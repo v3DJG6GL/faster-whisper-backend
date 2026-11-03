@@ -43,6 +43,21 @@ def _grid_partial(box):
     return decode_partial
 
 
+async def _discard(m):
+    pass
+
+
+def _grid_session(box, cfg, decode_final, *, endpointer=None, emit=_discard, **kw):
+    """Session whose partials transcribe the grid of their buffer; appended to box."""
+    s = StreamSession(
+        config=cfg, endpointer=endpointer or EnergyEndpointer(),
+        decode_partial=_grid_partial(box), decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit, **kw,
+    )
+    box.append(s)
+    return s
+
+
 def _run_long_utterance(speech_ms: int):
     """Drive a session through one continuous utterance of speech_ms, with a
     buffer trim configured to fire mid-utterance. The fake decoders transcribe
@@ -61,8 +76,6 @@ def _run_long_utterance(speech_ms: int):
 
     session_box: list[StreamSession] = []
 
-    decode_partial = _grid_partial(session_box)
-
     async def decode_final(audio, prompt):
         off = session_box[0]._buffer_offset
         dur = audio.shape[0] / SR
@@ -72,12 +85,7 @@ def _run_long_utterance(speech_ms: int):
         words = [{"word": t, "start": a - off, "end": b - off} for a, b, t in gw]
         return (raw, words, False)
 
-    s = StreamSession(
-        config=cfg, endpointer=EnergyEndpointer(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit, on_final=on_final,
-    )
-    session_box.append(s)
+    s = _grid_session(session_box, cfg, decode_final, emit=emit, on_final=on_final)
 
     # _trimmed_text is cleared by the finalize, so watch it live while feeding.
     trimmed: list[str] = []
@@ -133,23 +141,12 @@ def test_trim_folds_cut_words_into_rolling_prompt():
     ride the prompt so the seam decodes with context."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
     final_prompts: list[str] = []
-    session_box: list[StreamSession] = []
-
-    decode_partial = _grid_partial(session_box)
 
     async def decode_final(audio, prompt):
         final_prompts.append(prompt)
         return (" tail.", [], False)
 
-    async def emit(m):
-        pass
-
-    s = StreamSession(
-        config=cfg, endpointer=EnergyEndpointer(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit,
-    )
-    session_box.append(s)
+    s = _grid_session([], cfg, decode_final)
 
     async def run():
         await s.feed_pcm(_pcm(8000, 3500))
@@ -170,23 +167,12 @@ def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
     banked: list[str] = []
     session_box: list[StreamSession] = []
 
-    decode_partial = _grid_partial(session_box)
-
     async def decode_final(audio, prompt):
         final_prompts.append(prompt)
         banked[:] = session_box[0]._trimmed_text.split()
         return (" tail.", [], False)
 
-    async def emit(m):
-        pass
-
-    s = StreamSession(
-        config=cfg, endpointer=EnergyEndpointer(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit,
-        base_prompt="Ibuprofen Metoprolol",
-    )
-    session_box.append(s)
+    s = _grid_session(session_box, cfg, decode_final, base_prompt="Ibuprofen Metoprolol")
 
     async def run():
         await s.feed_pcm(_pcm(8000, 3500))
@@ -318,7 +304,6 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
     msgs: list[dict] = []
     finals_meta: list[dict] = []
     final_decodes: list[float] = []
-    session_box: list[StreamSession] = []
 
     async def emit(m):
         msgs.append(m)
@@ -326,18 +311,12 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
     async def on_final(info):
         finals_meta.append(info)
 
-    decode_partial = _grid_partial(session_box)
-
     async def decode_final(audio, prompt):
         final_decodes.append(audio.shape[0] / SR)
         return (" should-not-run.", [], False)
 
-    s = StreamSession(
-        config=cfg, endpointer=_AlwaysSpeech(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit, on_final=on_final,
-    )
-    session_box.append(s)
+    s = _grid_session([], cfg, decode_final, endpointer=_AlwaysSpeech(),
+                      emit=emit, on_final=on_final)
 
     async def run():
         # 3.5 s loud: partials commit grid words, a trim banks the opening.
@@ -426,22 +405,11 @@ def test_buffer_counter_matches_the_array_after_every_frame():
     """Drive the real pump through speech, a mid-utterance trim, a finalize and
     trailing silence — every writer must leave counter and array agreeing."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
-    session_box: list[StreamSession] = []
-
-    decode_partial = _grid_partial(session_box)
 
     async def decode_final(audio, prompt):
         return (" tail.", [], False)
 
-    async def emit(m):
-        pass
-
-    s = StreamSession(
-        config=cfg, endpointer=EnergyEndpointer(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit,
-    )
-    session_box.append(s)
+    s = _grid_session([], cfg, decode_final)
 
     trimmed = []  # _trimmed_text is cleared by the finalize, so watch it live
 

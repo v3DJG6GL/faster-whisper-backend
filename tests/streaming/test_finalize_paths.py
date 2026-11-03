@@ -56,6 +56,21 @@ def _grid_partial(box):
     return decode_partial
 
 
+async def _discard(m):
+    pass
+
+
+def _grid_session(box, cfg, decode_final, *, endpointer=None, emit=_discard, **kw):
+    """Session whose partials transcribe the grid of their buffer; appended to box."""
+    s = StreamSession(
+        config=cfg, endpointer=endpointer or EnergyEndpointer(),
+        decode_partial=_grid_partial(box), decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit, **kw,
+    )
+    box.append(s)
+    return s
+
+
 def _run_gate_path():
     """Loud speech long enough for a trim to bank words, then quiet frames
     until the max_buffer_sec ceiling forces a finalize whose live buffer is
@@ -64,26 +79,15 @@ def _run_gate_path():
                       rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
     finals_meta: list[dict] = []
     final_decodes: list[float] = []
-    box: list[StreamSession] = []
-
-    async def emit(m):
-        pass
 
     async def on_final(info):
         finals_meta.append(info)
-
-    decode_partial = _grid_partial(box)
 
     async def decode_final(audio, prompt):
         final_decodes.append(audio.shape[0] / SR)
         return (" should-not-run.", [], False)
 
-    s = StreamSession(
-        config=cfg, endpointer=_AlwaysSpeech(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit, on_final=on_final,
-    )
-    box.append(s)
+    s = _grid_session([], cfg, decode_final, endpointer=_AlwaysSpeech(), on_final=on_final)
 
     async def run():
         for _ in range(3500 // FRAME_MS):
@@ -127,13 +131,8 @@ def test_decoded_path_flags_decode_and_rebases_words():
     finals_meta: list[dict] = []
     box: list[StreamSession] = []
 
-    async def emit(m):
-        pass
-
     async def on_final(info):
         finals_meta.append(info)
-
-    decode_partial = _grid_partial(box)
 
     async def decode_final(audio, prompt):
         off = box[0]._buffer_offset
@@ -143,12 +142,7 @@ def test_decoded_path_flags_decode_and_rebases_words():
                 [{"word": t, "start": a - off, "end": b - off} for a, b, t in gw],
                 False)
 
-    s = StreamSession(
-        config=cfg, endpointer=EnergyEndpointer(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit, on_final=on_final,
-    )
-    box.append(s)
+    s = _grid_session(box, cfg, decode_final, on_final=on_final)
 
     async def run():
         await s.feed_pcm(_pcm(8000, 3500))
@@ -173,25 +167,14 @@ def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
     trim-banked prefix), so the captured text and words match."""
     cfg = fast_config(buffer_trim_sec=2.0 if trim else 100.0, buffer_trim_keep_sec=1.0)
     finals_meta: list[dict] = []
-    box: list[StreamSession] = []
-
-    async def emit(m):
-        pass
 
     async def on_final(info):
         finals_meta.append(info)
 
-    decode_partial = _grid_partial(box)
-
     async def decode_final(audio, prompt):
         return ("", [], False)
 
-    s = StreamSession(
-        config=cfg, endpointer=EnergyEndpointer(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit, on_final=on_final,
-    )
-    box.append(s)
+    s = _grid_session([], cfg, decode_final, on_final=on_final)
 
     async def run():
         await s.feed_pcm(_pcm(8000, 3500))
