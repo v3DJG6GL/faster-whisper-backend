@@ -1642,6 +1642,9 @@
   var _me = null;
   var _isAdmin = false;
   var STATUS_VALUES = ['all', 'new', 'reviewed', 'ready', 'dismissed', 'audio_missing'];
+  // The statuses a capture / group card can be set to (status button rows).
+  var EDIT_STATUS_OPTS = [{value: 'new', label: 'New'}, {value: 'reviewed', label: 'Reviewed'},
+                          {value: 'ready', label: 'Ready'}, {value: 'dismissed', label: 'Dismissed'}];
 
   // `&user_id=a,b` for the picked speakers ('' when none). Shared by the
   // capture list and both group fetches so they narrow the same way.
@@ -2291,10 +2294,7 @@
     actions.className = 'cc-actions';
     var statusLbl = _el('span', 'cc-status-label', 'status ');
     var statusGrp = buildStatusButtonGroup(
-      [{value: 'new',       label: 'New'},
-       {value: 'reviewed',  label: 'Reviewed'},
-       {value: 'ready',     label: 'Ready'},
-       {value: 'dismissed', label: 'Dismissed'}],
+      EDIT_STATUS_OPTS,
       state.newStatus,
       async function(v) {
         // Auto-save on click. Status-only PATCH: an unsaved chip edit stays
@@ -5228,10 +5228,7 @@
         actions.className = 'cc-actions';
         var statusLbl = _el('span', 'cc-status-label', 'status ');
         var statusGrp = buildStatusButtonGroup(
-          [{value: 'new',       label: 'New'},
-           {value: 'reviewed',  label: 'Reviewed'},
-           {value: 'ready',     label: 'Ready'},
-           {value: 'dismissed', label: 'Dismissed'}],
+          EDIT_STATUS_OPTS,
           sampleState.newStatus || 'new',
           async function(v) {
             var prev = sampleState.newStatus;
@@ -5736,14 +5733,8 @@
 
   _readUrl();
   (function() {
-    var opts = [
-      { value: 'all',           label: 'All' },
-      { value: 'new',           label: 'New' },
-      { value: 'reviewed',      label: 'Reviewed' },
-      { value: 'ready',         label: 'Ready' },
-      { value: 'dismissed',     label: 'Dismissed' },
-      { value: 'audio_missing', label: 'Audio missing' },
-    ];
+    var opts = [{ value: 'all', label: 'All' }].concat(
+      EDIT_STATUS_OPTS, [{ value: 'audio_missing', label: 'Audio missing' }]);
     var grp = buildStatusButtonGroup(opts, _filtStatus, function(v) {
       _filterChange(function() {
         _filtStatus = v;
