@@ -234,6 +234,14 @@ def hls_playlist(names, *, extra="") -> str:
         f"#EXTINF:{SEG_S:.3f},\n{n}\n" for n in names) + "#EXT-X-ENDLIST\n"
 
 
+def serve_hls(table, url, count):
+    """`count` TS segments s{i}.ts beside the playlist `url`, then the playlist."""
+    base = url.rsplit("/", 1)[0] + "/"
+    names = [f"s{i}.ts" for i in range(count)]
+    table.update({base + n: b for n, b in zip(names, ts_segments(count))})
+    table[url] = hls_playlist(names).encode()
+
+
 @pytest.fixture
 def served(fake_capped_get):
     """url → body (bytes, or an int HTTP status); (url, headers) per request."""
@@ -266,10 +274,7 @@ def _assert_pieces_hit(pieces, starts, seconds):
 
 def test_fetch_hls_ts_pieces(served, tmp_path):
     table, calls = served
-    names = [f"s{i}.ts" for i in range(12)]
-    for name, body in zip(names, ts_segments(12)):
-        table[f"https://cdn.test/v/audio/{name}"] = body
-    table[_BASE] = hls_playlist(names).encode()
+    serve_hls(table, _BASE, 12)
     source = {"protocol": "hls", "url": _BASE, "headers": {"Referer": "https://site.test/"}}
     starts = [5.0, 21.0, 37.0]
     pieces, got = _fetch(source, starts, 6.0, tmp_path)
@@ -287,10 +292,7 @@ def test_fetch_without_starts_places_pieces_by_the_playlist(served, tmp_path):
     of the playlist's summed segment durations, each a full PIECE_SECONDS inside
     it (60 s: 80 % = 48 is clamped to 40), and are reported back."""
     table, _calls = served
-    names = [f"s{i}.ts" for i in range(15)]
-    for name, body in zip(names, ts_segments(15)):
-        table[f"https://cdn.test/v/audio/{name}"] = body
-    table[_BASE] = hls_playlist(names).encode()
+    serve_hls(table, _BASE, 15)
     pieces, got = _fetch({"protocol": "hls", "url": _BASE}, None, 6.0, tmp_path)
     assert got["starts"] == [12.0, 30.0, 40.0]
     _assert_pieces_hit(pieces, got["starts"], 6.0)
@@ -300,11 +302,8 @@ def test_fetch_hls_resolves_segments_against_the_redirect_target(
         fake_capped_get, tmp_path):
     """A tokenised manifest endpoint that redirects to a CDN edge: relative
     segment URIs resolve against the URL that answered, not the one asked."""
-    names = [f"s{i}.ts" for i in range(12)]
     edge = "https://edge.cdn.test/x/y/index.m3u8"
-    for name, body in zip(names, ts_segments(12)):
-        fake_capped_get.table[f"https://edge.cdn.test/x/y/{name}"] = body
-    fake_capped_get.table[edge] = hls_playlist(names).encode()
+    serve_hls(fake_capped_get.table, edge, 12)
     fake_capped_get.redirects["https://site.test/manifest?token=1"] = edge
     pieces, got = _fetch({"protocol": "hls",
                           "url": "https://site.test/manifest?token=1"},

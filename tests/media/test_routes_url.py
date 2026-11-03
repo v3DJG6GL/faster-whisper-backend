@@ -1040,12 +1040,9 @@ def hls_link(url_enabled, lang_check, fake_capped_get, monkeypatch):
     """A 60 s link whose audio is HLS — 15 × 4 s real TS segments behind a
     fake guarded GET (requests recorded) — and every full download recorded.
     Each detect_language call records its piece's sample count."""
-    from tests.media.test_segmented import hls_playlist, ts_segments
-    names = [f"s{i}.ts" for i in range(15)]
+    from tests.media.test_segmented import serve_hls
     link = fake_capped_get
-    link.table.update({f"https://cdn.test/v/{n}": b
-                       for n, b in zip(names, ts_segments(15))})
-    link.table[_HLS] = hls_playlist(names).encode()
+    serve_hls(link.table, _HLS, 15)
     link.ctype, link.downloads, link.heard = "video/mp2t", [], []
 
     async def _probe(url, *, timeout):
