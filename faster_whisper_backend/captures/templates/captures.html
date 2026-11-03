@@ -2054,9 +2054,7 @@
     card.classList.remove('open');
     var state = _openRows[cid];
     if (state) {
-      if (state.blobUrl) {
-        try { URL.revokeObjectURL(state.blobUrl); } catch(_) {}
-      }
+      _revokeRowBlob(state);
       if (state.audio) {
         try { state.audio.pause(); } catch(_) {}
       }
@@ -2067,6 +2065,13 @@
     // the player is dead on second open.
     var body = card.querySelector('.cc-body');
     if (body) { body.dataset.built = '0'; body.innerHTML = ''; }
+  }
+  // Revoke an open capture row's audio blob URL, if it has one.
+  function _revokeRowBlob(st) {
+    if (st && st.blobUrl) { try { URL.revokeObjectURL(st.blobUrl); } catch(_) {} }
+  }
+  function _revokeOpenRowBlobs() {
+    Object.keys(_openRows).forEach(function(cid) { _revokeRowBlob(_openRows[cid]); });
   }
   // Revoke each open group card's blob: audio URL (render wipe, Clear all, tab close).
   function _revokeOpenSampleBlobs() {
@@ -2085,7 +2090,7 @@
     // dataset.built is '0', so toggleExpand re-runs buildBody).
     var prior = _openRows[r.id];
     if (prior) {
-      if (prior.blobUrl) { try { URL.revokeObjectURL(prior.blobUrl); } catch(_) {} }
+      _revokeRowBlob(prior);
       if (prior.audio) { try { prior.audio.pause(); } catch(_) {} }
     }
     var state = {
@@ -2975,10 +2980,7 @@
         toast('Cleared ' + _plural(j.deleted, 'capture') + '.');
         // Drop any open blob URLs first — both per-row audio blobs AND
         // group-card audio (their <audio>.src is also a blob: URL).
-        Object.keys(_openRows).forEach(function(cid) {
-          var st = _openRows[cid];
-          if (st && st.blobUrl) URL.revokeObjectURL(st.blobUrl);
-        });
+        _revokeOpenRowBlobs();
         _openRows = {};
         _revokeOpenSampleBlobs();
         _openSamples = {};
@@ -5742,8 +5744,7 @@
         var r = _allCaptures.find(function(x) { return x.id === cid; });
         if (r) toggleExpand(card, r);
       } else {
-        var st = _openRows[cid];
-        if (st && st.blobUrl) URL.revokeObjectURL(st.blobUrl);
+        _revokeRowBlob(_openRows[cid]);
         delete _openRows[cid];
       }
     });
@@ -5862,12 +5863,7 @@
   // Revoke any open audio blob URLs on tab close — also handled per-row
   // on collapse, but this is the safety net.
   window.addEventListener('beforeunload', function() {
-    Object.keys(_openRows).forEach(function(cid) {
-      var st = _openRows[cid];
-      if (st && st.blobUrl) {
-        try { URL.revokeObjectURL(st.blobUrl); } catch(_) {}
-      }
-    });
+    _revokeOpenRowBlobs();
     _revokeOpenSampleBlobs();
   });
 

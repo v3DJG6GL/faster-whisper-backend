@@ -2183,7 +2183,8 @@ global.document = { getElementById: function() { return footer; } };
 def test_header_collapse_asks_before_dropping_a_cards_unsaved_edits(page, tmp_path):
     """A header click collapsed an open capture or group card holding
     unsaved chips / notes with no prompt; the edits were gone."""
-    fns = _js_functions(page, "_okToCollapse", "toggleExpand", "collapse", "_toggleSampleExpand")
+    fns = _js_functions(page, "_okToCollapse", "toggleExpand", "collapse", "_revokeRowBlob",
+                        "_toggleSampleExpand")
     out = _run_node(tmp_path, fns + r"""
 var asked = 0, answers = [];
 async function _confirm() { asked++; return answers.shift(); }
@@ -2231,7 +2232,7 @@ def test_failed_reopen_after_render_drops_the_old_cards_state(page, tmp_path):
     in _openRows. When that GET failed the stale (dirty) state stayed:
     every refresh was skipped for "unsaved edits" no card showed, and its
     blob URL was never revoked. A first open that fails has no state."""
-    fns = _js_functions(page, "toggleExpand", "collapse")
+    fns = _js_functions(page, "toggleExpand", "collapse", "_revokeRowBlob")
     out = _run_node(tmp_path, fns + r"""
 var revoked = [], paused = 0;
 global.URL = { revokeObjectURL: function(u) { revoked.push(u); } };
@@ -2263,7 +2264,7 @@ def test_superseded_reopen_leaves_the_live_cards_state(page, tmp_path):
     (now detached) card's GET landed last, its buildBody replaced the live
     card's dirty state in _openRows with a clean one, so the unsaved-edits
     prompt no longer fired. A card collapsed while its GET ran stays shut."""
-    fns = _js_functions(page, "toggleExpand", "collapse")
+    fns = _js_functions(page, "toggleExpand", "collapse", "_revokeRowBlob")
     out = _run_node(tmp_path, fns + r"""
 var pending = [];
 function api() { return new Promise(function(res) { pending.push(res); }); }
