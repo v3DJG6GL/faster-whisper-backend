@@ -1000,18 +1000,19 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         "shorter list to see this step"
     )
 
-    def _fixed_count_msg(pat: str) -> str | None:
-        """The save-time fixed-count screen (regex_guard.check_fixed_counts),
-        as a not_run advisory. `(?:(?:a{0}){N}){N}` is no "nested repetition"
-        yet loops N*N times on any input, and sre holds the GIL for the whole
-        match, so a 2 s guard thread would freeze the process, not one core.
-        Runs BEFORE _nested_repetition, whose overlap check matches fragments
+    def _screen_msg(pat: str) -> str | None:
+        """The save-time structural screens as a not_run advisory; None = safe
+        to run. The fixed-count screen (regex_guard.check_fixed_counts) comes
+        first: `(?:(?:a{0}){N}){N}` is no "nested repetition" yet loops N*N
+        times on any input, and sre holds the GIL for the whole match, so a
+        2 s guard thread would freeze the process, not one core. It runs
+        BEFORE _nested_repetition, whose overlap check matches fragments
         in-process (the same order regex_guard.validate uses)."""
         try:
             regex_guard.check_fixed_counts("pattern", pat)
         except ValueError as e:
             return f"{e} Not executed here: a timed-out dry-run thread cannot be interrupted."
-        return None
+        return _NESTED_REP_MSG if regex_guard._nested_repetition(pat) else None
 
     sample = str(payload.get("sample") or "")
     rules = payload.get("rules") or []
@@ -1083,8 +1084,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             if not isinstance(pat, str) or not pat:
                 continue
             if pat not in _screened:
-                _screened[pat] = (_fixed_count_msg(pat) is None
-                                  and not regex_guard._nested_repetition(pat))
+                _screened[pat] = _screen_msg(pat) is None
             if _screened[pat]:
                 out.append((ei, pat, rep))
         return out
@@ -1193,12 +1193,12 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             if rank < 1:
                                 bad, rank = "pattern must be a string", 1
                             continue
-                        fc_msg = _fixed_count_msg(ep)
-                        if fc_msg is not None or regex_guard._nested_repetition(ep):
+                        screen = _screen_msg(ep)
+                        if screen is not None:
                             # Wins over an earlier compile error: `not_run`
                             # needs its "not executed here" caveat shown.
                             if rank < 3:
-                                bad, rank = fc_msg or _NESTED_REP_MSG, 3
+                                bad, rank = screen, 3
                             lout["not_run"] = True
                             continue
                         if ei in held:
@@ -1302,12 +1302,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 if not isinstance(pattern, str):
                     return {**common, "after": text,
                             "error": "pattern must be a string"}
-                fc_msg = _fixed_count_msg(pattern)
-                if fc_msg is not None:
-                    return {**common, "after": text, "error": fc_msg,
-                            "not_run": True}
-                if regex_guard._nested_repetition(pattern):
-                    return {**common, "after": text, "error": _NESTED_REP_MSG,
+                screen = _screen_msg(pattern)
+                if screen is not None:
+                    return {**common, "after": text, "error": screen,
                             "not_run": True}
                 if -1 in held:
                     return {**common, "after": text, "error": held[-1],
