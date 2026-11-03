@@ -53,10 +53,14 @@
     min-width: 2.75rem; text-align: center; }
   #load-older-row { display: flex; justify-content: center;
     padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
-  #loadOlderBtn { background: transparent; color: var(--cyan);
-    border: 1px solid var(--border); padding: 0.375rem 1rem;
+  /* Quiet cyan outline buttons inside the log (load older, search nav, fold,
+     clip); sizing stays in each button's own rule. */
+  #loadOlderBtn, #filter-nav button, .fold-ctl button, .line .clip-btn {
+    background: transparent; color: var(--cyan); border: 1px solid var(--border);
     border-radius: 4px; font: inherit; cursor: pointer; }
-  #loadOlderBtn:hover:not([disabled]) { background: var(--panel); }
+  #loadOlderBtn:hover:not([disabled]), #filter-nav button:hover,
+  .fold-ctl button:hover, .line .clip-btn:hover { background: var(--panel); }
+  #loadOlderBtn { padding: 0.375rem 1rem; }
   #loadOlderBtn[disabled] { opacity: 0.5; cursor: default; }
   .tz-hint { color: var(--dim); font-size: var(--fs-xs); cursor: help; }
   .line.hidden { display: none; }
@@ -67,9 +71,7 @@
   #log.hide-mode .line.match:not(.match-cur) { background: transparent; outline: none; }
   #filter-nav { display: inline-flex; align-items: center; gap: 0.25rem; margin-left: 0.375rem; }
   #filter-nav.hidden { display: none; }
-  #filter-nav button { background: transparent; color: var(--cyan); border: 1px solid var(--border);
-    border-radius: 4px; padding: 0 0.375rem; font: inherit; cursor: pointer; line-height: 1.4; }
-  #filter-nav button:hover { background: var(--panel); }
+  #filter-nav button { padding: 0 0.375rem; line-height: 1.4; }
   #filter-count { color: var(--dim); font-size: var(--fs-xs); min-width: 4ch; text-align: center; }
   .filter-mode { margin-left: 0.5rem; }
   .line.rule    { color: var(--dim); }
@@ -111,21 +113,14 @@
   /* Controls, not log text: the selection highlight skips them, and the
      copy handler drops them from the clipboard. */
   .fold-ctl { color: var(--dim); cursor: default; user-select: none; }
-  .fold-ctl button { background: transparent; color: var(--cyan);
-    border: 1px solid var(--border); border-radius: 4px; font: inherit;
-    font-size: 0.9em; padding: 0 0.5rem; margin-left: 0.5rem;
-    cursor: pointer; }
-  .fold-ctl button:hover { background: var(--panel); }
+  .fold-ctl button { font-size: 0.9em; padding: 0 0.5rem; margin-left: 0.5rem; }
   /* Long transcript lines — RAW WHISPER, FINAL, a pipeline step's before /
      after — clamp at 3 lines with a size-honest "Show all" button, the same
      folding the /quick-config trace viewer applies to raw/final. */
   .line .clip { display: -webkit-box; -webkit-box-orient: vertical;
     -webkit-line-clamp: 3; overflow: hidden; }
   .line .clip-btn { display: inline-block; margin: 0.15rem 0 0.2rem 2rem;
-    background: transparent; color: var(--cyan); border: 1px solid var(--border);
-    border-radius: 4px; font: inherit; font-size: 0.9em; padding: 0 0.5rem;
-    cursor: pointer; user-select: none; }
-  .line .clip-btn:hover { background: var(--panel); }
+    font-size: 0.9em; padding: 0 0.5rem; user-select: none; }
   {{NAV_CSS}}
 </style></head>
 <body class="{{PAGE_CLASS}}">
