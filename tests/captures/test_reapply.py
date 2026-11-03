@@ -307,9 +307,9 @@ def test_run_reapplies_rules_saved_while_a_pass_was_running(
 
 def test_rerun_keeps_the_job_totals_of_the_earlier_pass(
         captures_store_db, fake_pipeline, monkeypatch, fake_thread):
-    """A queued rerun walks every row again; a row pass 1 rewrote is current
-    by then, so resetting the totals per pass reported "0 updated" for a job
-    that rewrote it."""
+    """A queued rerun walks every row again, and a row pass 1 rewrote is
+    current by then; the totals carry across passes, so the job does not
+    report "0 updated" for a row it rewrote."""
     from faster_whisper_backend.settings import config as cfg
 
     cs = captures_store_db
