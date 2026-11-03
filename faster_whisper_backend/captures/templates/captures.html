@@ -1949,9 +1949,7 @@
     head.appendChild(cb);
     head.insertAdjacentHTML('beforeend',
       '<span class="expand-arrow">›</span>' +
-      '<span class="when" data-ts="' + (r.created_ts || 0) + '" title="' +
-        escapeHtml(absTime(r.created_ts)) + '">' +
-        escapeHtml(fmtWhen(r.created_ts)) + '</span>' +
+      '<span class="when"></span>' +
       '<span class="pill status-' + escapeHtml(r.status || 'new') + '">' +
         escapeHtml(r.status || 'new') + '</span>' +
       (r.model ? '<span class="pill">' + escapeHtml(r.model) + '</span>' : '') +
@@ -1981,6 +1979,7 @@
         ? '<span class="pill group-pill" title="member of sample ' + escapeHtml(r.sample_id.slice(0,8)) + '">in sample</span>'
         : '') +
       '<span class="spacer"></span>');
+    stampTs(head.querySelector('.when'), r.created_ts);
     card.appendChild(head);
 
     var preview = document.createElement('div');
@@ -5032,9 +5031,7 @@
     head.className = 'cc-head';
     head.innerHTML =
       '<span class="expand-arrow">›</span>' +
-      '<span class="when" data-ts="' + (g.created_ts || 0) + '" title="' +
-        escapeHtml(absTime(g.created_ts)) + '">' +
-        escapeHtml(fmtWhen(g.created_ts)) + '</span>' +
+      '<span class="when"></span>' +
       '<span class="pill group-pill">sample</span>' +
       '<span class="pill status-' + escapeHtml(g.status || 'new') + '">' +
         escapeHtml(g.status || 'new') + '</span>' +
@@ -5051,6 +5048,7 @@
         ? '<span class="pill lock-pill" title="locked — protect from edits">locked</span>'
         : '') +
       '<span class="spacer"></span>';
+    stampTs(head.querySelector('.when'), g.created_ts);
     card.appendChild(head);
 
     var preview = document.createElement('div');
