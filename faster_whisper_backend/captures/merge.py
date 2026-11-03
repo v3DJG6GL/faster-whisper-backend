@@ -85,6 +85,11 @@ def silence_bytes(ms: int) -> bytes:
     return bytes(n_samples * BYTES_PER_SAMPLE)
 
 
+def samples_to_ms(samples: int) -> int:
+    """Sample count -> milliseconds (rounded) in our fixed format."""
+    return int(round(samples * 1000 / _REQ_RATE))
+
+
 def merge_wavs(
     src_paths: list[str],
     dst_path: str,
@@ -183,7 +188,7 @@ def merge_wavs(
             if i > 0:
                 pieces.append(join)
                 total_samples += join_samples
-            offset_ms = int(round(total_samples * 1000 / _REQ_RATE))
+            offset_ms = samples_to_ms(total_samples)
             members.append({
                 "lead_ms": int(res["lead_ms"]),
                 "new_duration_ms": int(res["new_duration_ms"]),
@@ -203,7 +208,7 @@ def merge_wavs(
             pcm, n = read_pcm(sp)
             if n == 0:
                 raise ValueError(f"source {os.path.basename(sp)} is empty")
-            dur_ms = int(round(n * 1000 / _REQ_RATE))
+            dur_ms = samples_to_ms(n)
             members.append({
                 "lead_ms": 0,
                 "new_duration_ms": dur_ms,
@@ -280,7 +285,7 @@ def merge_wavs(
     return {
         "bytes": os.path.getsize(dst_path),
         "n_samples": total_samples,
-        "duration_ms": int(round(total_samples * 1000 / _REQ_RATE)),
+        "duration_ms": samples_to_ms(total_samples),
         "members": members,
     }
 

@@ -89,7 +89,7 @@ def trim_wav(
         return _no_trim(0)
 
     pcm, n_samples = audio_merge.read_pcm(src_path)
-    orig_duration_ms = int(round(n_samples * 1000 / _REQ_RATE))
+    orig_duration_ms = _samples_to_ms(n_samples)
     if n_samples == 0:
         return _no_trim(0)
 
@@ -186,7 +186,7 @@ def trim_wav(
     lead_ms = int(leading_trimmed * 1000 / _REQ_RATE)
     trail_ms = int(trailing_trimmed * 1000 / _REQ_RATE)
     new_samples = end_sample - start_sample
-    new_duration_ms = int(round(new_samples * 1000 / _REQ_RATE))
+    new_duration_ms = _samples_to_ms(new_samples)
     logger.info(
         "[vad-trim] %s: trimmed %d ms leading, %d ms trailing (margin=%d ms)",
         os.path.basename(src_path), lead_ms, trail_ms, margin_ms,
@@ -200,8 +200,7 @@ def trim_wav(
     }
 
 
-def _samples_to_ms(samples: int) -> int:
-    return int(round(samples * 1000 / _REQ_RATE))
+_samples_to_ms = audio_merge.samples_to_ms
 
 
 def trim_pcm_for_merge(
