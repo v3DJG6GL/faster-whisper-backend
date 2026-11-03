@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Literal
 
@@ -156,6 +157,15 @@ def _assert_member_sample_not_locked(
     sample = capture_samples_store.get_sample(sid)
     if sample is not None and sample.get("is_locked"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
+
+
+def _refuse_over_cap(chip_lists: Iterable[list[Any] | None], holder: str) -> None:
+    """422 before any write when a chip list would be cut at the store cap."""
+    if any(text_corrections.over_cap(c) for c in chip_lists):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{holder} holds at most {text_corrections.CAP_CORRECTIONS} corrections",
+        )
 
 
 class CorrectionIn(BaseModel):
@@ -884,12 +894,7 @@ async def patch_capture_api(
                 edited = text_corrections.three_way_merge_corrections(
                     baseline, edited, current,
                 )
-            if text_corrections.over_cap(edited):
-                raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    f"a capture holds at most"
-                    f" {text_corrections.CAP_CORRECTIONS} corrections",
-                )
+            _refuse_over_cap([edited], "a capture")
             patch["corrections"] = edited
         if payload.admin_notes is not None:
             patch["admin_notes"] = payload.admin_notes
@@ -1650,12 +1655,7 @@ async def preview_save_chips_api(
     }
     # Before any write, as in patch_sample_api: the schema bounds the whole
     # projection, the store caps each member.
-    if any(text_corrections.over_cap(c) for c in per_member.values()):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"a member capture holds at most"
-            f" {text_corrections.CAP_CORRECTIONS} corrections",
-        )
+    _refuse_over_cap(per_member.values(), "a member capture")
 
     saved: dict[str, int] = {}
     members_corrections: dict[str, list[dict[str, Any]]] = {}
@@ -2369,12 +2369,7 @@ async def patch_sample_api(
             }
             # Before any write: a member past the store's cap would lose
             # chips silently.
-            if any(text_corrections.over_cap(c) for c in by_member.values()):
-                raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    f"a member capture holds at most"
-                    f" {text_corrections.CAP_CORRECTIONS} corrections",
-                )
+            _refuse_over_cap(by_member.values(), "a member capture")
             # Skip members whose chip set didn't change — a 30-member group
             # with one edited chip otherwise fires 30 UPDATEs where 29 are
             # idempotent rewrites of the same JSON column.
