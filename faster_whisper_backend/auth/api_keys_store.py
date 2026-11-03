@@ -226,9 +226,10 @@ def _row_to_user_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _parse_permissions(raw: "str | None") -> dict[str, Any]:
-    """Decode the JSON-encoded permissions column. Returns an empty dict on
-    null/blank/invalid input — the policy object treats missing pages as
-    'none', which is the safe default for an unknown shape."""
+    """Decode a JSON-object TEXT column (permissions, a key's config binding).
+    Returns an empty dict on null/blank/invalid/non-object input — the policy
+    object treats missing pages as 'none', which is the safe default for an
+    unknown shape."""
     if not raw:
         return {}
     try:
@@ -263,13 +264,8 @@ def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
     stays {"direct": {}, "profiles": []}. Returns the empty binding on null /
     blank / invalid input — a malformed binding must never crash a decode."""
     empty = {"direct": {}, "profiles": []}
-    if not raw:
-        return dict(empty)
-    try:
-        v = json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, TypeError):
-        return dict(empty)
-    if not isinstance(v, dict):
+    v = raw if isinstance(raw, dict) else _parse_permissions(raw)
+    if not v:
         return dict(empty)
     direct = v.get("direct")
     if isinstance(direct, dict):
@@ -1015,13 +1011,7 @@ def rename_profile_refs(old: str, new: str) -> int:
                     touched += 1
             # Per-key bindings are the api_keys.config column (the binding itself).
             for r in conn.execute("SELECT id, config FROM api_keys").fetchall():
-                raw = r["config"]
-                if not raw:
-                    continue
-                try:
-                    binding = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
-                    continue
+                binding = _parse_permissions(r["config"])
                 if _rewrite_profile_in_binding(binding, old, new):
                     conn.execute("UPDATE api_keys SET config = ? WHERE id = ?",
                                  (json.dumps(binding), r["id"]))
