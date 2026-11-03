@@ -1598,18 +1598,6 @@ async def transcribe(
                    user_id=_user_id)
     tx_progress._bind_job_pid(_pid, request_id)
     try:
-        # Seed the registry entry EARLY so the cancel endpoint (which only
-        # accepts ids it can see in-flight) has a target well before the
-        # first stage-driven _progress_set (model load, semaphore queue can
-        # be seconds away) — but only INSIDE this try, whose finally closes
-        # the entry when the inner try was never reached (413, a failed model
-        # load, request.form()): seeding before the validation gates above
-        # leaked an orphan "waiting" entry (and a cancellable id) on every
-        # early 4xx. URL runs seed as "resolving": their pipeline starts at
-        # the link, and "waiting" maps onto the transcribe row in the
-        # client's rail — which would paint the download as already done.
-        # `owner` binds the entry to this caller: the progress/cancel
-        # endpoints treat a mismatched caller exactly like an unknown id.
         _keep_video = _form_bool(keep_video) is True
         _video_max_height = media_video._clamp_video_height(video_max_height)
         _video_format = media_video._clean_video_format(video_format)
@@ -1638,6 +1626,18 @@ async def transcribe(
             raise HTTPException(
                 status_code=422,
                 detail="retain_media requires a json response format")
+        # Seed the registry entry EARLY so the cancel endpoint (which only
+        # accepts ids it can see in-flight) has a target well before the
+        # first stage-driven _progress_set (model load, semaphore queue can
+        # be seconds away) — but only INSIDE this try, whose finally closes
+        # the entry when the inner try was never reached (413, a failed model
+        # load, request.form()): seeding before the validation gates above
+        # leaked an orphan "waiting" entry (and a cancellable id) on every
+        # early 4xx. URL runs seed as "resolving": their pipeline starts at
+        # the link, and "waiting" maps onto the transcribe row in the
+        # client's rail — which would paint the download as already done.
+        # `owner` binds the entry to this caller: the progress/cancel
+        # endpoints treat a mismatched caller exactly like an unknown id.
         _rplan.set_stages(tx_progress._provisional_stages(
             is_url=source_url is not None,
             separate=_form_bool(separate_bgm), diarize=_form_bool(diarize),
