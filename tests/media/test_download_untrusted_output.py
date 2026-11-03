@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from faster_whisper_backend.media import download as udl
-from tests.media.test_download import _patch_argv, _run
+from tests.media.test_download import _fetch, _patch_argv
 
 
 def test_download_over_long_filtered_line_is_still_a_policy_refusal(tmp_path, monkeypatch):
@@ -19,8 +19,7 @@ print("[download] " + "t" * 200_000
       flush=True)
 """)
     with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
-        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                          max_bytes=10_000, timeout=30))
+        _fetch(udl.download, tmp_path)
 
 
 def test_download_keeps_reading_progress_after_an_over_long_line(tmp_path, monkeypatch):
@@ -31,9 +30,8 @@ print("dl:1000 1000 NA", flush=True)
 open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 64)
 """)
     seen = []
-    out = _run(udl.download(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
-        timeout=30, progress_cb=lambda f, tot: seen.append((f, tot))))
+    out = _fetch(udl.download, tmp_path,
+                 progress_cb=lambda f, tot: seen.append((f, tot)))
     assert out.endswith("media.m4a")
     assert seen and seen[-1] == (1.0, 1000)
 

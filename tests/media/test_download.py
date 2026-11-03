@@ -124,6 +124,13 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _fetch(fetch, dest, **kw):
+    """`fetch` (udl.download / udl.download_video) of the stand-in link into
+    `dest`, with a 10 kB cap and a 30 s timeout unless `kw` overrides them."""
+    return _run(fetch("https://example.com/v", dest_dir=str(dest),
+                      **{"max_bytes": 10_000, "timeout": 30, **kw}))
+
+
 def test_extractor_allowlist_case_insensitive(monkeypatch):
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["youtube"],
@@ -952,9 +959,8 @@ open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 64)
 def test_download_success(tmp_path, monkeypatch):
     _patch_argv(monkeypatch, _OK_SCRIPT)
     seen = []
-    out = _run(udl.download(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
-        timeout=30, progress_cb=lambda f, tot: seen.append((f, tot))))
+    out = _fetch(udl.download, tmp_path,
+                 progress_cb=lambda f, tot: seen.append((f, tot)))
     assert os.path.basename(out) == "media.m4a"
     assert os.path.getsize(out) == 64
     assert seen and seen[0][1] == 1000
@@ -970,8 +976,7 @@ sys.stderr.write("ERROR: Private video. Sign in\\n")
 sys.exit(1)
 """)
     with pytest.raises(udl.UrlDownloadError, match="private"):
-        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                          max_bytes=10_000, timeout=30))
+        _fetch(udl.download, tmp_path)
 
 
 def test_download_failure_logs_the_end_of_a_long_stderr(tmp_path, monkeypatch, caplog):
@@ -985,8 +990,7 @@ sys.exit(1)
 """)
     with caplog.at_level("WARNING", logger="whisper-api"):
         with pytest.raises(udl.UrlDownloadError):
-            _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                              max_bytes=10_000, timeout=30))
+            _fetch(udl.download, tmp_path)
     rec = [r.getMessage() for r in caplog.records if "yt-dlp exited" in r.getMessage()]
     assert rec and "ERROR: fwb-tail-marker" in rec[0]
 
@@ -1031,8 +1035,7 @@ import os
 open(os.path.join(r"__DEST__", "media.m4a.part"), "wb").write(b"x")
 """)
     with pytest.raises(udl.UrlDownloadError, match="size limit"):
-        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                          max_bytes=10_000, timeout=30))
+        _fetch(udl.download, tmp_path)
 
 
 def test_download_filtered_out_run_is_the_policy_refusal(tmp_path, monkeypatch):
@@ -1043,8 +1046,7 @@ print("[download] t does not pass filter (extractor_key!=Generic), skipping ..",
       flush=True)
 """)
     with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
-        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                          max_bytes=10_000, timeout=30))
+        _fetch(udl.download, tmp_path)
 
 
 def test_download_oversize_result_rejected(tmp_path, monkeypatch):
@@ -1053,8 +1055,7 @@ import os
 open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 2048)
 """)
     with pytest.raises(udl.UrlDownloadError, match="size limit"):
-        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                          max_bytes=1024, timeout=30))
+        _fetch(udl.download, tmp_path, max_bytes=1024)
 
 
 def test_download_aborts_when_stream_exceeds_cap(tmp_path, monkeypatch):
@@ -1093,8 +1094,7 @@ def test_download_survives_stderr_drain_failure(tmp_path, monkeypatch):
         return await real_wait_for(aw, *a, **k)
 
     monkeypatch.setattr(udl.asyncio, "wait_for", flaky_wait_for)
-    out = _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                            max_bytes=10_000, timeout=30))
+    out = _fetch(udl.download, tmp_path)
     assert os.path.basename(out) == "media.m4a"
 
 
@@ -1110,8 +1110,7 @@ os.symlink(r"{outside}", os.path.join(r"__DEST__", "media.m4a"))
     with pytest.raises(udl.UrlDownloadError, match="size limit"):
         # No legitimate result file survives the symlink screen, so the
         # "clean exit, no file" branch (size-limit message) fires.
-        _run(udl.download("https://example.com/v", dest_dir=str(dest),
-                          max_bytes=10_000, timeout=30))
+        _fetch(udl.download, dest)
 
 
 def test_download_cancel_terminates(tmp_path, monkeypatch):
@@ -1156,9 +1155,8 @@ time.sleep(60)
         return calls["n"] > 2
 
     with pytest.raises(udl.UrlCancelled):
-        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                          max_bytes=10_000, timeout=60,
-                          cancel_check=cancel_after_first_poll))
+        _fetch(udl.download, tmp_path, timeout=60,
+               cancel_check=cancel_after_first_poll)
     time.sleep(3)
     assert not marker.exists()
 
@@ -1274,8 +1272,7 @@ import time
 time.sleep(60)
 """)
     with pytest.raises(udl.UrlTimeoutError, match="timed out"):
-        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                          max_bytes=10_000, timeout=1.0))
+        _fetch(udl.download, tmp_path, timeout=1.0)
 
 
 def test_real_argv_shape(monkeypatch):
@@ -2002,10 +1999,8 @@ open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeypatch):
     _patch_video_argv(monkeypatch, _TWO_STREAMS_SCRIPT)
     seen = []
-    out = _run(udl.download_video(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
-        timeout=30, expected_total=1300,
-        progress_cb=lambda f, tot, done: seen.append((f, tot, done))))
+    out = _fetch(udl.download_video, tmp_path, expected_total=1300,
+                 progress_cb=lambda f, tot, done: seen.append((f, tot, done)))
     assert os.path.basename(out) == "media.mkv"
     fracs = [f for f, _t, _d in seen]
     assert fracs == sorted(fracs), fracs
@@ -2032,11 +2027,9 @@ def test_download_video_denominator_is_per_leg(tmp_path, monkeypatch):
     its 300 estimate until its own series starts."""
     _patch_video_argv(monkeypatch, _TWO_LEGS_BY_ID_SCRIPT)
     seen = []
-    out = _run(udl.download_video(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
-        timeout=30, format_ids=("616", "140"),
-        leg_estimates={"616": 1000, "140": 300},
-        progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    out = _fetch(udl.download_video, tmp_path, format_ids=("616", "140"),
+                 leg_estimates={"616": 1000, "140": 300},
+                 progress_cb=lambda f, t, d: seen.append((f, t, d)))
     assert os.path.basename(out) == "media.mkv"
     totals = [t for _f, t, _d in seen]
     assert totals[0] == 1300            # both estimates
@@ -2061,10 +2054,9 @@ def test_download_video_never_reads_100_percent_while_a_leg_is_pending(tmp_path,
     # through the whole audio leg.
     _patch_video_argv(monkeypatch, _UNPRICED_AUDIO_LEG_SCRIPT)
     seen = []
-    _run(udl.download_video(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
-        timeout=30, format_ids=("616", "140"), leg_estimates={"616": 1000},
-        expected_total=1000, progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    _fetch(udl.download_video, tmp_path, format_ids=("616", "140"),
+           leg_estimates={"616": 1000}, expected_total=1000,
+           progress_cb=lambda f, t, d: seen.append((f, t, d)))
     fracs = [f for f, _t, _d in seen]
     assert len(seen) == 4 and all(f < 1.0 for f in fracs[:-1]), seen
     assert fracs == sorted(fracs), fracs
@@ -2087,11 +2079,9 @@ def test_download_video_fallback_legs_drop_the_rung_estimates(tmp_path, monkeypa
     # denominator, or the bar stops at 50 %.
     _patch_video_argv(monkeypatch, _OFF_RUNG_LEGS_SCRIPT)
     seen = []
-    _run(udl.download_video(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
-        timeout=30, format_ids=("137", "140"),
-        leg_estimates={"137": 1000, "140": 200}, expected_total=1200,
-        progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    _fetch(udl.download_video, tmp_path, format_ids=("137", "140"),
+           leg_estimates={"137": 1000, "140": 200}, expected_total=1200,
+           progress_cb=lambda f, t, d: seen.append((f, t, d)))
     fracs = [f for f, _t, _d in seen]
     assert fracs == sorted(fracs), seen
     assert all(f < 1.0 for f in fracs[:-1]), seen
@@ -2110,10 +2100,8 @@ open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 def test_download_video_counter_reset_inside_one_leg_is_not_a_new_file(tmp_path, monkeypatch):
     _patch_video_argv(monkeypatch, _DROP_INSIDE_ONE_LEG_SCRIPT)
     seen = []
-    _run(udl.download_video(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=1200,
-        timeout=30, format_ids=("616", None),
-        progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    _fetch(udl.download_video, tmp_path, max_bytes=1200, format_ids=("616", None),
+           progress_cb=lambda f, t, d: seen.append((f, t, d)))
     assert seen[-1] == (1.0, 1000, 1000)
 
 
@@ -2134,9 +2122,8 @@ def test_download_audio_counter_restart_is_not_double_counted(tmp_path, monkeypa
     # (600 + 1000 would trip the 1200 cap on a 1000-byte download).
     _patch_argv(monkeypatch, _AUDIO_RESTART_SCRIPT)
     seen = []
-    out = _run(udl.download(
-        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=1200,
-        timeout=30, progress_cb=lambda f, tot: seen.append((f, tot))))
+    out = _fetch(udl.download, tmp_path, max_bytes=1200,
+                 progress_cb=lambda f, tot: seen.append((f, tot)))
     assert os.path.basename(out) == "media.m4a"
     assert seen[-1] == (1.0, 1000)
     assert all(tot == 1000 for _f, tot in seen)
@@ -2145,8 +2132,7 @@ def test_download_audio_counter_restart_is_not_double_counted(tmp_path, monkeypa
 def test_download_video_cap_is_cumulative(tmp_path, monkeypatch):
     _patch_video_argv(monkeypatch, _TWO_STREAMS_SCRIPT)
     with pytest.raises(udl.UrlPolicyError, match="size"):
-        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
-                                max_bytes=1200, timeout=30))
+        _fetch(udl.download_video, tmp_path, max_bytes=1200)
 
 
 _INTERMEDIATE_ONLY_SCRIPT = """
@@ -2158,8 +2144,7 @@ open(os.path.join(r"__DEST__", "media.f251.webm"), "wb").write(b"x" * 64)
 def test_download_video_rejects_intermediate_only(tmp_path, monkeypatch):
     _patch_video_argv(monkeypatch, _INTERMEDIATE_ONLY_SCRIPT)
     with pytest.raises(udl.UrlDownloadError, match="merged"):
-        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
-                                max_bytes=10_000, timeout=30))
+        _fetch(udl.download_video, tmp_path)
 
 
 _MERGE_LEG_OVER_CAP_SCRIPT = """
@@ -2175,8 +2160,7 @@ def test_download_video_merge_leg_over_max_filesize_is_the_size_limit(tmp_path, 
     that is the size cap, not a failed merge on the server."""
     _patch_video_argv(monkeypatch, _MERGE_LEG_OVER_CAP_SCRIPT)
     with pytest.raises(udl.UrlPolicyError, match="size limit"):
-        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
-                                max_bytes=10_000, timeout=30))
+        _fetch(udl.download_video, tmp_path)
 
 
 _OVER_CAP_PHRASE_IN_ID_SCRIPT = """
@@ -2229,8 +2213,7 @@ def test_download_video_over_cap_phrase_in_a_filtered_title_is_the_handoff_refus
     starts with the over-cap phrase is still the policy refusal."""
     _patch_video_argv(monkeypatch, _OVER_CAP_PHRASE_IN_FILTERED_TITLE_SCRIPT)
     with pytest.raises(udl.UrlPolicyError) as ei:
-        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
-                                max_bytes=10_000, timeout=30))
+        _fetch(udl.download_video, tmp_path)
     assert str(ei.value) == udl._HANDOFF_REFUSED
 
 
