@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from tests._streaming_helpers import const_pcm
+from tests._streaming_helpers import const_pcm, fast_config
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
 
@@ -212,11 +212,7 @@ _pcm = const_pcm
 
 
 def test_pcm_loop_emits_partials_then_a_final_after_silence():
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config()
 
     async def decode_partial(audio, prompt):
         return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
@@ -249,12 +245,7 @@ def test_hard_break_resets_document_after_long_silence():
     """A silence longer than hard_break_silence_ms ends the whole grouping: emit a
     `boundary` marker (carrying the separator) and reset the accumulated document,
     without closing the connection. Fires once per quiet gap."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-        hard_break_silence_ms=500, hard_break_separator="\n",
-    )
+    cfg = fast_config(hard_break_silence_ms=500, hard_break_separator="\n")
 
     async def decode_final(audio, prompt):
         return ("hallo welt.", [], False)
@@ -338,11 +329,7 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
     (_skip_partials), the session skips the EXPENSIVE partial decode but still
     runs finals on silence — audio/VAD stay intact so we catch up without losing
     the utterance. Clearing the flag resumes partials."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config()
     calls = {"partial": 0, "final": 0}
 
     async def decode_partial(audio, prompt):
@@ -376,11 +363,7 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
 def test_prompt_words_zero_carries_no_confirmed_words():
     """prompt_words=0 means "no cross-utterance context". Python's [-0:] is
     the whole list, so a naive tail slice would carry the entire document."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-        rms_gate_dbfs=-60, preroll_keep_ms=100, prompt_words=0,
-    )
+    cfg = fast_config(prompt_words=0)
     final_prompts: list[str] = []
 
     async def decode_final(audio, prompt):
@@ -407,11 +390,7 @@ def test_all_dropped_final_keeps_empty_and_does_not_resurrect_partials():
     LocalAgreement buffer ran at a fixed temperature and so never tripped the
     drop — it still holds that hallucination — so the empty-decode fallback must
     NOT resurrect it."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config()
 
     async def decode_partial(audio, prompt):
         return [(0.0, 0.3, " thank"), (0.3, 0.6, " you")]   # the hallucination
@@ -443,11 +422,7 @@ def test_empty_final_still_falls_back_to_localagreement():
     decode produces nothing at all (no segments, dropped_all=False — e.g. its VAD
     filter trimmed the buffer), the partial-built transcript is still used so a
     momentary final-decode miss doesn't silently drop spoken text."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config()
 
     async def decode_partial(audio, prompt):
         return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
@@ -466,11 +441,6 @@ def test_empty_final_still_falls_back_to_localagreement():
 
     asyncio.run(run())
     assert "welt" in s.raw_confirmed        # recovered from the partials' transcript
-
-
-_FAST = dict(min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-             min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-             rms_gate_dbfs=-60, preroll_keep_ms=100)
 
 
 def _neue_zeile(raw):
@@ -499,7 +469,7 @@ def test_held_words_are_released_before_the_boundary():
     BEFORE the boundary marker, so it lands in the document it belongs to."""
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=500),
+        cfg=fast_config(hard_break_silence_ms=500),
         holdback=_hold_trailing("neue"))
 
     async def run():
@@ -526,7 +496,7 @@ def test_no_boundary_for_a_document_that_was_never_sent():
     s, msgs = _make_session(
         postprocess=lambda raw: raw.replace("äh", "").strip(),
         decode_final=_queued_final(["Hallo.", "äh"]),
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=500))
+        cfg=fast_config(hard_break_silence_ms=500))
 
     async def run():
         await s.feed_pcm(_pcm(8000, 300))
@@ -546,7 +516,7 @@ def test_no_boundary_for_a_document_that_was_never_sent():
 def test_close_releases_held_words_in_the_last_final():
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        cfg=fast_config(hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 
     async def run():
@@ -566,7 +536,7 @@ def test_flush_releases_held_words_between_utterances():
     release final; a second flush has nothing left to send."""
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        cfg=fast_config(hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 
     async def run():
@@ -584,7 +554,7 @@ def test_flush_releases_held_words_between_utterances():
 def test_flush_in_utterance_finalizes_with_the_hold_released():
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        cfg=fast_config(hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 
     async def run():
@@ -610,7 +580,7 @@ def test_flush_releases_the_hold_when_the_utterance_is_dropped():
         return (texts.pop(0), [], False)
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=decode_final,
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        cfg=fast_config(hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 
     async def run():
@@ -631,7 +601,7 @@ def test_idle_release_when_hard_breaks_are_off():
     speaker stays quiet: 5 s of silence release it, once."""
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        cfg=fast_config(hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 
     async def run():
@@ -652,7 +622,7 @@ def test_dropped_final_keeps_the_hold():
     word stays held and joins the utterance after it."""
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=_queued_final(["bla neue", ("", True), " zeile text."]),
-        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        cfg=fast_config(hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 
     async def run():

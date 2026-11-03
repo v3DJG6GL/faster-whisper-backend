@@ -15,19 +15,10 @@ import asyncio
 
 import pytest
 
-from tests._streaming_helpers import AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm
-from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
+from tests._streaming_helpers import (
+    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config as _cfg)
+from faster_whisper_backend.streaming.session import CloseAbort, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
-
-
-def _cfg(**over):
-    base = dict(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
-    base.update(over)
-    return StreamConfig(**base)
 
 
 def _session(*, decode_partial=None, decode_final=None, on_final=None, cfg=None,

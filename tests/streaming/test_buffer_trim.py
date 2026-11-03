@@ -15,7 +15,7 @@ import asyncio
 
 import numpy as np
 
-from tests._streaming_helpers import AlwaysSpeech as _AlwaysSpeech, const_pcm, ws_drain
+from tests._streaming_helpers import AlwaysSpeech as _AlwaysSpeech, const_pcm, fast_config, ws_drain
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
@@ -48,12 +48,7 @@ def _run_long_utterance(speech_ms: int):
     buffer trim configured to fire mid-utterance. The fake decoders transcribe
     exactly the buffer they receive (like the real model: they cannot re-hear
     trimmed audio)."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
     finals_meta: list[dict] = []
 
     async def on_final(info):
@@ -136,12 +131,7 @@ def test_trim_preserves_committed_opening_in_final_document():
 def test_trim_folds_cut_words_into_rolling_prompt():
     """After a trim the decodes see a mid-sentence buffer; the cut words must
     ride the prompt so the seam decodes with context."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
     final_prompts: list[str] = []
     session_box: list[StreamSession] = []
 
@@ -175,12 +165,7 @@ def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
     """prompt_words caps only the carried words, as _make_prompt does: capping
     the whole prompt string would silently drop the client's glossary
     (base_prompt) for the rest of a long utterance."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-60, preroll_keep_ms=100, prompt_words=3,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0, prompt_words=3)
     final_prompts: list[str] = []
     banked: list[str] = []
     session_box: list[StreamSession] = []
@@ -285,12 +270,8 @@ def test_ceiling_bounds_the_buffer_when_the_rms_gate_blocks_the_trim():
     and with it _maybe_trim — never runs; the more silence accumulates the
     further the whole-buffer RMS sinks, so the trim can never recover. The
     ceiling still bounds the buffer, at the cost of a forced finalize."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-42.0, preroll_keep_ms=100, max_buffer_sec=2.0,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
+                      rms_gate_dbfs=-42.0, max_buffer_sec=2.0)
     _s, _msgs, info = _drive_past_ceiling(cfg, level=1, feed_ms=8000)
     # Sanity: we fed far more than the ceiling, and nothing else could have
     # ended the utterance (VAD stuck on, forced_commit_sec 100 s away).
@@ -308,12 +289,7 @@ def test_ceiling_force_finalizes_through_the_decoder_when_partials_are_skipped()
     """Consumer behind realtime (_skip_partials) is the other way _maybe_trim
     stops running. Here the audio is loud, so the forced finalize goes through
     the real decode: the buffer is bounded AND every fed sample is transcribed."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=100, buffer_trim_keep_sec=10,
-        rms_gate_dbfs=-60, preroll_keep_ms=100, max_buffer_sec=2.0,
-    )
+    cfg = fast_config(buffer_trim_keep_sec=10, max_buffer_sec=2.0)
     feed_ms = 7000
     s, msgs, info = _drive_past_ceiling(cfg, level=8000, feed_ms=feed_ms,
                                         skip_partials=True)
@@ -337,12 +313,8 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
     finalize whose LIVE buffer is near-silence. The RMS gate must skip the
     decode only — the already-committed (and already-displayed) text has to be
     emitted, not silently discarded with the quiet tail."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-42.0, preroll_keep_ms=100, max_buffer_sec=6.0,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
+                      rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
     msgs: list[dict] = []
     finals_meta: list[dict] = []
     final_decodes: list[float] = []
@@ -453,12 +425,7 @@ def test_buffer_counter_survives_preroll_trim_and_reset():
 def test_buffer_counter_matches_the_array_after_every_frame():
     """Drive the real pump through speech, a mid-utterance trim, a finalize and
     trailing silence — every writer must leave counter and array agreeing."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
     session_box: list[StreamSession] = []
 
     decode_partial = _grid_partial(session_box)

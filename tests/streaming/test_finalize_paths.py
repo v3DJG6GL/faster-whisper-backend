@@ -22,9 +22,10 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, speak_and_stop, ws_drain as _drain)
+    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config, speak_and_stop,
+    ws_drain as _drain)
 from tests.conftest import bearer
-from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -59,12 +60,8 @@ def _run_gate_path():
     """Loud speech long enough for a trim to bank words, then quiet frames
     until the max_buffer_sec ceiling forces a finalize whose live buffer is
     near-silence: the gate skips the decode, on_final still fires."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-42.0, preroll_keep_ms=100, max_buffer_sec=6.0,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
+                      rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
     finals_meta: list[dict] = []
     final_decodes: list[float] = []
     box: list[StreamSession] = []
@@ -126,12 +123,7 @@ def test_gate_path_flags_no_decode_and_hands_over_whole_utterance_words():
 def test_decoded_path_flags_decode_and_rebases_words():
     """The ordinary path keeps its contract: decoded=True and the final
     decode's buffer-relative words re-based behind the banked prefix."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
     finals_meta: list[dict] = []
     box: list[StreamSession] = []
 
@@ -179,12 +171,7 @@ def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
     without dropping anything falls back to the partial-agreed transcript —
     for the text AND the words (not the decode's empty list, nor only the
     trim-banked prefix), so the captured text and words match."""
-    cfg = StreamConfig(
-        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
-        min_speech_ms=64, forced_commit_sec=100,
-        buffer_trim_sec=2.0 if trim else 100.0, buffer_trim_keep_sec=1.0,
-        rms_gate_dbfs=-60, preroll_keep_ms=100,
-    )
+    cfg = fast_config(buffer_trim_sec=2.0 if trim else 100.0, buffer_trim_keep_sec=1.0)
     finals_meta: list[dict] = []
     box: list[StreamSession] = []
 

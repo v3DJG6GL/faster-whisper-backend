@@ -8,6 +8,8 @@ pytest.ini puts the repo root on sys.path).
 import numpy as np
 from starlette.websockets import WebSocketDisconnect
 
+from faster_whisper_backend.streaming.session import StreamConfig
+
 
 def const_pcm(level: int, ms: int, sample_rate: int = 16000) -> bytes:
     """One constant-level int16 PCM frame of ``ms`` milliseconds."""
@@ -46,3 +48,14 @@ class AlwaysSpeech:
 
     def reset(self) -> None:
         pass
+
+
+def fast_config(**over) -> StreamConfig:
+    """Test-speed StreamConfig: 96 ms cadence, 192 ms commit silence, no trim."""
+    base = dict(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
+        rms_gate_dbfs=-60, preroll_keep_ms=100,
+    )
+    base.update(over)
+    return StreamConfig(**base)
