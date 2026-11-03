@@ -296,8 +296,8 @@ def test_post_factory_rules_non_list_400(client):
 @pytest.mark.parametrize("bad", [[[]], ["x"], [1], [None]])
 def test_post_factory_rules_non_mapping_element_400(client, bad):
     """A list whose ELEMENTS aren't objects must 400 like a non-list does.
-    save_factory_rules splats each element (`{**r, "seeded": True}`) before it
-    validates, so a non-mapping raised TypeError past the handler's
+    save_factory_rules reads each element's `r.items()` before it validates,
+    so a non-mapping raised AttributeError past the handler's
     ValidationError/OSError catches — a bare 500 with a stack trace."""
     r = client.post("/settings/factory-rules", json={"PIPELINE_RULES": bad})
     assert r.status_code == 400, r.text
