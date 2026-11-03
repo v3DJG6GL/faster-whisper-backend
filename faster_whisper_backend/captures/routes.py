@@ -656,18 +656,23 @@ def _sniff_audio_mime(abs_path: str, fallback_ext: str) -> str:
     }.get(ext, "application/octet-stream")
 
 
+def _existing_audio_path(relpath: str | None) -> str | None:
+    """Abs path of a capture audio relpath if it is on disk, else None (an
+    empty relpath, or one escaping the audio root, counts as absent)."""
+    if not relpath:
+        return None
+    try:
+        cand = captures_store.abs_audio_path(relpath)
+    except ValueError:
+        return None
+    return cand if os.path.isfile(cand) else None
+
+
 def _served_trimmed_path(row: dict[str, Any]) -> str | None:
     """Abs path of `row`'s trimmed WAV if it is still on disk, else None —
     the one decision behind both the audio route's fallback to the original
     and the detail routes' trimmed-timeline projection."""
-    trimmed_rel = row.get("audio_trimmed_relpath")
-    if not trimmed_rel:
-        return None
-    try:
-        cand = captures_store.abs_audio_path(trimmed_rel)
-    except ValueError:
-        return None
-    return cand if os.path.isfile(cand) else None
+    return _existing_audio_path(row.get("audio_trimmed_relpath"))
 
 
 def _capture_audio_file(row: dict[str, Any], original: bool) -> tuple[str, str]:
@@ -730,11 +735,7 @@ def _audio_still_missing(row: dict[str, Any]) -> bool:
     status is only set and lifted at boot (reconcile_on_startup), so
     a file restored after a late mount must not keep the row un-triageable
     until the next restart. A relpath that escapes the audio root counts as missing."""
-    try:
-        return not os.path.isfile(
-            captures_store.abs_audio_path(row.get("audio_relpath") or ""))
-    except ValueError:
-        return True
+    return _existing_audio_path(row.get("audio_relpath")) is None
 
 
 def _bulk_guard(
@@ -2799,13 +2800,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             rel = abs_p = None
             trimmed = False
             for cand in (row.get("audio_trimmed_relpath"), row.get("audio_relpath")):
-                if not cand:
-                    continue
-                try:
-                    cand_abs = captures_store.abs_audio_path(cand)
-                except ValueError:
-                    continue
-                if os.path.isfile(cand_abs):
+                cand_abs = _existing_audio_path(cand)
+                if cand_abs is not None:
                     rel, abs_p = cand, cand_abs
                     trimmed = cand == row.get("audio_trimmed_relpath")
                     break
