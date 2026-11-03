@@ -105,9 +105,8 @@ def _read() -> dict[str, dict]:
                     # a measured rate of 1.0.
                     if (isinstance(r, (int, float)) and not isinstance(r, bool)
                             and math.isfinite(r) and r > 0):
-                        # Normalised here, once: lookup() and the fold
-                        # below trust `n`, and a hand-edited "n": "many"
-                        # must not raise out of either.
+                        # A hand-edited "n": "many" is cached as a
+                        # count of 0, never as the raw value.
                         row = {"rate": float(r), "n": _count(v.get("n"))}
                         if "ts" in v:
                             row["ts"] = v["ts"]
