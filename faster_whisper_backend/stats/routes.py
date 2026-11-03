@@ -107,8 +107,9 @@ def stats_scope_for(user: dict[str, Any], *,
 
     admin                       → all, every identity, machine visible
     admin + preview_user_id     → "own" for THAT user (`?user=` on
-                                  /stats/usage and /stats/jobs); still sees
-                                  the machine — it is the admin looking, by design
+                                  /stats/usage, /stats/jobs and /stats/tail);
+                                  still sees the machine — it is the admin
+                                  looking, by design
     non-admin, stats="all"      → all, identities scrubbed, machine visible
     non-admin, stats="own"      → own rows only, identities on (they are
                                   all the caller's), machine only when
