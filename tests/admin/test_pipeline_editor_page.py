@@ -365,6 +365,31 @@ def _slice(html, start, end):
     return html[html.index(start):html.index(end)]
 
 
+# The page globals _postFactory touches; the driver defines `name` and `term`
+# before them and its own `rules` / `api` after.
+_POSTFACTORY_STUBS = r"""const fields = { PIPELINE_RULES: { value: [term], default_value: [term] } };
+const fieldDef = n => fields[n];
+const dirty = {};
+const setDirty = (n, v) => { dirty[n] = v; };
+const paintAll = () => {};
+const alert = m => { throw new Error(m); };
+let factoryRules = [term];
+"""
+
+
+def _run_postfactory(html, drive, extra_fns=""):
+    """Run `drive` under node after the page's real _sortDeep / _withDefaults /
+    _sansRevs / _postFactory (+ `extra_fns`); return its stdout as JSON."""
+    fns = (_slice(html, "function _sortDeep(o) {", "  // The server copy (schema model_dump)")
+           + _slice(html, "function _withDefaults(r) {", "  // Content equality ignoring")
+           + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
+           + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {")
+           + extra_fns)
+    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=True)
+    return json.loads(out.stdout)
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_unshadowed_promote_of_a_new_rule_leaves_save_unlit(client):
     """A new custom rule is seeded:false in the editor; the server writes it
@@ -373,21 +398,10 @@ def test_unshadowed_promote_of_a_new_rule_leaves_save_unlit(client):
     that Save pinned a full local copy shadowing later config.json updates.
     The real _sansRevs / _setRulesDirty / _postFactory run under node."""
     html = _html(client)
-    fns = (_slice(html, "function _sortDeep(o) {", "  // The server copy (schema model_dump)")
-           + _slice(html, "function _withDefaults(r) {", "  // Content equality ignoring")
-           + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
-           + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {"))
     drive = r"""
 const name = 'PIPELINE_RULES';
 const term = { name: 'terminal', type: 'terminal', seeded: true };
-const fields = { PIPELINE_RULES: { value: [term], default_value: [term] } };
-const fieldDef = n => fields[n];
-const dirty = {};
-const setDirty = (n, v) => { dirty[n] = v; };
-const paintAll = () => {};
-const alert = m => { throw new Error(m); };
-let factoryRules = [term];
-let rules = [{ name: 'my-rule', type: 'regex', pattern: 'a', replacement: 'b',
+""" + _POSTFACTORY_STUBS + r"""let rules = [{ name: 'my-rule', type: 'regex', pattern: 'a', replacement: 'b',
                seeded: false }, term];
 const served = [{ name: 'my-rule', type: 'regex', pattern: 'a', replacement: 'b',
                   seeded: true }, term];
@@ -398,9 +412,7 @@ const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: se
   console.log(JSON.stringify({ clean: d === fields[name].value, seeded: rules[0].seeded }));
 })();
 """
-    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
-                         encoding="utf-8", timeout=30, check=True)
-    assert json.loads(out.stdout) == {"clean": True, "seeded": True}
+    assert _run_postfactory(html, drive) == {"clean": True, "seeded": True}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
@@ -412,10 +424,6 @@ def test_unshadowed_promote_of_a_new_map_rule_leaves_save_unlit(client):
     from faster_whisper_backend.pipeline.apply import canon_rules
 
     html = _html(client)
-    fns = (_slice(html, "function _sortDeep(o) {", "  // The server copy (schema model_dump)")
-           + _slice(html, "function _withDefaults(r) {", "  // Content equality ignoring")
-           + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
-           + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {"))
     new_rule = {"name": "my-map", "label": "My map", "type": "callback:map",
                 "enabled": True, "languages": [], "locked": False, "seeded": False,
                 "exposed": False, "tags": [], "note": "", "color": "", "map": {"foo": "bar"}}
@@ -425,14 +433,7 @@ def test_unshadowed_promote_of_a_new_map_rule_leaves_save_unlit(client):
     drive = r"""
 const name = 'PIPELINE_RULES';
 const term = SERVED[1];
-const fields = { PIPELINE_RULES: { value: [term], default_value: [term] } };
-const fieldDef = n => fields[n];
-const dirty = {};
-const setDirty = (n, v) => { dirty[n] = v; };
-const paintAll = () => {};
-const alert = m => { throw new Error(m); };
-let factoryRules = [term];
-let rules = [NEW_RULE, term];
+""" + _POSTFACTORY_STUBS + r"""let rules = [NEW_RULE, term];
 const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SERVED }) });
 (async () => {
   await _postFactory(rules);
@@ -442,10 +443,8 @@ const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SE
 """
     drive = (drive.replace("SERVED", json.dumps(served))
              .replace("NEW_RULE", json.dumps(new_rule)))
-    fns += _slice(html, "function _ruleStrip(r) {", "function _ruleContentEqual(a, b) {")
-    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
-                         encoding="utf-8", timeout=30, check=True)
-    assert json.loads(out.stdout) == {"clean": True, "hash_free": True}
+    strip = _slice(html, "function _ruleStrip(r) {", "function _ruleContentEqual(a, b) {")
+    assert _run_postfactory(html, drive, strip) == {"clean": True, "hash_free": True}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
@@ -458,10 +457,6 @@ def test_unshadowed_promote_after_a_map_key_delete_leaves_save_unlit(client):
     from faster_whisper_backend.pipeline.apply import canon_rules
 
     html = _html(client)
-    fns = (_slice(html, "function _sortDeep(o) {", "  // The server copy (schema model_dump)")
-           + _slice(html, "function _withDefaults(r) {", "  // Content equality ignoring")
-           + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
-           + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {"))
     edited = {"name": "my-map", "label": "My map", "type": "callback:map",
               "enabled": True, "languages": [], "locked": False, "seeded": True,
               "exposed": False, "tags": [], "note": "", "color": "", "map": {"foo": "bar"},
@@ -471,14 +466,7 @@ def test_unshadowed_promote_after_a_map_key_delete_leaves_save_unlit(client):
     drive = r"""
 const name = 'PIPELINE_RULES';
 const term = SERVED[1];
-const fields = { PIPELINE_RULES: { value: [term], default_value: [term] } };
-const fieldDef = n => fields[n];
-const dirty = {};
-const setDirty = (n, v) => { dirty[n] = v; };
-const paintAll = () => {};
-const alert = m => { throw new Error(m); };
-let factoryRules = [term];
-let rules = [EDITED, term];
+""" + _POSTFACTORY_STUBS + r"""let rules = [EDITED, term];
 const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SERVED }) });
 (async () => {
   await _postFactory(rules);
@@ -487,6 +475,4 @@ const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SE
 """
     drive = (drive.replace("SERVED", json.dumps(served))
              .replace("EDITED", json.dumps(edited)))
-    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
-                         encoding="utf-8", timeout=30, check=True)
-    assert json.loads(out.stdout) == {"clean": True}
+    assert _run_postfactory(html, drive) == {"clean": True}
