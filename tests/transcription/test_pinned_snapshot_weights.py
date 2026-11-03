@@ -2,7 +2,8 @@
 converter reads must hold only the weight set from_pretrained loads, not every
 *.safetensors / *.bin variant the repo ships.
 
-The conversion stack is stubbed in sys.modules, as in test_auto_convert.py.
+The conversion stack is stubbed in sys.modules, as in test_auto_convert.py
+(tests/transcription/_conversion_helpers.py).
 """
 
 import asyncio
@@ -12,6 +13,7 @@ import types
 from fnmatch import fnmatch
 
 from faster_whisper_backend.transcription import models as tx_models
+from tests.transcription._conversion_helpers import stub_conversion_stack
 
 # openai/whisper-large-v3's top level, plus a Trainer-style subfolder.
 _LARGE_V3 = [
@@ -35,16 +37,6 @@ def _fetched(files, patterns):
 
 
 def test_pinned_convert_snapshots_one_weight_set(monkeypatch, tmp_path):
-    monkeypatch.setattr(tx_models.cfg, "AUTO_CONVERT_HF_MODELS", True,
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERT_QUANTIZATION", "float16",
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERTED_MODELS_DIR", str(tmp_path),
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MODEL_OVERRIDES",
-                        {"openai/whisper-large-v3": {"REVISION": "abc"}},
-                        raising=False)
-    monkeypatch.setattr(tx_models, "_convert_locks", {})
     patterns = []
 
     def _snapshot_download(repo_id, revision=None, allow_patterns=None):
@@ -61,29 +53,13 @@ def test_pinned_convert_snapshots_one_weight_set(monkeypatch, tmp_path):
             os.makedirs(out)
             open(os.path.join(out, "model.bin"), "w").close()
 
-    class _FileLock:
-        def __init__(self, path, timeout=None):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
     hub = types.ModuleType("huggingface_hub")
     hub.list_repo_files = lambda repo_id, revision=None: list(_LARGE_V3)
     hub.snapshot_download = _snapshot_download
-    fl = types.ModuleType("filelock")
-    fl.FileLock = _FileLock
-    fl.Timeout = type("Timeout", (Exception,), {})
-    conv = types.ModuleType("ctranslate2.converters")
-    conv.TransformersConverter = _Converter
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
-    monkeypatch.setitem(sys.modules, "filelock", fl)
-    monkeypatch.setitem(sys.modules, "ctranslate2.converters", conv)
-    for mod in ("ctranslate2", "transformers", "torch"):
-        monkeypatch.setitem(sys.modules, mod, types.ModuleType(mod))
+    stub_conversion_stack(
+        monkeypatch, _Converter, converted_dir=tmp_path,
+        overrides={"openai/whisper-large-v3": {"REVISION": "abc"}})
 
     asyncio.run(tx_models._ensure_ct2_model("openai/whisper-large-v3"))
 

@@ -11,6 +11,7 @@ import sys
 import types
 
 from faster_whisper_backend.transcription import models as tx_models
+from tests.transcription._conversion_helpers import stub_conversion_stack
 
 
 def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
@@ -21,15 +22,6 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
     local snapshot of the pinned revision: it forwards its own `revision` to
     the weights only, so config, tokenizer and preprocessor files would
     otherwise come from HEAD."""
-    monkeypatch.setattr(tx_models.cfg, "AUTO_CONVERT_HF_MODELS", True,
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERT_QUANTIZATION", "float16",
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERTED_MODELS_DIR", str(tmp_path),
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MODEL_OVERRIDES",
-                        {"org/ft": {"REVISION": "v2"}}, raising=False)
-    monkeypatch.setattr(tx_models, "_convert_locks", {})
     head = tmp_path / "org__ft" / "float16"
     head.mkdir(parents=True)
     (head / "model.bin").write_bytes(b"HEAD")
@@ -56,29 +48,12 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
             with open(os.path.join(out, "model.bin"), "w") as f:
                 f.write(os.path.basename(self._src))
 
-    class _FileLock:
-        def __init__(self, path, timeout=None):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
     hub = types.ModuleType("huggingface_hub")
     hub.list_repo_files = _list_repo_files
     hub.snapshot_download = _snapshot_download
-    fl = types.ModuleType("filelock")
-    fl.FileLock = _FileLock
-    fl.Timeout = type("Timeout", (Exception,), {})
-    conv = types.ModuleType("ctranslate2.converters")
-    conv.TransformersConverter = _Converter
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
-    monkeypatch.setitem(sys.modules, "filelock", fl)
-    monkeypatch.setitem(sys.modules, "ctranslate2.converters", conv)
-    for mod in ("ctranslate2", "transformers", "torch"):
-        monkeypatch.setitem(sys.modules, mod, types.ModuleType(mod))
+    stub_conversion_stack(monkeypatch, _Converter, converted_dir=tmp_path,
+                          overrides={"org/ft": {"REVISION": "v2"}})
 
     out = asyncio.run(tx_models._ensure_ct2_model("org/ft"))
 
@@ -95,14 +70,7 @@ def test_local_dir_is_reconverted_once_its_weights_change(
     """A local HF-format dir has no revision to key a fresh cache dir on: a
     retrain into the same dir must be reconverted, not answered by the
     model.bin of the previous fine-tune. An unchanged dir keeps the cache."""
-    monkeypatch.setattr(tx_models.cfg, "AUTO_CONVERT_HF_MODELS", True,
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERT_QUANTIZATION", "float16",
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERTED_MODELS_DIR",
-                        str(tmp_path / "ct2"), raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MODEL_OVERRIDES", {}, raising=False)
-    monkeypatch.setattr(tx_models, "_convert_locks", {})
+    converted = _stub_local_conversion(monkeypatch, tmp_path)
     src = tmp_path / "my-ft"
     src.mkdir()
     (src / "config.json").write_text("{}")
@@ -116,39 +84,6 @@ def test_local_dir_is_reconverted_once_its_weights_change(
     os.utime(src / "config.json", (1_000, 1_000))
     os.utime(weights, (1_000, 1_000))
     os.utime(cached, (2_000, 2_000))
-
-    converted = []
-
-    class _Converter:
-        def __init__(self, model_name_or_path, **kw):
-            converted.append(model_name_or_path)
-            self._src = model_name_or_path
-
-        def convert(self, out, quantization, force):
-            os.makedirs(out)
-            with open(os.path.join(out, "model.bin"), "w") as f:
-                f.write(open(os.path.join(self._src,
-                                          "model.safetensors")).read())
-
-    class _FileLock:
-        def __init__(self, path, timeout=None):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    fl = types.ModuleType("filelock")
-    fl.FileLock = _FileLock
-    fl.Timeout = type("Timeout", (Exception,), {})
-    conv = types.ModuleType("ctranslate2.converters")
-    conv.TransformersConverter = _Converter
-    monkeypatch.setitem(sys.modules, "filelock", fl)
-    monkeypatch.setitem(sys.modules, "ctranslate2.converters", conv)
-    for mod in ("ctranslate2", "transformers", "torch"):
-        monkeypatch.setitem(sys.modules, mod, types.ModuleType(mod))
 
     assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
     assert converted == []
@@ -165,14 +100,6 @@ def _stub_local_conversion(monkeypatch, tmp_path, during_convert=None):
     """Stub the converter + filelock for a local-dir auto-convert; returns
     the list of sources converted. `during_convert` runs after the converter
     has read the weights, before model.bin is written."""
-    monkeypatch.setattr(tx_models.cfg, "AUTO_CONVERT_HF_MODELS", True,
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERT_QUANTIZATION", "float16",
-                        raising=False)
-    monkeypatch.setattr(tx_models.cfg, "CONVERTED_MODELS_DIR",
-                        str(tmp_path / "ct2"), raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MODEL_OVERRIDES", {}, raising=False)
-    monkeypatch.setattr(tx_models, "_convert_locks", {})
     converted = []
 
     class _Converter:
@@ -188,25 +115,8 @@ def _stub_local_conversion(monkeypatch, tmp_path, during_convert=None):
             with open(os.path.join(out, "model.bin"), "w") as f:
                 f.write(data)
 
-    class _FileLock:
-        def __init__(self, path, timeout=None):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    fl = types.ModuleType("filelock")
-    fl.FileLock = _FileLock
-    fl.Timeout = type("Timeout", (Exception,), {})
-    conv = types.ModuleType("ctranslate2.converters")
-    conv.TransformersConverter = _Converter
-    monkeypatch.setitem(sys.modules, "filelock", fl)
-    monkeypatch.setitem(sys.modules, "ctranslate2.converters", conv)
-    for mod in ("ctranslate2", "transformers", "torch"):
-        monkeypatch.setitem(sys.modules, mod, types.ModuleType(mod))
+    stub_conversion_stack(monkeypatch, _Converter,
+                          converted_dir=tmp_path / "ct2", overrides={})
     return converted
 
 
