@@ -5,6 +5,7 @@ feedback. Driven through the real app; no faster-whisper needed."""
 import json
 
 from tests.conftest import bearer
+from tests._translation_helpers import enable_translation
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.translation import gating as tr_gating
@@ -485,11 +486,9 @@ def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
         return ([{t: f"{seg['text']}-{t}" for t in targets} for seg in segments],
                 [], {"model": model_ref or "", "source": "", "mode": "fluent"})
     monkeypatch.setattr(translation, "translate_segments", _fake)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
-                        {"org/public-GGUF:Q4"}, raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
-                        "org/public-GGUF:Q4", raising=False)
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_ALLOWED_MODELS={"org/public-GGUF:Q4"},
+                       TRANSLATION_DEFAULT_MODEL="org/public-GGUF:Q4")
     raw_bob = _bind_profile_user(client, make_user_key, "pinned-mt", user="bob",
                                  TRANSLATION_MODEL="org/pinned-GGUF:Q4",
                                  locks=["TRANSLATION_MODEL"])

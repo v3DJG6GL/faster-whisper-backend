@@ -15,6 +15,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
+from tests._translation_helpers import enable_translation
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 
@@ -229,8 +230,7 @@ def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
 
 def test_translation_skipped_warning_without_speech_segments(
         client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _never(*args, **kw):
         raise AssertionError("translate_segments() must not run")

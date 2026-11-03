@@ -6,6 +6,7 @@ map — none of them should require verbose_json to be seen."""
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import bearer
+from tests._translation_helpers import enable_translation
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 OV = "/settings/overrides"
@@ -61,8 +62,7 @@ def test_plain_json_translation_meta_names_kept_originals(client, app_module,
     # A guard fallback that kept the SOURCE text is flagged per segment only
     # in verbose_json; the shared meta carries target -> segment indices so
     # the joined-text shape can tell a kept German line from a translation.
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _fake(segments, targets, **kwargs):
         per_seg = [{t: seg["text"] for t in targets} for seg in segments]
@@ -87,8 +87,7 @@ def test_plain_json_translation_meta_names_kept_originals(client, app_module,
 
 def test_plain_json_translation_meta_kept_is_explicit_empty(client, app_module,
                                                             monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _fake(segments, targets, **kwargs):
         per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
@@ -110,10 +109,7 @@ def test_joined_translations_glue_unspaced_pieces(client, app_module,
     from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment("I went to the store", 0.0, 1.0),
                             FakeSegment("to buy some bread today.", 1.0, 2.0)]
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True)
     pieces = {"zh": ["我今天去商", "店买一些面包。"], "en": ["Hi", "there."]}
 
     async def _fake(segments, targets, **kwargs):
@@ -144,10 +140,7 @@ def test_joined_translations_glue_a_digit_to_han_only_for_a_zh_target(
     from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment("I bought 3", 0.0, 1.0),
                             FakeSegment("apples.", 1.0, 2.0)]
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True)
     stored = {}
 
     def _spy_create(**kw):

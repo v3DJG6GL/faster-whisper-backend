@@ -7,6 +7,7 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 import pytest
 
 from tests.conftest import FakeModel, FakeSegment, bearer
+from tests._translation_helpers import enable_translation
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -754,8 +755,7 @@ def test_translate_task_cascades_from_english_text(client, app_module,
     # task=translate decodes to ENGLISH while info.language stays the spoken
     # one: the T2T stage must be told "en", or translate_to=de on German
     # audio short-circuits as same-language and copies the English text.
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     seen: dict = {}
 
     async def _fake(segments, targets, **kwargs):
@@ -794,8 +794,7 @@ def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module
                                                               monkeypatch):
     # A multipart field can carry ~1 MiB of codes: the walk stops early and
     # the over-MAX_TARGETS warning never echoes the whole field back.
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _fake(segments, targets, **kwargs):
         return ([{t: "x" for t in targets} for _ in segments], [],

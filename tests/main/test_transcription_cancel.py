@@ -6,6 +6,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests._translation_helpers import enable_translation
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -236,8 +237,7 @@ def test_cancel_inside_diarization_stage_is_not_a_soft_fail(
 def test_cancel_inside_translation_stage_is_not_a_soft_fail(
         client, app_module, monkeypatch):
     from faster_whisper_backend.translation import engine as translation
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     # The decode loop's own check runs BEFORE each segment's progress tick,
     # so a flag raised on the (only) segment's tail is first seen by the
     # translation stage's in-try check.
@@ -277,10 +277,8 @@ def test_in_flight_progress_id_is_treated_as_absent(client, app_module, caplog):
 def test_text_translations_in_flight_progress_id_is_treated_as_absent(
         client, app_module, monkeypatch):
     from faster_whisper_backend.translation import engine as translation
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
-                        "org/default-GGUF:Q4", raising=False)
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4")
 
     async def _fake(segments, targets, **kw):
         return ([{t: "x" for t in targets} for _ in segments], [],
