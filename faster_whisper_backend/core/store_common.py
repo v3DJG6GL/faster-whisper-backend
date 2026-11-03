@@ -6,7 +6,8 @@
 - `LONE_SURROGATE_RE`: the lone-UTF-16-surrogate screen for client strings.
 - `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB;
   `close_quietly()` drops the previous one on a re-init; `transaction()`
-  wraps an explicit BEGIN..COMMIT on it.
+  wraps an explicit BEGIN..COMMIT on it; `require_init()` is every store's
+  "init_db() was not called" guard.
 - `job_columns_ddl()` / `missing_job_columns()`: the job-label columns shared
   by usage_jobs and recent_transcriptions.
 - `rename_columns()` / `add_missing_columns()`: the legacy column-rename and
@@ -174,6 +175,14 @@ def open_wal_db(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
+
+
+def require_init[T](value: T | None, store: str) -> T:
+    """Return `value`, or raise the shared RuntimeError naming `store` when
+    its init_db() has not bound it yet (usage_routes maps it to a 503)."""
+    if value is None:
+        raise RuntimeError(f"{store}.init_db() was not called before use.")
+    return value
 
 
 def close_quietly(conn: sqlite3.Connection | None) -> None:

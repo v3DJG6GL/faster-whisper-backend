@@ -127,11 +127,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError(
-            "reports_store.init_db() was not called before use."
-        )
-    return _conn
+    return store_common.require_init(_conn, "reports_store")
 
 
 def _clean_trace_ts(value: Any, now: float) -> float:

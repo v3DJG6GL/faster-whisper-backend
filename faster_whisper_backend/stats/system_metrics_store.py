@@ -68,9 +68,7 @@ def is_open() -> bool:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError("system_metrics_store.init_db() was not called before use.")
-    return _conn
+    return store_common.require_init(_conn, "system_metrics_store")
 
 
 def adopt_legacy(legacy: sqlite3.Connection) -> int:

@@ -150,9 +150,7 @@ def _migrate_add_key_id(conn: sqlite3.Connection) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError("sessions_store.init_db() was not called before use.")
-    return _conn
+    return store_common.require_init(_conn, "sessions_store")
 
 
 def hash_token(raw_token: str) -> str:

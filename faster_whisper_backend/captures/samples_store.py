@@ -93,9 +93,7 @@ def init_db(conn: sqlite3.Connection, captures_audio_root: str) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError("capture_samples_store.init_db() was not called before use.")
-    return _conn
+    return store_common.require_init(_conn, "capture_samples_store")
 
 
 def _read_under_lock(fn):
@@ -112,9 +110,7 @@ def _read_under_lock(fn):
 
 
 def _require_audio_root() -> str:
-    if _groups_audio_dir is None:
-        raise RuntimeError("capture_samples_store.init_db() was not called before use.")
-    return _groups_audio_dir
+    return store_common.require_init(_groups_audio_dir, "capture_samples_store")
 
 
 def _relpath_for(sid: str) -> str:

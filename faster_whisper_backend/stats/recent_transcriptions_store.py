@@ -149,11 +149,7 @@ def is_open() -> bool:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError(
-            "recent_transcriptions_store.init_db() was not called before use."
-        )
-    return _conn
+    return store_common.require_init(_conn, "recent_transcriptions_store")
 
 
 @contextlib.contextmanager

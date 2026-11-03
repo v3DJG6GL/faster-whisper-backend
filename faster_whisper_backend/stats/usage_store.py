@@ -397,8 +397,7 @@ def _reclassify_unknown_hourly(conn: sqlite3.Connection) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError("usage_store.init_db() was not called before use.")
+    store_common.require_init(_conn, "usage_store")
     return getattr(_reader, "conn", None) or _conn
 
 

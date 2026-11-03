@@ -139,9 +139,7 @@ def init_db(path: str) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError("jobs_store.init_db() was not called before use.")
-    return _conn
+    return store_common.require_init(_conn, "jobs_store")
 
 
 def _reset_for_tests() -> None:

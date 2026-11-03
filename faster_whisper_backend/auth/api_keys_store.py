@@ -178,9 +178,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError("api_keys_store.init_db() was not called before use.")
-    return _conn
+    return store_common.require_init(_conn, "api_keys_store")
 
 
 def hash_key(raw_key: str) -> str:

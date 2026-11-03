@@ -155,9 +155,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
-        raise RuntimeError("captures_store.init_db() was not called before use.")
-    return _conn
+    return store_common.require_init(_conn, "captures_store")
 
 
 def _cfg_int(name: str, default: int) -> int:
@@ -182,9 +180,7 @@ def _read_under_lock(fn):
 
 
 def _require_audio_dir() -> str:
-    if _audio_dir is None:
-        raise RuntimeError("captures_store.init_db() was not called before use.")
-    return _audio_dir
+    return store_common.require_init(_audio_dir, "captures_store")
 
 
 def _relpath_for(cid: str, ext: str) -> str:
