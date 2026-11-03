@@ -19,6 +19,16 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def run_ffmpeg(*args):
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
+                   check=True, timeout=60)
+
+
+def _h264_clip(path, duration=1):
+    run_ffmpeg("-f", "lavfi", "-i", f"testsrc=size=64x64:rate=10:duration={duration}",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", path)
+
+
 def test_mp4_compatibility_allowlist():
     assert pk.mp4_compatibility("h264", "aac") == (True, None)
     assert pk.mp4_compatibility("hevc", None) == (True, None)
@@ -350,11 +360,9 @@ def test_package_real_ffmpeg_muxes_language_tags(tmp_path):
     reads two subtitle streams back with the 639-2/T tags and titles."""
     av = pytest.importorskip("av")
     src = str(tmp_path / "src.mp4")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src],
-                   check=True, timeout=60)
+    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+               "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src)
     out = _run(pk.package(src, _tracks(), container="mkv", default_track=1, timeout=60))
     try:
         with av.open(out) as c:
@@ -382,9 +390,7 @@ def test_package_real_ffmpeg_writes_per_track_dispositions(tmp_path):
     FlagOriginal; MP4 keeps default + hearing_impaired and the hdlr name)."""
     import json
     src = str(tmp_path / "src.mp4")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    _h264_clip(src)
 
     def _subs(path):
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
@@ -418,10 +424,8 @@ def test_probe_streams_reads_a_non_utf8_title(tmp_path):
     src = tmp_path / "src.avi"
     # A Windows command line is Unicode and cannot carry the raw 0xFC byte,
     # so ffmpeg writes a same-length ASCII placeholder that is patched in.
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-c:v", "mpeg4", "-metadata", "title=MQller",
-                    str(src)], check=True, timeout=60)
+    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+               "-c:v", "mpeg4", "-metadata", "title=MQller", str(src))
     data = src.read_bytes()
     assert data.count(b"MQller") == 1
     src.write_bytes(data.replace(b"MQller", b"M\xfcller"))
@@ -454,14 +458,11 @@ def test_probe_cover_art_only_file_has_no_video(tmp_path):
     pytest.importorskip("av")
     cover = str(tmp_path / "cover.jpg")
     src = str(tmp_path / "song.m4a")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=1:duration=1",
-                    "-frames:v", "1", cover], check=True, timeout=60)
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                    "-i", cover, "-map", "0:a", "-map", "1:v", "-c:a", "aac",
-                    "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", src],
-                   check=True, timeout=60)
+    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=1:duration=1",
+               "-frames:v", "1", cover)
+    run_ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+               "-i", cover, "-map", "0:a", "-map", "1:v", "-c:a", "aac",
+               "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", src)
     streams = pk.probe_streams(src)
     assert streams.video_codec is None and streams.width is None
     assert streams.cover_art_only is True and streams.unreadable is False
@@ -474,14 +475,12 @@ def test_probe_mp4_verdict_covers_every_audio_stream(tmp_path):
     carry blocks MP4 even when the first one is AAC."""
     pytest.importorskip("av")
     src = str(tmp_path / "dual.mkv")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                    "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
-                    "-map", "0:v", "-map", "1:a", "-map", "2:a",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    "-c:a:0", "aac", "-c:a:1", "flac", "-shortest", src],
-                   check=True, timeout=60)
+    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+               "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+               "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+               "-map", "0:v", "-map", "1:a", "-map", "2:a",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-c:a:0", "aac", "-c:a:1", "flac", "-shortest", src)
     streams = pk.probe_streams(src)
     assert streams.video_codec == "h264" and streams.audio_codec == "aac"
     assert streams.mp4_ok is False and "FLAC" in streams.mp4_reason
@@ -495,12 +494,10 @@ def test_probe_names_mp3_by_codec_not_decoder(tmp_path):
     pytest.importorskip("av")
     src = str(tmp_path / "t.mp4")
     try:
-        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                        "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                        "-c:a", "libmp3lame", "-shortest", src],
-                       check=True, timeout=60)
+        run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                   "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                   "-c:a", "libmp3lame", "-shortest", src)
     except subprocess.CalledProcessError:
         pytest.skip("this ffmpeg has no libx264/libmp3lame")
     streams = pk.probe_streams(src)
@@ -590,9 +587,7 @@ def test_write_srts_clamps_an_inverted_cue_followed_only_by_cues_ffmpeg_drops(tm
 def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_before_an_empty_last_cue(tmp_path):
     av = pytest.importorskip("av")
     src = str(tmp_path / "src.mp4")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    _h264_clip(src)
     tracks = [pk.SubtitleTrack("en", "English",
                                "1\n00:00:00,500 --> 00:00:00,200\nHello\n\n"
                                "2\n00:00:00,900 --> 00:00:01,000\n\n")]
@@ -608,9 +603,7 @@ def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_before_an_empty_last_cu
 def test_package_real_ffmpeg_mp4_accepts_a_cue_that_ends_before_it_starts(tmp_path):
     av = pytest.importorskip("av")
     src = str(tmp_path / "src.mp4")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    _h264_clip(src)
     tracks = [pk.SubtitleTrack("en", "English",
                                "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n"
                                "2\n00:00:00,900 --> 00:00:00,600\nThere\n")]
@@ -628,9 +621,7 @@ def test_package_real_ffmpeg_keeps_a_mid_file_inverted_cue_on_screen(tmp_path):
     """A typo'd end time on a cue that is not the last one still shows until
     the next cue starts (ffmpeg's own repair), in MP4 and MKV alike."""
     src = str(tmp_path / "src.mp4")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=3",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    _h264_clip(src, 3)
     tracks = [pk.SubtitleTrack("en", "English",
                                "1\n00:00:00,000 --> 00:00:00,500\nA\n\n"
                                "2\n00:00:01,000 --> 00:00:00,800\nTypo\n\n"
@@ -655,9 +646,7 @@ def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_with_a_stray_space_or_s
     timing line to ffmpeg — the MP4 export must not fail on it."""
     av = pytest.importorskip("av")
     src = str(tmp_path / "src.mp4")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    _h264_clip(src)
     for timing in ("00:00:00,800 --> 00:00:00, 200", "+00:00:00,800 --> -00:00:00,200",
                    "\v00:00:00,800 --> 00: 00:00,200"):
         tracks = [pk.SubtitleTrack("en", "English", f"1\n{timing}\nHello\n")]

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -17,6 +16,7 @@ import pytest
 
 from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import subtitle_mux as pk
+from tests.media.test_subtitle_mux import run_ffmpeg
 
 _ID = "a" * 32
 _REAL_PROBE = pk.probe_streams   # before any fixture stubs it
@@ -238,9 +238,8 @@ def test_ffconcat_upload_naming_a_retained_video_is_unreadable(
     pytest.importorskip("av")
     monkeypatch.setattr(pk, "probe_streams", _REAL_PROBE)
     src = str(tmp_path / "a.mkv")
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                    "-c:v", "mpeg4", src], check=True, timeout=60)
+    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+               "-c:v", "mpeg4", src)
     with open(src, "rb") as f:
         id_a = _upload(client, data=f.read(), ext="mkv").json()["media_id"]
     assert client.get(f"/v1/audio/media/{id_a}/streams").json()["video_codec"]
