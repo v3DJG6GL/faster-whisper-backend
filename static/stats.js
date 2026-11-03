@@ -3,9 +3,9 @@
 //
 // Loaded as a classic script right after the grid markup and BEFORE the
 // page's inline dashboard IIFE, so the top-level declarations here
-// (GS_LAYOUT_KEY, grid, onSeg, restartClass, flashCtl) are the globals that
-// IIFE reads; the usage section is an IIFE of its own and only touches its
-// own elements.
+// (GS_LAYOUT_KEY, grid, onSeg, restartClass, onResizeFrame, flashCtl) are
+// the globals that IIFE reads; the usage section is an IIFE of its own and
+// only touches its own elements.
 //
 // Cache-busting: the page links this file as /static/stats.js?v=<version>;
 // /static answers with ETag/Last-Modified and no no-store, so a new build
@@ -111,6 +111,16 @@ function onPick(id, sel, fn) {
 function onSeg(id, fn) { onPick(id, 'button', (b) => fn(b.dataset.v, b)); }
 // Re-run a one-shot CSS animation: the forced reflow makes the re-added class start it over.
 function restartClass(el, cls) { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
+// Observe el's size; coalesce a burst of resizes (a GridStack drag) into one fn() per frame.
+function onResizeFrame(el, fn) {
+  let raf = 0;
+  const ro = new ResizeObserver(() => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => { raf = 0; fn(); });
+  });
+  ro.observe(el);
+  return ro;
+}
 function flashCtl(id) {
   const el = document.getElementById(id); if (!el) return;
   el.scrollIntoView({ block: 'nearest' });
@@ -869,19 +879,13 @@ function renderTurnaround() {
     return html;
   });
   if (!el._ro && typeof ResizeObserver !== 'undefined') {
-    let raf = 0;
-    el._ro = new ResizeObserver(() => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        const svg = el.querySelector('svg');
-        // Same gate as loadTail: a tail whose document has not landed
-        // (or failed) must not redraw beside the old window's cards.
-        if (!(lastDoc && _docSeq === _seq)) return;
-        if (svg && (Math.abs(el.clientWidth - svg.width.baseVal.value) > 1 || Math.abs(el.clientHeight - svg.height.baseVal.value) > 1)) renderTurnaround();
-      });
+    el._ro = onResizeFrame(el, () => {
+      const svg = el.querySelector('svg');
+      // Same gate as loadTail: a tail whose document has not landed
+      // (or failed) must not redraw beside the old window's cards.
+      if (!(lastDoc && _docSeq === _seq)) return;
+      if (svg && (Math.abs(el.clientWidth - svg.width.baseVal.value) > 1 || Math.abs(el.clientHeight - svg.height.baseVal.value) > 1)) renderTurnaround();
     });
-    el._ro.observe(el);
   }
   const w = lastTail.wait || {};
   if (wv) wv.innerHTML = '';
@@ -1294,15 +1298,11 @@ function refreshChart() {
   renderChart();
 }
 
-let _raf = 0;
-new ResizeObserver(() => {
-  if (_raf || !chart) return;
-  _raf = requestAnimationFrame(() => {
-    _raf = 0;
-    const cw = chartEl.clientWidth, ch = chartEl.clientHeight;
-    if (cw > 0 && ch > 0) chart.setSize({ width: cw, height: ch });
-  });
-}).observe(chartEl);
+onResizeFrame(chartEl, () => {
+  if (!chart) return;
+  const cw = chartEl.clientWidth, ch = chartEl.clientHeight;
+  if (cw > 0 && ch > 0) chart.setSize({ width: cw, height: ch });
+});
 
 // Keyboard scrub: the chart wrapper is focusable; arrows step the cursor
 // bucket by bucket, Home/End jump, Escape clears. The aria-live region
@@ -1763,14 +1763,7 @@ function renderHours() {
   el.innerHTML = html;
   el._labelSteps = { col: L.colSteps || [1], row: L.rowSteps || [1] };
   fitHoursLabels(el);
-  if (!el._ro && typeof ResizeObserver !== 'undefined') {
-    let raf = 0;
-    el._ro = new ResizeObserver(() => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => { raf = 0; fitHoursLabels(el); });
-    });
-    el._ro.observe(el);
-  }
+  if (!el._ro && typeof ResizeObserver !== 'undefined') el._ro = onResizeFrame(el, () => fitHoursLabels(el));
   if (!el._hl) {
     el._hl = true;
     const light = (t, on) => {

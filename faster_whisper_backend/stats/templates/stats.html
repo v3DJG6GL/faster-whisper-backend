@@ -1409,17 +1409,11 @@ function makeSpark(elId, color, opts={}) {
   // Catches every size source (GridStack drag-resize, window resize,
   // scale-picker rem changes, .hidden reflow); rAF coalesces the costly
   // setSize() canvas rebuild during a drag.
-  let raf = 0;
-  const ro = new ResizeObserver(() => {
-    if (raf) return;
-    raf = requestAnimationFrame(() => {
-      raf = 0;
-      const cw = el.clientWidth, ch = el.clientHeight;
-      if (cw < 1 || ch < 1) return;
-      inst.setSize({ width: cw, height: ch });
-    });
+  onResizeFrame(el, () => {
+    const cw = el.clientWidth, ch = el.clientHeight;
+    if (cw < 1 || ch < 1) return;
+    inst.setSize({ width: cw, height: ch });
   });
-  ro.observe(el);
   // Cursor overlays (time flag, value pill) live in uPlot's own overlay so
   // they follow the plot's box; hover tracking picks the flag's host.
   inst._flag = document.createElement('div'); inst._flag.className = 'spark-flag'; inst._flag.hidden = true;
