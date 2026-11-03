@@ -59,11 +59,13 @@ def test_multilingual_override_true_null_and_locked():
     assert "multilingual" not in kw
 
 
-def _assemble(values, language="", overrides=None):
+def _assemble(values, language="", overrides=None, initial_prompt=None,
+              locked=frozenset()):
     return tx_models.assemble_transcribe_kwargs(
         None, None, language=language, temperature=0.0, vad_filter=False,
-        vad_parameters=None, want_word_ts=False, initial_prompt=None,
-        overrides=overrides, ident=ec.Resolved(values=values))
+        vad_parameters=None, want_word_ts=False, initial_prompt=initial_prompt,
+        overrides=overrides,
+        ident=ec.Resolved(values=values, locked_client_keys=locked))
 
 
 def test_whitespace_only_initial_prompt_is_no_prompt():
@@ -72,10 +74,7 @@ def test_whitespace_only_initial_prompt_is_no_prompt():
     <|startofprev|> for any non-empty string, which drops opening words. The
     streaming handshake already strips it, so batch must decode the same."""
     def prompt(p):
-        return tx_models.assemble_transcribe_kwargs(
-            None, None, language="", temperature=0.0, vad_filter=False,
-            vad_parameters=None, want_word_ts=False, initial_prompt=p,
-            ident=ec.Resolved(values={}))["initial_prompt"]
+        return _assemble({}, initial_prompt=p)["initial_prompt"]
     assert prompt("  ") is None and prompt("\n\t") is None and prompt("") is None
     assert prompt(" Hallo ") == " Hallo "
 
@@ -248,12 +247,8 @@ def test_client_suppress_chars_replace_config_and_empty_means_none(monkeypatch):
     assert kw.get("suppress_tokens") == _assemble({}).get("suppress_tokens")
     assert seen == []
     # Locked: the configured chars stand.
-    locked = ec.Resolved(values={"SUPPRESS_CHARS": "."},
-                         locked_client_keys=frozenset({"suppress_chars"}))
-    kw = tx_models.assemble_transcribe_kwargs(
-        None, None, language="", temperature=0.0, vad_filter=False,
-        vad_parameters=None, want_word_ts=False, initial_prompt=None,
-        overrides={"suppress_chars": "?"}, ident=locked)
+    kw = _assemble({"SUPPRESS_CHARS": "."}, overrides={"suppress_chars": "?"},
+                   locked=frozenset({"suppress_chars"}))
     assert kw["suppress_tokens"] == [-1, 7]
 
 
