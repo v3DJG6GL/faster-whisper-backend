@@ -482,14 +482,11 @@ function renderPickerButtons() {
   syncPicker(keysPicker, 'keys');
 }
 function pickRows(dim, list) {
-  const p = new URLSearchParams();
-  if (Q.range === 'custom') { p.set('from', Q.from); p.set('to', Q.to); }
-  else if (Q.range === 'all') p.set('all', '1');
-  else p.set('days', Q.range);
-  p.set('dim', dim); p.set('metric', Q.metric);
-  filterParams(p, list);          // rank by the slice, minus this dimension
-  try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
-  return fetch('/stats/pick?' + p.toString(), { cache: 'no-store' })
+  const q = windowParams(p => {
+    p.set('dim', dim); p.set('metric', Q.metric);
+    filterParams(p, list);          // rank by the slice, minus this dimension
+  });
+  return fetch('/stats/pick?' + q.toString(), { cache: 'no-store' })
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(j => {
       _pickMetric[dim] = j.metric;
@@ -633,17 +630,13 @@ let _docSeq = 0;   // the load() seq that produced lastDoc
 const usageCards = () => document.querySelectorAll('.usage-fed');
 
 function queryString() {
-  const p = new URLSearchParams();
-  if (Q.range === 'custom') { p.set('from', Q.from); p.set('to', Q.to); }
-  else if (Q.range === 'all') p.set('all', '1');
-  else p.set('days', Q.range);
-  p.set('bucket', Q.bucket); p.set('metric', Q.metric);
-  // Own scope has no per-user board; the server refuses by=user there.
-  p.set('by', (ownScope() && Q.by === 'user') ? 'key' : Q.by);
-  if (Q.compare !== 'off') p.set('compare', Q.compare);
-  filterParams(p);
-  try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
-  return '?' + p.toString();
+  return '?' + windowParams(p => {
+    p.set('bucket', Q.bucket); p.set('metric', Q.metric);
+    // Own scope has no per-user board; the server refuses by=user there.
+    p.set('by', (ownScope() && Q.by === 'user') ? 'key' : Q.by);
+    if (Q.compare !== 'off') p.set('compare', Q.compare);
+    filterParams(p);
+  }).toString();
 }
 // The comma-list filters every usage endpoint understands (/stats/usage,
 // /stats/tail, /stats/pick); users are dropped for own scope (403 there).
@@ -654,16 +647,23 @@ function filterParams(p, skip) {
   if (Q.keys.length && skip !== 'keys') p.set('keys', Q.keys.join(','));
   return p;
 }
-function tailQuery() {
+// The window (days | from/to | all) and tz every usage endpoint takes;
+// `fill` sets the endpoint's own params in between.
+function windowParams(fill) {
   const p = new URLSearchParams();
   if (Q.range === 'custom') { p.set('from', Q.from); p.set('to', Q.to); }
   else if (Q.range === 'all') p.set('all', '1');
   else p.set('days', Q.range);
-  if (Q.kinds.length) p.set('kind', Q.kinds.join(','));
-  filterParams(p);
-  p.delete('with');   // the tail has no stage filter
+  fill(p);
   try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
-  return '?' + p.toString();
+  return p;
+}
+function tailQuery() {
+  return '?' + windowParams(p => {
+    if (Q.kinds.length) p.set('kind', Q.kinds.join(','));
+    filterParams(p);
+    p.delete('with');   // the tail has no stage filter
+  }).toString();
 }
 function loadTail(seq) {
   fetch('/stats/tail' + tailQuery(), { cache: 'no-store' })
