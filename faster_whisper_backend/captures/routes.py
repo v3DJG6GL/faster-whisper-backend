@@ -2759,9 +2759,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         # only_status is a concrete status to match.
         if only_status and (g.get("status") or "new") != only_status:
             return True
-        # Hard filters (apply even on `only_status=all`). Stale = audio/
-        # text drift; locked = admin lock (same skip as captures_reapply,
-        # so this stays consistent with what the trainer last saw).
+        # Hard filters, even on `only_status=all`: the lock skip matches
+        # captures_reapply's, so the export is what the trainer last saw.
         return bool(g.get("is_stale") or g.get("is_locked"))
 
     try:
