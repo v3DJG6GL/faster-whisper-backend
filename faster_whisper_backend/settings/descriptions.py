@@ -20,7 +20,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "unknown multi-GB downloads.",
     "MAX_LOADED_MODELS":
         "Max models kept hot in VRAM (LRU evicts beyond this). large-v3 "
-        "~1.5 GB fp16, turbo/distill ~600 MB.",
+        "~3 GB fp16, turbo/distil ~1.6 GB.",
     "MODEL_IDLE_TIMEOUT_S":
         "Unload a model from VRAM/RAM after this many seconds without use. "
         "0 = disabled (default). Examples: 1800 = 30 min, 3600 = 1 h, "
