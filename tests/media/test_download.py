@@ -155,10 +155,14 @@ def test_generic_allowed_with_flag(monkeypatch):
     assert _run(udl.check_url_policy("https://x/")) == "Generic"
 
 
-def test_direct_media_probe_gates_generic(monkeypatch):
+def _generic_direct_media_only(monkeypatch):
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+
+
+def test_direct_media_probe_gates_generic(monkeypatch):
+    _generic_direct_media_only(monkeypatch)
     monkeypatch.setattr(udl, "_direct_media_probe_sync",
                         lambda u, timeout: True)
     assert _run(udl.check_url_policy("https://x/a.mp3")) == "Generic"
@@ -172,9 +176,7 @@ def test_direct_media_probe_refuses_userinfo_with_an_honest_message(monkeypatch)
     """`user:pw@host` must not reach the urllib probe: http.client reads
     `pw@host` as the port, so it would fail as "the site could not be
     reached"."""
-    monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    _generic_direct_media_only(monkeypatch)
     monkeypatch.setattr(udl, "_direct_media_probe_sync",
                         lambda u, timeout: pytest.fail("probe ran"))
     for url in ("https://user:pw@files.example.com/talk.mp3",
@@ -274,9 +276,7 @@ def _probe_opener_raising(monkeypatch, exc):
     class _Opener:
         def open(self, req, timeout=None):
             raise exc
-    monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    _generic_direct_media_only(monkeypatch)
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
     monkeypatch.setattr(udl.urllib.request, "build_opener",
                         lambda *handlers: _Opener())
@@ -335,9 +335,7 @@ def test_unreachable_hand_off_target_is_not_called_a_policy_refusal(
 def test_direct_media_probe_spends_from_the_probe_deadline(monkeypatch):
     # A socket timeout above the preview timeout must not let the probe's
     # pool thread outlive probe()'s budget against a dribbling host.
-    monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    _generic_direct_media_only(monkeypatch)
     monkeypatch.setattr(udl.cfg, "URL_SOCKET_TIMEOUT_S", 600, raising=False)
     budgets = []
 
