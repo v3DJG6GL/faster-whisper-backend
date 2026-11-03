@@ -94,6 +94,17 @@ def sse_response(generator):
     )
 
 
+def validation_error_response(err):
+    """422 {"errors": [...]} for a settings ValidationError (the /settings and
+    /overrides save contract)."""
+    from fastapi import status
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"errors": settings_schema.format_validation_errors(err)},
+    )
+
+
 # Pipeline-stage and job-kind hues — ONE definition for every backend page (/stats
 # cards and rings, /logs receipts, /quick-config traces) and the same values
 # the desktop app's app.css declares (--c-download, --c-separate, --c-ok for

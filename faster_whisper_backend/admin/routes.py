@@ -450,10 +450,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
                 # _GUARD_TIMEOUT (2.0 s).
                 written = await asyncio.to_thread(config_store.save_overrides, payload)
             except ValidationError as e:
-                return JSONResponse(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    content={"errors": settings_schema.format_validation_errors(e)},
-                )
+                return web_common.validation_error_response(e)
             except OSError as e:
                 logger.error("[config] save failed: %s", e)
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -531,10 +528,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
             try:
                 saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
             except ValidationError as e:
-                return JSONResponse(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    content={"errors": settings_schema.format_validation_errors(e)},
-                )
+                return web_common.validation_error_response(e)
             except OSError as e:
                 logger.error("[config] factory-rules save failed: %s", e)
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -607,10 +601,7 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
                 # A stored per-model / profile / captures exclude still names a
                 # rule only the local copy has; the factory list would strand it.
                 logger.warning("[config] clear-local-override refused: %s", e)
-                return JSONResponse(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    content={"errors": settings_schema.format_validation_errors(e)},
-                )
+                return web_common.validation_error_response(e)
             except (RuntimeError, OSError) as e:
                 logger.error("[config] clear-local-override failed: %s", e)
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,

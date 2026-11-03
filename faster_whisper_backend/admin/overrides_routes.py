@@ -274,10 +274,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
                 # stream and streaming WebSocket on the worker for its duration.
                 written = await asyncio.to_thread(config_store.save_overrides, payload)
             except ValidationError as e:
-                return JSONResponse(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    content={"errors": settings_schema.format_validation_errors(e)},
-                )
+                return web_common.validation_error_response(e)
             except OSError as e:
                 logger.error("[overrides] save failed: %s", e)
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -352,10 +349,7 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
                     config_store.save_overrides, {"OVERRIDE_PROFILES": renamed},
                 )
             except ValidationError as e:
-                return JSONResponse(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    content={"errors": settings_schema.format_validation_errors(e)},
-                )
+                return web_common.validation_error_response(e)
             except OSError as e:
                 logger.error("[overrides] rename save failed: %s", e)
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
