@@ -106,8 +106,8 @@ def test_stream_request_override_profile_applies(
 def test_stream_picks_up_binding_change_without_reconnect(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """A binding change made WHILE a dictation WebSocket is open applies from
-    the next utterance: ident is re-resolved per utterance, not frozen at the
-    handshake until reconnect."""
+    the next decode: ident is re-resolved when the config version changes, not
+    frozen at the handshake until reconnect."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
