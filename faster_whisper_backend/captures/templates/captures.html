@@ -2068,6 +2068,15 @@
     var body = card.querySelector('.cc-body');
     if (body) { body.dataset.built = '0'; body.innerHTML = ''; }
   }
+  // Revoke each open group card's blob: audio URL (render wipe, Clear all, tab close).
+  function _revokeOpenSampleBlobs() {
+    Object.keys(_openSamples).forEach(function(sid) {
+      var st = _openSamples[sid];
+      if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
+        try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
+      }
+    });
+  }
 
   function buildBody(body, r) {
     body.innerHTML = '';
@@ -2983,12 +2992,7 @@
           if (st && st.blobUrl) URL.revokeObjectURL(st.blobUrl);
         });
         _openRows = {};
-        Object.keys(_openSamples).forEach(function(sid) {
-          var st = _openSamples[sid];
-          if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
-            try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
-          }
-        });
+        _revokeOpenSampleBlobs();
         _openSamples = {};
         await load();
       } catch (e) {
@@ -5705,12 +5709,7 @@
     }
     // Group cards don't persist open state across render — innerHTML wipe
     // destroys their <audio>, so revoke any tracked blob URL first.
-    Object.keys(_openSamples).forEach(function(sid) {
-      var st = _openSamples[sid];
-      if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
-        try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
-      }
-    });
+    _revokeOpenSampleBlobs();
     _openSamples = {};
     list.innerHTML = '';
     // Members render inside their group card, so leave them out of the flat list.
@@ -5911,12 +5910,7 @@
         try { URL.revokeObjectURL(st.blobUrl); } catch(_) {}
       }
     });
-    Object.keys(_openSamples).forEach(function(sid) {
-      var st = _openSamples[sid];
-      if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
-        try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
-      }
-    });
+    _revokeOpenSampleBlobs();
   });
 
   // The shared header is sticky and variable-height (it wraps on narrow
