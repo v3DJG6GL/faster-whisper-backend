@@ -27,6 +27,11 @@ def _by_name():
     return {r["name"]: r for r in _factory_rules()}
 
 
+def _entry(rules, label):
+    return next(e for r in rules for e in (r.get("entries") or [])
+                if e.get("label") == label)
+
+
 def _hyphen_pattern():
     entry = next(e for e in _by_name()["final-cleanup"]["entries"]
                  if e["label"] == "delete-punct-before-hyphen")
@@ -218,17 +223,11 @@ def test_no_factory_default_names_a_renamed_rule():
         assert f'"{old}"' not in text, f"config.json still names {old}"
 
 
-def _quote_entry(rules):
-    return next(e for r in rules for e in (r.get("entries") or [])
-                if e.get("label") == "tighten-quote-spacing")
-
-
 def test_upgraded_entries_match_config_json():
     """The NEW side of every upgrade is what config.json ships — an upgrade
     that wrote anything else would fork stored copies from the factory."""
     for label, (_old, new) in renames.UPGRADED_RULE_ENTRIES.items():
-        e = next(e for r in _factory_rules() for e in (r.get("entries") or [])
-                 if e.get("label") == label)
+        e = _entry(_factory_rules(), label)
         assert (e["pattern"], e["replacement"]) == new
     assert set(renames.EARLIER_RULE_ENTRIES) <= set(renames.UPGRADED_RULE_ENTRIES)
 
@@ -236,7 +235,7 @@ def test_upgraded_entries_match_config_json():
 def test_stored_old_factory_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
-    e = _quote_entry(rules)
+    e = _entry(rules, "tighten-quote-spacing")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == ["digit-and-whitespace-tidy/tighten-quote-spacing"]
@@ -249,8 +248,7 @@ def test_stored_old_hyphen_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     (old_pat, old_rep), (new_pat, new_rep) = \
         renames.UPGRADED_RULE_ENTRIES["delete-punct-before-hyphen"]
-    e = next(e for r in rules for e in (r.get("entries") or [])
-             if e.get("label") == "delete-punct-before-hyphen")
+    e = _entry(rules, "delete-punct-before-hyphen")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == ["final-cleanup/delete-punct-before-hyphen"]
@@ -267,8 +265,7 @@ def test_stored_old_strip_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     (old_pat, old_rep), (new_pat, new_rep) = \
         renames.UPGRADED_RULE_ENTRIES["Strip terminators & commas"]
-    e = next(e for r in rules for e in (r.get("entries") or [])
-             if e.get("label") == "Strip terminators & commas")
+    e = _entry(rules, "Strip terminators & commas")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == [
@@ -291,8 +288,7 @@ def test_stray_symbols_strip_both_halves_of_a_typographic_quote(app_module):
     assert run(" Il a dit «Bonjour» à moi.", "fr") == "Il a dit Bonjour à moi"
     rules = copy.deepcopy(_factory_rules())
     (old_pat, old_rep), _new = renames.UPGRADED_RULE_ENTRIES["strip-stray-symbols"]
-    e = next(e for r in rules for e in (r.get("entries") or [])
-             if e.get("label") == "strip-stray-symbols")
+    e = _entry(rules, "strip-stray-symbols")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == ["strip-stray-symbols/strip-stray-symbols"]
@@ -303,11 +299,11 @@ def test_stray_symbols_strip_both_halves_of_a_typographic_quote(app_module):
 def test_edited_factory_entry_is_left_alone():
     rules = copy.deepcopy(_factory_rules())
     old_pat, _old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
-    e = _quote_entry(rules)
+    e = _entry(rules, "tighten-quote-spacing")
     e["pattern"], e["replacement"] = old_pat, '"\\1" '       # admin's own replacement
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == []
-    assert _quote_entry(raw["PIPELINE_RULES"])["pattern"] == old_pat
+    assert _entry(raw["PIPELINE_RULES"], "tighten-quote-spacing")["pattern"] == old_pat
     assert renames.upgrade_rule_entries({}) == []
     assert renames.upgrade_rule_entries({"PIPELINE_RULES": "junk"}) == []
 
@@ -316,13 +312,13 @@ def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
     from faster_whisper_backend.settings import config_store as cs
     rules = copy.deepcopy(_factory_rules())
     old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
-    e = _quote_entry(rules)
+    e = _entry(rules, "tighten-quote-spacing")
     e["pattern"], e["replacement"] = old_pat, old_rep
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
     out = cs.load_overrides(str(p))
     new = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][1]
-    got = _quote_entry(out["PIPELINE_RULES"])
+    got = _entry(out["PIPELINE_RULES"], "tighten-quote-spacing")
     assert (got["pattern"], got["replacement"]) == new
 
 
@@ -370,8 +366,7 @@ def test_stored_old_digit_separator_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     (old_pat, old_rep), (new_pat, new_rep) = \
         renames.UPGRADED_RULE_ENTRIES["tighten-digit-separators"]
-    e = next(e for r in rules for e in (r.get("entries") or [])
-             if e.get("label") == "tighten-digit-separators")
+    e = _entry(rules, "tighten-digit-separators")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == [
@@ -446,11 +441,6 @@ def test_digit_range_keeps_a_line_break_between_two_numbers():
     assert sub("Termin 10 - 12 Uhr") == "Termin 10/12 Uhr"
 
 
-def _closing_punct_entry(rules):
-    return next(e for r in rules for e in (r.get("entries") or [])
-                if e.get("label") == "space-before-closing-punct")
-
-
 @pytest.mark.parametrize("unit", ["... ", " .", " ,"])
 def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_module, unit):
     """Whisper hallucinates "... ... ..." on silence; strip-auto-punctuation
@@ -469,7 +459,7 @@ def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_modul
 
 
 def test_space_before_closing_punct_output_is_unchanged():
-    entry = _closing_punct_entry(_factory_rules())
+    entry = _entry(_factory_rules(), "space-before-closing-punct")
     old = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][0]
     for s in ("a , b", "a \t \t. b  ;c", "( 45 Jahre ) klagt .", "x   y", " \t", "a  ,\n  .",
               "Wert 12 % ] } ! ?", "\t,\t.\t"):
@@ -479,7 +469,7 @@ def test_space_before_closing_punct_output_is_unchanged():
 def test_stored_old_closing_punct_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][0]
-    e = _closing_punct_entry(rules)
+    e = _entry(rules, "space-before-closing-punct")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == [
@@ -505,11 +495,6 @@ def test_closing_punct_rule_saved_before_june_is_upgraded(tmp_path):
     new = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][1]
     assert [(e["label"], e["pattern"], e["replacement"]) for e in got] == [
         ("space-before-closing-punct", *new)]
-
-
-def _trailing_period_entry(rules):
-    return next(e for r in rules for e in (r.get("entries") or [])
-                if e.get("label") == "trim-trailing-period")
 
 
 @pytest.mark.parametrize("unit, n", [("* ", 40000), ("( ) ", 20000)])
@@ -541,7 +526,7 @@ def _assert_trim_trailing_period_is_fast(app_module, unit, n):
 
 
 def test_trim_trailing_period_output_is_unchanged():
-    entry = _trailing_period_entry(_factory_rules())
+    entry = _entry(_factory_rules(), "trim-trailing-period")
     old = renames.UPGRADED_RULE_ENTRIES["trim-trailing-period"][0]
     for s in ("Wert 5.", "gut. . . ", "x. .", "a  \t.\n", "z.B. morgen", " . ", "...",
               "Ende.\n\n", "a b", "  ", "1.5 mg .\t.", "Satz. Zwei", "es...... Danke",
@@ -552,18 +537,13 @@ def test_trim_trailing_period_output_is_unchanged():
 def test_stored_old_trailing_period_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["trim-trailing-period"][0]
-    e = _trailing_period_entry(rules)
+    e = _entry(rules, "trim-trailing-period")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == [
         "strip-trailing-period/trim-trailing-period"]
     assert raw["PIPELINE_RULES"] == _factory_rules()
     assert renames.upgrade_rule_entries(raw) == []
-
-
-def _newline_entry(rules):
-    return next(e for r in rules for e in (r.get("entries") or [])
-                if e.get("label") == "tidy-newlines")
 
 
 def test_tidy_newlines_is_fast_on_a_symbol_loop_with_the_whitespace_card_off(app_module):
@@ -584,7 +564,7 @@ def test_tidy_newlines_is_fast_on_a_symbol_loop_with_the_whitespace_card_off(app
 
 
 def test_tidy_newlines_output_is_unchanged():
-    entry = _newline_entry(_factory_rules())
+    entry = _entry(_factory_rules(), "tidy-newlines")
     old = renames.UPGRADED_RULE_ENTRIES["tidy-newlines"][0]
     for s in ("a ,\n, b", "Hallo   ,   \n   Welt", "x\n\n\ty", "\t\ta\n\t\n,a\t", "\n \n ",
               "a , , \n", ",\n,", "a  b", " \t ", "Zeile 1,\nZeile 2", "\n", "a ,b\n"):
@@ -594,7 +574,7 @@ def test_tidy_newlines_output_is_unchanged():
 def test_stored_old_tidy_newlines_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tidy-newlines"][0]
-    e = _newline_entry(rules)
+    e = _entry(rules, "tidy-newlines")
     e["pattern"], e["replacement"] = old_pat, old_rep
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == ["final-cleanup/tidy-newlines"]
