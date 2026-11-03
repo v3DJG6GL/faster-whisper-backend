@@ -1134,8 +1134,6 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
     # Every uvicorn worker runs this at boot (SERVER_WORKERS > 1), so a sibling
     # may have registered the key since this worker's init_db built its index.
     _refresh_if_sibling_committed()
-    # If this hash already maps to an active key, nothing to do — and nothing
-    # to complain about, however weak the value is by today's floor.
     _existing = _KEY_INDEX.get(h)
     if _existing is not None:
         # The index holds every live key, admin or not. A NON-admin key here
