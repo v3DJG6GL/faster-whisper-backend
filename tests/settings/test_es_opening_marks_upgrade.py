@@ -8,14 +8,12 @@ carries a factory regex fix into a saved PIPELINE_RULES copy.
 """
 
 import copy
-import json
-import os
 import re
 
 import pytest
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.settings import config_renames as renames
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 # The entries as shipped in config.json at c4fefe2 (through 00fd42f^).
 _OLD = {
@@ -24,11 +22,6 @@ _OLD = {
     "es-opening-exclamation-mark":
         ("(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)", "\\1¡\\2"),
 }
-
-
-def _factory_rules():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
 
 
 def _entry(rules, label):

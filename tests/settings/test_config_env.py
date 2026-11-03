@@ -15,6 +15,7 @@ import pytest
 
 from faster_whisper_backend.settings import config
 from tests.conftest import _repoint_path_default
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 
 def test_truthy():
@@ -1179,8 +1180,7 @@ def test_env_rules_that_break_a_stored_exclude_do_not_revert_every_scalar(monkey
     EXCLUDE names fails validation with every env scalar reverted. That error
     used to fail each isolation pass too, so every env scalar (the cookie
     flag included) was reverted and blamed for it."""
-    with open(os.path.join(config._REPO_DIR, "config.json"), encoding="utf-8") as f:
-        rules = json.load(f)["PIPELINE_RULES"]
+    rules = _factory_rules()
     one = [r for r in rules if r["name"] == "strip-stray-symbols"]
     try:
         _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
@@ -1200,8 +1200,7 @@ def test_env_rules_that_break_a_stored_exclude_do_not_revert_every_scalar(monkey
 
 
 def test_env_scalar_still_reverted_next_to_a_pre_env_error(monkeypatch):
-    with open(os.path.join(config._REPO_DIR, "config.json"), encoding="utf-8") as f:
-        rules = json.load(f)["PIPELINE_RULES"]
+    rules = _factory_rules()
     one = [r for r in rules if r["name"] == "strip-stray-symbols"]
     try:
         _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
@@ -1321,9 +1320,7 @@ def test_env_slug_lists_beside_a_local_copy_of_the_split_card_keep_naming_it(
     """A config.local.json rule list from before June 17 still runs the old
     combined card: an env list naming it is valid there and must not be split
     onto cards that list does not hold (the unknown-slug check drops the var)."""
-    from faster_whisper_backend.paths import REPO_ROOT
-    with open(os.path.join(REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        rules = json.load(fh)["PIPELINE_RULES"]
+    rules = _factory_rules()
     rules = [r for r in rules
              if r["name"] not in ("strip-trailing-period", "strip-auto-punctuation")]
     rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
@@ -1734,8 +1731,7 @@ def test_env_values_are_normalized_next_to_a_pre_env_error(monkeypatch):
     """A pre-env error fails the full normalization pass whatever the env
     values are, so a surviving mixed-case env origin stayed unmatched by the
     exact-match origin guard; each survivor is normalized on its own then."""
-    with open(os.path.join(config._REPO_DIR, "config.json"), encoding="utf-8") as f:
-        rules = json.load(f)["PIPELINE_RULES"]
+    rules = _factory_rules()
     one = [r for r in rules if r["name"] == "strip-stray-symbols"]
     try:
         _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
