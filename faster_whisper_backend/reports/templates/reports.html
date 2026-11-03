@@ -427,28 +427,16 @@
     if (a.length * b.length > DIFF_CELL_BUDGET) {
       var plain = document.createElement('div');
       plain.className = 'rc-diff ws-region';
-      var del = document.createElement('span');
-      del.className = 'diff-del';
-      del.textContent = beforeStr || '';
-      var sep = document.createElement('span');
-      sep.className = 'diff-eq';
-      sep.textContent = '\n';
-      var ins = document.createElement('span');
-      ins.className = 'diff-ins';
-      ins.textContent = afterStr || '';
-      plain.appendChild(del);
-      plain.appendChild(sep);
-      plain.appendChild(ins);
+      plain.appendChild(_el('span', 'diff-del', beforeStr || ''));
+      plain.appendChild(_el('span', 'diff-eq', '\n'));
+      plain.appendChild(_el('span', 'diff-ins', afterStr || ''));
       return plain;
     }
     var ops = lcsDiff(a, b);
     var div = document.createElement('div');
     div.className = 'rc-diff ws-region';
     ops.forEach(function(op) {
-      var span = document.createElement('span');
-      span.className = 'diff-' + op[0];
-      span.textContent = op[1];
-      div.appendChild(span);
+      div.appendChild(_el('span', 'diff-' + op[0], op[1]));
     });
     return div;
   }
@@ -489,6 +477,13 @@
     // the result is safe in a double-/single-quoted attribute (the model
     // filter renders user-supplied model ids into option value="...").
     return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function _el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
   }
 
   function applyFilters(rows) {
@@ -585,23 +580,15 @@
     sel.addEventListener('change', function() { onStatusChange(r, sel); });
     head.appendChild(sel);
 
-    var delBtn = document.createElement('button');
-    delBtn.className = 'danger';
-    delBtn.textContent = 'Delete';
+    var delBtn = _el('button', 'danger', 'Delete');
     delBtn.addEventListener('click', function() { onDelete(r); });
     head.appendChild(delBtn);
 
     function textLine(klass, label, value) {
       var row = document.createElement('div');
       row.className = 'rc-textline ' + klass;
-      var tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = label;
-      row.appendChild(tag);
-      var v = document.createElement('span');
-      v.className = 'val' + (value ? ' ws-region' : ' dim');
-      v.textContent = value || '(empty)';
-      row.appendChild(v);
+      row.appendChild(_el('span', 'tag', label));
+      row.appendChild(_el('span', 'val' + (value ? ' ws-region' : ' dim'), value || '(empty)'));
       return row;
     }
     // What the job actually ran. Without it a report saying "the French
@@ -657,8 +644,7 @@
       return c && c.correct;
     });
     if (corr.length) {
-      var sec = document.createElement('div');
-      sec.className = 'rc-section';
+      var sec = _el('div', 'rc-section');
       sec.innerHTML = '<h3>Word corrections</h3>';
       var box = document.createElement('div');
       box.className = 'rc-corrections';
@@ -676,26 +662,20 @@
     }
 
     if (r.intended_text && r.intended_text.trim()) {
-      var sec2 = document.createElement('div');
-      sec2.className = 'rc-section';
+      var sec2 = _el('div', 'rc-section');
       sec2.innerHTML = '<h3>Sentence rewrite (diff vs. final)</h3>';
       sec2.appendChild(renderDiff(r.final || '', r.intended_text));
       card.appendChild(sec2);
     }
 
     if (r.user_comment && r.user_comment.trim()) {
-      var sec3 = document.createElement('div');
-      sec3.className = 'rc-section';
+      var sec3 = _el('div', 'rc-section');
       sec3.innerHTML = '<h3>User comment</h3>';
-      var p = document.createElement('div');
-      p.className = 'rc-comment';
-      p.textContent = r.user_comment;
-      sec3.appendChild(p);
+      sec3.appendChild(_el('div', 'rc-comment', r.user_comment));
       card.appendChild(sec3);
     }
 
-    var sec4 = document.createElement('div');
-    sec4.className = 'rc-section rc-notes';
+    var sec4 = _el('div', 'rc-section rc-notes');
     sec4.innerHTML = '<h3>Admin notes</h3>';
     var ta = document.createElement('textarea');
     ta.value = _hasDraft(r.id) ? _drafts[r.id] : (r.admin_notes || '');
@@ -703,13 +683,9 @@
     sec4.appendChild(ta);
     var row = document.createElement('div');
     row.className = 'row';
-    var saveBtn = document.createElement('button');
-    saveBtn.className = 'primary';
-    saveBtn.textContent = 'Save notes';
+    var saveBtn = _el('button', 'primary', 'Save notes');
     saveBtn.disabled = true;
-    var dirty = document.createElement('span');
-    dirty.className = 'dirty hidden';
-    dirty.textContent = 'unsaved changes';
+    var dirty = _el('span', 'dirty hidden', 'unsaved changes');
     row.appendChild(saveBtn);
     row.appendChild(dirty);
     sec4.appendChild(row);
