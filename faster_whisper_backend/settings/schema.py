@@ -351,6 +351,16 @@ class _RuleBase(BaseModel):
 # forever, so a repeating rule costs at most this many times one pass.
 RULE_REPEAT_MAX_PASSES = 8
 
+# What re.compile of an admin-supplied pattern can raise, beyond re.error:
+# OverflowError: a repeat count past MAXREPEAT in a range (`a{1,4294967296}`);
+# RecursionError: sre's parser recurses once per open group, so '(' * 512
+# (within the pattern cap) escapes re.error; ValueError: conflicting inline
+# flags ('(?a)(?u)x'). One set for the save-time validator, the engine's
+# compile paths and the /settings/pipeline dry run, so they agree on what a
+# bad pattern is.
+REGEX_COMPILE_ERRORS: tuple[type[BaseException], ...] = (
+    re.error, OverflowError, RecursionError, ValueError)
+
 
 class _RepeatableRule(_RuleBase):
     """Every rule type but `terminal` (a fixed trim: a second pass is a no-op)."""
@@ -1822,12 +1832,9 @@ class AdminConfig(BaseModel):
             t0 = time.perf_counter()
             try:
                 rx = re.compile(pat)
-            # RecursionError: sre's parser recurses once per open group, so
-            # '(' * 512 (within the pattern cap) escapes re.error — and
-            # pydantic turns only ValueError into a ValidationError.
-            # ValueError: conflicting inline flags ('(?a)(?u)x') — caught so
-            # the 422 still names the rule and entry.
-            except (re.error, OverflowError, RecursionError, ValueError) as e:
+            # Re-raised as ValueError: pydantic turns only that into a
+            # ValidationError, and the 422 then still names the rule and entry.
+            except REGEX_COMPILE_ERRORS as e:
                 raise ValueError(f"{where}: invalid regex: {e}")
             if guarding and (guard_slugs is None or slug in guard_slugs):
                 compile_spent += time.perf_counter() - t0

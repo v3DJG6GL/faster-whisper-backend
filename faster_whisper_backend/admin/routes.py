@@ -1209,13 +1209,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             continue
                         try:
                             ecre = re.compile(ep)
-                        # OverflowError: a repeat count past MAXREPEAT in a
-                        # range (`a{1,4294967296}`), which the fixed-count
-                        # screen does not cover; RecursionError: groups nested
-                        # too deep for sre's parser (`((((…`); ValueError:
-                        # incompatible inline flags (`(?a)(?u)x`).
-                        except (re.error, OverflowError, RecursionError,
-                                ValueError) as e:
+                        # OverflowError in the set: a MAXREPEAT range
+                        # (`a{1,4294967296}`) the fixed-count screen misses.
+                        except settings_schema.REGEX_COMPILE_ERRORS as e:
                             # Engine parity (pl_engine.rebuild_caches): a bad entry is
                             # SKIPPED, not the whole card — the valid entries still
                             # apply.

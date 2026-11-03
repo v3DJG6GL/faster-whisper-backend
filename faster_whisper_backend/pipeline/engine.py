@@ -224,9 +224,7 @@ def _rebuild_caches_locked() -> None:
                     continue
                 try:
                     ecre = re.compile(epat)
-                # ValueError: conflicting inline flags ("(?a)(?u)x");
-                # RecursionError: groups nested too deep.
-                except (re.error, OverflowError, ValueError, RecursionError) as e:
+                except settings_schema.REGEX_COMPILE_ERRORS as e:
                     logger.warning("[pipeline] rule %r entry has invalid regex "
                                    "(%s) — skipping entry", rname, e)
                     continue
@@ -266,7 +264,7 @@ def _rebuild_caches_locked() -> None:
                 else:
                     logger.warning("[pipeline] unknown rule type %r — skipping", rtype)
                     continue
-        except (re.error, OverflowError, ValueError, RecursionError) as e:
+        except settings_schema.REGEX_COMPILE_ERRORS as e:
             logger.warning("[pipeline] rule %r has invalid regex (%s) — skipping",
                            rule.get("name"), e)
             continue
