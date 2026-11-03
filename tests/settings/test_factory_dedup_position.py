@@ -8,19 +8,13 @@ Ausrufezeichen" came out "!", "Punkt Punkt Punkt" ".".
 
 import copy
 import json
-import os
 
 import pytest
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
 from faster_whisper_backend.settings import config_store as cs
-
-
-def _factory_rules():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 
 def _names(rules):

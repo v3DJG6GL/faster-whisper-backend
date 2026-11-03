@@ -8,22 +8,15 @@ on /transcribe (20000 items: 4 s).
 """
 
 import copy
-import json
-import os
 import random
 import re
 import time
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 _LABEL = "tighten-quote-spacing"
-
-
-def _factory_rules():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
 
 
 def _entry(rules):

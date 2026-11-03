@@ -9,17 +9,15 @@ factory strip rule keeps `…` and `:` runs, so such a run reaches the map on
 """
 
 import copy
-import json
-import os
 import re
 import time
 
 import pytest
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import dictation_map
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 
 @pytest.mark.parametrize("mark", ["…", ":", "."])
@@ -92,11 +90,6 @@ def test_large_non_ascii_map_stays_fast():
     out = pattern.sub(replace, text)
     assert time.perf_counter() - t0 < 0.6
     assert out == " ".join(f"x {o}," for o in others) * 3
-
-
-def _factory_rules():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
 
 
 def _factory_de_map():

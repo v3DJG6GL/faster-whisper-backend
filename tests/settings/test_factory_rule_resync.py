@@ -19,16 +19,12 @@ import pytest
 
 from faster_whisper_backend import paths
 from faster_whisper_backend.settings import config_store as cs
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 _NODE = shutil.which("node")
 _SETTINGS_HTML = os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
                               "templates", "settings.html")
 _QUOTE_LABELS = ("tighten-german-quote-open", "tighten-german-quote-close")
-
-
-def _factory_rules():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
 
 
 def _rev(rule):

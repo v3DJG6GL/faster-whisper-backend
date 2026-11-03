@@ -10,25 +10,18 @@ one re.sub pass reaches only the first lowercase part of a chain
 """
 
 import copy
-import json
-import os
 
 import pytest
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.pipeline import regex_guard
 from faster_whisper_backend.settings import config_renames as renames
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 _NAME = "capitalize-letter-after-hyphen"
 # As shipped from 0a9403f8 until the capital-first pattern, and before 0a9403f8.
 _OLD_PATTERNS = ("(?<!\\d)(-)([a-zäöüß])", "(-)([a-zäöüß])")
 _OLD_NOTE = "Capitalizes a lowercase letter right after a hyphen: Eisen-infusion → Eisen-Infusion."
-
-
-def _factory_rules():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
 
 
 def _rule(rules):

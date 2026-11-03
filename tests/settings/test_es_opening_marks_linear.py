@@ -9,23 +9,16 @@ paragraph breaks started a scan to its end.
 """
 
 import copy
-import json
-import os
 import re
 import time
 
 import pytest
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
+from tests.settings._rules_helpers import factory_rules as _factory_rules
 
 _LABELS = ("es-opening-question-mark", "es-opening-exclamation-mark")
-
-
-def _factory_rules():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
 
 
 def _entries():
