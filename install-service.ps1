@@ -111,6 +111,14 @@ function Invoke-WinSW {
     }
 }
 
+# Invoke-PipInstall "<label>" <pip install args...>: throws "<label> failed
+# (exit N)" on a non-zero exit. No param block, so pip's --flags stay in $args.
+function Invoke-PipInstall {
+    $label, $pipArgs = $args
+    & $Python -m pip install @pipArgs
+    if ($LASTEXITCODE -ne 0) { throw "$label failed (exit $LASTEXITCODE)" }
+}
+
 if (-not (Test-Path $MainPy))  { throw "main.py not found: $MainPy" }
 New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 
@@ -166,8 +174,7 @@ if (-not (Test-VenvUsable)) {
     if (-not (Test-Path $Python)) { throw "venv created but $Python still missing - check the Python install" }
 
     Write-Host "Upgrading pip..." -ForegroundColor Cyan
-    & $Python -m pip install --upgrade pip
-    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed (exit $LASTEXITCODE)" }
+    Invoke-PipInstall "pip upgrade" --upgrade pip
 
     # Purge the HTTP cache after the pip upgrade. Older pip versions store
     # cache entries in a format the upgraded pip can't deserialize, producing
@@ -273,8 +280,7 @@ if (Test-Path $LegacyNssm) {
 $reqFile = Join-Path $RepoDir "requirements.txt"
 if (Test-Path $reqFile) {
     Write-Host "Installing/refreshing requirements (faster-whisper + CUDA wheels can take a few minutes)..." -ForegroundColor Cyan
-    & $Python -m pip install -r $reqFile
-    if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements.txt failed (exit $LASTEXITCODE)" }
+    Invoke-PipInstall "pip install -r requirements.txt" -r $reqFile
 } else {
     Write-Host "WARNING: requirements.txt not found at $reqFile" -ForegroundColor Yellow
 }
@@ -285,8 +291,7 @@ if (Test-Path $reqFile) {
 if ($Gpu) {
     $gpuReq = Join-Path $RepoDir "requirements-gpu.txt"
     Write-Host "Installing/refreshing GPU wheels (CUDA 12 / cuDNN 9, ~1 GB)..." -ForegroundColor Cyan
-    & $Python -m pip install -r $gpuReq
-    if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-gpu.txt failed (exit $LASTEXITCODE)" }
+    Invoke-PipInstall "pip install -r requirements-gpu.txt" -r $gpuReq
 }
 
 # -Full: the heavy extras of the Docker "-full" tags. Keep the GPU branch in
@@ -361,8 +366,7 @@ class UniformQuantizer:
 def restore_quantized_state(*args, **kwargs):
     _unavailable()
 '@ | Set-Content -Path (Join-Path $stubDir "diffq\__init__.py") -Encoding ASCII
-        & $Python -m pip install $stubDir
-        if ($LASTEXITCODE -ne 0) { throw "diffq-fixed stub install failed (exit $LASTEXITCODE)" }
+        Invoke-PipInstall "diffq-fixed stub install" $stubDir
     }
 
     $diarizeReq = Join-Path $RepoDir "requirements-diarize.txt"
@@ -371,23 +375,18 @@ def restore_quantized_state(*args, **kwargs):
         # requirements-bgm.txt pins the versions (single source of truth,
         # Renovate-bumped); "audio-separator[gpu]" only swaps in the GPU extra.
         $bgmReq = Join-Path $RepoDir "requirements-bgm.txt"
-        & $Python -m pip install -r $diarizeReq -r $bgmReq "audio-separator[gpu]" --extra-index-url https://download.pytorch.org/whl/cu126
-        if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
-        & $Python -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
-        if ($LASTEXITCODE -ne 0) { throw "pip install onnxruntime-gpu==1.26.* failed (exit $LASTEXITCODE)" }
+        Invoke-PipInstall "pip install of the full extras" -r $diarizeReq -r $bgmReq "audio-separator[gpu]" --extra-index-url https://download.pytorch.org/whl/cu126
+        Invoke-PipInstall "pip install onnxruntime-gpu==1.26.*" --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
         # Translation (llama-cpp-python): the project's cu124 wheel index -- no
         # cu126 index exists; cu124 wheels run on a cu12.6 userspace (CUDA 12
         # minor-version compatibility). PyPI is sdist-only (source build).
-        & $Python -m pip install -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
-        if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-translate.txt failed (exit $LASTEXITCODE)" }
+        Invoke-PipInstall "pip install -r requirements-translate.txt" -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
     } else {
         $bgmReq = Join-Path $RepoDir "requirements-bgm.txt"
-        & $Python -m pip install -r $diarizeReq -r $bgmReq
-        if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
+        Invoke-PipInstall "pip install of the full extras" -r $diarizeReq -r $bgmReq
         # Translation (llama-cpp-python): prebuilt CPU wheels from the project
         # index -- PyPI is sdist-only and would compile llama.cpp from source.
-        & $Python -m pip install -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-        if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-translate.txt failed (exit $LASTEXITCODE)" }
+        Invoke-PipInstall "pip install -r requirements-translate.txt" -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
     }
     Write-Host "Full extras installed. Gated pyannote pipelines additionally need accepted" -ForegroundColor Green
     Write-Host "model terms on huggingface.co plus WHISPER_HF_TOKEN in the service env." -ForegroundColor Green
@@ -506,11 +505,10 @@ function Install-ConvertDeps {
         # Keep any torch resolution on the same CUDA 12 userspace the -Full/-Gpu
         # block established (see its "one CUDA 12 userspace" rationale) -- the
         # default PyPI index could swap in a CPU / cu13 torch wheel.
-        & $Python -m pip install -r $convertReq --extra-index-url https://download.pytorch.org/whl/cu126
+        Invoke-PipInstall "pip install -r requirements-convert.txt" -r $convertReq --extra-index-url https://download.pytorch.org/whl/cu126
     } else {
-        & $Python -m pip install -r $convertReq
+        Invoke-PipInstall "pip install -r requirements-convert.txt" -r $convertReq
     }
-    if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-convert.txt failed (exit $LASTEXITCODE)" }
     Write-Host "Conversion extras installed. AUTO_CONVERT_HF_MODELS=true will now work." -ForegroundColor Green
 }
 
