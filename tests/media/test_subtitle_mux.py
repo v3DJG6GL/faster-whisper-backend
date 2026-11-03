@@ -521,6 +521,12 @@ def test_package_forwards_a_non_zero_video_index(monkeypatch):
     assert seen["video_index"] == 1
 
 
+def _written(tmp_path, srt):
+    (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+
 def test_write_srts_clamps_only_the_last_inverted_cue_end_to_its_start(tmp_path):
     """MP4 timed text refuses a cue that ends before it starts (movenc fails
     the whole mux with a bare 500) — but only the last one by start time:
@@ -531,12 +537,10 @@ def test_write_srts_clamps_only_the_last_inverted_cue_end_to_its_start(tmp_path)
            "2\r\n00:00:06,000 --> 00:00:07,500 X1:0\r\nOk\r\n\r\n"
            "3\r\n00:00:09,000 --> 00:00:08,000\r\nLast\r\n\r\n"
            "4\r\n00:00:08,000 --> 00:00:08,000\r\nZero\r\n")
-    (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
-    with open(p, encoding="utf-8") as f:
-        assert f.read() == ("1\n00:00:05,000 --> 00:00:01,000\nTypo\n\n"
-                            "2\n00:00:06,000 --> 00:00:07,500 X1:0\nOk\n\n"
-                            "3\n00:00:09,000 --> 00:00:09,000\nLast\n\n"
-                            "4\n00:00:08,000 --> 00:00:08,000\nZero\n")
+    assert _written(tmp_path, srt) == ("1\n00:00:05,000 --> 00:00:01,000\nTypo\n\n"
+                                       "2\n00:00:06,000 --> 00:00:07,500 X1:0\nOk\n\n"
+                                       "3\n00:00:09,000 --> 00:00:09,000\nLast\n\n"
+                                       "4\n00:00:08,000 --> 00:00:08,000\nZero\n")
 
 
 def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
@@ -544,10 +548,8 @@ def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
     3,40 --> 3,5 is inverted to the muxer and 2,5 --> 2,40 is not."""
     srt = ("1\n00:00:02,5 --> 00:00:02,40\nKept\n\n"
            "2\n00:00:03,40 --> 00:00:03,5\nInverted\n")
-    (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
-    with open(p, encoding="utf-8") as f:
-        assert f.read() == ("1\n00:00:02,5 --> 00:00:02,40\nKept\n\n"
-                            "2\n00:00:03,40 --> 00:00:03,40\nInverted\n")
+    assert _written(tmp_path, srt) == ("1\n00:00:02,5 --> 00:00:02,40\nKept\n\n"
+                                       "2\n00:00:03,40 --> 00:00:03,40\nInverted\n")
 
 
 @pytest.mark.parametrize("timing, clamped", [
@@ -563,13 +565,9 @@ def test_write_srts_clamps_a_timing_line_with_the_whitespace_and_signs_ffmpeg_ac
     skip whitespace and take a sign — a cue spelled that way is still the
     muxer's inverted last cue, and a later one spelled that way still keeps
     an earlier inverted cue (ffmpeg stretches it) from being clamped."""
-    def written(srt):
-        (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
-        with open(p, encoding="utf-8") as f:
-            return f.read()
-    assert written(f"1\n{timing}\nLast\n") == f"1\n{clamped}\nLast\n"
+    assert _written(tmp_path, f"1\n{timing}\nLast\n") == f"1\n{clamped}\nLast\n"
     earlier = f"1\n00:00:02,000 --> 00:00:01,000\nTypo\n\n2\n{clamped}\nLast\n"
-    assert written(earlier) == earlier
+    assert _written(tmp_path, earlier) == earlier
 
 
 def test_write_srts_clamps_an_inverted_cue_followed_only_by_cues_ffmpeg_drops(tmp_path):
@@ -577,19 +575,15 @@ def test_write_srts_clamps_an_inverted_cue_followed_only_by_cues_ffmpeg_drops(tm
     next cue's number), so an inverted cue before such cues is the muxer's
     real last one and is clamped; a whitespace or trailing-number body is
     text ffmpeg keeps, so the inverted cue before it is left alone."""
-    def written(srt):
-        (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
-        with open(p, encoding="utf-8") as f:
-            return f.read()
     dropped = ("1\n00:00:01,000 --> 00:00:00,500\nHello\n\n"
                "2\n00:00:03,000 --> 00:00:04,000\n\n\n3\n"
                "00:00:05,000 --> 00:00:06,000\n\n")
-    assert written(dropped) == dropped.replace("00:00:00,500", "00:00:01,000")
+    assert _written(tmp_path, dropped) == dropped.replace("00:00:00,500", "00:00:01,000")
     for kept in ("1\n00:00:01,000 --> 00:00:00,500\nHello\n\n"
                  "2\n00:00:05,000 --> 00:00:06,000\n \n",
                  "1\n00:00:01,000 --> 00:00:00,500\nHello\n\n"
                  "2\n00:00:05,000 --> 00:00:06,000\n42\n"):
-        assert written(kept) == kept
+        assert _written(tmp_path, kept) == kept
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
