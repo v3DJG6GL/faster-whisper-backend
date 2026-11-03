@@ -13,6 +13,11 @@ from tests._transcription_helpers import bind_profile
 from tests._transcription_helpers import post_verbose as _post
 
 
+@pytest.fixture
+def bgm_on(app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
+
+
 def _stub_separate(monkeypatch, calls=None):
     """separate() writes a real vocals tmp file — the handler swaps it into
     tmp_path and the request-level finally must unlink it."""
@@ -32,115 +37,99 @@ def _stub_separate(monkeypatch, calls=None):
     return made
 
 
-def test_separate_swaps_audio_and_cleans_up(client, app_module, monkeypatch, fake_model):
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    try:
-        calls = []
-        made = _stub_separate(monkeypatch, calls)
-        r = _post(client, separate_bgm="true")
-        assert r.status_code == 200, r.text
-        assert "warnings" not in r.json()
-        assert len(calls) == 1                 # the ORIGINAL upload went in
-        # The decode consumed the vocals file, not the original...
-        assert fake_model.last_audio == made[0]
-        # ...and the request-level finally unlinked the swapped-in tmp.
-        assert not os.path.exists(made[0])
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+def test_separate_swaps_audio_and_cleans_up(client, monkeypatch, fake_model, bgm_on):
+    calls = []
+    made = _stub_separate(monkeypatch, calls)
+    r = _post(client, separate_bgm="true")
+    assert r.status_code == 200, r.text
+    assert "warnings" not in r.json()
+    assert len(calls) == 1                 # the ORIGINAL upload went in
+    # The decode consumed the vocals file, not the original...
+    assert fake_model.last_audio == made[0]
+    # ...and the request-level finally unlinked the swapped-in tmp.
+    assert not os.path.exists(made[0])
 
 
 def test_separate_transcodes_non_libsndfile_container(
-        client, app_module, monkeypatch, fake_model):
+        client, monkeypatch, fake_model, bgm_on):
     """An .m4a input is pre-transcoded to 44.1 kHz stereo WAV for the
     separator (libsndfile can't read AAC/MP4 → slow audioread fallback)."""
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    try:
-        calls = []
-        made = _stub_separate(monkeypatch, calls)
-        transcoded = []
+    calls = []
+    made = _stub_separate(monkeypatch, calls)
+    transcoded = []
 
-        def _fake_transcode(src, dst, *, rate, layout):
-            transcoded.append((src, dst, rate, layout))
-            with open(dst, "wb") as f:
-                f.write(b"RIFF44kWAVE")
-            return 11
+    def _fake_transcode(src, dst, *, rate, layout):
+        transcoded.append((src, dst, rate, layout))
+        with open(dst, "wb") as f:
+            f.write(b"RIFF44kWAVE")
+        return 11
 
-        monkeypatch.setattr(audio_transcode, "transcode_to_wav",
-                            _fake_transcode)
-        r = client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
-            data={"model": "whisper-1", "response_format": "verbose_json",
-                  "separate_bgm": "true"})
-        assert r.status_code == 200, r.text
-        assert len(transcoded) == 1
-        _src, _dst, _rate, _layout = transcoded[0]
-        assert (_rate, _layout) == (44100, "stereo")
-        assert _src.endswith(".m4a") and _dst.endswith(".wav")
-        assert calls == [_dst]
-        assert not os.path.exists(_dst)
-        assert fake_model.last_audio == made[0]
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav",
+                        _fake_transcode)
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "separate_bgm": "true"})
+    assert r.status_code == 200, r.text
+    assert len(transcoded) == 1
+    _src, _dst, _rate, _layout = transcoded[0]
+    assert (_rate, _layout) == (44100, "stereo")
+    assert _src.endswith(".m4a") and _dst.endswith(".wav")
+    assert calls == [_dst]
+    assert not os.path.exists(_dst)
+    assert fake_model.last_audio == made[0]
 
 
 def test_separate_transcode_failure_falls_back_to_original(
-        client, app_module, monkeypatch, fake_model):
+        client, monkeypatch, fake_model, bgm_on):
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    try:
-        calls = []
-        _stub_separate(monkeypatch, calls)
+    calls = []
+    _stub_separate(monkeypatch, calls)
 
-        def _boom(src, dst, *, rate, layout):
-            raise RuntimeError("no decoder")
+    def _boom(src, dst, *, rate, layout):
+        raise RuntimeError("no decoder")
 
-        monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
-        r = client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
-            data={"model": "whisper-1", "separate_bgm": "true",
-                  "response_format": "verbose_json"})
-        assert r.status_code == 200, r.text
-        # Separation still ran — on the original file (soft-fail, no warning
-        # surfaced to the client for a transcode hiccup). The refusal arm
-        # (a ValueError from _open_audio) is pinned in
-        # tests/main/test_routes_transcription.py.
-        assert "warnings" not in r.json()
-        assert len(calls) == 1 and calls[0].endswith(".m4a")
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
+        data={"model": "whisper-1", "separate_bgm": "true",
+              "response_format": "verbose_json"})
+    assert r.status_code == 200, r.text
+    # Separation still ran — on the original file (soft-fail, no warning
+    # surfaced to the client for a transcode hiccup). The refusal arm
+    # (a ValueError from _open_audio) is pinned in
+    # tests/main/test_routes_transcription.py.
+    assert "warnings" not in r.json()
+    assert len(calls) == 1 and calls[0].endswith(".m4a")
 
 
 def test_separate_wav_input_skips_transcode(
-        client, app_module, monkeypatch, fake_model):
+        client, monkeypatch, fake_model, bgm_on):
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    try:
-        calls = []
-        _stub_separate(monkeypatch, calls)
+    calls = []
+    _stub_separate(monkeypatch, calls)
 
-        # Record instead of only raising: the route swallows any transcode
-        # exception and falls back to the original file, so a raise alone
-        # could never fail this test if the wav/flac skip regressed.
-        tc_calls = []
+    # Record instead of only raising: the route swallows any transcode
+    # exception and falls back to the original file, so a raise alone
+    # could never fail this test if the wav/flac skip regressed.
+    tc_calls = []
 
-        def _never(src, dst, *, rate, layout):
-            tc_calls.append(src)
-            raise AssertionError("wav input must not be transcoded")
+    def _never(src, dst, *, rate, layout):
+        tc_calls.append(src)
+        raise AssertionError("wav input must not be transcoded")
 
-        monkeypatch.setattr(audio_transcode, "transcode_to_wav", _never)
-        r = _post(client, separate_bgm="true")
-        assert r.status_code == 200, r.text
-        assert tc_calls == []
-        assert "warnings" not in r.json()
-        assert len(calls) == 1 and calls[0].endswith(".wav")
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _never)
+    r = _post(client, separate_bgm="true")
+    assert r.status_code == 200, r.text
+    assert tc_calls == []
+    assert "warnings" not in r.json()
+    assert len(calls) == 1 and calls[0].endswith(".wav")
 
 
 def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
@@ -154,59 +143,47 @@ def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
     assert calls == []
 
 
-def test_separate_error_becomes_warning(client, app_module, monkeypatch, fake_model):
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    try:
-        async def _boom(path, **kw):
-            raise bgm_separation.BgmSeparationError(
-                "music-separation dependencies are not installed on this "
-                "server (pip install -r requirements-bgm.txt)")
-        monkeypatch.setattr(bgm_separation, "separate", _boom)
-        r = _post(client, separate_bgm="1")
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["text"]                    # original audio transcribed
-        assert any("requirements-bgm" in w for w in body["warnings"])
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+def test_separate_error_becomes_warning(client, monkeypatch, fake_model, bgm_on):
+    async def _boom(path, **kw):
+        raise bgm_separation.BgmSeparationError(
+            "music-separation dependencies are not installed on this "
+            "server (pip install -r requirements-bgm.txt)")
+    monkeypatch.setattr(bgm_separation, "separate", _boom)
+    r = _post(client, separate_bgm="1")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["text"]                    # original audio transcribed
+    assert any("requirements-bgm" in w for w in body["warnings"])
 
 
-def test_separate_absent_inherits_config_default(client, app_module, monkeypatch):
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    app_module.cfg.SEPARATE_BGM = True
-    try:
-        calls = []
-        _stub_separate(monkeypatch, calls)
-        r = _post(client)
-        assert r.status_code == 200
-        assert len(calls) == 1                 # SEPARATE_BGM=true applies
-        r = _post(client, separate_bgm="false")
-        assert r.status_code == 200
-        assert len(calls) == 1                 # explicit false wins
-    finally:
-        app_module.cfg.SEPARATE_BGM = False
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+def test_separate_absent_inherits_config_default(client, app_module, monkeypatch,
+                                                 bgm_on):
+    monkeypatch.setattr(app_module.cfg, "SEPARATE_BGM", True, raising=False)
+    calls = []
+    _stub_separate(monkeypatch, calls)
+    r = _post(client)
+    assert r.status_code == 200
+    assert len(calls) == 1                 # SEPARATE_BGM=true applies
+    r = _post(client, separate_bgm="false")
+    assert r.status_code == 200
+    assert len(calls) == 1                 # explicit false wins
 
 
-def test_locked_separate_ignores_client_param(client, app_module, make_user_key,
-                                              monkeypatch):
+def test_locked_separate_ignores_client_param(client, make_user_key,
+                                              monkeypatch, bgm_on):
     from tests.conftest import bearer
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    try:
-        calls = []
-        _stub_separate(monkeypatch, calls)
-        _, raw_alice = bind_profile(client, make_user_key, "nosep",
-                                    {"locks": ["SEPARATE_BGM"]})
-        r = client.post(
-            "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-            data={"model": "whisper-1", "response_format": "verbose_json",
-                  "separate_bgm": "true"},
-        )
-        assert r.status_code == 200, r.text
-        assert calls == []                     # pinned off (global default)
-        assert "separate_bgm" in r.json()["overrides_ignored"]
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    calls = []
+    _stub_separate(monkeypatch, calls)
+    _, raw_alice = bind_profile(client, make_user_key, "nosep",
+                                {"locks": ["SEPARATE_BGM"]})
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "separate_bgm": "true"},
+    )
+    assert r.status_code == 200, r.text
+    assert calls == []                     # pinned off (global default)
+    assert "separate_bgm" in r.json()["overrides_ignored"]
 
 
 def test_model_filename_appends_onnx(app_module, monkeypatch):
