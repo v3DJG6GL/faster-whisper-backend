@@ -25,6 +25,12 @@ function fmtWhen(ts) {
   return r ? (a + ' | ' + r) : a;
 }
 
+// Paint a live timestamp node: timeTick repaints any [data-ts] element.
+function stampTs(el, ts) {
+  el.textContent = fmtWhen(ts);
+  if (ts) { el.dataset.ts = String(ts); el.title = absTime(ts); }
+}
+
 function timeTick(sel, ms) {
   sel = sel || '[data-ts]';
   ms = ms || 30000;

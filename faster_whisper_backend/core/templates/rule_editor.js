@@ -162,13 +162,7 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
     td4.className = 'map-date-cell';
     const span = document.createElement('span');
     span.className = 'map-date';
-    if (ts) {
-      span.setAttribute('data-ts', String(ts));
-      span.textContent = fmtWhen(ts);
-      span.title = absTime(ts);
-    } else {
-      span.textContent = '—';
-    }
+    stampTs(span, ts);
     td4.appendChild(span);
     tr.appendChild(td4);
   }
