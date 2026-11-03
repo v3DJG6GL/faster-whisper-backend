@@ -26,6 +26,16 @@ def _keep_process_identity():
      build_info.APP_VERSION, build_info.VERSION_SHORT) = saved
 
 
+@pytest.fixture
+def restore_build_info(monkeypatch):
+    """For a test that reloads build_info under patched env/subprocess:
+    restore the ORIGINAL env first (a baked-in WHISPER_BUILD_VERSION must
+    come back), then reload so build_info matches it again."""
+    yield
+    monkeypatch.undo()
+    importlib.reload(build_info)
+
+
 def test_resolves_to_nonempty_string():
     # In any environment (CI, checkout, tarball) the constant must be a
     # usable display string — the exact value depends on the build.
@@ -33,29 +43,19 @@ def test_resolves_to_nonempty_string():
     assert build_info.SERVER_NAME == "faster-whisper-backend"
 
 
-def test_env_override_wins(monkeypatch):
+def test_env_override_wins(monkeypatch, restore_build_info):
     monkeypatch.setenv("WHISPER_BUILD_VERSION", "v9.9.9-test")
-    try:
-        assert importlib.reload(build_info).APP_VERSION == "v9.9.9-test"
-    finally:
-        # Restore the ORIGINAL env first (a baked-in WHISPER_BUILD_VERSION
-        # must come back), then reload so build_info matches it again.
-        monkeypatch.undo()
-        importlib.reload(build_info)
+    assert importlib.reload(build_info).APP_VERSION == "v9.9.9-test"
 
 
-def test_no_git_falls_back_to_unknown(monkeypatch):
+def test_no_git_falls_back_to_unknown(monkeypatch, restore_build_info):
     monkeypatch.delenv("WHISPER_BUILD_VERSION", raising=False)
 
     def _no_git(*a, **k):
         raise FileNotFoundError("git")
 
     monkeypatch.setattr(subprocess, "run", _no_git)
-    try:
-        assert importlib.reload(build_info).APP_VERSION == "unknown"
-    finally:
-        monkeypatch.undo()
-        importlib.reload(build_info)
+    assert importlib.reload(build_info).APP_VERSION == "unknown"
 
 
 def _stub_pkg_version(monkeypatch, llama):
@@ -90,7 +90,7 @@ def test_engine_versions_omits_llama_cpp_when_absent(monkeypatch):
     assert "CTranslate2 4.6.1" in s
 
 
-def test_reload_does_not_leak_a_new_boot_id(monkeypatch):
+def test_reload_does_not_leak_a_new_boot_id(monkeypatch, restore_build_info):
     # Bind the by-value copies BEFORE the reload re-mints the id, so the next
     # test checks real survival even when this file runs alone.
     from faster_whisper_backend import main
@@ -99,11 +99,7 @@ def test_reload_does_not_leak_a_new_boot_id(monkeypatch):
     assert catalog_routes.BOOT_ID == before
     assert main.BOOT_ID == before
     monkeypatch.setenv("WHISPER_BUILD_VERSION", "v0.0.0-reload")
-    try:
-        importlib.reload(build_info)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(build_info)
+    importlib.reload(build_info)
     # A reload mints a fresh id inside the test; the autouse fixture puts
     # the process one back afterwards (checked by the next test).
     assert build_info.BOOT_ID != before
