@@ -1154,15 +1154,13 @@ function updateTip(u) {
   const rows = stacked ? vis.slice().reverse() : vis;
   rows.forEach(ln => {
     const v = Number(ln.values[idx] || 0); total += v;
-    html += '<div class="tip-row"><span class="usage-swatch" style="background:' + ln.color + '"></span>'
-      + '<span>' + esc(ln.label) + '</span><span class="tip-val">' + fmtMetric(docMetric(), v) + '</span></div>';
+    html += tipRow(ln.color, ln.label, fmtMetric(docMetric(), v));
   });
-  if (rows.length > 1) html += '<div class="tip-row tot"><span>total</span><span class="tip-val">'
-    + fmtMetric(docMetric(), total) + '</span></div>';
+  if (rows.length > 1) html += tipRow(null, 'total', fmtMetric(docMetric(), total), 'tot');
   if (cmpTotal) {
     const c = cmpTotal[idx] || 0;
-    html += '<div class="tip-row cmp"><span>' + cmpWord() + '</span><span class="tip-val">'
-      + fmtMetric(docMetric(), c) + (c > 0 ? ' · ' + ((total - c) / c * 100).toFixed(0) + ' %' : '') + '</span></div>';
+    html += tipRow(null, cmpWord(), fmtMetric(docMetric(), c)
+      + (c > 0 ? ' · ' + ((total - c) / c * 100).toFixed(0) + ' %' : ''), 'cmp');
   }
   const orect = u.over.getBoundingClientRect();
   showTipAt(html, orect.left + u.cursor.left, orect.top + u.cursor.top);
