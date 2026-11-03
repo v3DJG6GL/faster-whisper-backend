@@ -729,7 +729,7 @@ def test_regex_list_nested_fixed_counts_refused_before_the_template_sub():
     # The in-process template check (`.sub(repl, "")`) runs on EVERY
     # validation path, LOAD included, before the out-of-process guard:
     # `(?:(?:a{0}){N}){N}` loops N*N times even on "", so 1e5 x 1e5 never
-    # returned. The counts are now refused match-free first. Run in a thread
+    # returned. The counts are refused match-free first. Run in a thread
     # so a regression fails here instead of hanging the suite.
     import threading
     out = {}
