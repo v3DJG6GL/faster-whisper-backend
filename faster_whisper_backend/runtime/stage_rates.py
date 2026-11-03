@@ -103,8 +103,7 @@ def _read() -> dict[str, dict]:
                     r = v.get("rate") if isinstance(v, dict) else None
                     # A bool is an int: a hand-edited "rate": true is not
                     # a measured rate of 1.0.
-                    if (isinstance(r, (int, float)) and not isinstance(r, bool)
-                            and math.isfinite(r) and r > 0):
+                    if atomic_json.positive_number(r):
                         # A hand-edited "n": "many" is cached as a
                         # count of 0, never as the raw value.
                         row = {"rate": float(r), "n": _count(v.get("n"))}
@@ -120,11 +119,7 @@ def _read() -> dict[str, dict]:
     return rates
 
 
-def _count(n) -> int:
-    if (isinstance(n, (int, float)) and not isinstance(n, bool)
-            and math.isfinite(n) and n > 0):
-        return int(n)
-    return 0
+_count = atomic_json.json_count
 
 
 def _write_locked(rates: dict[str, dict]) -> None:

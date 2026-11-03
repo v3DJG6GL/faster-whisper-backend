@@ -19,7 +19,6 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import json
-import math
 import os
 import tempfile
 import threading
@@ -95,8 +94,7 @@ def _read(path: str = PATH) -> dict[str, dict]:
                     # footprint. lookup() and the merge trust `bytes` and
                     # `n`, so int(Infinity) or int("many") there would 500
                     # /stats.
-                    if (isinstance(b, (int, float)) and not isinstance(b, bool)
-                            and math.isfinite(b) and b > 0):
+                    if atomic_json.positive_number(b):
                         row = {"bytes": int(b), "n": _count(v.get("n"))}
                         if "ts" in v:
                             row["ts"] = v["ts"]
@@ -112,11 +110,7 @@ def _read(path: str = PATH) -> dict[str, dict]:
     return models
 
 
-def _count(n) -> int:
-    if (isinstance(n, (int, float)) and not isinstance(n, bool)
-            and math.isfinite(n) and n > 0):
-        return int(n)
-    return 0
+_count = atomic_json.json_count
 
 
 def _write_locked(models: dict[str, dict], path: str = PATH) -> None:

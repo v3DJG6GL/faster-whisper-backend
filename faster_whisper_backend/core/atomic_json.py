@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import tempfile
 import threading
@@ -116,3 +117,16 @@ def atomic_write_json(obj: Any, path: str, *, sort_keys: bool, tmp_prefix: str) 
                 os.unlink(tmp)
             except OSError:
                 pass
+
+
+def positive_number(x) -> bool:
+    """A JSON-read value that is a real, finite, positive number: json.load
+    accepts Infinity / NaN and a bool is an int. Raises OverflowError on an
+    int too large for a double, like math.isfinite."""
+    return (isinstance(x, (int, float)) and not isinstance(x, bool)
+            and math.isfinite(x) and x > 0)
+
+
+def json_count(n) -> int:
+    """A ledger row's `n`: a hand-edited "many" or -3 reads as 0."""
+    return int(n) if positive_number(n) else 0
