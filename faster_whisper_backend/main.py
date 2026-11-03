@@ -310,6 +310,18 @@ def _startup_step(fn, what: str) -> None:
         logger.warning("Startup %s failed: %s", what, e)
 
 
+def _open_store(init_db, path, label: str, fail_label: str) -> bool:
+    """Open a non-fatal store: a failure logs and the lifespan goes on;
+    returns whether it opened."""
+    try:
+        init_db(path)
+    except Exception as e:
+        logger.error("Failed to initialize %s store: %s", fail_label, e)
+        return False
+    logger.info("%s store initialized at %s", label, path)
+    return True
+
+
 async def _usage_retention_loop() -> None:
     """Hourly sweep for the usage-statistics store: closes out dictation
     sessions whose outcome never arrived and prunes the job/app rows past
@@ -389,16 +401,9 @@ async def lifespan(app: FastAPI):
     # recent-jobs row through this store, and with it still closed those rows
     # are lost with a "persist failed" warning. Needs only cfg + store_common.
     # Its hourly sweep task starts after the fatal api-keys init, like usage's.
-    recent_tx_ready = False
-    try:
-        recent_transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
-        logger.info(
-            "Recent-transcriptions store initialized at %s",
-            cfg.RECENT_TRANSCRIPTIONS_DB,
-        )
-        recent_tx_ready = True
-    except Exception as _te:
-        logger.error("Failed to initialize recent-transcriptions store: %s", _te)
+    recent_tx_ready = _open_store(
+        recent_transcriptions_store.init_db, cfg.RECENT_TRANSCRIPTIONS_DB,
+        "Recent-transcriptions", "recent-transcriptions")
     # The startup sweep is its own best-effort step: the store is open, so a
     # failing first sweep must not keep the hourly loop from starting.
     if recent_tx_ready:
@@ -432,13 +437,8 @@ async def lifespan(app: FastAPI):
     # started further down, after the fatal api-keys init (no long-lived
     # task may exist before that point) and only when the store opened —
     # without a connection it would log the same error every hour.
-    usage_store_ready = False
-    try:
-        usage_store.init_db(cfg.USAGE_DB)
-        logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
-        usage_store_ready = True
-    except Exception as _ue:
-        logger.error("Failed to initialize usage store: %s", _ue)
+    usage_store_ready = _open_store(usage_store.init_db, cfg.USAGE_DB,
+                                    "Usage rollup", "usage")
     # The first hourly tick is an hour away, so a server restarted more
     # often than that never applied the retention: sweep once now, its own
     # best-effort step like the recent-transcriptions one above.
@@ -577,12 +577,9 @@ async def lifespan(app: FastAPI):
     # Non-fatal: if this fails, cookie login is unavailable but bearer auth
     # (API clients) and open mode keep working.
     sessions_purge_task = None
-    try:
-        sessions_store.init_db(cfg.SESSIONS_DB)
-        logger.info("Session store initialized at %s", cfg.SESSIONS_DB)
+    if _open_store(sessions_store.init_db, cfg.SESSIONS_DB,
+                   "Session", "session"):
         sessions_purge_task = asyncio.create_task(_sessions_purge_loop())
-    except Exception as _se:
-        logger.error("Failed to initialize session store: %s", _se)
 
     usage_sweep_task = (asyncio.create_task(_usage_retention_loop())
                         if usage_store_ready else None)
@@ -597,15 +594,9 @@ async def lifespan(app: FastAPI):
     # Failure here is non-fatal: the rest of the app must keep working even if
     # the reports surface is broken, but the /reports page will error.
     reports_sweep_task = None
-    try:
-        reports_store.init_db(cfg.REPORTS_DB)
-        logger.info("Reports store initialized at %s", cfg.REPORTS_DB)
-        reports_sweep_task = asyncio.create_task(
-            _reports_retention_loop()
-        )
-    except Exception as _re:
-        logger.error("Failed to initialize reports store: %s", _re)
-    else:
+    if _open_store(reports_store.init_db, cfg.REPORTS_DB,
+                   "Reports", "reports"):
+        reports_sweep_task = asyncio.create_task(_reports_retention_loop())
         _startup_step(reports_store.sweep_retention, "reports sweep")
 
     # Open the desktop-client settings-sync store (one opaque blob per
@@ -658,13 +649,8 @@ async def lifespan(app: FastAPI):
     # interrupted by the previous process's death — flip it, or it reads as
     # in flight forever (the poller would wait out the whole TTL).
     jobs_sweep_task = None
-    try:
-        _jobs_store.init_db(cfg.JOBS_DB)
-        logger.info("Jobs store initialized at %s", cfg.JOBS_DB)
+    if _open_store(_jobs_store.init_db, cfg.JOBS_DB, "Jobs", "jobs"):
         jobs_sweep_task = asyncio.create_task(_jobs_retention_loop())
-    except Exception as _je:
-        logger.error("Failed to initialize jobs store: %s", _je)
-    else:
         try:
             _n_interrupted = _jobs_store.mark_running_as_failed("server restarted")
             logger.info("Jobs store: %d interrupted run(s) marked failed",
