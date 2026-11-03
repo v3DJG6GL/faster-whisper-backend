@@ -2155,6 +2155,12 @@ try:
         _d.update(override)
         return _d
 
+    def _validate_env(**override):
+        """AdminConfig over _effective_env_dict(**override), with the slug set
+        in force."""
+        return _AdminConfig.model_validate(_effective_env_dict(**override),
+                                           context=_env_slug_ctx())
+
     _changed = {
         _f: globals()[_f]
         for _f in sorted(_ENV_PRE)
@@ -2183,9 +2189,7 @@ try:
     _PRE_ENV_SIGS: "set[tuple]" = set()
     if _changed:
         try:
-            _AdminConfig.model_validate(
-                _effective_env_dict(**{_o: _ENV_PRE[_o] for _o in _changed}),
-                context=_env_slug_ctx())
+            _validate_env(**{_o: _ENV_PRE[_o] for _o in _changed})
         except Exception as _perr:  # noqa: BLE001
             _PRE_ENV_SIGS = _error_sigs(_perr)
             if _PRE_ENV_SIGS:
@@ -2196,8 +2200,7 @@ try:
                     "for it")
     if _changed:
         try:
-            _full = _effective_env_dict()
-            _AdminConfig.model_validate(_full, context=_env_slug_ctx())
+            _validate_env()
         except Exception as _verr:  # noqa: BLE001 — any validation failure
             # Revert ONLY the fields the error locations name. Errors with an
             # empty/unknown loc (cross-field model validators) can't be
@@ -2226,10 +2229,8 @@ try:
                         # "Does this env value fail on its own": every other
                         # still-standing env change is put back to its pre-env
                         # value, but the config.local.json siblings stay.
-                        _iso = _effective_env_dict(
-                            **{_o: _ENV_PRE[_o] for _o in _changed
-                               if _o != _field and _o not in _ENV_REJECTED})
-                        _AdminConfig.model_validate(_iso, context=_env_slug_ctx())
+                        _validate_env(**{_o: _ENV_PRE[_o] for _o in _changed
+                                         if _o != _field and _o not in _ENV_REJECTED})
                     except Exception as _ferr:  # noqa: BLE001
                         if _env_caused(_ferr):
                             _revert_env_field(
@@ -2248,8 +2249,7 @@ try:
             if not _left:
                 break
             try:
-                _AdminConfig.model_validate(_effective_env_dict(),
-                                            context=_env_slug_ctx())
+                _validate_env()
                 break
             except Exception as _gerr:  # noqa: BLE001
                 if not _env_caused(_gerr):
@@ -2270,9 +2270,7 @@ try:
                     _cur = _error_sigs(_gerr) - _PRE_ENV_SIGS
                     for _f in _left:
                         try:
-                            _AdminConfig.model_validate(
-                                _effective_env_dict(**{_f: _ENV_PRE[_f]}),
-                                context=_env_slug_ctx())
+                            _validate_env(**{_f: _ENV_PRE[_f]})
                         except Exception as _serr:  # noqa: BLE001
                             if not _cur or _cur & _error_sigs(_serr):
                                 continue   # this revert alone does not clear it
@@ -2290,8 +2288,7 @@ try:
         _normed: "dict[str, object]" = {}
         if _left:
             try:
-                _norm = _AdminConfig.model_validate(_effective_env_dict(),
-                                                    context=_env_slug_ctx())
+                _norm = _validate_env()
                 _normed = {_f: getattr(_norm, _f, None) for _f in _left}
             except Exception:  # noqa: BLE001 — the passes above already reported
                 # A pre-env error (_PRE_ENV_SIGS) fails the full pass whatever
