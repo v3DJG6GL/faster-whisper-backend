@@ -1908,7 +1908,6 @@ function modelOverridesEditor(name, v) {
         persist();
         refreshMarkers();  // sidebar count + dot, in place (parity with field rows)
       },
-      // jumpToGlobalRule also expands a collapsed Pipeline section.
       onJumpToGlobal: (slug) => jumpToGlobalRule(slug),
     };
     secEl.appendChild(makeRuleListEditor('PIPELINE_RULES', rules, 'checklist', ruleOpts));
@@ -3396,7 +3395,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         sw.addEventListener('click', () => {
           rule.color = tok;
           _closeColorPop();
-          commitFull();          // repaint reflects the new colour token
+          commitFull();
         });
         colorPop.appendChild(sw);
         return sw;
@@ -4003,7 +4002,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     document.addEventListener('keydown', _onKey);
     return close;
   }
-  // Review dialog: one diff + confirm, shared by every sync action.
   // Rows of a rule diff, BEFORE -> AFTER: {key, kind, o, n}; kind is one of
   // added / removed / changed / moved; o / n are display strings (undefined =
   // not present on that side). Either side may be null (a rule that does not
@@ -5425,10 +5423,8 @@ async function doRestart() {
     'Helper spawned (' + (result.method || 'unknown method') + '). '
     + 'Service will stop in ' + (result.delay_sec || 3) + ' s.';
 
-  // Poll /v1/models. Two success criteria: (1) boot_id changed
-  // (definitive — new process is up), or (2) we saw the service go down
-  // and then come back. Deadline is generous because PRELOAD_MODELS
-  // blocks uvicorn's lifespan startup.
+  // The deadline is generous because PRELOAD_MODELS blocks uvicorn's
+  // lifespan startup.
   const RESTART_TIMEOUT_MS = 5 * 60 * 1000;
   const deadline = Date.now() + RESTART_TIMEOUT_MS;
   let sawDown = false;
