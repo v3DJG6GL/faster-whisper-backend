@@ -8,6 +8,7 @@ round-trip (the request-gate keys survive validate_binding/_parse_binding).
 """
 
 from faster_whisper_backend.core import languages
+from tests._transcription_helpers import bind_profile
 from tests.conftest import bearer
 
 OV = "/settings/overrides"
@@ -138,9 +139,7 @@ def test_me_translate_to_default_respects_identity_override(
         client, app_module, make_user_key, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
     monkeypatch.setattr(app_module.cfg, "TRANSLATE_TO", "en")
-    h = _admin_with_profiles(client, make_user_key, {"de-fr": {"TRANSLATE_TO": "de,fr-CA"}})
-    uid, raw_alice = make_user_key("alice")
-    _bind_user_profiles(client, h, uid, ["de-fr"])
+    h, raw_alice = bind_profile(client, make_user_key, "de-fr", {"TRANSLATE_TO": "de,fr-CA"})
     # Alice sees HER effective default (profile layer), parsed csv → list.
     j = client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert j["translate_to_default"] == ["de", "fr-CA"]
@@ -416,9 +415,7 @@ def test_me_server_info_url_limits_only_with_url_download(
 
 def test_me_server_info_max_targets_per_identity(
         client, app_module, make_user_key, monkeypatch):
-    h = _admin_with_profiles(client, make_user_key, {"two": {"TRANSLATION_MAX_TARGETS": 2}})
-    uid, raw_alice = make_user_key("alice")
-    _bind_user_profiles(client, h, uid, ["two"])
+    h, raw_alice = bind_profile(client, make_user_key, "two", {"TRANSLATION_MAX_TARGETS": 2})
     alice = client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert alice["server_info"]["limits"]["translation_max_targets"] == 2
     admin = client.get("/v1/me", headers=h).json()

@@ -7,12 +7,10 @@ used to be swallowed as "not set".
 import json
 
 from faster_whisper_backend.settings import effective_config as ec
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import bind_profile
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
-OV = "/settings/overrides"
-PERMS = "/settings/api-keys/api/users"
 
 
 def test_explicit_empty_suppress_tokens_means_suppress_nothing():
@@ -132,22 +130,8 @@ def test_suppress_chars_survive_a_client_suppress_tokens_override(monkeypatch):
     assert kw["suppress_tokens"] == [-1, 7, 8]
 
 
-def _bind_profile(client, make_user_key, **fields):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post(f"{OV}/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {"p": fields}})
-    assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {},
-                                                   "profiles": ["p"], "locks": []}})
-    assert r.status_code == 200, r.text
-    return raw_alice
-
-
 def test_empty_language_form_field_is_explicit_auto_detect(client, make_user_key, fake_model):
-    raw = _bind_profile(client, make_user_key, DEFAULT_LANGUAGE="de")
+    _, raw = bind_profile(client, make_user_key, "p", {"DEFAULT_LANGUAGE": "de"})
     base = {"model": "whisper-1", "response_format": "verbose_json"}
     r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw), data=base)
     assert r.status_code == 200, r.text
@@ -172,8 +156,8 @@ def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
                 {"model": "org/m-GGUF:Q4", "source": "", "mode": mode})
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    raw = _bind_profile(client, make_user_key, TRANSLATE_TO="en",
-                        TRANSLATION_GLOSSARY="Messung = measurement")
+    _, raw = bind_profile(client, make_user_key, "p", {
+        "TRANSLATE_TO": "en", "TRANSLATION_GLOSSARY": "Messung = measurement"})
     base = {"model": "whisper-1", "response_format": "verbose_json"}
     # absent → both inherited from the profile
     r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw), data=base)
