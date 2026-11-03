@@ -732,18 +732,14 @@
     pages.forEach(function(p) {
       var th = document.createElement('th');
       th.textContent = '/' + p.replace(/_/g, '-');
-      var tip = document.createElement('span');
-      tip.className = 'tip';
-      tip.textContent = '?';
+      var tip = _el('span', 'tip', '?');
       tip.title = PAGE_TIPS[p] || '';
       th.appendChild(tip);
       headRow.appendChild(th);
     });
     var thTags = document.createElement('th');
     thTags.textContent = 'quick-config tags';
-    var tagsTip = document.createElement('span');
-    tagsTip.className = 'tip';
-    tagsTip.textContent = '?';
+    var tagsTip = _el('span', 'tip', '?');
     tagsTip.title = 'Per-user filter for /quick-config rules. A user '
       + 'sees a rule when their tags intersect the rule’s tags '
       + '— OR when the rule has no tags (visible to everyone). '
@@ -837,9 +833,7 @@
 
       var tdSave = document.createElement('td');
       if (!u.is_admin) {
-        var btn = document.createElement('button');
-        btn.className = 'save-perms';
-        btn.textContent = 'Save';
+        var btn = _el('button', 'save-perms', 'Save');
         btn.title = 'Save this row';
         btn.addEventListener('click', function() {
           savePerms(u.id, tr, btn);
@@ -949,8 +943,7 @@
 
     var head = document.createElement('h3');
     head.className = 'user-head';
-    var chev = document.createElement('span');
-    chev.className = 'uchev'; chev.textContent = '▸';
+    var chev = _el('span', 'uchev', '▸');
     head.appendChild(chev);
     // User-level dot: u.last_used_ts is the server-computed max over the
     // user's non-revoked keys; data-used-ts opts it into the refreshKeyDots()
@@ -965,22 +958,16 @@
     var nameEl = document.createElement('span');
     nameEl.textContent = u.username;
     head.appendChild(nameEl);
-    var pill = document.createElement('span');
-    pill.className = 'pill ' + (u.is_admin ? 'admin' : '');
-    pill.textContent = u.is_admin ? 'admin' : 'user';
+    var pill = _el('span', 'pill ' + (u.is_admin ? 'admin' : ''), u.is_admin ? 'admin' : 'user');
     head.appendChild(pill);
-    var keyCount = document.createElement('span');
-    keyCount.className = 'pill';
-    keyCount.textContent = u.active_key_count + ' active key' +
-      (u.active_key_count === 1 ? '' : 's');
+    var keyCount = _el('span', 'pill', u.active_key_count + ' active key' +
+      (u.active_key_count === 1 ? '' : 's'));
     head.appendChild(keyCount);
     // Synced-settings chip: answers "is this account syncing?" while the
     // card is collapsed. Metadata only; details live in the ⇅ drawer below.
     var csm = csMetaFor(u.id);
     if (csm) {
-      var syncPill = document.createElement('span');
-      syncPill.className = 'pill sync';
-      syncPill.textContent = '⇅ v' + csm.version;
+      var syncPill = _el('span', 'pill sync', '⇅ v' + csm.version);
       syncPill.title = 'synced settings v' + csm.version
         + ' · ' + fmtBytes(csm.bytes)
         + (csm.device ? ' · from ' + csm.device : '')
@@ -1012,9 +999,7 @@
     labelInp.maxLength = 128;
     labelInp.style.maxWidth = '14rem';
     labelInp.style.flex = '1';
-    var addBtn = document.createElement('button');
-    addBtn.className = 'primary';
-    addBtn.textContent = '+ generate key';
+    var addBtn = _el('button', 'primary', '+ generate key');
     addBtn.disabled = true;
     addBtn.title = 'Enter a label first';
     // Set while the POST runs and kept until the key modal closes: editing
@@ -1055,9 +1040,7 @@
     tb.appendChild(addBtn);
 
     // Per-user config overrides (profiles + direct overrides + locks).
-    var ovrBtn = document.createElement('button');
-    ovrBtn.className = 'ghost';
-    ovrBtn.textContent = '⚙ Overrides';
+    var ovrBtn = _el('button', 'ghost', '⚙ Overrides');
     var ovrWrap = document.createElement('div');
     toggleDrawer(ovrBtn, ovrWrap, function () {
       return buildBindingDrawer({
@@ -1079,16 +1062,12 @@
     tb.appendChild(ovrBtn);
 
     // Synced settings (desktop sync) — same drawer idiom as ⚙ Overrides.
-    var csBtn = document.createElement('button');
-    csBtn.className = 'ghost';
-    csBtn.textContent = '⇅ Synced settings';
+    var csBtn = _el('button', 'ghost', '⇅ Synced settings');
     var csWrap = document.createElement('div');
     toggleDrawer(csBtn, csWrap, function () { return buildCsDrawer(u); });
     tb.appendChild(csBtn);
 
-    var revBtn = document.createElement('button');
-    revBtn.className = 'danger';
-    revBtn.textContent = 'Revoke user';
+    var revBtn = _el('button', 'danger', 'Revoke user');
     revBtn.style.marginLeft = 'auto';       // separate the destructive action
     revBtn.onclick = function () {
       if (!confirm('Revoke user "' + u.username +
@@ -1175,9 +1154,7 @@
     acts.className = 'kacts';
     var kdraw = document.createElement('div');  // overrides drawer holder
     if (!revoked) {
-      var renameBtn = document.createElement('button');
-      renameBtn.className = 'ghost';
-      renameBtn.textContent = '✎ Rename';
+      var renameBtn = _el('button', 'ghost', '✎ Rename');
       var renameRow = null;
       renameBtn.onclick = function () {
         if (renameRow) { renameRow.remove(); renameRow = null; return; }
@@ -1187,10 +1164,8 @@
         inp.type = 'text'; inp.maxLength = 128;
         inp.value = hasLabel ? k.label : '';
         inp.placeholder = 'label (e.g., desktop)';
-        var saveB = document.createElement('button');
-        saveB.className = 'primary'; saveB.textContent = 'Save';
-        var cancelB = document.createElement('button');
-        cancelB.className = 'ghost'; cancelB.textContent = 'Cancel';
+        var saveB = _el('button', 'primary', 'Save');
+        var cancelB = _el('button', 'ghost', 'Cancel');
         function closeRename() { if (renameRow) { renameRow.remove(); renameRow = null; } }
         function doSave() {
           var nl = inp.value.trim();
@@ -1216,9 +1191,7 @@
       };
       acts.appendChild(renameBtn);
 
-      var kcfgBtn = document.createElement('button');
-      kcfgBtn.className = 'ghost';
-      kcfgBtn.textContent = '⚙ Overrides';
+      var kcfgBtn = _el('button', 'ghost', '⚙ Overrides');
       toggleDrawer(kcfgBtn, kdraw, function () {
         return buildBindingDrawer({
           scope: 'key', binding: bindingFromConfig(k.config),
@@ -1233,9 +1206,7 @@
       });
       acts.appendChild(kcfgBtn);
 
-      var b = document.createElement('button');
-      b.className = 'danger';
-      b.textContent = 'Revoke';
+      var b = _el('button', 'danger', 'Revoke');
       b.onclick = function () {
         if (!confirm('Revoke key "' + (hasLabel ? k.label : k.key_prefix + '…' + k.key_last4) +
             '"? Apps using it will stop working immediately.')) return;
@@ -1265,6 +1236,13 @@
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function _el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
   }
 
   function fmtCount(n) {
@@ -1482,16 +1460,15 @@
     function _ovCard(title, caption, hintText) {
       var card = document.createElement('div'); card.className = 'ov-card';
       var head = document.createElement('div'); head.className = 'ohead';
-      var t = document.createElement('span'); t.className = 't'; t.textContent = title;
+      var t = _el('span', 't', title);
       head.appendChild(t);
       if (caption) {
-        var c = document.createElement('span'); c.className = 'c'; c.textContent = caption;
+        var c = _el('span', 'c', caption);
         head.appendChild(c);
       }
       card.appendChild(head);
       if (hintText) {
-        var hn = document.createElement('div'); hn.className = 'ohint';
-        hn.textContent = hintText; card.appendChild(hn);
+        var hn = _el('div', 'ohint', hintText); card.appendChild(hn);
       }
       return card;
     }
@@ -1500,7 +1477,7 @@
       var row = document.createElement('div'); row.className = 'gaterow';
       var gl = document.createElement('span'); gl.className = 'gl';
       gl.title = hint; gl.appendChild(document.createTextNode(label));
-      var sub = document.createElement('span'); sub.className = 'sub'; sub.textContent = slug;
+      var sub = _el('span', 'sub', slug);
       gl.appendChild(sub); row.appendChild(gl);
       var cur = val === true ? 'allow' : (val === false ? 'deny' : 'inherit');
       row.appendChild(_ovSeg(
@@ -1534,8 +1511,7 @@
       var arow = document.createElement('div'); arow.className = 'gaterow';
       var agl = document.createElement('span'); agl.className = 'gl';
       agl.appendChild(document.createTextNode('Requestable profiles'));
-      var asub = document.createElement('span'); asub.className = 'sub';
-      asub.textContent = 'allowed_override_profiles'; agl.appendChild(asub);
+      var asub = _el('span', 'sub', 'allowed_override_profiles'); agl.appendChild(asub);
       arow.appendChild(agl);
       arow.appendChild(_ovSeg(
         [['inherit', 'Inherit', 'inherit'], ['all', 'All', 'all'],
@@ -1564,8 +1540,7 @@
         })).sort();
         var box = document.createElement('div'); box.className = 'ov-checks';
         if (!names.length) {
-          var e = document.createElement('span'); e.className = 'lbl';
-          e.textContent = '(no profiles defined — create them on the Overrides page)';
+          var e = _el('span', 'lbl', '(no profiles defined — create them on the Overrides page)');
           box.appendChild(e);
         }
         names.forEach(function (n) {
@@ -1590,8 +1565,7 @@
 
     function draw() {
       if (_ovUnavailable()) {
-        var ua = document.createElement('div'); ua.className = 'ohint';
-        ua.textContent = 'Override state unavailable — reload the page before editing.';
+        var ua = _el('div', 'ohint', 'Override state unavailable — reload the page before editing.');
         root.appendChild(ua);
       }
       var pcard = _ovCard('Profiles', 'ordered · earlier wins',
@@ -1611,10 +1585,9 @@
         npLbl.textContent = 'Apply no profiles';
         npRow.appendChild(npCb); npRow.appendChild(npLbl);
         pcard.appendChild(npRow);
-        var npHint = document.createElement('div'); npHint.className = 'ohint';
-        npHint.textContent = noProf
+        var npHint = _el('div', 'ohint', noProf
           ? 'On — this key ignores every profile (key, user-level, and per-request) and resolves to plain defaults.'
-          : 'Force plain defaults for this key: ignore every profile (key, user-level, and per-request).';
+          : 'Force plain defaults for this key: ignore every profile (key, user-level, and per-request).');
         pcard.appendChild(npHint);
       }
       var chips = document.createElement('div');
@@ -1637,8 +1610,7 @@
         sel.onchange = function () { if (sel.value) { b.profiles.push(sel.value); rerender(); } };
         chips.appendChild(sel);
       } else if (!b.profiles.length) {
-        var e = document.createElement('span'); e.className = 'lbl';
-        e.textContent = '(no profiles defined — create them on the Overrides page)';
+        var e = _el('span', 'lbl', '(no profiles defined — create them on the Overrides page)');
         chips.appendChild(e);
       }
       pcard.appendChild(chips);
@@ -1650,7 +1622,7 @@
         'Force a config value for this identity; lock to stop clients overriding it.');
       Object.keys(b.overrides).sort().forEach(function (name) {
         var row = document.createElement('div'); row.className = 'cfg-ovr-row';
-        var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; row.appendChild(nm);
+        var nm = _el('span', 'nm', name); row.appendChild(nm);
         var vc = document.createElement('span');
         vc.appendChild(_cfgWidget(name, b.overrides[name], function (v) { if (v !== null) b.overrides[name] = v; _syncSave(); }));
         row.appendChild(vc);
@@ -1659,7 +1631,7 @@
         lk.innerHTML = on ? '\u{1F512}' : '\u{1F513}'; lk.title = 'lock — client cannot override this field';
         lk.onclick = function () { var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); else b.locks.push(name); rerender(); };
         row.appendChild(lk);
-        var rm = document.createElement('button'); rm.className = 'rm'; rm.textContent = '×';
+        var rm = _el('button', 'rm', '×');
         rm.onclick = function () { delete b.overrides[name]; var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); rerender(); };
         row.appendChild(rm); dcard.appendChild(row);
       });
@@ -1672,9 +1644,9 @@
       root.appendChild(dcard);
 
       var foot = document.createElement('div'); foot.className = 'ov-footer';
-      var prev = document.createElement('button'); prev.className = 'ghost'; prev.textContent = '⟲ Preview effective';
+      var prev = _el('button', 'ghost', '⟲ Preview effective');
       var spacer = document.createElement('span'); spacer.className = 'spacer';
-      var save = document.createElement('button'); save.className = 'primary'; save.textContent = 'Save overrides';
+      var save = _el('button', 'primary', 'Save overrides');
       _saveBtn = save;
       save.disabled = _ovUnavailable() || (_sig(b) === _baseline);
       save.onclick = function () {
@@ -1880,13 +1852,10 @@
     card.className = 'ov-card';
     var head = document.createElement('div');
     head.className = 'ohead';
-    var t = document.createElement('span');
-    t.className = 't'; t.textContent = 'Synced settings';
+    var t = _el('span', 't', 'Synced settings');
     head.appendChild(t);
-    var c = document.createElement('span');
-    c.className = 'c';
-    c.textContent = meta ? 'v' + meta.version + ' on the server'
-      : (csUnavailable() ? 'store unavailable' : 'nothing stored');
+    var c = _el('span', 'c', meta ? 'v' + meta.version + ' on the server'
+      : (csUnavailable() ? 'store unavailable' : 'nothing stored'));
     head.appendChild(c);
     card.appendChild(head);
 
@@ -1904,21 +1873,17 @@
         meta.device ? escapeHtml(meta.device) : '—'));
       grid.appendChild(cell('updated', metaWhen(meta.updated_ts)));
       card.appendChild(grid);
-      var hint = document.createElement('div');
-      hint.className = 'ohint';
-      hint.textContent = 'What the desktop app stores for this account. It can '
+      var hint = _el('div', 'ohint', 'What the desktop app stores for this account. It can '
         + 'include the account’s saved API keys — they never appear on this '
-        + 'page; Export downloads them as a file.';
+        + 'page; Export downloads them as a file.');
       card.appendChild(hint);
     } else {
-      var hintE = document.createElement('div');
-      hintE.className = 'ohint';
-      hintE.textContent = csUnavailable()
+      var hintE = _el('div', 'ohint', csUnavailable()
         ? 'The synced-settings store is unavailable — this account’s stored '
           + 'settings could not be read. Nothing here reflects what is stored.'
         : 'No device has pushed settings for this account yet. '
           + 'Import a settings file to seed it — every device signed in with this '
-          + 'account’s keys applies it on its next sync.';
+          + 'account’s keys applies it on its next sync.');
       card.appendChild(hintE);
     }
     root.appendChild(card);
@@ -1979,9 +1944,7 @@
 
     // Import — file picker → preview modal → force-write. Accepts a desktop
     // settings export (envelope with categories) or a server Export file.
-    var imp = document.createElement('button');
-    imp.className = 'ghost';
-    imp.textContent = '⤒ Import…';
+    var imp = _el('button', 'ghost', '⤒ Import…');
     // Store down: a force-write over unknown state is the one thing the
     // page must not offer; Export/Delete are already disabled via !meta.
     imp.disabled = csUnavailable();
@@ -2038,9 +2001,7 @@
     foot.appendChild(imp);
     foot.appendChild(fileInp);
 
-    var del = document.createElement('button');
-    del.className = 'danger';
-    del.textContent = 'Delete';
+    var del = _el('button', 'danger', 'Delete');
     del.style.marginLeft = 'auto';
     del.disabled = !meta;
     del.onclick = function () {
@@ -2075,14 +2036,10 @@
     card.className = 'card';
     var h = document.createElement('h3');
     h.appendChild(document.createTextNode(opts.heading + ' '));
-    var pill = document.createElement('span');
-    pill.className = 'pill sync';
-    pill.textContent = '⇅ v' + opts.version;
+    var pill = _el('span', 'pill sync', '⇅ v' + opts.version);
     h.appendChild(pill);
     card.appendChild(h);
-    var hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = opts.hint;
+    var hint = _el('p', 'hint', opts.hint);
     card.appendChild(hint);
     card.appendChild(buildCsDrawer({ id: opts.id, username: opts.username }));
     ct.appendChild(card);

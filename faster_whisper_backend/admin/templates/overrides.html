@@ -377,6 +377,12 @@ window._renderWaterfall = (function () {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
+  function _el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
   // Set/unset dot shared by the sidebar, the pane head and the field rows.
   function dotHtml(on) {
     return '<span class="ov-dot ' + (on ? 'on' : 'off') + '">' + (on ? '●' : '○') + '</span>';
@@ -490,16 +496,13 @@ window._renderWaterfall = (function () {
       listEl.appendChild(item);
       if (isSel) {
         var u = (S.usage || {})[name] || { users: [], keys: [] };
-        var us = document.createElement('div');
-        us.className = 'ov-usage';
-        us.textContent = 'used by ' + plural(u.users.length, 'user') + ' · '
-          + plural(u.keys.length, 'key');
+        var us = _el('div', 'ov-usage', 'used by ' + plural(u.users.length, 'user') + ' · '
+          + plural(u.keys.length, 'key'));
         listEl.appendChild(us);
       }
     });
     if (!names.length) {
-      var e = document.createElement('div');
-      e.className = 'ov-usage'; e.textContent = 'no profiles yet';
+      var e = _el('div', 'ov-usage', 'no profiles yet');
       listEl.appendChild(e);
     }
     if (uiAdding) {
@@ -510,26 +513,26 @@ window._renderWaterfall = (function () {
     }
     var acts = document.createElement('div');
     acts.className = 'ov-side-actions';
-    var nb = document.createElement('button'); nb.className = 'ghost'; nb.textContent = '+ New';
+    var nb = _el('button', 'ghost', '+ New');
     nb.onclick = function () {
       uiAdding = true; uiRenaming = false; uiConfirmDel = false; setStatus(''); render();
     };
     acts.appendChild(nb);
     if (sel) {
-      var rb = document.createElement('button'); rb.className = 'ghost'; rb.textContent = '✎ Rename';
+      var rb = _el('button', 'ghost', '✎ Rename');
       rb.onclick = startRename; acts.appendChild(rb);
-      var db = document.createElement('button'); db.className = 'ghost'; db.textContent = '⧉ Duplicate';
+      var db = _el('button', 'ghost', '⧉ Duplicate');
       db.onclick = duplicateProfile; acts.appendChild(db);
       if (uiConfirmDel) {
         var cf = document.createElement('span'); cf.className = 'ov-confirm';
         cf.appendChild(document.createTextNode('Delete?'));
-        var yes = document.createElement('button'); yes.className = 'danger'; yes.textContent = '✓ Yes';
+        var yes = _el('button', 'danger', '✓ Yes');
         yes.onclick = confirmDelete; cf.appendChild(yes);
-        var dno = document.createElement('button'); dno.className = 'ghost'; dno.textContent = '✕';
+        var dno = _el('button', 'ghost', '✕');
         dno.onclick = function () { uiConfirmDel = false; render(); };
         cf.appendChild(dno); acts.appendChild(cf);
       } else {
-        var xb = document.createElement('button'); xb.className = 'danger'; xb.textContent = '✕ Delete';
+        var xb = _el('button', 'danger', '✕ Delete');
         xb.onclick = startDelete; acts.appendChild(xb);
       }
     }
@@ -751,8 +754,7 @@ window._renderWaterfall = (function () {
 
     if (isSet(p, name)) {
       valCell.appendChild(makeWidget(name, meta, p[name], function (v) { setVal(p, name, v); }));
-      var rb = document.createElement('button'); rb.className = 'reset';
-      rb.textContent = '↶ reset';
+      var rb = _el('button', 'reset', '↶ reset');
       rb.onclick = function () { clearVal(p, name); };
       ctrl.appendChild(rb);
     } else {
@@ -761,10 +763,8 @@ window._renderWaterfall = (function () {
       inh.className = 'ov-inherits';
       // Split label from value so "inherits" reads as a subordinate tag, not
       // part of the value: dim italic sans label + brighter upright mono value.
-      var inhLbl = document.createElement('span');
-      inhLbl.className = 'lbl'; inhLbl.textContent = 'inherits';
-      var inhVal = document.createElement('span');
-      inhVal.className = 'val'; inhVal.textContent = fmtVal(dv);
+      var inhLbl = _el('span', 'lbl', 'inherits');
+      var inhVal = _el('span', 'val', fmtVal(dv));
       inhVal.title = 'Inherited global default — ' + fmtVal(dv);
       inh.appendChild(inhLbl); inh.appendChild(inhVal);
       valCell.appendChild(inh);
@@ -894,8 +894,7 @@ window._renderWaterfall = (function () {
       row.appendChild(grp); s.body.appendChild(row);
     });
     if (!(S.rules || []).length) {
-      var none = document.createElement('p'); none.className = 'ov-help';
-      none.textContent = 'No pipeline rules configured.';
+      var none = _el('p', 'ov-help', 'No pipeline rules configured.');
       s.body.appendChild(none);
     }
     return s.sec;
@@ -1045,14 +1044,12 @@ window._renderWaterfall = (function () {
     if (seq !== _resolveSeq) return;
     exOut.innerHTML = '';
     if (j.binding_fault) {
-      var bf = document.createElement('p'); bf.className = 'status err';
-      bf.textContent = 'Binding store unreadable — every field is locked '
-        + '(fail-closed) until it can be read again.';
+      var bf = _el('p', 'status err', 'Binding store unreadable — every field is locked '
+        + '(fail-closed) until it can be read again.');
       exOut.appendChild(bf);
     }
     if (j.profiles_applied && j.profiles_applied.length) {
-      var pa = document.createElement('p'); pa.className = 'hint';
-      pa.textContent = 'profiles applied (earlier wins): ' + j.profiles_applied.join(' → ');
+      var pa = _el('p', 'hint', 'profiles applied (earlier wins): ' + j.profiles_applied.join(' → '));
       exOut.appendChild(pa);
     }
     var names = Object.keys(j.fields || {}).sort(coll.compare);
