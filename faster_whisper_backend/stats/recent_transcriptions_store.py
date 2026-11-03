@@ -1,4 +1,4 @@
-"""Durable store for recent /transcribe traces.
+"""Durable store for the recent-jobs rows (transcriptions, dictations, translations, downloads).
 
 SQLite (stdlib) in WAL mode — single-file, crash-safe, indexed. Lives at
 cfg.RECENT_TRANSCRIPTIONS_DB (defaults to recent_transcriptions.local.sqlite3
