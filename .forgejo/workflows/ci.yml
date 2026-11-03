@@ -678,9 +678,8 @@ jobs:
       # Every green main push becomes a patch release. release.yml owns all
       # the tag logic (bump compute, [skip release] opt-out, monotonicity,
       # idempotence) — this step only tells it WHICH commit passed. Main
-      # pushes only: a tag run must not re-dispatch (cycle). The dispatch API
-      # accepts the run-scoped token; the PAT release.yml needs for the tag
-      # push itself lives there as RELEASE_TOKEN.
+      # pushes only: a tag run must not re-dispatch (cycle). The tag push
+      # itself needs a PAT, which lives in release.yml as RELEASE_TOKEN.
       - name: Dispatch release.yml (auto patch bump; green main pushes only)
         if: needs.all-ci.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
