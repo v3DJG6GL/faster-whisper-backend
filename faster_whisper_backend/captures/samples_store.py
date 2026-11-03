@@ -186,8 +186,8 @@ def list_samples(
     bulk VAD reprocess paths that genuinely want the whole table). The route
     passes a limit and pages with the (before_ts, before_id) cursor.
 
-    The cursor is a PAIR, not just the timestamp: samples merged in the same
-    call share a created_ts to the microsecond, so a plain `created_ts < ?`
+    The cursor is a PAIR, not just the timestamp: created_ts is one
+    time.time() reading per merge and not unique, so a plain `created_ts < ?`
     would silently drop every tie sitting on a page boundary. Ordering and
     comparison both use (created_ts, id) so the sequence is total.
 
