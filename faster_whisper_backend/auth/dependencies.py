@@ -12,7 +12,7 @@ Three-level dependency layering (FastAPI idiomatic):
     `open_mode_host_ok`.
   - `require_admin`: depends on `get_current_user` and raises 403 if
     `is_admin=False`. Used for system-mutation endpoints (/settings,
-    /settings/api-keys, delete/clear/reapply-rules).
+    /settings/api-keys, captures clear/export/reprocess-all).
   - `require_page(name)`: dependency factory — raises 403 if the user
     has no access to the named page. Mounted at the APIRouter constructor
     of API-only routers so every sub-route inherits the check; a router
