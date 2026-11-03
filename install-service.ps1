@@ -119,6 +119,20 @@ function Invoke-PipInstall {
     if ($LASTEXITCODE -ne 0) { throw "$label failed (exit $LASTEXITCODE)" }
 }
 
+# Invoke-NativeQuiet <exe> <args...>: runs a native command with its output
+# dropped and stderr non-terminating (Stop turns it into NativeCommandError);
+# the caller reads $LASTEXITCODE.
+function Invoke-NativeQuiet {
+    $exe, $rest = $args
+    $oldPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $exe @rest 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $oldPref
+    }
+}
+
 if (-not (Test-Path $MainPy))  { throw "main.py not found: $MainPy" }
 New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 
@@ -132,15 +146,11 @@ New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 # terminate under Stop, as for pip cache purge below.
 function Test-VenvUsable {
     if (-not (Test-Path $Python)) { return $false }
-    $oldPref = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
     try {
-        & $Python -m pip --version 2>&1 | Out-Null
+        Invoke-NativeQuiet $Python -m pip --version
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
-    } finally {
-        $ErrorActionPreference = $oldPref
     }
 }
 
@@ -182,13 +192,7 @@ if (-not (Test-VenvUsable)) {
     # (pip re-downloads) but very noisy. Ignore failures: a clean cache is
     # not load-bearing. That includes stderr output (cache disabled, nothing
     # to purge), which $ErrorActionPreference=Stop would make terminating.
-    $oldPref = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        & $Python -m pip cache purge 2>&1 | Out-Null
-    } finally {
-        $ErrorActionPreference = $oldPref
-    }
+    Invoke-NativeQuiet $Python -m pip cache purge
 
     Write-Host "venv ready." -ForegroundColor Green
 }
@@ -316,9 +320,7 @@ if ($Full) {
     # raises a clear error if quantized Demucs is ever actually used. (Linux
     # depends on plain `diffq`, whose sdist compiles -- the .sh handles that
     # with best-effort gcc instead.)
-    $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    & $Python -m pip install --only-binary :all: "diffq-fixed>=0.2" 2>&1 | Out-Null
-    $ErrorActionPreference = $oldPref
+    Invoke-NativeQuiet $Python -m pip install --only-binary :all: "diffq-fixed>=0.2"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "No diffq-fixed wheel for this Python - installing a stub (quantized Demucs models won't work; MDX is unaffected)..." -ForegroundColor Yellow
         $stubDir = Join-Path $env:TEMP "diffq-fixed-stub"
@@ -438,9 +440,7 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
     if ($winget -and -not $Full) {
         $ffId = "Gyan.FFmpeg"
         Write-Host "ffmpeg not usable; attempting 'winget install $ffId' (optional)..." -ForegroundColor Cyan
-        $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-        & winget install --id $ffId -e --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
-        $ErrorActionPreference = $oldPref
+        Invoke-NativeQuiet winget install --id $ffId -e --silent --accept-source-agreements --accept-package-agreements
     }
     # winget's PATH change only reaches new shells, so this re-check usually
     # still fails right after a successful winget install.
@@ -484,13 +484,7 @@ function Test-ConvertDepsInstalled {
     # A failed import writes a traceback to stderr, which under
     # $ErrorActionPreference=Stop becomes a terminating NativeCommandError
     # before any redirect applies: relax the pref and merge stderr locally.
-    $oldPref = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        & $Python -c "import torch, transformers, accelerate" 2>&1 | Out-Null
-    } finally {
-        $ErrorActionPreference = $oldPref
-    }
+    Invoke-NativeQuiet $Python -c "import torch, transformers, accelerate"
     return ($LASTEXITCODE -eq 0)
 }
 

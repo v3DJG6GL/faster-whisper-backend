@@ -233,15 +233,22 @@ def test_install_never_executes_unverified_wrapper():
     assert "Remove-Item -Force $LegacyNssm" in ps1
 
 
+# install-service.ps1's quiet native-command wrapper: Continue around the call,
+# stderr merged and dropped, the old preference restored in a finally.
+_NATIVE_QUIET = re.compile(
+    r'function Invoke-NativeQuiet \{\n\s*\$exe, \$rest = \$args\n'
+    r'\s*\$oldPref = \$ErrorActionPreference\n\s*\$ErrorActionPreference = "Continue"\n'
+    r'\s*try \{\n\s*& \$exe @rest 2>&1 \| Out-Null\n'
+    r'\s*\} finally \{\n\s*\$ErrorActionPreference = \$oldPref')
+
+
 def test_pip_cache_purge_runs_under_a_relaxed_error_preference():
     # Under $ErrorActionPreference=Stop (and the UAC relaunch's Windows
     # PowerShell 5.1) a native command's redirected stderr line terminates
     # the script: a disabled or empty pip cache aborted the venv bootstrap.
     ps1 = _read("install-service.ps1")
-    assert re.search(r'\$ErrorActionPreference = "Continue"\n\s*try \{\n'
-                     r'\s*& \$Python -m pip cache purge 2>&1 \| Out-Null\n'
-                     r'\s*\} finally \{\n\s*\$ErrorActionPreference = \$oldPref',
-                     ps1)
+    assert _NATIVE_QUIET.search(ps1)
+    assert "\n    Invoke-NativeQuiet $Python -m pip cache purge\n" in ps1
 
 
 def test_preflight_winsw_uninstall_runs_under_a_relaxed_error_preference():
@@ -565,8 +572,8 @@ def test_windows_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless():
     # stderr would terminate under Stop), and the rebuild clears an old venv.
     ps1 = _read("install-service.ps1")
     probe = ps1[ps1.index("function Test-VenvUsable"):ps1.index("\nif (-not (Test-VenvUsable))")]
-    assert re.search(r'\$ErrorActionPreference = "Continue"\n\s*try \{\n'
-                     r'\s*& \$Python -m pip --version 2>&1 \| Out-Null\n'
+    assert _NATIVE_QUIET.search(ps1)
+    assert re.search(r'\s*Invoke-NativeQuiet \$Python -m pip --version\n'
                      r'\s*return \(\$LASTEXITCODE -eq 0\)\n', probe)
     assert "if (-not (Test-Path $Python)) { return $false }" in probe
     assert "if (-not (Test-Path $Python)) {\n" not in ps1
