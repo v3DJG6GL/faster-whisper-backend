@@ -519,6 +519,12 @@
     return fetch(path, opts);
   }
 
+  // Rejects with the response body text on a non-2xx, else parses JSON.
+  function _okJson(r) {
+    if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
+    return r.json();
+  }
+
   {{NOT_ADMIN_LANDING_JS}}
 
   async function _check403(r) {
@@ -872,10 +878,7 @@
     api('PATCH',
         '/settings/api-keys/api/users/' + encodeURIComponent(uid) + '/permissions',
         body)
-      .then(function(r) {
-        if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-        return r.json();
-      })
+      .then(_okJson)
       .then(function() {
         tr._permBaseline = sent;
         recomputePermDirty(tr);
@@ -1023,10 +1026,7 @@
       addBtn.disabled = true;
       api('POST', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/keys',
           { label: label })
-        .then(function (r) {
-          if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
-          return r.json();
-        })
+        .then(_okJson)
         .then(function (j) {
           showKeyModal(j.key, u.username, label, function () {
             addBusy = false;
@@ -1059,7 +1059,7 @@
         save: function (body) {
           return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/permissions',
                      { config: body })
-            .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
+            .then(_okJson)
             // The reload after a save can be declined (another drawer is
             // dirty); a reopened drawer must start from what was saved.
             .then(function (j) {
@@ -1199,7 +1199,7 @@
           saveB.disabled = true;
           api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
               '/keys/' + encodeURIComponent(k.id) + '/label', { label: nl })
-            .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
+            .then(_okJson)
             .then(function () { showToast('Key renamed', 'ok'); load(); })
             .catch(function (e) { showToast(String(e.message || e), 'err'); saveB.disabled = false; });
         }
@@ -1229,7 +1229,7 @@
           save: function (body2) {
             return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
                        '/keys/' + encodeURIComponent(k.id) + '/config', body2)
-              .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
+              .then(_okJson)
               .then(function (j) { k.config = j.config; return j; });
           },
         }));
@@ -2226,10 +2226,7 @@
     var is_admin = document.getElementById('new-is-admin').checked;
     if (!username) { showToast('Enter a username', 'err'); return; }
     api('POST', '/settings/api-keys/api/users', { username: username, is_admin: is_admin })
-      .then(function(r) {
-        if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-        return r.json();
-      })
+      .then(_okJson)
       .then(function() {
         document.getElementById('new-username').value = '';
         document.getElementById('new-is-admin').checked = false;

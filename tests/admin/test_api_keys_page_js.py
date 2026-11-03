@@ -99,7 +99,7 @@ def test_save_perms_baseline_is_the_sent_state(client, tmp_path):
     lost on the next load()."""
     html = client.get("/settings/api-keys").text
     js = (_fn(html, "permRowState") + "\n" + _fn(html, "recomputePermDirty")
-          + "\n" + _fn(html, "savePerms") + r"""
+          + "\n" + _fn(html, "savePerms") + "\n" + _fn(html, "_okJson") + r"""
 var _permSaves = 0, _permRenders = 0;
 function group(page, val) {
   var g = { dataset: { page: page }, val: val };
@@ -205,7 +205,8 @@ def test_permission_save_is_not_undone_by_a_load_already_running(client, tmp_pat
     start = html.index("  var _loadGen = 0;")
     loadsrc = html[start:html.index("\n  }\n", start) + 4]
     js = (_fn(html, "permRowState") + "\n" + _fn(html, "recomputePermDirty")
-          + "\n" + _fn(html, "savePerms") + "\n" + loadsrc + r"""
+          + "\n" + _fn(html, "savePerms") + "\n" + _fn(html, "_okJson")
+          + "\n" + loadsrc + r"""
 function group(page, val) {
   var g = { dataset: { page: page }, val: val };
   g.querySelector = function () { return { dataset: { val: g.val } }; };
@@ -347,7 +348,7 @@ def test_reopened_overrides_drawer_shows_the_save_after_a_declined_reload(
         src = _between(html, "      kcfgBtn.onclick = function () {", "\n      };\n")
         btn, wrap = "kcfgBtn", "kdraw"
         reply = {"ok": True, "config": {"direct": {"beam_size": 3}}}
-    js = r"""
+    js = _fn(html, "_okJson") + r"""
 function mkBtn() { return { classList: { add: function () {}, remove: function () {} } }; }
 var %(btn)s = mkBtn();
 var %(wrap)s = { firstChild: null, set innerHTML(v) { this.firstChild = null; },
@@ -443,7 +444,7 @@ def test_label_edit_keeps_generate_off_while_the_post_runs(client, tmp_path):
     html = client.get("/settings/api-keys").text
     src = _between(html, "    addBtn.title = 'Enter a label first';",
                    "e.key === 'Enter' && !addBtn.disabled) addBtn.onclick();\n    };\n")
-    js = r"""
+    js = _fn(html, "_okJson") + r"""
 var labelInp = { value: 'laptpo' }, addBtn = { disabled: false, title: '' };
 var u = { id: 'u1', username: 'alice' };
 var posts = [], modals = [];
@@ -483,7 +484,7 @@ def test_label_edit_keeps_generate_off_while_the_key_modal_is_open(client, tmp_p
     html = client.get("/settings/api-keys").text
     src = _between(html, "    addBtn.title = 'Enter a label first';",
                    "e.key === 'Enter' && !addBtn.disabled) addBtn.onclick();\n    };\n")
-    js = r"""
+    js = _fn(html, "_okJson") + r"""
 var labelInp = { value: 'desktop' }, addBtn = { disabled: false, title: '' };
 var u = { id: 'u1', username: 'alice' };
 var posts = [], modals = [];
@@ -520,7 +521,7 @@ def test_generate_comes_back_when_the_key_modal_closes_without_a_rebuild(
     html = client.get("/settings/api-keys").text
     src = _between(html, "    addBtn.title = 'Enter a label first';",
                    "e.key === 'Enter' && !addBtn.disabled) addBtn.onclick();\n    };\n")
-    js = _FAKE_DOM + _fn(html, "showKeyModal") + r"""
+    js = _FAKE_DOM + _fn(html, "showKeyModal") + "\n" + _fn(html, "_okJson") + r"""
 var labelInp = { value: 'desktop' }, addBtn = { disabled: false, title: '' };
 var u = { id: 'u1', username: 'alice' };
 var posts = [];
