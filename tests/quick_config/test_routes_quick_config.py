@@ -296,17 +296,13 @@ def test_post_patch_oversized_map_400(client, app_module):
 
     slug = _expose_first_map_rule(app_module)
     assert slug is not None, "fixture config has no callback:map rule"
-    from faster_whisper_backend.settings import schema as settings_schema
+    from tests.conftest import schema_map_cap
 
     cap = quick_config_routes._MAP_MAX_ENTRIES
     # Track the schema rather than re-pinning the literal: this still catches
     # the derivation silently taking its fallback if pydantic's metadata
     # layout changes, without failing on a deliberate schema-side cap change.
-    expected = next(
-        m.max_length
-        for m in settings_schema.MapRule.model_fields["map"].metadata
-        if getattr(m, "max_length", None) is not None)
-    assert cap == expected
+    assert cap == schema_map_cap()
     big = {f"wort{i}": str(i) for i in range(cap + 1)}
     r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": big}}})
     assert r.status_code == 400, r.text

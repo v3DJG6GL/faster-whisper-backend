@@ -768,6 +768,17 @@ def make_user_key(app_module):
     return _create
 
 
+def schema_map_cap():
+    """MapRule.map's max_length read straight off the schema, with NO fallback
+    (web_common's 10_000 default would hide a blind introspection)."""
+    from faster_whisper_backend.settings import schema as settings_schema
+    caps = [m.max_length
+            for m in settings_schema.MapRule.model_fields["map"].metadata
+            if getattr(m, "max_length", None) is not None]
+    assert caps, "MapRule.map lost its max_length — _MAP_MAX_ENTRIES silently fell back"
+    return caps[0]
+
+
 def bearer(raw_key):
     """Authorization header dict for a raw API key."""
     return {"Authorization": f"Bearer {raw_key}"}

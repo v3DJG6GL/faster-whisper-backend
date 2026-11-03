@@ -5,14 +5,12 @@ button never disables. /quick-config sets it from its API payload
 rest (/settings).
 """
 
-from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.core import web_common
+from tests.conftest import schema_map_cap
 
 
 def test_settings_ships_map_entry_cap(client):
-    cap = next(m.max_length
-               for m in settings_schema.MapRule.model_fields["map"].metadata
-               if getattr(m, "max_length", None) is not None)
+    cap = schema_map_cap()
     line = ("window.__mme = (typeof window.__mme === 'number') "
             f"? window.__mme : {cap};")
     assert line in web_common.RULE_EDITOR_JS
