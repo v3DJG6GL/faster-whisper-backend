@@ -569,10 +569,8 @@ function _applyLockState(card) {
   });
 }
 function _buildPerCardSaveBtn(slug) {
-  const btn = document.createElement('button');
+  const btn = _el('button', 'primary', 'save');
   btn.type = 'button';
-  btn.className = 'primary';
-  btn.textContent = 'save';
   btn.disabled = !dirty.has(slug);
   btn.addEventListener('click', doSave);
   _perCardSaveBtns.set(slug, btn);
@@ -762,10 +760,8 @@ function traceTextBlock(tagLabel, text, extraClass) {
     div.classList.add('has-clip');
     span.classList.add('trace-clip');
     const label = 'Show all \u00b7 ' + fmtCount(text.length) + ' chars \u25be';
-    const btn = document.createElement('button');
+    const btn = _el('button', 'trace-more', label);
     btn.type = 'button';
-    btn.className = 'trace-more';
-    btn.textContent = label;
     btn.addEventListener('click', () => {
       const clipped = span.classList.toggle('trace-clip');
       btn.textContent = clipped ? label : 'Show less \u25b4';
@@ -1020,11 +1016,9 @@ function renderTrace(entry) {
       const row = document.createElement('div');
       row.className = 'trace-meta trace-stages';
       for (const st of stages) {
-        const chip = document.createElement('span');
-        chip.className = 'pill stage-chip stage-' + String(st.name);
         const secs = Number(st.secs);
-        chip.textContent = st.name +
-          (Number.isFinite(secs) && secs > 0 ? ' ' + secs.toFixed(1) + 's' : '');
+        const chip = _el('span', 'pill stage-chip stage-' + String(st.name), st.name +
+          (Number.isFinite(secs) && secs > 0 ? ' ' + secs.toFixed(1) + 's' : ''));
         if (st.model) chip.title = String(st.model);
         row.appendChild(chip);
       }
@@ -1162,10 +1156,8 @@ function renderTrace(entry) {
 
   const actions = document.createElement('div');
   actions.className = 'trace-actions';
-  const reportBtn = document.createElement('button');
+  const reportBtn = _el('button', 'trace-report-btn', 'Report a problem');
   reportBtn.type = 'button';
-  reportBtn.className = 'trace-report-btn';
-  reportBtn.textContent = 'Report a problem';
   reportBtn.title = 'For single-word fixes, edit the pipeline rules above. '
                   + 'Use this form for issues larger than a single word.';
   reportBtn.addEventListener('click', () => toggleReportForm(item, entry));
@@ -1277,10 +1269,8 @@ function _wordifyFinal(form, finalText) {
         document.createTextNode(finalText.slice(last, m.index))
       );
     }
-    const span = document.createElement('span');
-    span.className = 'word';
+    const span = _el('span', 'word', m[0]);
     span.dataset.idx = String(wordIdx);
-    span.textContent = m[0];
     span.addEventListener('click', (e) => {
       toggleCorrection(form, parseInt(span.dataset.idx, 10),
                        span.textContent, !!e.shiftKey);
@@ -1542,10 +1532,8 @@ function _renderCorrections(form) {
         }
       }
     });
-    const x = document.createElement('button');
+    const x = _el('button', 'rep-correction-remove', '×');
     x.type = 'button';
-    x.className = 'rep-correction-remove';
-    x.textContent = '×';
     x.setAttribute('aria-label', 'remove correction');
     x.addEventListener('click', () => {
       // Find the chip's current index — _renderCorrections rebuilds
