@@ -964,8 +964,8 @@ async def _handle(item: "tuple[str, str, str]") -> None:
             await _evict(family, peer)
 
     t0 = time.perf_counter()
-    # `is False`, not falsy: only a singleton's explicit decline means nothing
-    # was loaded (an orphan or a running job's pipeline holds the slot).
+    # False: a singleton declined, so nothing was loaded (an orphan or a
+    # running job's pipeline holds the slot).
     if await _load(family, model_id) is False:
         logger.info("[preload] %s deferred: a running job holds the slot", key)
         return
