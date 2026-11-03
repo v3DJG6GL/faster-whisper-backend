@@ -211,9 +211,8 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
     Resilient: any store error (e.g. store not yet initialised) → []."""
     if max_words <= 0:
         return []
-    perms = user["permissions"]
-    sees_all = perms.scope("quick_config") == "all"
-    user_filter = None if sees_all else (user.get("user_id") or "")
+    user_filter = user["permissions"].effective_user_id_for(
+        "quick_config", user.get("user_id") or "")
     scan = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
     try:
         rows = recent_transcriptions_store.list_recent(limit=scan, user_id_filter=user_filter)
@@ -1012,9 +1011,8 @@ async def get_recent(
     is copied verbatim into uvicorn's access log, the reverse proxy's access
     log and the browser's history — none of which are the 0600 log file the
     transcript text is otherwise confined to."""
-    perms = user["permissions"]
-    caller_uid = user.get("user_id") or ""
-    sees_all = perms.scope("quick_config") == "all"
+    user_id_filter = user["permissions"].effective_user_id_for(
+        "quick_config", user.get("user_id") or "")
 
     page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
     try:
@@ -1029,7 +1027,7 @@ async def get_recent(
 
     return await _recent_page(
         before_ts=q_before, limit=q_limit,
-        query=None, sees_all=sees_all, caller_uid=caller_uid,
+        query=None, user_id_filter=user_id_filter,
     )
 
 
@@ -1038,8 +1036,7 @@ async def _recent_page(
     before_ts: float,
     limit: int,
     query: str | None,
-    sees_all: bool,
-    caller_uid: str,
+    user_id_filter: str | None,
 ) -> dict[str, Any]:
     """Shared body of GET /recent and POST /recent/search — identical scoping
     and pagination, the two differ only in where the search term travels.
@@ -1053,7 +1050,7 @@ async def _recent_page(
             recent_transcriptions_store.list_recent,
             before_ts=before_ts if before_ts > 0 else None,
             limit=limit,
-            user_id_filter=None if sees_all else caller_uid,
+            user_id_filter=user_id_filter,
             query=query or None,
         )
     )
@@ -1083,15 +1080,14 @@ async def post_recent_search(
     BODY. A POST purely to keep dictation words out of every access log and
     out of browser history — the scoping, bounds and response shape are the
     GET's, unchanged."""
-    perms = user["permissions"]
     page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
     limit = max(1, min(payload.limit or page_size, page_size))
     return await _recent_page(
         before_ts=payload.before_ts,
         limit=limit,
         query=(payload.q or "").strip() or None,
-        sees_all=perms.scope("quick_config") == "all",
-        caller_uid=user.get("user_id") or "",
+        user_id_filter=user["permissions"].effective_user_id_for(
+            "quick_config", user.get("user_id") or ""),
     )
 
 
