@@ -56,13 +56,22 @@ def _tracks():
             pk.SubtitleTrack("de", "German", "1\n00:00:00,000 --> 00:00:01,000\nHallo\n")]
 
 
+def argv_for(tracks=(), container="mkv", *, src=None, default_track=None, **kw):
+    """pk.build_package_argv over fake paths: /m/src.<container>, one
+    /w/sub_<i>.srt per track, /w/out.<container>."""
+    tracks = list(tracks)
+    return pk.build_package_argv(src or f"/m/src.{container}",
+                                 [f"/w/sub_{i}.srt" for i in range(len(tracks))], tracks,
+                                 container=container, out_path=f"/w/out.{container}",
+                                 default_track=default_track, **kw)
+
+
 def _disp(argv):
     return [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
 
 
 def test_build_package_argv_mkv():
-    argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
-                                 container="mkv", out_path="/w/out.mkv", default_track=0)
+    argv = argv_for(_tracks(), default_track=0)
     # Every input runs under the file-only protocol whitelist.
     assert argv.count("-protocol_whitelist") == 3
     assert argv.index("-protocol_whitelist") < argv.index("-i")
@@ -78,35 +87,29 @@ def test_build_package_argv_mkv():
 def test_build_package_argv_original_flag_and_audio_language():
     # The original-language track carries the flag, NOT a "· original" name;
     # both flags combine with "+"; the first audio stream gets the spoken language.
-    argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
-                                 container="mkv", out_path="/w/out.mkv", default_track=0,
-                                 original_track=0, audio_lang="de", audio_label="German")
+    argv = argv_for(_tracks(), default_track=0, original_track=0, audio_lang="de",
+                    audio_label="German")
     assert _disp(argv) == ["default+original", "0"]
     a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
     assert a == ["language=deu", "title=German"]
     # original without default; audio label defaults to the language name.
-    argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
-                                 container="mkv", out_path="/w/out.mkv", default_track=1,
-                                 original_track=0, audio_lang="pt-BR")
+    argv = argv_for(_tracks(), default_track=1, original_track=0, audio_lang="pt-BR")
     assert _disp(argv) == ["original", "default"]
     a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
     assert a == ["language=por", "title=Portuguese (BR)"]
     # No audio language → no audio metadata at all.
-    argv = pk.build_package_argv("/m/src.mkv", [], [], container="mkv",
-                                 out_path="/w/out.mkv", default_track=None)
+    argv = argv_for()
     assert not any(x.startswith("-metadata:s:a") for x in argv)
 
 
 def test_build_package_argv_mp4_mov_text_faststart_and_no_default():
-    argv = pk.build_package_argv("/m/src.mp4", ["/w/sub_0.srt"], _tracks()[:1],
-                                 container="mp4", out_path="/w/out.mp4", default_track=None)
+    argv = argv_for(_tracks()[:1], "mp4")
     assert argv[argv.index("-c:s") + 1] == "mov_text"
     assert "+faststart" in argv
     assert argv[-3:] == ["-f", "mp4", "/w/out.mp4"]
     assert argv[argv.index("-disposition:s:0") + 1] == "0"
     # An unknown container falls back to mkv rather than reaching ffmpeg.
-    argv = pk.build_package_argv("/m/src.mp4", [], [], container="webm",
-                                 out_path="/w/out.webm", default_track=None)
+    argv = argv_for(container="webm", src="/m/src.mp4")
     assert argv[-2] == "matroska" and "-c:s" not in argv
 
 
@@ -120,14 +123,11 @@ def _flagged_tracks():
 
 def test_build_package_argv_per_track_flags():
     # Several originals, one default per language, a hearing-impaired track.
-    paths = [f"/w/sub_{i}.srt" for i in range(4)]
-    argv = pk.build_package_argv("/m/src.mkv", paths, _flagged_tracks(), container="mkv",
-                                 out_path="/w/out.mkv", default_track=None)
+    argv = argv_for(_flagged_tracks())
     assert _disp(argv) == ["default+original", "original+hearing_impaired", "default", "0"]
     assert not any(a.startswith("handler_name=") for a in argv)
     # The legacy indices OR into the per-track flags.
-    argv = pk.build_package_argv("/m/src.mkv", paths, _flagged_tracks(), container="mkv",
-                                 out_path="/w/out.mkv", default_track=1, original_track=3)
+    argv = argv_for(_flagged_tracks(), default_track=1, original_track=3)
     assert _disp(argv) == ["default+original", "default+original+hearing_impaired",
                            "default", "original"]
 
@@ -135,9 +135,7 @@ def test_build_package_argv_per_track_flags():
 def test_build_package_argv_mp4_handler_name_and_no_original():
     # MP4 has no FlagOriginal: it is left out; default + HI stay. The hdlr
     # name carries the title (movenc writes no `title` for mov_text).
-    paths = [f"/w/sub_{i}.srt" for i in range(4)]
-    argv = pk.build_package_argv("/m/src.mp4", paths, _flagged_tracks(), container="mp4",
-                                 out_path="/w/out.mp4", default_track=None, original_track=3)
+    argv = argv_for(_flagged_tracks(), "mp4", original_track=3)
     assert _disp(argv) == ["default", "hearing_impaired", "default", "0"]
     h = [argv[i + 1] for i, a in enumerate(argv)
          if a.startswith("-metadata:s:s:") and argv[i + 1].startswith("handler_name=")]
@@ -433,9 +431,7 @@ def test_probe_streams_reads_a_non_utf8_title(tmp_path):
 
 
 def test_build_package_argv_maps_the_probed_video_index():
-    argv = pk.build_package_argv("/m/src.mkv", [], [], container="mkv",
-                                 out_path="/w/out.mkv", default_track=None,
-                                 video_index=1)
+    argv = argv_for(video_index=1)
     assert argv[argv.index("-map") + 1] == "0:v:1"
 
 

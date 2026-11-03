@@ -15,7 +15,7 @@ import pytest
 
 from faster_whisper_backend.media import captions as cc
 from faster_whisper_backend.media import subtitle_mux as pk
-from tests.media.test_subtitle_mux import packaged
+from tests.media.test_subtitle_mux import argv_for, packaged
 
 PAD = (0xFC, 0x80, 0x80)          # CEA-608 field 1, valid, padding
 HI = (0xFC, 0xC8, 0xE9)           # CEA-608 "Hi" with odd parity
@@ -75,12 +75,9 @@ def test_emulation_prevention_bytes_are_removed():
 
 def test_argv_strips_sei_only_when_asked():
     tracks = [pk.SubtitleTrack("en", "English", "1\n00:00:00,000 --> 00:00:01,000\nHi\n")]
-    base = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt"], tracks, container="mkv",
-                                 out_path="/w/out.mkv", default_track=0)
+    base = argv_for(tracks, default_track=0)
     assert "filter_units=remove_types=6" not in base
-    strip = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt"], tracks, container="mkv",
-                                  out_path="/w/out.mkv", default_track=0,
-                                  strip_empty_captions=True)
+    strip = argv_for(tracks, default_track=0, strip_empty_captions=True)
     i = strip.index("-bsf:v")
     assert strip[i + 1] == "filter_units=remove_types=6"
     assert strip.index("-c:v") < i
