@@ -113,8 +113,8 @@ def test_merge_trims_each_member(monkeypatch, fake_vad):
 
 def test_merge_accepts_raw_over_cap_when_trimmed_fits(monkeypatch, fake_vad):
     # Two members of ~15 s raw each (mostly silence): the raw sum (~30 s) exceeds
-    # the 28 s cap, but each trims to 13 s so the merged WAV fits (the proposer /
-    # batch case).
+    # the sample cap (CAPTURES_SAMPLE_MAX_DURATION_S, 29.9 s by default), but each
+    # trims to 13 s so the merged WAV fits (the proposer / batch case).
     m1, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
     m2, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
     with tempfile.TemporaryDirectory() as d:
