@@ -1400,10 +1400,13 @@ function _chipCovers(chip, idx) {
   return chip.idx <= idx && idx <= chip.idx_end;
 }
 
+// The clickable span _wordifyFinal stamped with data-idx `idx`.
+function _wordSpan(form, idx) {
+  return form.querySelector('.rep-final-words .word[data-idx="' + idx + '"]');
+}
+
 function _selectWord(form, idx, on) {
-  const span = form.querySelector(
-    '.rep-final-words .word[data-idx="' + idx + '"]'
-  );
+  const span = _wordSpan(form, idx);
   if (span) span.classList.toggle('selected', !!on);
 }
 
@@ -1412,9 +1415,7 @@ function _selectWord(form, idx, on) {
 function _setReplacementInline(form, chip) {
   if (typeof chip.idx !== 'number') return;
   const lastIdx = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
-  const anchor = form.querySelector(
-    '.rep-final-words .word[data-idx="' + lastIdx + '"]'
-  );
+  const anchor = _wordSpan(form, lastIdx);
   if (!anchor) return;
   let existing = anchor.nextSibling;
   if (!existing || !existing.classList ||
@@ -1437,9 +1438,7 @@ function _setReplacementInline(form, chip) {
 function _clearReplacementInline(form, chip) {
   if (typeof chip.idx !== 'number') return;
   const lastIdx = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
-  const anchor = form.querySelector(
-    '.rep-final-words .word[data-idx="' + lastIdx + '"]'
-  );
+  const anchor = _wordSpan(form, lastIdx);
   if (!anchor) return;
   const nxt = anchor.nextSibling;
   if (nxt && nxt.classList && nxt.classList.contains('word-replacement')) {
@@ -1455,9 +1454,7 @@ function _spanText(form, a, b) {
   if (!pos[a] || !pos[b]) {
     const parts = [];
     for (let i = a; i <= b; i++) {
-      const s = form.querySelector(
-        '.rep-final-words .word[data-idx="' + i + '"]'
-      );
+      const s = _wordSpan(form, i);
       if (s) parts.push(s.textContent);
     }
     return parts.join(' ');
