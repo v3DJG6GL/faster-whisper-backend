@@ -26,6 +26,15 @@ def _seed(monkeypatch, pipe=None, key=None, leases=None, orphans=None):
     monkeypatch.setattr(diarization, "_orphans", {} if orphans is None else orphans)
 
 
+def _diar_model(monkeypatch, model="A", batch=4):
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", model, raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", batch, raising=False)
+    _seed(monkeypatch)
+    return cfg
+
+
 def _stub_turns(monkeypatch, turns, calls=None):
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
                             max_speakers=None, model_id=None,
@@ -332,9 +341,7 @@ def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     then decrement a bucket that was never leased and the real lease would
     pin the pipeline forever."""
     import asyncio
-    cfg = diarization.cfg
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    cfg = _diar_model(monkeypatch, "m1")
     monkeypatch.setattr(diarization, "_load_blocking",
                         lambda model_id, device, batch: object())
 
@@ -370,13 +377,9 @@ def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
 
 def test_cancel_during_diarize_still_drops_the_lease(monkeypatch):
     import asyncio
-    cfg = diarization.cfg
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
     # The key must match _pipeline_key below: a miss would take _lock, which
     # _main holds — a hang instead of a failure.
-    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
-                        raising=False)
+    _diar_model(monkeypatch, "m1")
     pipe = object()
     _seed(monkeypatch, pipe, ("m1", "cpu", 4))
 
@@ -428,10 +431,7 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
     'last used' must not move for a job that never touched it."""
     import asyncio
     from faster_whisper_backend.runtime import model_registry
-    cfg = diarization.cfg
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
-    _seed(monkeypatch)
+    _diar_model(monkeypatch, "m1")
 
     class _Ann:
         def itertracks(self, yield_label=True):
@@ -541,21 +541,13 @@ def _blocked_register(monkeypatch):
     return entered, gate
 
 
-def _model_a(monkeypatch, batch=4):
-    cfg = diarization.cfg
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "A", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", batch, raising=False)
-    _seed(monkeypatch)
-
-
 def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch):
     """The register thread writes "pyannote:<id>" even when the awaiting
     caller is cancelled; with no cached pipeline that row was a phantom
     _drop_locked (early return on no pipeline) never unregistered."""
     import asyncio
     from faster_whisper_backend.runtime import model_registry
-    _model_a(monkeypatch)
+    _diar_model(monkeypatch)
     pipe = object()
     monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: pipe)
     entered, gate = _blocked_register(monkeypatch)
@@ -587,7 +579,7 @@ def test_cancel_while_register_is_queued_still_lists_the_pipeline(monkeypatch):
     import concurrent.futures
     import threading
     from faster_whisper_backend.runtime import model_registry
-    _model_a(monkeypatch)
+    _diar_model(monkeypatch)
     pipe = object()
     loaded, queued, gate = [], [], threading.Event()
 
@@ -636,11 +628,9 @@ def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
     not unregister the row the live pipeline just wrote."""
     import asyncio
     from faster_whisper_backend.runtime import model_registry
-    _model_a(monkeypatch, batch=8)
+    _diar_model(monkeypatch, batch=8)
     old, new = object(), object()
-    monkeypatch.setattr(diarization, "_pipeline", old)
-    monkeypatch.setattr(diarization, "_pipeline_key", ("A", "cpu", 4))
-    monkeypatch.setattr(diarization, "_leases", {"A": 1})
+    _seed(monkeypatch, old, ("A", "cpu", 4), {"A": 1})
     monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: new)
     entered, gate = _blocked_register(monkeypatch)
 
