@@ -1142,8 +1142,8 @@ def test_stream_unknown_language_skips_language_tagged_rules(app_module, fake_mo
 
 def test_stream_holds_a_split_dictation_phrase_until_the_close(app_module, fake_model,
                                                                 monkeypatch):
-    """The route wires the real hold-back: a final ending in 'neue' is not
-    sent until the close releases it."""
+    """The route wires the real hold-back: the trailing 'neue' of a final is
+    held back (the rest is sent) until the close releases it."""
     from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment(" Befund unauffällig Punkt neue", 0.0, 1.0)]
     msgs = _stream_once(app_module, monkeypatch)
