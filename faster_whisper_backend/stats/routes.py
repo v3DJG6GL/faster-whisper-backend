@@ -479,7 +479,6 @@ async def stats_usage(
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             detail="users= needs stats scope 'all'")
     key_list = _csv(keys) or ([key] if key else [])
-    # v1 spelling: days<=0 meant lifetime.
     if days is not None and days <= 0:
         days, all = None, True
     try:
