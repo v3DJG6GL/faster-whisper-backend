@@ -113,8 +113,8 @@ def _run(drive: str) -> dict:
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_denied_probe_drops_allowed_so_the_css_really_hides_the_button():
     """`.hdr-activity.allowed` / `.page-link.allowed` set display:inline-flex,
-    which beats [hidden]: a 401/403 probe that only flipped `hidden` left the
-    button painted with frozen numbers. A later auth change restores it."""
+    which beats [hidden], so a 401/403 probe drops `allowed` too or the button
+    stays painted with frozen numbers. A later auth change restores it."""
     res = _run(r"""
 const before = btn.classList.contains('allowed') && !btn.hidden;
 probeStatus = 403;
@@ -136,8 +136,9 @@ console.log(JSON.stringify({ before, denied,
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_frame_rebuild_keeps_keyboard_focus_on_the_same_cancel_button():
-    """renderPop swaps the popover's innerHTML on every changed 1 Hz frame;
-    a keyboard user Tabbed onto a cancel button lost focus to <body>."""
+    """renderPop swaps the popover's innerHTML on every changed 1 Hz frame, so
+    it puts focus back on the same cancel button or footer link, or keyboard
+    focus would fall to <body>."""
     res = _run(r"""
 window._fwFeedActivity({ jobs: [job('p1', 0.41), job('p2', 0.10)] });
 openPop();
