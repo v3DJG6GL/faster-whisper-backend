@@ -1,6 +1,6 @@
 """pl_apply.apply_hot_changes must evict a model on a MODEL_OVERRIDES
 save only when that model's LOAD-TIME subset (added, changed or removed
-key) differs between the pre-save snapshot and the new bundle.
+key) differs between the running value it replaces and the new bundle.
 
 The editor sends the whole dict on every change, so "clear MODEL_DEVICE,
 keep BEAM_SIZE" and "edit B's BEAM_SIZE while A holds an unchanged
