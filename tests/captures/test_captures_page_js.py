@@ -43,6 +43,12 @@ def _js_block(src, start):
     raise AssertionError("unbalanced block")
 
 
+def _js_after(src, anchor):
+    """The block that starts right after `anchor` (e.g. an `x.onclick = `
+    handler)."""
+    return _js_block(src, src.index(anchor) + len(anchor))
+
+
 def _js_function(html, name):
     """The full `function name(...) {...}` declaration (async or not)."""
     sig = "function " + name + "("
@@ -1158,8 +1164,7 @@ def test_group_regenerate_asks_before_dropping_unsaved_edits(page, tmp_path):
     """Regenerate (and the missing-audio banner's button) ends in
     applyServerSample, which replaced unsaved chips and notes with the
     server copy and cleared the dirty marker, with no prompt."""
-    anchor = "regenBtn.onclick = "
-    handler = _js_block(page, page.index(anchor) + len(anchor))
+    handler = _js_after(page, "regenBtn.onclick = ")
     out = _run_node(tmp_path, r"""
 var sampleState = { dirty: true }, answers = [], asked = 0, posts = 0, applied = 0;
 var g = { id: 'g1' }, regenBtn = {};
@@ -1192,8 +1197,7 @@ def test_group_save_keeps_edits_made_while_it_ran(page, tmp_path):
     """Only the Save button is disabled during the (slow, alignment-heavy)
     group PATCH; its response went through applyServerSample, which
     overwrote chips / notes typed meanwhile and cleared the dirty flag."""
-    anchor = "saveTBtn.onclick = "
-    handler = _js_block(page, page.index(anchor) + len(anchor))
+    handler = _js_after(page, "saveTBtn.onclick = ")
     out = _run_node(tmp_path, _js_functions(page, "markDirty", "_chipFields") + r"""
 var chip = { wrong: 'a', correct: 'A', idx: 1, idx_end: 1 };
 var sampleState = { dirty: true, adminNotes: 'n', corrections: [chip],
@@ -1226,8 +1230,7 @@ var onSave = """ + handler + r""";
 def test_group_save_sends_the_notes_only_when_changed(page, tmp_path):
     """The group Save resent the notes from the card's GET on every Save:
     a chip-only Save erased a note another tab had saved since."""
-    anchor = "saveTBtn.onclick = "
-    handler = _js_block(page, page.index(anchor) + len(anchor))
+    handler = _js_after(page, "saveTBtn.onclick = ")
     out = _run_node(tmp_path, _js_function(page, "_chipFields") + r"""
 var sampleState = { adminNotes: 'old', notesBaseline: 'old', corrections: [],
   baselineCorrections: [], editGen: 0 };
@@ -1736,8 +1739,7 @@ def test_group_status_click_during_save_survives_the_save_reply(page, tmp_path):
     clicked status."""
     anchor = "async function(v) {\n            var prev = sampleState.newStatus;"
     on_status = _js_block(page, page.index(anchor))
-    save_anchor = "saveTBtn.onclick = "
-    on_save = _js_block(page, page.index(save_anchor) + len(save_anchor))
+    on_save = _js_after(page, "saveTBtn.onclick = ")
     fns = _js_functions(page, "applyServerSample", "_applyChipsToText", "_chipFields")
     out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + r"""
 var g = { id: 'g1' }, _allSamples = [{ id: 'g1', status: 'new' }];
@@ -2015,7 +2017,7 @@ def test_load_after_a_request_asks_about_edits_made_during_it(
     started: a chip typed during the request (a dissolve can wait seconds
     on a running rebuild) counted as agreed and the refreshed list dropped
     it with no prompt."""
-    handler = _js_block(page, page.index(anchor) + len(anchor))
+    handler = _js_after(page, anchor)
     fns = _js_functions(page, "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
                         "_dirtyOpenEdits", "markDirty")
     out = _run_node(tmp_path, fns + r"""
@@ -2403,8 +2405,7 @@ def test_group_regenerate_asks_before_dropping_edits_made_while_it_ran(page, tmp
     """Regenerate checked for unsaved edits only before its POST; a chip or
     note typed during the slow rebuild was replaced by the server copy and
     marked clean, with no prompt."""
-    anchor = "regenBtn.onclick = "
-    handler = _js_block(page, page.index(anchor) + len(anchor))
+    handler = _js_after(page, "regenBtn.onclick = ")
     out = _run_node(tmp_path, _js_function(page, "markDirty") + r"""
 var sampleState = { dirty: false }, answers = [], asked = [], applied = 0, pending = [];
 var g = { id: 'g1' }, regenBtn = {}, toasts = [];
