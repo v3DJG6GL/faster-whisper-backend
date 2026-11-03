@@ -278,8 +278,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
 def _server_info(caps: dict, ident) -> dict:
     """/v1/me's read-only policy view: the limits a request runs into and
     what this server keeps about the caller's work. Privacy-positive
-    disclosure (SECURITY-REVIEW_NOTES, "server_info is an admin policy
-    view"): retention knobs and caps only, never data. Every value is
+    disclosure (SECURITY-REVIEW_NOTES, "`GET /v1/me` `server_info`"):
+    retention knobs and caps only, never data. Every value is
     scope="server" (plain cfg) except TRANSLATION_MAX_TARGETS, which is
     per_request and resolved for the caller exactly like the text route."""
     limits: dict = {
