@@ -9,6 +9,7 @@ and subprocess.Popen so even an accidental direct invocation can't escape.
 
 import importlib
 import os
+import time
 
 import pytest
 
@@ -344,37 +345,45 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
     assert reached == ["flush", "sampler", "shutdown"]
 
 
-def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
+@pytest.fixture
+def fake_tmp(tmp_path, monkeypatch):
+    """An empty dir standing in for the TMPDIR the startup sweep scans."""
+    d = tmp_path / "faketmp"
+    d.mkdir()
+    monkeypatch.setattr(restart_service.tempfile, "gettempdir", lambda: str(d))
+    return d
+
+
+def _backdate(p):
+    """Age `p` an hour, well past the sweep's 60 s guard."""
+    old = time.time() - 3600
+    os.utime(p, (old, old))
+
+
+def _aged(p):
+    p.write_bytes(b"x")
+    _backdate(p)
+
+
+def test_reclaim_hard_restart_orphans(fake_tmp):
     """The startup sweep reclaims what an admin restart (os.execve/os._exit,
     no ASGI shutdown) orphaned — urldl- job dirs, sepsrc-/vocals- WAVs —
     while leaving fresh entries (a just-overlapping process) and unrelated
     names alone. (No app_module fixture: that fixture stubs the sweep out
     so TestClient startups never touch the real tempdir.)"""
-    import time as _time
-
-    fake_tmp = tmp_path / "faketmp"
-    fake_tmp.mkdir()
-    monkeypatch.setattr(restart_service.tempfile, "gettempdir",
-                        lambda: str(fake_tmp))
-
-    old = _time.time() - 3600
     old_dir = fake_tmp / "urldl-dead"
     old_dir.mkdir()
     (old_dir / "media.m4a.part").write_bytes(b"x")
-    os.utime(old_dir, (old, old))
+    _backdate(old_dir)
     for name in ("sepsrc-dead.wav", "vocals-dead.wav"):
-        p = fake_tmp / name
-        p.write_bytes(b"x")
-        os.utime(p, (old, old))
+        _aged(fake_tmp / name)
     fresh_dir = fake_tmp / "urldl-live"
     fresh_dir.mkdir()
     (fake_tmp / "sepsrc-live.wav").write_bytes(b"x")
     (fake_tmp / "unrelated.txt").write_bytes(b"x")
     # /captures merge preview + merge_wavs' own `.tmp` sibling.
     for name in ("preview_merge_x.wav", "preview_merge_x.wav.abc.tmp"):
-        p = fake_tmp / name
-        p.write_bytes(b"x")
-        os.utime(p, (old, old))
+        _aged(fake_tmp / name)
 
     restart_service.reclaim_hard_restart_orphans()
 
@@ -388,23 +397,16 @@ def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
     assert (fake_tmp / "unrelated.txt").exists()
 
 
-def test_reclaim_hard_restart_orphans_spares_foreign_pkg_dirs(tmp_path, monkeypatch):
+def test_reclaim_hard_restart_orphans_spares_foreign_pkg_dirs(fake_tmp):
     """The subtitle-package workdir carries the app-specific `fwb-pkg-`
     prefix: a bare `pkg-` dir is a generic name another same-user program
     may own in the shared TMPDIR, so the sweep must not rmtree it."""
-    import time as _time
-
-    fake_tmp = tmp_path / "faketmp"
-    fake_tmp.mkdir()
-    monkeypatch.setattr(restart_service.tempfile, "gettempdir",
-                        lambda: str(fake_tmp))
-    old = _time.time() - 3600
     ours = fake_tmp / "fwb-pkg-x"
     foreign = fake_tmp / "pkg-foreign"
     for d in (ours, foreign):
         d.mkdir()
         (d / "out.mkv").write_bytes(b"x")
-        os.utime(d, (old, old))
+        _backdate(d)
 
     restart_service.reclaim_hard_restart_orphans()
 
@@ -412,26 +414,15 @@ def test_reclaim_hard_restart_orphans_spares_foreign_pkg_dirs(tmp_path, monkeypa
     assert (foreign / "out.mkv").exists()
 
 
-def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(
-        tmp_path, monkeypatch):
+def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(fake_tmp):
     """The sweep also reclaims the `urlmedia-` pipeline copies
     (url_media_store.make_pipeline_copy) and the `whisperup-` batch upload
     spools, under the same 60 s age guard."""
-    import time as _time
-
-    fake_tmp = tmp_path / "faketmp"
-    fake_tmp.mkdir()
-    monkeypatch.setattr(restart_service.tempfile, "gettempdir",
-                        lambda: str(fake_tmp))
-    old = _time.time() - 3600
     for name in ("urlmedia-dead.m4a", "whisperup-dead.wav"):
-        p = fake_tmp / name
-        p.write_bytes(b"x")
-        os.utime(p, (old, old))
+        _aged(fake_tmp / name)
     (fake_tmp / "urlmedia-live.m4a").write_bytes(b"x")
     (fake_tmp / "whisperup-live.wav").write_bytes(b"x")
-    (fake_tmp / "tmpabc123.wav").write_bytes(b"x")   # someone else's tempfile
-    os.utime(fake_tmp / "tmpabc123.wav", (old, old))
+    _aged(fake_tmp / "tmpabc123.wav")   # someone else's tempfile
 
     restart_service.reclaim_hard_restart_orphans()
 
