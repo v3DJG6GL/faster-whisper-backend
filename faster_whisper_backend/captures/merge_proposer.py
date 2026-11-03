@@ -80,8 +80,8 @@ _GEN = 0
 # runs — the first run after a miss pays one VAD pass per eligible capture.
 # {capture_id: (mtime, edge_pad_ms, max_gap_ms, trimmed_seconds)}
 _TRIM_DUR_CACHE: dict[str, tuple[float, int, int, float]] = {}
-# Nothing prunes this dict: invalidate() clears only _CACHE, and no capture
-# deletion path notifies the proposer. Capture ids churn (a fresh uuid4 per
+# Nothing prunes this dict: invalidate(), which capture deletion does call,
+# clears only _CACHE. Capture ids churn (a fresh uuid4 per
 # transcription) while the row count stays pinned at CAPTURES_MAX, so without a
 # ceiling it grows for the process lifetime. The value is pure memoization of a
 # recomputable number, so dropping the oldest entries costs one VAD pass.
