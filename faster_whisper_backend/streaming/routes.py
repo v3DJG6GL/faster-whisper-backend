@@ -558,6 +558,11 @@ def _trim_trailing_nonspeech(audio: "np.ndarray", pad_ms: int,
     return audio[:end]
 
 
+def _user_row_fields(user: dict) -> dict:
+    """The caller-identity columns a usage row / receipt block names."""
+    return {k: user.get(k) for k in ("user_id", "key_id", "username", "key_label")}
+
+
 def _note_pinned_condition(req_overrides: dict, overrides_ignored: list) -> None:
     """The streaming final decode pins condition_on_previous_text from
     STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT (see _build_transcribe_kwargs),
@@ -894,9 +899,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 metrics.record_transcription(
                     model=str(_loading or ""), audio_dur=0.0, proc_dur=0.0,
                     status="error", words=0, kind="dictate",
-                    request_id=session_id, user_id=user.get("user_id"),
-                    key_id=user.get("key_id"), username=user.get("username"),
-                    key_label=user.get("key_label"), job_id=usage_job_id,
+                    request_id=session_id, **_user_row_fields(user), job_id=usage_job_id,
                     error_class=_ec, error_stage=_es)
             except Exception:  # noqa: BLE001 — never mask the refusal
                 pass
@@ -1507,8 +1510,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     endpoint="/v1/audio/transcriptions/stream",
                     audio_source=audio_source_label,
                     ident=ident, overrides_ignored=overrides_ignored,
-                    user_id=user.get("user_id"), key_id=user.get("key_id"),
-                    username=user.get("username"), key_label=user.get("key_label"),
+                    **_user_row_fields(user),
                     guards=dec.get("guards"),
                     decode_trace=dec.get("trace"),
                     stages=stages,
@@ -1578,9 +1580,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 words=len(final_text.split()), kind="dictate",
                 stages=([{**stages[0], "detail": f"utt#{info['utterance']}"}]
                         if stages else None),
-                request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"),
-                username=user.get("username"), key_label=user.get("key_label"),
-                job_id=usage_job_id,
+                request_id=rid, **_user_row_fields(user), job_id=usage_job_id,
                 language=(_stored_lang(fw_info) or None),
                 wait_s=metrics.take_wait(), error_class=_ec, error_stage=_es)
 
@@ -2009,9 +2009,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             metrics.record_transcription(
                 model=str(_loc.get("final_model") or ""), audio_dur=0.0,
                 proc_dur=0.0, status="error", words=0, kind="dictate",
-                request_id=session_id, user_id=user.get("user_id"),
-                key_id=user.get("key_id"), username=user.get("username"),
-                key_label=user.get("key_label"),
+                request_id=session_id, **_user_row_fields(user),
                 job_id=_loc.get("usage_job_id") or session_id,
                 error_class=_ec, error_stage=_es)
         except Exception:  # noqa: BLE001 — never mask the real error
