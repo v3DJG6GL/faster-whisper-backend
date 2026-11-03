@@ -1,7 +1,7 @@
 """A save refuses a callback:lowercase-wordlist pattern with fewer than 3
 groups. The replacer reads group 1 as the space after the terminator and
-groups 2 + 3 as the next word; a quick-config user can edit the pattern, and
-`[.?!](\\s*)([A-ZÄÖÜ]\\w*)` deleted every sentence-initial word it matched."""
+groups 2 + 3 as the next word; with fewer groups it keeps the match as is, so
+a quick-config user's edited pattern would silently do nothing."""
 
 import pytest
 from pydantic import ValidationError
