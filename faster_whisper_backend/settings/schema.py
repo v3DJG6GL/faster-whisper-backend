@@ -1979,7 +1979,7 @@ class AdminConfig(BaseModel):
         counts as "no valid slug" only on a save that sets
         `empty_rules_known` (config_store.save_overrides, when the payload
         touches the rules or a slug-bearing key): load_overrides drops every
-        override on a failure, so load stays as permissive as before."""
+        override on a failure, so load keeps skipping the check."""
         ctx = info.context or {}
         if self.PIPELINE_RULES:
             return {r.name for r in self.PIPELINE_RULES}
