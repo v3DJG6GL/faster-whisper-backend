@@ -423,9 +423,8 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
 _bsf_cache: "dict[str, bool]" = {}
 _caps_cache: "list[FfmpegCaps]" = []
 # ffmpeg_capabilities' retry is single-flight and, after the first attempt,
-# runs on its own thread: request handlers (/v1/me, the package routes) call
-# it on the event loop, and a re-probe there is up to 3 x 15 s of a frozen
-# server while ffmpeg stays slow.
+# runs on its own thread: the package routes call it on the event loop, and a
+# re-probe there is up to 3 x 15 s of a frozen server while ffmpeg stays slow.
 _caps_lock = threading.Lock()
 _caps_state: "dict" = {"tried": False, "busy": False, "thread": None}
 _CAPS_PENDING = FfmpegCaps(False, False, False,
