@@ -1601,7 +1601,8 @@ async def translation_test(
             model_ref=ref or None, glossary=body.glossary or "",
             template_override=template, family_override=fam,
             # target_progress is the only intra-target signal: a one-target
-            # test keeps `f` at 0.0 until the end, so forward it (as main does).
+            # test keeps `f` at 0.0 until the end, so forward it (as the
+            # request path's progress callback does).
             progress_cb=lambda f, step=None, last_text=None, target=None,
                 target_progress=None, **_kw:
                 tx_progress._progress_set(_pid, stage="translating",
