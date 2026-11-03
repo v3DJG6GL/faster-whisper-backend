@@ -400,12 +400,14 @@
     background: var(--active-word-bg); color: var(--active-word-color);
   }
 
-  .cc-notes textarea {
-    width: 100%; min-height: 3rem; resize: vertical;
-    background: var(--input-bg); color: var(--fg);
+  .cc-notes textarea, .modal input, #merge-modal textarea {
+    width: 100%; background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.4rem 0.55rem; font-size: var(--fs-md);
-    font-family: var(--font-sans);
+    font-size: var(--fs-md);
+  }
+  .cc-notes textarea {
+    min-height: 3rem; resize: vertical;
+    padding: 0.4rem 0.55rem; font-family: var(--font-sans);
   }
 
   .cc-actions {
@@ -438,10 +440,7 @@
   .modal h3 { margin: 0 0 0.5rem; color: var(--bold); font-size: var(--fs-xl); }
   .modal p { margin: 0.25rem 0; font-size: var(--fs-md); }
   .modal input {
-    width: 100%; background: var(--input-bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.35rem 0.5rem; font-family: var(--font-mono);
-    font-size: var(--fs-md); margin-top: 0.5rem;
+    padding: 0.35rem 0.5rem; font-family: var(--font-mono); margin-top: 0.5rem;
   }
   .modal .actions {
     display: flex; gap: 0.5rem; justify-content: flex-end;
@@ -521,11 +520,8 @@
   }
   #merge-modal h3 { margin: 0 0 0.5rem 0; color: var(--bold); }
   #merge-modal textarea {
-    width: 100%; min-height: 8rem; box-sizing: border-box;
-    background: var(--input-bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 4px;
+    min-height: 8rem; box-sizing: border-box;
     padding: 0.5rem 0.6rem; font-family: var(--font-mono);
-    font-size: var(--fs-md);
   }
   #merge-modal .row {
     display: flex; gap: 0.5rem; align-items: center; margin: 0.5rem 0;
