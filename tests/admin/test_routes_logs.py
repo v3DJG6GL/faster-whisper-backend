@@ -1,6 +1,8 @@
 """/logs viewer: source pins for its page script (admin/logs_routes.py serves
 it), plus direct drives of logs_routes' stream generator and its re-auth."""
 
+from tests._page_helpers import js_body
+
 
 def test_logs_page_search_skips_fold_controls_and_button_labels(client):
     """The search filter matched el.textContent, which also holds the fold
@@ -8,14 +10,12 @@ def test_logs_page_search_skips_fold_controls_and_button_labels(client):
     "Show all · N chars" button, so "show" or "rows" hit every control and
     clipped line, and hide mode hid the controls that reveal folded rows."""
     html = client.get("/logs").text
-    f = html[html.index("function applyFilter(el)"):]
-    f = f[:f.index("\n  }\n")]
+    f = js_body(html, "function applyFilter(el)")
     assert "el.classList.contains('fold-ctl')" in f
     assert "_lineText.get(el)" in f
     assert "el.textContent.toLowerCase()" not in f
     # makeLine records the line's own text for the filter to read.
-    m = html[html.index("function makeLine(line, st)"):]
-    assert "_lineText.set(el, txt);" in m[:m.index("\n  }\n")]
+    assert "_lineText.set(el, txt);" in js_body(html, "function makeLine(line, st)")
 
 
 def test_logs_page_unfold_moves_the_control_past_revealed_rows(client):
@@ -23,8 +23,7 @@ def test_logs_page_unfold_moves_the_control_past_revealed_rows(client):
     unfolded row; _foldRemaining stopped there, returned 0 and the control
     was removed, stranding every row past the first 50 with no way back."""
     html = client.get("/logs").text
-    f = html[html.index("function _unfold(ctl, n)"):]
-    f = f[:f.index("\n  }\n")]
+    f = js_body(html, "function _unfold(ctl, n)")
     assert "last = e;" in f
     assert f.index("if (last) last.after(ctl);") \
         < f.index("const left = _foldRemaining(ctl);")

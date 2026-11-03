@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from faster_whisper_backend.pipeline import apply as pl_apply
+from tests._page_helpers import js_body
 from tests.conftest import bearer
 
 PERMS = "/settings/api-keys/api/users"
@@ -347,8 +348,7 @@ def test_resolve_reports_a_binding_store_fault(client, make_user_key, monkeypatc
 
 def test_page_explorer_names_a_binding_fault(client):
     html = client.get(OV).text
-    dr = html[html.index("async function doResolve() {"):]
-    dr = dr[:dr.index("\n  }\n")]
+    dr = js_body(html, "async function doResolve() {")
     assert "if (j.binding_fault) {" in dr
     assert "Binding store unreadable" in dr
 
@@ -576,8 +576,7 @@ def test_page_rename_409_shows_the_server_detail(client):
     doRename shows the server detail so an env pin is not reported as
     'already exists'."""
     html = client.get(OV).text
-    body = html[html.index("async function doRename(oldName, newName) {"):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "async function doRename(oldName, newName) {")
     branch = body[body.index("if (r.status === 409) {"):]
     branch = branch[:branch.index("return;")]
     assert "r.json()" in branch
@@ -656,8 +655,7 @@ def test_page_save_rerenders_after_reloading_state(client):
     every widget closes over the old profiles[sel], so the next edit would land
     on an orphan (dropped, or never lighting Save)."""
     html = client.get(OV).text
-    body = html[html.index("async function save() {"):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "async function save() {")
     ok = body[body.index("if (fresh) adoptServerProfiles(true);"):]
     assert ok.index("adoptServerProfiles(true);") < ok.index("render();") \
         < ok.index("setStatus('saved', 'ok');")
@@ -665,8 +663,7 @@ def test_page_save_rerenders_after_reloading_state(client):
 
 def _page_save_body(client):
     html = client.get(OV).text
-    body = html[html.index("async function save() {"):]
-    return body[:body.index("\n  }\n")]
+    return js_body(html, "async function save() {")
 
 
 def test_page_save_409_keeps_the_working_copy(client):
@@ -708,13 +705,11 @@ def test_page_explorer_drops_stale_answers(client):
     """fillKeys / doResolve drop a stale answer: a slower reply for an earlier
     pick would mix keys from two users or overwrite the current waterfall."""
     html = client.get(OV).text
-    fk = html[html.index("async function fillKeys() {"):]
-    fk = fk[:fk.index("\n  }\n")]
+    fk = js_body(html, "async function fillKeys() {")
     assert "var seq = ++_keysSeq;" in fk
     assert "if (seq !== _keysSeq || !r.ok) return;" in fk
     assert "if (seq !== _keysSeq) return;" in fk
-    dr = html[html.index("async function doResolve() {"):]
-    dr = dr[:dr.index("\n  }\n")]
+    dr = js_body(html, "async function doResolve() {")
     assert "var seq = ++_resolveSeq;" in dr
     assert dr.count("if (seq !== _resolveSeq) return;") == dr.count("await ")
 

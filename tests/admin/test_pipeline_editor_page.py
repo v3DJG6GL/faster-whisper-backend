@@ -13,6 +13,7 @@ import pytest
 
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
+from tests._page_helpers import js_body
 
 
 def _html(client):
@@ -27,8 +28,7 @@ def test_every_sync_action_goes_through_the_review_dialog(client):
     serves promote, reset / update, add, promote all and reset all."""
     html = _html(client)
     for fn in ("_promoteOne", "_promoteAll", "_resetOne", "_resetAll", "_addFromConfig"):
-        body = html[html.index(f"function {fn}("):]
-        body = body[:body.index("\n  }\n")]
+        body = js_body(html, f"function {fn}(")
         assert "_reviewDialog({" in body, fn
     # Both sides are named, and the left column is what gets overwritten.
     assert "const _RV_SERVER = { t: 'This server'" in html
@@ -80,8 +80,7 @@ def test_promote_all_removal_ids_cannot_collide_with_a_slug(client):
     allows a leading '-': ticking a hand-edited rule "-foo" promoted nothing
     and silently deleted config.json's "foo"."""
     html = _html(client)
-    body = html[html.index("function _promoteAll("):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "function _promoteAll(")
     assert "id: 'rm:' + b.name," in body
     assert "ids.filter(i => i.startsWith('rm:')).map(i => i.slice(3))" in body
     assert "i[0] === '-'" not in body and "i[0] !== '-'" not in body
@@ -100,8 +99,7 @@ def test_promote_all_leaves_diverged_rules_unticked(client):
     edit; promote-all ticked it by default, so one click replaced that update
     with no warning (the single-rule promote warns). It is now opt-in."""
     html = _html(client)
-    body = html[html.index("function _promoteAll("):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "function _promoteAll(")
     assert "checked: !diverged && !ambiguous," in body
     assert "checked: true," not in body.split("_missingFactoryRules()")[0]
     assert "start'\n          + ' unticked: ticking one replaces those newer config.json changes'" in body
@@ -162,8 +160,7 @@ def test_promote_keeps_an_absent_config_json_rule_in_place(client):
     order: after a local reorder (config A,B,C,D; local D,A,C) the first local
     rule that is any successor (D) put B before its own predecessor A."""
     html = _html(client)
-    body = html[html.index("function _buildFactoryPayload("):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "function _buildFactoryPayload(")
     assert "if (!out.some(o => o.name === b.name)) out.push(" not in body
     assert "after.indexOf(o.name) !== -1" not in body
     assert "for (const n of after) {" in body
@@ -183,19 +180,16 @@ def test_commit_compares_rules_without_config_rev(client):
     html = _html(client)
     assert "delete c.config_rev;" in html
     for fn in ("function commitData() {", "function commitFull() {"):
-        body = html[html.index(fn):]
-        body = body[:body.index("\n  }\n")]
+        body = js_body(html, fn)
         assert "_setRulesDirty();" in body, fn
         assert "setDirty(name, JSON.parse(JSON.stringify(rules)));" not in body, fn
-    helper = html[html.index("function _setRulesDirty() {"):]
-    helper = helper[:helper.index("\n  }\n")]
+    helper = js_body(html, "function _setRulesDirty() {")
     assert "_sansRevs(rules, keep) === _sansRevs(cur, keep)" in helper
     # A rev-only change against a server rule that carries a config_rev (the
     # _afterPromoteStamp restamp) is real: only revs the server copy lacks
     # are stripped, so the dirty entry survives a later no-op commit.
     assert "const keep = new Map((cur || []).map(r => [r && r.name, r && r.config_rev]));" in helper
-    sans = html[html.index("function _sansRevs(v, keep) {"):]
-    sans = sans[:sans.index("\n  }\n")]
+    sans = js_body(html, "function _sansRevs(v, keep) {")
     assert "if (!(keep && keep.get(r && r.name))) delete c.config_rev;" in sans
 
 
@@ -250,8 +244,7 @@ def test_drop_local_list_after_promote_counts_unpromoted_edits(client):
     the primary button discarded those local edits (and brought back
     unticked removals). The safe-check covers both, not only local-only."""
     html = _html(client)
-    body = html[html.index("function _afterPromoteAll("):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "function _afterPromoteAll(")
     assert "const orphaned = _localOnlyNames();" in body
     assert "st === 'edited' || st === 'diverged'" in body
     assert "_missingFactoryRules()" in body
@@ -262,8 +255,7 @@ def test_reset_on_a_rule_config_json_dropped_says_so(client):
     """↓ Reset on a rule config.json dropped since the paint returned
     silently, leaving a dead button and no × delete until a full repaint."""
     html = _html(client)
-    body = html[html.index("async function _resetOne("):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "async function _resetOne(")
     assert "if (!base) return;" not in body
     assert "paintAll();" in body and "_toast(" in body
 
@@ -275,15 +267,12 @@ def test_rule_comparisons_fill_in_schema_defaults(client):
     promote-all drop dialog to "lossy"), so both comparisons fill them in,
     and the add dialog seeds them like the server dump."""
     html = _html(client)
-    strip = html[html.index("function _ruleStrip(r) {"):]
-    strip = strip[:strip.index("\n  }\n")]
+    strip = js_body(html, "function _ruleStrip(r) {")
     assert "const c = _withDefaults(r);" in strip
-    sans = html[html.index("function _sansRevs(v, keep) {"):]
-    sans = sans[:sans.index("\n  }\n")]
+    sans = js_body(html, "function _sansRevs(v, keep) {")
     assert "const c = _withDefaults(r);" in sans
     assert "return _sortDeep(c);" in sans
-    fill = html[html.index("function _withDefaults(r) {"):]
-    fill = fill[:fill.index("\n  }\n")]
+    fill = js_body(html, "function _withDefaults(r) {")
     for key in ("languages: []", "exposed: false", "tags: []", "note: ''",
                 "color: ''", "label: ''"):
         assert key in fill, key
@@ -311,8 +300,7 @@ def test_promote_paths_share_the_factory_refresh(client):
     assign / repaint; one copy drifting would change only that path."""
     html = _html(client)
     for fn in ("_promoteOne", "_promoteAll", "_promoteOrder"):
-        body = html[html.index(f"async function {fn}("):]
-        body = body[:body.index("\n  }\n")]
+        body = js_body(html, f"async function {fn}(")
         assert "if (!(await _refreshFactory())) return;" in body, fn
         assert "_fetchFactory()" not in body, fn
 
@@ -322,15 +310,9 @@ def test_promote_all_label_names_removals(client):
     confirm read '↑ Promote 1 selected rule'."""
     html = _html(client)
     assert "ok.textContent = o.confirm(sel.length, sel);" in html
-    body = html[html.index("async function _promoteAll("):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(html, "async function _promoteAll(")
     assert "const rm = sel.filter(g => g.id.startsWith('rm:')).length;" in body
     assert "' from config.json'" in body
-
-
-def _fn(html, sig):
-    body = html[html.index(sig):]
-    return body[:body.index("\n  }\n")]
 
 
 def test_unshadowed_promote_syncs_the_running_value(client):
@@ -339,21 +321,21 @@ def test_unshadowed_promote_syncs_the_running_value(client):
     lit (_afterPromoteStamp even re-set it raw) and the "press Save as well"
     note led to a full local copy shadowing every later config.json update."""
     html = _html(client)
-    post = _fn(html, "async function _postFactory(arr) {")
+    post = js_body(html, "async function _postFactory(arr) {")
     unsh = post[post.index("if (!out.shadowed_by_local && !out.env_pinned) {"):]
     assert "fd.value = JSON.parse(JSON.stringify(out.rules));" in unsh
     assert "_setRulesDirty();" in unsh
-    stamp = _fn(html, "function _afterPromoteStamp() {")
+    stamp = js_body(html, "function _afterPromoteStamp() {")
     assert "_setRulesDirty();" in stamp
     assert "setDirty(name," not in stamp
-    note = _fn(html, "function _unsavedNoteEl() {")
+    note = js_body(html, "function _unsavedNoteEl() {")
     assert "fd.provenance !== 'local.json'" in note
 
 
 def test_single_rule_promote_discloses_an_order_change(client):
     """_promoteOne's payload walks the CURRENT order, so a local reorder is
     written into config.json too; its dialog now says so like Promote all."""
-    body = _fn(_html(client), "async function _promoteOne(rule) {")
+    body = js_body(_html(client), "async function _promoteOne(rule) {")
     assert "extraEls: [_seededOrderDirty() ? _orderChangeEl() : null]" in body
     assert "is written as well." in body
 

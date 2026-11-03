@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+from tests._page_helpers import js_body
 from tests.conftest import bearer
 
 _API = "/settings/api-keys/api"
@@ -33,8 +34,7 @@ def test_page_ships_sync_ui(client):
 
 
 def _load_body(html):
-    body = html[html.index("async function load() {"):]
-    return body[:body.index("\n  }\n")]
+    return js_body(html, "async function load() {")
 
 
 def test_page_failed_meta_fetch_reads_as_unavailable(client):

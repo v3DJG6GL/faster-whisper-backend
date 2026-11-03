@@ -7,6 +7,7 @@ import pytest
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests._page_helpers import js_body
 from tests.conftest import _repoint_path_default
 
 
@@ -274,8 +275,7 @@ def test_translation_lab_models_come_from_saved_values(client):
     """POST /settings/translation-test checks the SAVED allowlist/default: an
     unsaved entry offered by the lab only answered 400."""
     page = client.get("/settings").text
-    fn = page[page.index("function refreshModels() {"):]
-    fn = fn[:fn.index("\n  }\n")]
+    fn = js_body(page, "function refreshModels() {")
     assert "fieldDef('TRANSLATION_DEFAULT_MODEL').value" in fn
     assert "fieldDef('TRANSLATION_ALLOWED_MODELS').value" in fn
     assert "currentValue(" not in fn
@@ -1039,8 +1039,7 @@ def test_per_model_override_seed_honours_the_field_min(client):
     0 sits below e.g. DIARIZATION_NUM_SPEAKERS' ge=1 and 422s the whole Save."""
     text = client.get("/settings").text
     assert "defaultForKind(meta) : cur" in text
-    f = text[text.index("function defaultForKind(meta)"):]
-    f = f[:f.index("\n  }\n")]
+    f = js_body(text, "function defaultForKind(meta)")
     assert "meta.min > 0" in f
 
 
@@ -1049,8 +1048,7 @@ def test_prompt_lab_preview_clears_on_any_error(client):
     family, 422 sample bounds), clears the previous prompt, family chip and
     sampling line so stale output never shows as current."""
     text = client.get("/settings").text
-    f = text[text.index("function schedulePreview()"):]
-    f = f[:f.index("\n  }\n")]
+    f = js_body(text, "function schedulePreview()")
     assert "'preview unavailable: '" in f
     assert "famChip.textContent = '';" in f
     assert "sampling.textContent = '';" in f
@@ -1165,8 +1163,7 @@ def test_translation_test_explicit_auto_detects_instead_of_the_saved_pin(
     assert r.status_code == 200, r.text
     assert r.json()["prompt"]["family"] == translation.detect_family(ref)
     text = client.get("/settings").text
-    body = text[text.index("function labBody(preview) {"):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(text, "function labBody(preview) {")
     assert "family: currentValue('TRANSLATION_PROMPT_FAMILY') || 'auto'," in body
 
 
@@ -1186,8 +1183,7 @@ def test_translation_test_cleared_custom_template_is_not_the_saved_one(
     assert prompt["family"] == "custom"
     assert "SAVED-SENTINEL" not in json.dumps(prompt)
     text = client.get("/settings").text
-    body = text[text.index("function labBody(preview) {"):]
-    body = body[:body.index("\n  }\n")]
+    body = js_body(text, "function labBody(preview) {")
     assert "template: t.value," in body
 
 
@@ -1433,14 +1429,12 @@ def test_prompt_lab_family_widgets_follow_a_failed_preview(client):
     lst = html[html.index("_registerAdminListener('admin:dirty', 'translationLab'"):]
     lst = lst[:lst.index("\n  });\n")]
     assert "showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));" in lst
-    rp = html[html.index("function renderPrompt(p) {"):]
-    assert "showFamily(p.family);" in rp[:rp.index("\n  }\n")]
+    assert "showFamily(p.family);" in js_body(html, "function renderPrompt(p) {")
 
 
 def test_prompt_lab_thrown_preview_clears_the_old_prompt(client):
     html = _settings_html(client)
-    sp = html[html.index("function schedulePreview() {"):]
-    sp = sp[:sp.index("\n  }\n")]
+    sp = js_body(html, "function schedulePreview() {")
     c = sp[sp.index("} catch (e) {"):]
     assert "if (seq !== previewSeq) return;" in c
     assert "readout.textContent = 'preview unavailable: ' + e;" in c
@@ -1584,8 +1578,7 @@ def test_promote_one_warns_on_a_rule_without_a_sync_record(client):
     """Promote all starts an 'edited' rule with no config_rev unticked (it may
     be diverged); the per-row ↑ Promote overwrote it with no warning."""
     html = _settings_html(client)
-    one = html[html.index("async function _promoteOne(rule) {"):]
-    one = one[:one.index("\n  }\n")]
+    one = js_body(html, "async function _promoteOne(rule) {")
     assert "st === 'edited' && !rule.config_rev ?" in one
 
 
