@@ -127,6 +127,14 @@ def test_merge_trim_false_is_identity(monkeypatch):
     assert res["duration_ms"] == 700
 
 
+@pytest.fixture
+def identity_align(monkeypatch):
+    monkeypatch.setattr(
+        capture_samples, "_align_words_to_final",
+        lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
+    )
+
+
 def _routes():
     pytest.importorskip("fastapi")
     from faster_whisper_backend.captures import routes as captures_routes
@@ -148,12 +156,8 @@ def test_remap_time_ms():
     assert cr._remap_time_ms(5000, segs) == 1100
 
 
-def test_build_merged_words_per_member(monkeypatch):
+def test_build_merged_words_per_member(identity_align):
     cr = _routes()
-    monkeypatch.setattr(
-        capture_samples, "_align_words_to_final",
-        lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
-    )
     members = [
         {"id": "a", "words": [{"word": "hi", "start": 0.2, "end": 0.5}],
          "final": "hi", "audio_s": 2.0},
@@ -177,14 +181,10 @@ def test_build_merged_words_per_member(monkeypatch):
     assert out[1]["member_idx"] == 1
 
 
-def test_build_merged_words_uniform_offset(monkeypatch):
+def test_build_merged_words_uniform_offset(identity_align):
     # Uniform-silence layout: each member carries an absolute `offset_ms`,
     # so word times are offset_ms + remapped-local (NOT cum+i*silence).
     cr = _routes()
-    monkeypatch.setattr(
-        capture_samples, "_align_words_to_final",
-        lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
-    )
     members = [
         {"id": "a", "words": [{"word": "hi", "start": 0.25, "end": 0.45}],
          "final": "hi", "audio_s": 2.0},
@@ -242,12 +242,8 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
     assert "train_word" not in ws2[0]
 
 
-def test_build_merged_words_legacy(monkeypatch):
+def test_build_merged_words_legacy(identity_align):
     cr = _routes()
-    monkeypatch.setattr(
-        capture_samples, "_align_words_to_final",
-        lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
-    )
     members = [
         {"id": "a", "words": [{"word": "hi", "start": 0.2, "end": 0.5}],
          "final": "hi", "audio_s": 2.0},
@@ -312,15 +308,11 @@ def test_build_proposal_uses_trimmed_durations():
     assert abs(prop["total_duration_s"] - 2.5) < 1e-6
 
 
-def test_build_merged_words_keeps_index_parity_with_the_raw_words(monkeypatch):
+def test_build_merged_words_keeps_index_parity_with_the_raw_words(identity_align):
     # A filler stamped inside member a's trimmed lead used to be dropped, so
     # every later merged index sat one word off the raw-word frame the server
     # splits chips by: a chip on " three" landed on member a's " two".
     cr = _routes()
-    monkeypatch.setattr(
-        capture_samples, "_align_words_to_final",
-        lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
-    )
     members = [
         {"id": "a", "final": "x", "audio_s": 2.0, "words": [
             {"word": "hm", "start": 0.0, "end": 0.2},
