@@ -27,33 +27,25 @@ def _env_tidy(monkeypatch, rules):
 
 
 def test_an_untouched_older_factory_copy_in_the_env_becomes_the_current_rule(
-        monkeypatch):
+        monkeypatch, restore_config):
     rules = copy.deepcopy(_factory_rules())
     _older_tidy(rules)
-    try:
-        got = _env_tidy(monkeypatch, rules)
-        want = next(r for r in cs.load_factory_rules() if r["name"] == _TIDY)
-        assert got == {**want, "config_rev": _rev(want)}
-        assert any("WHISPER_PIPELINE_RULES: updated rules" in m and _TIDY in m
-                   for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    got = _env_tidy(monkeypatch, rules)
+    want = next(r for r in cs.load_factory_rules() if r["name"] == _TIDY)
+    assert got == {**want, "config_rev": _rev(want)}
+    assert any("WHISPER_PIPELINE_RULES: updated rules" in m and _TIDY in m
+               for m in config._ENV_WARNINGS)
 
 
-def test_edited_and_unrecorded_env_copies_stay_as_written(monkeypatch):
+def test_edited_and_unrecorded_env_copies_stay_as_written(monkeypatch, restore_config):
     rules = copy.deepcopy(_factory_rules())
     edited = _older_tidy(rules)
     edited["entries"][-1]["note"] = "mine"           # rev no longer matches
     unrecorded = copy.deepcopy(rules)
     del _older_tidy(unrecorded)["config_rev"]        # hand-written, no rev
-    try:
-        for env_rules in (rules, unrecorded):
-            want = next(r for r in env_rules if r["name"] == _TIDY)
-            got = _env_tidy(monkeypatch, env_rules)
-            assert got["entries"] == want["entries"]
-            assert got.get("config_rev") == want.get("config_rev")
-            assert not set(_QUOTE_LABELS) & {e["label"] for e in got["entries"]}
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    for env_rules in (rules, unrecorded):
+        want = next(r for r in env_rules if r["name"] == _TIDY)
+        got = _env_tidy(monkeypatch, env_rules)
+        assert got["entries"] == want["entries"]
+        assert got.get("config_rev") == want.get("config_rev")
+        assert not set(_QUOTE_LABELS) & {e["label"] for e in got["entries"]}
