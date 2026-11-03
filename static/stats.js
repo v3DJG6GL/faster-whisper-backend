@@ -99,15 +99,16 @@ function setPreset(name, persist = true) {
   if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === name));
 }
 window._fwSetPreset = setPreset;
-// Segmented control #id: a click on one of its buttons calls fn(value, button).
-function onSeg(id, fn) {
+// Delegated click on #id: fn(match, event) for the nearest `sel` inside it.
+function onPick(id, sel, fn) {
   const g = document.getElementById(id); if (!g) return;
   g.addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (!b || !g.contains(b)) return;
-    fn(b.dataset.v, b);
+    const t = e.target.closest(sel);
+    if (t && g.contains(t)) fn(t, e);
   });
 }
+// Segmented control #id: a click on one of its buttons calls fn(value, button).
+function onSeg(id, fn) { onPick(id, 'button', (b) => fn(b.dataset.v, b)); }
 // Re-run a one-shot CSS animation: the forced reflow makes the re-added class start it over.
 function restartClass(el, cls) { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
 function flashCtl(id) {
@@ -551,9 +552,7 @@ function wireScopeBar() {
   });
   onSeg('sb-compare', (v) => { Q.compare = v; setSeg('sb-compare', v); load(); });
   // Kind chips: OR across kinds; Alt-click isolates one, like the chart legend.
-  const kinds = $('sb-kind');
-  if (kinds) kinds.addEventListener('click', (e) => {
-    const c = e.target.closest('.chip'); if (!c) return;
+  onPick('sb-kind', '.chip', (c, e) => {
     const v = c.dataset.v;
     if (v === 'all') Q.kinds = [];
     else if (e.altKey) Q.kinds = [v];
@@ -561,16 +560,12 @@ function wireScopeBar() {
     if (Q.kinds.length === KINDS.length) Q.kinds = [];
     setKind();
   });
-  const w = $('sb-with');
-  if (w) w.addEventListener('click', (e) => {
-    const c = e.target.closest('.chip'); if (!c) return;
+  onPick('sb-with', '.chip', (c) => {
     const v = c.dataset.v;
     Q.with = Q.with.includes(v) ? Q.with.filter(x => x !== v) : Q.with.concat([v]);
     load();
   });
-  const f = $('sb-filters');
-  if (f) f.addEventListener('click', (e) => {
-    const c = e.target.closest('.chip'); if (!c) return;
+  onPick('sb-filters', '.chip', (c) => {
     if (c.id === 'sb-clear') {
       Object.assign(Q, { range: '30', from: null, to: null, compare: 'off', kinds: [],
                          with: [], users: [], keys: [] });
