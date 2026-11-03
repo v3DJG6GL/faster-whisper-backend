@@ -112,6 +112,32 @@ def test_logs_page_reconnect_while_paused_shows_paused(client):
     assert "if (!paused) {" not in onopen
 
 
+def _tail_rig(app_module, monkeypatch, tmp_path, after_backlog):
+    """Seed LOG_FILE with "first" and run `after_backlog(log)` right after the
+    stream's backlog read; re-auth always passes. Returns the log path."""
+    from faster_whisper_backend.admin import logs_routes
+
+    log = tmp_path / "live.log"
+    log.write_text("first\n", encoding="utf-8")
+    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
+    real = logs_routes._read_chain_window
+
+    def _read_then(*a, **k):
+        out = real(*a, **k)
+        after_backlog(log)
+        return out
+
+    monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then)
+    monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
+                        lambda request, seen, resolved_at: (seen, resolved_at))
+    return log
+
+
+async def _past_backlog(gen):
+    assert await gen.__anext__() == "data: first\n\n"
+    assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+
+
 def test_logs_stream_delivers_a_line_logged_during_the_backlog(
         app_module, monkeypatch, tmp_path):
     """A line logged after the backlog read but before the tail took its
@@ -120,26 +146,16 @@ def test_logs_stream_delivers_a_line_logged_during_the_backlog(
 
     from faster_whisper_backend.admin import logs_routes
 
-    log = tmp_path / "live.log"
-    log.write_text("first\n", encoding="utf-8")
-    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
-    real = logs_routes._read_chain_window
-
-    def _read_then_log(*a, **k):
-        out = real(*a, **k)
+    def _log_during(log):
         with open(log, "a", encoding="utf-8") as f:
             f.write("during\n")
-        return out
 
-    monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then_log)
-    monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
-                        lambda request, seen, resolved_at: (seen, resolved_at))
+    _tail_rig(app_module, monkeypatch, tmp_path, _log_during)
 
     async def drive():
         gen = logs_routes._stream_log_lines(None)
         try:
-            assert await gen.__anext__() == "data: first\n\n"
-            assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+            await _past_backlog(gen)
             # Bounded: on a regression "during" is in neither the backlog
             # nor the tail and the generator polls forever — fail, not hang.
             assert await asyncio.wait_for(gen.__anext__(), timeout=5) \
@@ -158,29 +174,20 @@ def test_logs_stream_holds_back_a_half_written_line(app_module, monkeypatch, tmp
 
     from faster_whisper_backend.admin import logs_routes
 
-    log = tmp_path / "live.log"
-    log.write_text("first\n", encoding="utf-8")
-    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
-    real = logs_routes._read_chain_window
     whole = "half of a läng line".encode("utf-8")
     cut = whole.index(b"\xc3") + 1          # inside the two-byte "ä"
 
-    def _read_then_log_half(*a, **k):
-        out = real(*a, **k)
+    def _log_half(log):
         with open(log, "ab") as f:
             f.write(whole[:cut])
-        return out
 
-    monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then_log_half)
-    monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
-                        lambda request, seen, resolved_at: (seen, resolved_at))
+    log = _tail_rig(app_module, monkeypatch, tmp_path, _log_half)
 
     async def drive():
         gen = logs_routes._stream_log_lines(None)
         got = []
         try:
-            assert await gen.__anext__() == "data: first\n\n"
-            assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+            await _past_backlog(gen)
             # First poll sees only the unterminated half.
             msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
             if msg.startswith("data: "):
@@ -209,28 +216,18 @@ def test_logs_stream_keeps_lines_logged_just_before_a_rotation(
 
     from faster_whisper_backend.admin import logs_routes
 
-    log = tmp_path / "live.log"
-    log.write_text("first\n", encoding="utf-8")
-    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
-    real = logs_routes._read_chain_window
-
-    def _read_then_rotate(*a, **k):
-        out = real(*a, **k)
+    def _rotate(log):
         with open(log, "a", encoding="utf-8") as f:
             f.write("before rollover\n")
         log.rename(tmp_path / "live.log.1")
         log.write_text("new\n", encoding="utf-8")   # shorter than the offset
-        return out
 
-    monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then_rotate)
-    monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
-                        lambda request, seen, resolved_at: (seen, resolved_at))
+    _tail_rig(app_module, monkeypatch, tmp_path, _rotate)
 
     async def drive():
         gen = logs_routes._stream_log_lines(None)
         try:
-            assert await gen.__anext__() == "data: first\n\n"
-            assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+            await _past_backlog(gen)
             return [await asyncio.wait_for(gen.__anext__(), timeout=5)
                     for _ in range(2)]
         finally:
