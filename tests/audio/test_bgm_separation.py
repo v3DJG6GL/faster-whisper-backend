@@ -25,6 +25,15 @@ def _seed(monkeypatch, sep=None, key=None, leases=None, orphans=None):
     monkeypatch.setattr(bgm_separation, "_orphans", {} if orphans is None else orphans)
 
 
+def _foo_model(monkeypatch, device="cpu"):
+    cfg = bgm_separation.cfg
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", device, raising=False)
+    _seed(monkeypatch)
+    monkeypatch.setattr(bgm_separation, "_deferred_free", set())
+    return cfg
+
+
 def _stub_separate(monkeypatch, calls=None):
     """separate() writes a real vocals tmp file — the handler swaps it into
     tmp_path and the request-level finally must unlink it."""
@@ -249,9 +258,7 @@ def test_register_records_the_actual_session_device(monkeypatch):
     import asyncio
     from faster_whisper_backend.runtime import model_registry
 
-    cfg = bgm_separation.cfg
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cuda", raising=False)
+    _foo_model(monkeypatch, device="cuda")
     monkeypatch.setattr(bgm_separation, "_session_device", None)
 
     def _load(model, device):
@@ -305,9 +312,7 @@ def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     would then decrement a bucket that was never leased and the real lease
     would pin the model forever."""
     import asyncio
-    cfg = bgm_separation.cfg
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
+    cfg = _foo_model(monkeypatch)
     monkeypatch.setattr(bgm_separation, "_load_blocking",
                         lambda model, device: object())
 
@@ -329,12 +334,7 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
     by a job that never touched it."""
     import asyncio
     from faster_whisper_backend.runtime import model_registry
-    cfg = bgm_separation.cfg
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
-    monkeypatch.setattr(bgm_separation, "_separator", None)
-    monkeypatch.setattr(bgm_separation, "_separator_key", None)
-    monkeypatch.setattr(bgm_separation, "_leases", {})
+    _foo_model(monkeypatch)
     made = []
 
     class _Sep:
@@ -394,9 +394,7 @@ def test_release_returns_the_lease_immediately_while_a_load_holds_the_lock(
     downloading — the release is lock-free and lands before the lock is
     ever given up."""
     import asyncio
-    cfg = bgm_separation.cfg
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
+    _foo_model(monkeypatch)
     sep = object()
     _seed(monkeypatch, sep, ("Foo.onnx", "cpu"))
 
@@ -433,14 +431,6 @@ def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     assert unregistered == []
     assert bgm_separation._orphans == {"m.onnx": 1}
     assert bgm_separation.actual_device() == "cuda"
-
-
-def _foo_model(monkeypatch, device="cpu"):
-    cfg = bgm_separation.cfg
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", device, raising=False)
-    _seed(monkeypatch)
-    monkeypatch.setattr(bgm_separation, "_deferred_free", set())
 
 
 def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatch):
@@ -545,9 +535,7 @@ def test_failed_reload_redoes_the_free_an_orphan_deferred_to_it(monkeypatch):
     from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch, device="cuda")
     old = object()
-    monkeypatch.setattr(bgm_separation, "_separator", old)
-    monkeypatch.setattr(bgm_separation, "_separator_key", ("Foo.onnx", "cpu"))
-    monkeypatch.setattr(bgm_separation, "_leases", {"Foo.onnx": 1})
+    _seed(monkeypatch, old, ("Foo.onnx", "cpu"), {"Foo.onnx": 1})
     monkeypatch.setattr(bgm_separation, "_session_device", "cpu")
     model_registry.register_loaded_model("uvr:Foo.onnx", None, "cpu", "onnx", 1.0)
     entered, gate = threading.Event(), threading.Event()
@@ -584,8 +572,7 @@ def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
     import time
     import types
     monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
-    monkeypatch.setattr(bgm_separation, "_leases", {})
-    monkeypatch.setattr(bgm_separation, "_orphans", {})
+    _foo_model(monkeypatch)
     entered, gate = threading.Event(), threading.Event()
     written: "list[str]" = []
 
@@ -599,12 +586,7 @@ def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
             return [out]
 
     sep = _Sep()
-    monkeypatch.setattr(bgm_separation, "_separator", sep)
-    monkeypatch.setattr(bgm_separation, "_separator_key", ("Foo.onnx", "cpu"))
-    monkeypatch.setattr(bgm_separation.cfg, "BGM_SEPARATION_UVR_MODEL", "Foo",
-                        raising=False)
-    monkeypatch.setattr(bgm_separation.cfg, "BGM_SEPARATION_DEVICE", "cpu",
-                        raising=False)
+    _seed(monkeypatch, sep, ("Foo.onnx", "cpu"))
 
     async def _main():
         task = asyncio.create_task(bgm_separation.separate("in.wav"))
@@ -634,9 +616,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_separator(
     import asyncio
     _foo_model(monkeypatch)
     held = object()
-    monkeypatch.setattr(bgm_separation, "_separator", held)
-    monkeypatch.setattr(bgm_separation, "_separator_key", ("Bar.onnx", "cpu"))
-    monkeypatch.setattr(bgm_separation, "_leases", {"Bar.onnx": 1})
+    _seed(monkeypatch, held, ("Bar.onnx", "cpu"), {"Bar.onnx": 1})
     loads: list = []
     monkeypatch.setattr(bgm_separation, "_load_blocking",
                         lambda m, d: loads.append(m) or object())
