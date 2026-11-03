@@ -559,16 +559,29 @@ def test_trace_row_stashes_only_the_fields_its_readers_need(client, tmp_path):
     assert res == {"request_id": "r1", "ts": 5, "tokens": ["a"], "bigrams": ["a b"]}
 
 
+_OLIST_FUNCS = ("_stringify", "_olistKeyed", "_olistAlign", "_fieldDiff", "_applyFieldDiff",
+                "_diffKindFor", "_reapplyDiffs")
+
+
+def _olist_consts(page):
+    return "\n".join(
+        "globalThis." + m.group(1) + " = " + m.group(2)
+        for m in re.finditer(r"^const (_\w+_FIELDS) = (.*)$", page, re.M))
+
+
+def _run_olist_js(client, tmp_path, body):
+    """_run_js with the page's _*_FIELDS sets as globals and the olist merge functions."""
+    page = client.get("/quick-config").text
+    return _run_js(client, tmp_path, _olist_consts(page) + body, funcs=_OLIST_FUNCS)
+
+
 def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_path):
     # A regex-list rule's `entries` diffed as a scalar, so a conflict re-merge
     # put back the user's whole load-time list plus their edit and the other
     # writer's new entry was dropped by the next save, under an "Auto-merged"
     # toast.
     page = client.get("/quick-config").text
-    field_sets = "\n".join(
-        "globalThis." + m.group(1) + " = " + m.group(2)
-        for m in re.finditer(r"^const (_\w+_FIELDS) = (.*)$", page, re.M))
-    res = _run_js(client, tmp_path, field_sets + r"""
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
       const e = (p) => ({ pattern: p, replacement: p.toUpperCase() });
       const base = [e('a'), e('b'), e('c')];
       // The user moved c to the top, dropped b and appended y; meanwhile the
@@ -588,24 +601,13 @@ def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_p
     assert res["noop"] is None
 
 
-_OLIST_FUNCS = ("_stringify", "_olistKeyed", "_olistAlign", "_fieldDiff", "_applyFieldDiff",
-                "_diffKindFor", "_reapplyDiffs")
-
-
-def _olist_consts(page):
-    return "\n".join(
-        "globalThis." + m.group(1) + " = " + m.group(2)
-        for m in re.finditer(r"^const (_\w+_FIELDS) = (.*)$", page, re.M))
-
-
 def test_conflict_merge_keeps_an_entry_edited_in_place_as_one_entry(client, tmp_path):
     # The regex-list merge keyed entries by their whole content, so an edit in
     # place looked like delete + add: an entry the user edited could not
     # anchor the other writer's new entries (they were spliced in front of it,
     # changing the apply order), and an entry both writers edited came back
     # twice, the other writer's copy first, shadowing the user's.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r, extra) => ({ pattern: p, replacement: r || p.toUpperCase(), ...(extra || {}) });
       const merge = (base, mine, theirs) => {
         const clashes = [];
@@ -633,7 +635,7 @@ def test_conflict_merge_keeps_an_entry_edited_in_place_as_one_entry(client, tmp_
         kept: merge([e('a'), e('b'), e('c')], [e('a'), e('b', 'MINE'), e('c')],
                     [e('a'), e('c')]),
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["order"] == ["a>A", "x>X2", "y>Y2"]
     assert res["anchor"] == ["a>A", "x>X2", "n>N", "y>Y"]
     assert res["both"] == ["CONFLICT", ["foo"], ["foo>baz", "x>X"]]
@@ -648,8 +650,7 @@ def test_conflict_merge_pairs_a_pattern_edited_in_place_with_its_entry(client, t
     # looked like delete + add: the entry came back twice, the other writer's
     # new entry was spliced in front of it, or the other writer's edit to the
     # same entry was dropped, all under an "Auto-merged" toast.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const merge = (base, mine, theirs) => {
         const clashes = [];
@@ -676,7 +677,7 @@ def test_conflict_merge_pairs_a_pattern_edited_in_place_with_its_entry(client, t
         clean: merge([e('a'), e('x'), e('y')], [e('a'), e('x2', 'X'), e('y')],
                      [e('a'), e('x'), e('y', 'Y2')]),
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     # The other writer's pattern fix may as well be a delete + add, so it is
     # kept next to the user's version for review rather than dropped.
     assert res["theirsPattern"] == ["CONFLICT", ["a>A", "colou?r>color", "colour>COLOR"]]
@@ -692,8 +693,7 @@ def test_conflict_merge_keeps_the_other_writers_entry_added_where_they_deleted_o
     # new entry added where they deleted one took the deleted entry's id: when
     # the user had deleted that entry as well it vanished with no clash, and
     # when the user had edited it only the user's version came back.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const merge = (base, mine, theirs) => {
         const clashes = [];
@@ -712,7 +712,7 @@ def test_conflict_merge_keeps_the_other_writers_entry_added_where_they_deleted_o
         inPlace: merge([e('x'), e('b'), e('y')], [e('x'), e('b'), e('y', 'Y2')],
                        [e('x'), e('b2', 'B'), e('y')]),
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["tail"] == ["a>A", "c>C"]
     assert res["mid"] == ["x>X", "c>C", "y>Y"]
     assert res["edited"] == ["CONFLICT", ["x>X", "c>C", "b>B2"]]
@@ -723,8 +723,7 @@ def test_conflict_merge_keeps_both_new_entries_around_a_moved_one(client, tmp_pa
     # After a side moved an entry up, a later gap overlapped an earlier one and
     # the same deleted entry's id went to two new entries: one of the other
     # writer's new entries was dropped under a clean "Auto-merged" toast.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const base = [e('a'), e('b'), e('c'), e('d')];
       // The other writer added X on top, deleted b, moved a after c and added
@@ -736,7 +735,7 @@ def test_conflict_merge_keeps_both_new_entries_around_a_moved_one(client, tmp_pa
       const keys = _olistAlign(_olistKeyed(base), _olistKeyed(theirs)).map(([k]) => k);
       out({ merged: m.map(x => x.pattern + '>' + x.replacement).sort(), clashes,
             uniqueKeys: new Set(keys).size === keys.length });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["merged"] == ["X>X", "Y>Y", "a>A", "c>C", "d>D9"]
     assert res["clashes"] == []
     assert res["uniqueKeys"] is True
@@ -746,8 +745,7 @@ def test_conflict_merge_keeps_one_entry_when_both_writers_made_the_same_pattern_
     # Both writers fixed x's pattern to y and one also changed the
     # replacement: the other writer's entry went back in under its own id as
     # well, so the list held y twice and theirs, first, shadowed the user's.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
       const merge = (base, mine, theirs) => {
         const clashes = [];
@@ -760,7 +758,7 @@ def test_conflict_merge_keeps_one_entry_when_both_writers_made_the_same_pattern_
         theirsRepl: merge([e('x', '1'), e('a', '2')], [e('y', '1'), e('a', '2')],
                           [e('y', 'S'), e('a', '2')]),
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["mineRepl"] == [["y"], ["y>U", "a>2"]]
     assert res["theirsRepl"] == [["y"], ["y>1", "a>2"]]
 
@@ -769,8 +767,7 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_the_user_also_adde
     # The other writer's pattern fix x -> y went back in under its own id,
     # but the user had added a y entry of their own: theirs was skipped with
     # no clash, so the next save overwrote it under an "Auto-merged" toast.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
       const merge = (base, mine, theirs) => {
         const clashes = [];
@@ -785,7 +782,7 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_the_user_also_adde
         same: merge([e('a', '1'), e('x', '1')], [e('a', '1'), e('x', 'U'), e('y', '1')],
                     [e('a', '1'), e('y', '1')]),
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["edited"] == [["x", "y"], ["a>1", "x>U", "y>5"]]
     assert res["same"] == [["x"], ["a>1", "x>U", "y>1"]]
 
@@ -796,8 +793,7 @@ def test_conflict_merge_reports_the_users_new_entry_shadowed_by_the_other_writer
     # fixed x's pattern to y: the merge put their fix in x's place, ahead of
     # the user's y, so the user's entry never matched (or sat there twice)
     # under a clean "Auto-merged" toast.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
       const merge = (base, mine, theirs) => {
         const clashes = [];
@@ -810,7 +806,7 @@ def test_conflict_merge_reports_the_users_new_entry_shadowed_by_the_other_writer
         other: merge(base, [...base, e('y', 'W')], theirs),
         same: merge(base, [...base, e('y', 'X')], theirs),
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["other"] == [["y"], ["a>A", "y>X", "z>Z", "y>W"]]
     assert res["same"] == [[], ["a>A", "y>X", "z>Z"]]
 
@@ -820,8 +816,7 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_to_an_entry_the_us
     # The user deleted b while the other writer only fixed b's pattern: the
     # entry came back under a clean "Auto-merged" toast, though a deleted
     # entry the other writer changed the replacement of stays deleted.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const merge = (base, mine, theirs) => {
         const clashes = [];
@@ -836,7 +831,7 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_to_an_entry_the_us
         // the other writer put a new entry in b's place: kept, nothing to review.
         replaced: merge([e('x'), e('b'), e('y')], [e('x'), e('y')], [e('x'), e('c'), e('y')]),
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["fixed"] == [["b2"], ["x>X", "b2>B", "y>Y"]]
     assert res["added"] == [["y"], ["a>1", "b>1", "y>5"]]
     assert res["replaced"] == [[], ["x>X", "c>C", "y>Y"]]
@@ -847,8 +842,7 @@ def test_reapply_tells_an_entry_the_user_deleted_coming_back_from_a_both_edited_
     # The deleted entry the other writer fixed the pattern of comes back in
     # their version, but its rule was reported like a both-edited clash, so
     # the toast said "your version is kept" of a deletion that was undone.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       globalThis.dirty = new Set();
       globalThis.liveRules = [
@@ -865,7 +859,7 @@ def test_reapply_tells_an_entry_the_user_deleted_coming_back_from_a_both_edited_
       _applyFieldDiff([e('x'), e('b2', 'B'), e('y')],
                       _fieldDiff([e('x'), e('b'), e('y')], [e('x'), e('y')], 'olist'), clashes, back);
       out({ clashed, restored, clashes, back });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["clashed"] == ["both"]
     assert res["restored"] == ["del"]
     assert res["clashes"] == ["b2"] and res["back"] == ["b2"]
@@ -877,8 +871,7 @@ def test_reapply_keeps_a_both_edited_clash_when_the_users_entry_keeps_the_other_
     # pattern fix b2 never went in, yet the toast said "their entry is back,
     # delete it again" (pointing at the user's own entry) instead of "your
     # version is kept"; the same b2 on both sides was a clash too.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const base = [e('x'), e('b'), e('y')];
       const theirs = [e('x'), e('b2', 'B'), e('y')];
@@ -897,7 +890,7 @@ def test_reapply_keeps_a_both_edited_clash_when_the_users_entry_keeps_the_other_
         same: merge([e('x'), e('y'), e('b2', 'B')]),
         clashed, restored,
       });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["other"] == [["b2"], [], ["x>X", "y>Y", "b2>W"]]
     assert res["same"] == [[], [], ["x>X", "y>Y", "b2>B"]]
     assert res["clashed"] == ["kept"] and res["restored"] == []
@@ -908,8 +901,7 @@ def test_reapply_reports_a_scalar_both_writers_changed_differently_as_a_clash(
     # A callback rule's pattern is a scalar: the merge kept the user's value
     # over the other writer's different one and the toast called the rule
     # "Auto-merged", so their edit was dropped by the next save unseen.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       globalThis.dirty = new Set();
       const reapply = (theirs) => {
         globalThis.liveRules = [{ name: 'lw', type: 'callback:lowercase-wordlist',
@@ -920,7 +912,7 @@ def test_reapply_reports_a_scalar_both_writers_changed_differently_as_a_clash(
         return [liveRules[0].pattern, clashed, restored];
       };
       out({ other: reapply('c'), same: reapply('b'), untouched: reapply('a') });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["other"] == ["b", ["lw"], []]
     assert res["same"] == ["b", [], []]
     assert res["untouched"] == ["b", [], []]
@@ -983,8 +975,7 @@ def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited
     # every other unsaved edit on it (added entries, the enabled toggle, other
     # entries) vanished with no undo. Its slug is reported so the toast can
     # name the rule.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
       globalThis.dirty = new Set();
       globalThis.liveRules = [
@@ -1000,7 +991,7 @@ def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited
       const clashed = [];
       const merged = _reapplyDiffs(diffs, clashed);
       out({ merged, clashed, dirty: [...dirty].sort(), rules: liveRules });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["merged"] == 2
     assert res["clashed"] == ["rx"]
     assert res["dirty"] == ["ok", "rx"]
@@ -1016,8 +1007,7 @@ def test_reapply_reports_a_dictionary_key_both_writers_changed(client, tmp_path)
     # to another value was overwritten under a clean "Auto-merged" toast, and
     # the next save lost their edit. It keeps the user's value and reports
     # the rule, as a regex-list entry both writers edited does.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       globalThis.dirty = new Set();
       const base = { komma: ',', punkt: '.', fragezeichen: '?' };
       globalThis.liveRules = [
@@ -1035,7 +1025,7 @@ def test_reapply_reports_a_dictionary_key_both_writers_changed(client, tmp_path)
       const keys = [];
       _applyFieldDiff({ komma: ', ', neu: 'A' }, _fieldDiff(base, mine, 'dict'), keys);
       out({ merged, clashed, keys, maps: liveRules.map(r => r.map) });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["merged"] == 4
     assert res["clashed"] == ["both"]
     assert sorted(res["keys"]) == ["komma", "neu"]
@@ -1052,8 +1042,7 @@ def test_reapply_brings_back_a_dictionary_key_the_user_deleted_and_the_other_wri
     # clean "Auto-merged" toast, and so was their value under the user's
     # rename of that key (a remove plus an add). Their key is back and the
     # rule reported, as for a regex-list entry the user deleted.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       globalThis.dirty = new Set();
       const base = { komma: ',', punkt: '.' };
       globalThis.liveRules = [
@@ -1072,7 +1061,7 @@ def test_reapply_brings_back_a_dictionary_key_the_user_deleted_and_the_other_wri
       _applyFieldDiff({ komma: ', ', punkt: '.' }, _fieldDiff(base, { punkt: '.' }, 'dict'),
                       clashes, back);
       out({ merged, clashed, restored, clashes, back, maps: liveRules.map(r => r.map) });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["merged"] == 3
     # A rename that only recases the key keeps the user's key alone (the
     # server refuses komma next to Komma): a clash, not a restore.
@@ -1090,8 +1079,7 @@ def test_conflict_merge_deletes_a_dictionary_key_the_other_writer_only_recased(c
     # under a clean "Auto-merged" toast, and the next save stored the word
     # the user deleted. A pure recase takes the deletion; a recase with a
     # changed value is back and reported, as for the same spelling.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const base = { komma: ',', punkt: '.' };
       const d = _fieldDiff(base, { punkt: '.' }, 'dict');
       const res = {};
@@ -1101,7 +1089,7 @@ def test_conflict_merge_deletes_a_dictionary_key_the_other_writer_only_recased(c
         res[name] = { map: _applyFieldDiff(theirs, d, clashes, back), clashes, back };
       }
       out(res);
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["recased"] == {"map": {"punkt": "."}, "clashes": [], "back": []}
     assert res["changed"] == {"map": {"Komma": ";", "punkt": "."},
                               "clashes": ["Komma"], "back": ["Komma"]}
@@ -1114,8 +1102,7 @@ def test_reapply_keeps_one_spelling_of_a_dictionary_key_both_writers_added_in_an
     # under a clean "Auto-merged" toast, and the next save got a 422 (map
     # keys collide when lowercased). The user's key is kept and the rule
     # reported, as for a key both writers added with different values.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       globalThis.dirty = new Set();
       const base = { punkt: '.' };
       globalThis.liveRules = [
@@ -1131,7 +1118,7 @@ def test_reapply_keeps_one_spelling_of_a_dictionary_key_both_writers_added_in_an
       const merged = _reapplyDiffs(diffs, clashed, restored);
       const plain = _applyFieldDiff({ komma: ', ' }, _fieldDiff(base, { Komma: ',' }, 'dict'));
       out({ merged, clashed, restored, plain, maps: liveRules.map(r => r.map) });
-    """, funcs=_OLIST_FUNCS)
+    """)
     assert res["merged"] == 2
     assert res["clashed"] == ["added", "recased"]
     assert res["restored"] == []
