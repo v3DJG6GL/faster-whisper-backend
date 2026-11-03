@@ -53,6 +53,15 @@ def _grid_words(start_s: float, end_s: float):
     return out
 
 
+def _grid_partial(box):
+    """Fake partial decoder: the grid words of exactly the buffer it receives."""
+    async def decode_partial(audio, prompt):
+        off = box[0]._buffer_offset
+        dur = audio.shape[0] / SR
+        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    return decode_partial
+
+
 def _run_gate_path():
     """Loud speech long enough for a trim to bank words, then quiet frames
     until the max_buffer_sec ceiling forces a finalize whose live buffer is
@@ -73,10 +82,7 @@ def _run_gate_path():
     async def on_final(info):
         finals_meta.append(info)
 
-    async def decode_partial(audio, prompt):
-        off = box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(box)
 
     async def decode_final(audio, prompt):
         final_decodes.append(audio.shape[0] / SR)
@@ -142,10 +148,7 @@ def test_decoded_path_flags_decode_and_rebases_words():
     async def on_final(info):
         finals_meta.append(info)
 
-    async def decode_partial(audio, prompt):
-        off = box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(box)
 
     async def decode_final(audio, prompt):
         off = box[0]._buffer_offset
@@ -198,10 +201,7 @@ def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
     async def on_final(info):
         finals_meta.append(info)
 
-    async def decode_partial(audio, prompt):
-        off = box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(box)
 
     async def decode_final(audio, prompt):
         return ("", [], False)

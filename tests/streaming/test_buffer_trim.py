@@ -34,6 +34,15 @@ def _grid_words(start_s: float, end_s: float):
             for i in range(first, last)]
 
 
+def _grid_partial(box):
+    """Fake partial decoder: the grid words of exactly the buffer it receives."""
+    async def decode_partial(audio, prompt):
+        off = box[0]._buffer_offset
+        dur = audio.shape[0] / SR
+        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    return decode_partial
+
+
 def _run_long_utterance(speech_ms: int):
     """Drive a session through one continuous utterance of speech_ms, with a
     buffer trim configured to fire mid-utterance. The fake decoders transcribe
@@ -57,10 +66,7 @@ def _run_long_utterance(speech_ms: int):
 
     session_box: list[StreamSession] = []
 
-    async def decode_partial(audio, prompt):
-        off = session_box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(session_box)
 
     async def decode_final(audio, prompt):
         off = session_box[0]._buffer_offset
@@ -139,10 +145,7 @@ def test_trim_folds_cut_words_into_rolling_prompt():
     final_prompts: list[str] = []
     session_box: list[StreamSession] = []
 
-    async def decode_partial(audio, prompt):
-        off = session_box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(session_box)
 
     async def decode_final(audio, prompt):
         final_prompts.append(prompt)
@@ -182,10 +185,7 @@ def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
     banked: list[str] = []
     session_box: list[StreamSession] = []
 
-    async def decode_partial(audio, prompt):
-        off = session_box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(session_box)
 
     async def decode_final(audio, prompt):
         final_prompts.append(prompt)
@@ -365,10 +365,7 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
     async def on_final(info):
         finals_meta.append(info)
 
-    async def decode_partial(audio, prompt):
-        off = session_box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(session_box)
 
     async def decode_final(audio, prompt):
         final_decodes.append(audio.shape[0] / SR)
@@ -475,10 +472,7 @@ def test_buffer_counter_matches_the_array_after_every_frame():
     )
     session_box: list[StreamSession] = []
 
-    async def decode_partial(audio, prompt):
-        off = session_box[0]._buffer_offset
-        dur = audio.shape[0] / SR
-        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+    decode_partial = _grid_partial(session_box)
 
     async def decode_final(audio, prompt):
         return (" tail.", [], False)
