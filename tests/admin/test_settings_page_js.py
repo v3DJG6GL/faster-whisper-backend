@@ -93,7 +93,8 @@ def _captures_harness(html, body, real_list=False):
     branch = _block(html, "  if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {")
     if real_list:
         rle = (_block(html, "function makeRuleListEditor(", "\n}\n")
-               + _block(html, "function _helpDiv(text) {", "\n}\n"))
+               + _block(html, "function _helpDiv(text) {", "\n}\n")
+               + _block(html, "function _button(", "\n}\n"))
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
 function _lsGet() { return null; }
@@ -198,7 +199,9 @@ def test_model_overrides_rerender_keeps_env_pinned_editor_disabled(client):
 def test_model_override_seeds_from_the_current_global_value(client):
     """'+ override' seeded the global value captured when the row was built;
     an unsaved global edit later only refreshed the 'inherits' hint."""
-    row_fn = _block(_html(client), "  function renderFieldRow(field) {")
+    html = _html(client)
+    row_fn = (_block(html, "function _button(", "\n}\n")
+              + _block(html, "  function renderFieldRow(field) {"))
     out = _node(_FAKE_DOM + """
 let selectedId = 'm';
 const FIELD_META = { BEAM_SIZE: { kind: 'int' } };
@@ -1173,6 +1176,7 @@ def test_env_pinned_full_row_field_says_why_it_is_read_only(client):
         _block(html, "const FULLROW_FIELDS = ", ";\n"),
         _block(html, "function makeBadges(name) {", "\n}\n"),
         _block(html, "function envPinnedNote(name) {", "\n}\n"),
+        _block(html, "function _button(", "\n}\n"),
         _block(html, "function fieldRow(name) {", "\n}\n"),
     ])
     out = _node(_FAKE_DOM + """
@@ -1211,6 +1215,7 @@ def test_env_pinned_field_offers_no_reset_to_default(client):
         _block(html, "const FULLROW_FIELDS = ", ";\n"),
         _block(html, "function makeBadges(name) {", "\n}\n"),
         _block(html, "function envPinnedNote(name) {", "\n}\n"),
+        _block(html, "function _button(", "\n}\n"),
         _block(html, "function fieldRow(name) {", "\n}\n"),
     ])
     out = _node(_FAKE_DOM + """

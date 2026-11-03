@@ -17,7 +17,9 @@ from tests.admin.test_settings_page_js import _FAKE_DOM, _block, _html, _node, n
     ("BEAM_SIZE", True),
 ])
 def test_field_row_reset_link_skips_pipeline_rules(client, name, want_link):
-    row_fn = _block(_html(client), "function fieldRow(name) {", "\n}\n")
+    html = _html(client)
+    row_fn = (_block(html, "function _button(", "\n}\n")
+              + _block(html, "function fieldRow(name) {", "\n}\n"))
     out = _node(_FAKE_DOM + """
 const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
 const DEFAULTS = { PIPELINE_RULES: [{ name: 'a' }], BEAM_SIZE: 5 };

@@ -1085,6 +1085,15 @@ function envPinnedNote(name) {
   return note;
 }
 
+function _button(className, text, title) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = className;
+  b.textContent = text;
+  if (title) b.title = title;
+  return b;
+}
+
 function fieldRow(name) {
   const row = document.createElement('div');
   row.className = 'field';
@@ -1148,11 +1157,7 @@ function fieldRow(name) {
   }
   const resetWrap = document.createElement('div');
   resetWrap.className = 'reset-wrap';
-  const resetBtn = document.createElement('button');
-  resetBtn.type = 'button';
-  resetBtn.className = 'reset-link';
-  resetBtn.textContent = '↺ Reset to default';
-  resetBtn.title = 'Restore the in-repo default value';
+  const resetBtn = _button('reset-link', '↺ Reset to default', 'Restore the in-repo default value');
   resetBtn.addEventListener('click', () => {
     const def = fieldDef(name).default_value;
     setDirty(name, def);
@@ -1588,11 +1593,8 @@ function modelOverridesEditor(name, v) {
     sidebar.appendChild(addRow);
 
     if (selectedId) {
-      const rmBtn = document.createElement('button');
-      rmBtn.type = 'button';
-      rmBtn.className = 'reset-link mo-remove-btn';
-      rmBtn.textContent = '× remove model entry';
-      rmBtn.title = 'Delete all overrides for ' + selectedId;
+      const rmBtn = _button('reset-link mo-remove-btn', '× remove model entry',
+                            'Delete all overrides for ' + selectedId);
       rmBtn.addEventListener('click', () => {
         if (!confirm('Delete all overrides for ' + selectedId + '?')) return;
         delete overrides[selectedId];
@@ -1728,11 +1730,8 @@ function modelOverridesEditor(name, v) {
     const ctrl = document.createElement('span');
     ctrl.className = 'mo-row-ctrl';
     if (isOverridden) {
-      const reset = document.createElement('button');
-      reset.type = 'button';
-      reset.className = 'reset-link';
-      reset.textContent = '↶ reset';
-      reset.title = 'Restore inherited value (' + fmtValue(globalVal) + ')';
+      const reset = _button('reset-link', '↶ reset',
+                            'Restore inherited value (' + fmtValue(globalVal) + ')');
       reset.addEventListener('click', () => {
         clearOverride(selectedId, field);
         renderMain();
@@ -1740,11 +1739,8 @@ function modelOverridesEditor(name, v) {
       });
       ctrl.appendChild(reset);
     } else {
-      const add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'reset-link';
-      add.textContent = '+ override';
-      add.title = 'Set a per-model override starting from the inherited value';
+      const add = _button('reset-link', '+ override',
+                          'Set a per-model override starting from the inherited value');
       add.addEventListener('click', () => {
         // Seed with the current global value so the admin starts from the
         // inherited value (not from a zero/empty default that overrides it).
@@ -2992,11 +2988,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
             + '. Force-enabling it for this model does not override that.';
           head.appendChild(langBadge);
         }
-        const view = document.createElement('button');
-        view.type = 'button';
-        view.className = 'reset-link';
-        view.textContent = '↑ view';
-        view.title = 'Scroll to global PIPELINE_RULES editor and expand this rule';
+        const view = _button('reset-link', '↑ view',
+                             'Scroll to global PIPELINE_RULES editor and expand this rule');
         // Navigation only: stays live inside an env-pinned editor.
         view.dataset.diagnostic = '1';
         view.addEventListener('click', () => {
@@ -3404,11 +3397,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // shows it (via .row-promote) only when the rule has something of its own to write.
     let promoteBtnEl = null;
     if (rule.type !== 'terminal') {
-      promoteBtnEl = document.createElement('button');
-      promoteBtnEl.type = 'button';
-      promoteBtnEl.className = 'sync-btn sm up row-promote';
-      promoteBtnEl.textContent = '↑ Promote';
-      promoteBtnEl.title = "Write this server's version of the rule into config.json — shows the changes first";
+      promoteBtnEl = _button('sync-btn sm up row-promote', '↑ Promote',
+        "Write this server's version of the rule into config.json — shows the changes first");
       promoteBtnEl.style.display = 'none';
       promoteBtnEl.addEventListener('click', (e) => { e.stopPropagation(); _promoteOne(rule); });
     }
@@ -3506,11 +3496,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       reset.addEventListener('click', (e) => { e.stopPropagation(); _resetOne(rule); });
       if (syncSlot) syncSlot.appendChild(reset);
     } else if (_canDelete) {
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'delete-btn';
-      del.textContent = '× delete';
-      del.title = 'Remove this rule (it exists only on this server)';
+      const del = _button('delete-btn', '× delete', 'Remove this rule (it exists only on this server)');
       del.addEventListener('click', () => {
         expandedNames.delete(rule.name);
         _saveExpanded();
@@ -3755,11 +3741,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   resetAllBtn.addEventListener('click', () => _resetAll());
   syncBar.appendChild(resetAllBtn);
 
-  const resetOrderBtn = document.createElement('button');
-  resetOrderBtn.type = 'button';
-  resetOrderBtn.className = 'sync-btn';
-  resetOrderBtn.textContent = '↺ Reset order';
-  resetOrderBtn.title = 'Restore the config.json rule order; rules that exist only on this server go before the last step';
+  const resetOrderBtn = _button('sync-btn', '↺ Reset order',
+    'Restore the config.json rule order; rules that exist only on this server go before the last step');
   resetOrderBtn.style.display = 'none';
   resetOrderBtn.addEventListener('click', async () => {
     // A stale cache would restore an order config.json has since left.
@@ -3784,11 +3767,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   syncSpacer.className = 'sync-spacer';
   syncBar.appendChild(syncSpacer);
 
-  const promoteOrderBtn = document.createElement('button');
-  promoteOrderBtn.type = 'button';
-  promoteOrderBtn.className = 'sync-btn up';
-  promoteOrderBtn.textContent = '↑ Promote order';
-  promoteOrderBtn.title = 'Write the current pipeline ORDER into config.json (rule contents unchanged)';
+  const promoteOrderBtn = _button('sync-btn up', '↑ Promote order',
+    'Write the current pipeline ORDER into config.json (rule contents unchanged)');
   promoteOrderBtn.style.display = 'none';
   promoteOrderBtn.addEventListener('click', () => _promoteOrder());
   syncBar.appendChild(promoteOrderBtn);
@@ -3821,10 +3801,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     names.className = 'sync-notice-names';
     names.textContent = missing.map(m => m.label || m.name).join(', ');
     txt.appendChild(b); txt.appendChild(names);
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'sync-btn down';
-    btn.textContent = '↓ Review and add';
+    const btn = _button('sync-btn down', '↓ Review and add');
     btn.addEventListener('click', () => _addFromConfig());
     syncNotice.appendChild(txt); syncNotice.appendChild(btn);
   }
