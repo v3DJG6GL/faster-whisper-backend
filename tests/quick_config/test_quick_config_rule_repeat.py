@@ -3,15 +3,11 @@ _PATCH_ALLOWED_FIELDS, like note / color), and a body patch from
 /quick-config keeps the admin's value (the merge overlays the patched
 fields only)."""
 
-import copy
+from tests.quick_config._rules_helpers import expose_first
 
 
 def _expose_upper(app_module, **extra):
-    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
-    r = next(r for r in rules if r.get("type") == "callback:upper")
-    r.update(exposed=True, **extra)
-    app_module.cfg.PIPELINE_RULES = rules
-    return r["name"]
+    return expose_first(app_module, "callback:upper", **extra)
 
 
 def test_a_quick_config_body_edit_keeps_the_admins_repeat(client, app_module):
