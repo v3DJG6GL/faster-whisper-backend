@@ -256,10 +256,10 @@ async def list_captures_api(
             status=status_filter, limit=limit, before_ts=before_ts,
             user_id=effective_user,
         )
-        # Per-row pipeline self-heal happens in get_capture_api (expand) only.
-        # Running it here would be 2 _postprocess_text calls × `limit` rows per
-        # list render, which dominates response time on /captures with
-        # limit=500.
+        # Per-row pipeline self-heal runs on the expand paths only
+        # (get_capture_api, _enrich_sample). Running it here would be 2
+        # _postprocess_text calls × `limit` rows per list render, which
+        # dominates response time on /captures with limit=500.
         usernames = api_keys_store.get_usernames(
             [r.get("user_id") for r in rows])
         for r in rows:
