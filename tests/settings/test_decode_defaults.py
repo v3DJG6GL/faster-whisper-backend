@@ -40,6 +40,12 @@ def _set_key_binding(client, h, uid, kid, **binding):
     assert r.status_code == 200, r.text
 
 
+def _bound_alice(client, make_user_key, h, **binding):
+    uid, raw = make_user_key("alice")
+    _set_key_binding(client, h, uid, _key_id(client, h, uid), **binding)
+    return bearer(raw)
+
+
 def test_every_client_key_with_value_source_and_lock(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "BEAM_SIZE", 7)
     j = client.get(URL).json()
@@ -117,10 +123,8 @@ def test_bound_profile_is_account_and_locks(client, make_user_key):
     h = bearer(raw_admin)
     _profiles(client, h, {"studio": {"BEAM_SIZE": 4, "DEFAULT_PROMPT": "Studio",
                                      "locks": ["BEAM_SIZE", "DEFAULT_PROMPT"]}})
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid, profiles=["studio"])
-    j = client.get(URL, headers=bearer(raw_alice)).json()
+    ah = _bound_alice(client, make_user_key, h, profiles=["studio"])
+    j = client.get(URL, headers=ah).json()
     beam = j["settings"]["beam_size"]
     assert beam["value"] == 4
     assert beam["source"] == "account"
@@ -129,8 +133,7 @@ def test_bound_profile_is_account_and_locks(client, make_user_key):
     assert j["prompt"] == {"value": "Studio", "source": "account",
                            "label": beam["label"], "locked": True}
     # "__none__" drops the bound profile: plain defaults, unlocked.
-    j2 = client.get(URL, params={"override_profile": "__none__"},
-                    headers=bearer(raw_alice)).json()
+    j2 = client.get(URL, params={"override_profile": "__none__"}, headers=ah).json()
     assert j2["settings"]["beam_size"]["source"] == "server"
     assert j2["settings"]["beam_size"]["locked"] is False
 
@@ -139,10 +142,8 @@ def test_lock_without_value_keeps_the_inherited_source(client, make_user_key, ap
     monkeypatch.setattr(app_module.cfg, "BEAM_SIZE", 9)
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid, locks=["BEAM_SIZE"])
-    beam = client.get(URL, headers=bearer(raw_alice)).json()["settings"]["beam_size"]
+    ah = _bound_alice(client, make_user_key, h, locks=["BEAM_SIZE"])
+    beam = client.get(URL, headers=ah).json()["settings"]["beam_size"]
     assert beam == {"value": 9, "source": "server", "label": "global default", "locked": True}
 
 
@@ -151,10 +152,7 @@ def test_request_profile_layers_under_identity(client, make_user_key):
     h = bearer(raw_admin)
     _profiles(client, h, {"fast": {"BEAM_SIZE": 2, "BEST_OF": 2},
                           "internal": {"BEAM_SIZE": 1, "requestable": False}})
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid, overrides={"BEST_OF": 6})
-    ah = bearer(raw_alice)
+    ah = _bound_alice(client, make_user_key, h, overrides={"BEST_OF": 6})
     j = client.get(URL, params={"override_profile": "fast"}, headers=ah).json()
     assert j["profile_applied"] == "fast"
     assert j["settings"]["beam_size"]["value"] == 2
@@ -171,10 +169,8 @@ def test_request_profile_layers_under_identity(client, make_user_key):
 def test_decode_gate_off_locks_every_key(client, make_user_key):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid, allow_request_decode_overrides=False)
-    j = client.get(URL, headers=bearer(raw_alice)).json()
+    ah = _bound_alice(client, make_user_key, h, allow_request_decode_overrides=False)
+    j = client.get(URL, headers=ah).json()
     assert all(e["locked"] for e in j["settings"].values())
 
 
@@ -202,9 +198,8 @@ def test_translation_context_segments_entry(client, app_module, make_user_key, m
     h = bearer(raw_admin)
     _profiles(client, h, {"ctx": {"TRANSLATION_CONTEXT_SEGMENTS": 0,
                                   "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]}})
-    uid, raw_alice = make_user_key("alice")
-    _set_key_binding(client, h, uid, _key_id(client, h, uid), profiles=["ctx"])
-    entry = client.get(URL, headers=bearer(raw_alice)).json()["translation"]["context_segments"]
+    ah = _bound_alice(client, make_user_key, h, profiles=["ctx"])
+    entry = client.get(URL, headers=ah).json()["translation"]["context_segments"]
     assert entry["value"] == 0 and entry["locked"] is True
     assert entry["source"] == "account"
 
@@ -252,9 +247,7 @@ def test_run_defaults_per_profile(client, app_module, make_user_key, monkeypatch
                    "BGM_SEPARATION_UVR_MODEL": "Kim_Vocal_2",
                    "locks": ["DIARIZE"]},
         "en": {"DEFAULT_LANGUAGE": "en"}})
-    uid, raw_alice = make_user_key("alice")
-    _set_key_binding(client, h, uid, _key_id(client, h, uid), profiles=["studio"])
-    ah = bearer(raw_alice)
+    ah = _bound_alice(client, make_user_key, h, profiles=["studio"])
     j = client.get(URL, headers=ah).json()
     assert j["separate_bgm"]["value"] is True
     assert j["separate_bgm"]["source"] == "account"
