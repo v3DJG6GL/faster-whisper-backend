@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -329,6 +330,15 @@ def _csv(v: str | None) -> list[str]:
     return list(dict.fromkeys(x.strip() for x in (v or "").split(",") if x.strip()))
 
 
+def _kinds_param(raw: str | None, allowed: Collection[str]) -> list[str]:
+    """`_csv(raw)`, 422 on the first kind outside `allowed`."""
+    kinds = _csv(raw)
+    for k in kinds:
+        if k not in allowed:
+            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    return kinds
+
+
 def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -> list[str]:
     """The ids behind the picked labels. Admin (and own) viewers send ids.
     A non-admin "all" viewer sends the row `id` the picker / leaderboard
@@ -471,10 +481,7 @@ async def stats_usage(
             detail="per-user leaderboard needs stats scope 'all'")
     caller_uid = user.get("user_id") or None
     scrub = not scope.include_identity
-    kind_list = _csv(kinds)
-    for k in kind_list:
-        if k not in usage_store.KINDS:
-            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    kind_list = _kinds_param(kinds, usage_store.KINDS)
     user_list = _csv(users)
     if user_list and scope.scope == "own":
         raise HTTPException(status.HTTP_403_FORBIDDEN,
@@ -564,10 +571,7 @@ async def stats_pick(
                             detail="per-user picker needs stats scope 'all'")
     caller_uid = user.get("user_id") or None
     scrub = not scope.include_identity
-    kind_list = _csv(kinds)
-    for k in kind_list:
-        if k not in usage_store.KINDS:
-            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    kind_list = _kinds_param(kinds, usage_store.KINDS)
     user_list = _csv(users) if scope.scope != "own" else []
     key_list = _csv(keys)
     if days is not None and days <= 0:
@@ -638,10 +642,7 @@ async def stats_jobs(
     if user_q and not is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
     scope = stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
-    kind_list = _csv(kind)
-    for k in kind_list:
-        if k not in JOB_KINDS:
-            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    kind_list = _kinds_param(kind, JOB_KINDS)
     if status_q and status_q not in JOB_STATUSES:
         raise HTTPException(422, detail=f"unknown status: {status_q!r}")
     user_list = _csv(users)
@@ -711,10 +712,7 @@ async def stats_tail(
                                             all_time=all, tz=tz)
     except ValueError as e:
         raise HTTPException(422, detail=str(e))
-    kind_list = _csv(kind)
-    for k in kind_list:
-        if k not in usage_store.KINDS:
-            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    kind_list = _kinds_param(kind, usage_store.KINDS)
     user_list = _csv(users)
     if user_list and scope.scope == "own":
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="users= needs stats scope 'all'")
