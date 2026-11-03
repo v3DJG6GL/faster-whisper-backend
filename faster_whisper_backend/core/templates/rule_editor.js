@@ -64,10 +64,15 @@ function _bindEnterCommit(inp, onEnter) {
   });
 }
 
+function _helpDiv(text) {
+  const d = document.createElement('div');
+  d.className = 'help';
+  if (text != null) d.textContent = text;
+  return d;
+}
+
 function _makeMonoLabeledInput(label, val, onInput, onEnter) {
-  const lbl = document.createElement('div');
-  lbl.className = 'help';
-  lbl.textContent = label + ':';
+  const lbl = _helpDiv(label + ':');
   const inp = document.createElement('input');
   inp.type = 'text';
   inp.spellcheck = false;
@@ -458,10 +463,7 @@ function renderTypeEditor(rule, commitData, opts) {
   // `showNote` — /quick-config omits it (non-admin users cannot patch the
   // `note` field, see _PATCH_ALLOWED_FIELDS in quick_config/routes.py).
   if (opts.showNote) {
-    const noteLbl = document.createElement('div');
-    noteLbl.className = 'help';
-    noteLbl.textContent = 'note (rationale / documentation):';
-    box.appendChild(noteLbl);
+    box.appendChild(_helpDiv('note (rationale / documentation):'));
     const noteTa = document.createElement('textarea');
     noteTa.className = 'rule-note';
     noteTa.rows = 2;
@@ -474,12 +476,9 @@ function renderTypeEditor(rule, commitData, opts) {
   }
 
   if (rule.type === 'terminal') {
-    const note = document.createElement('div');
-    note.className = 'help';
-    note.textContent = 'Hardcoded terminal step: lstrip(" \\t\\r") + rstrip(" \\t\\r"). '
+    box.appendChild(_helpDiv('Hardcoded terminal step: lstrip(" \\t\\r") + rstrip(" \\t\\r"). '
       + 'Always runs last. Preserves a leading or trailing newline ("\\n") emitted by '
-      + '"neue Zeile" / "neuer Absatz" at the edges of the utterance.';
-    box.appendChild(note);
+      + '"neue Zeile" / "neuer Absatz" at the edges of the utterance.'));
     return box;
   }
 
@@ -504,12 +503,9 @@ function renderTypeEditor(rule, commitData, opts) {
     repTxt.textContent = ' Repeat until nothing changes';
     repWrap.appendChild(repTxt);
     box.appendChild(repWrap);
-    const repHelp = document.createElement('div');
-    repHelp.className = 'help';
-    repHelp.textContent = 'Runs the rule again on its own output (a list: all its entries) '
+    box.appendChild(_helpDiv('Runs the rule again on its own output (a list: all its entries) '
       + 'until the text stops changing, at most __REPEAT_CAP__ times. For matches that overlap: '
-      + 'one pass sees "Hals-nasen-ohren-arzt" only up to the first hyphen it changed.';
-    box.appendChild(repHelp);
+      + 'one pass sees "Hals-nasen-ohren-arzt" only up to the first hyphen it changed.'));
   }
 
   // Save row for rule types without a "+ add entry" bar (regex-list and
@@ -525,11 +521,8 @@ function renderTypeEditor(rule, commitData, opts) {
   }
 
   if (rule.type === 'regex-list') {
-    const note = document.createElement('div');
-    note.className = 'help';
-    note.textContent = 'Ordered find→replace list — entries run top-to-bottom '
-      + '(drag ⠿ to reorder). An empty replacement deletes the match.';
-    box.appendChild(note);
+    box.appendChild(_helpDiv('Ordered find→replace list — entries run top-to-bottom '
+      + '(drag ⠿ to reorder). An empty replacement deletes the match.'));
     const entriesBox = document.createElement('div');
     entriesBox.className = 'rl-entries';
     (rule.entries || []).forEach((en) => {
@@ -589,10 +582,7 @@ function renderTypeEditor(rule, commitData, opts) {
     box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
       rule.pattern = v; commitData();
     }, onEnter));
-    const wlLbl = document.createElement('div');
-    wlLbl.className = 'help';
-    wlLbl.textContent = 'Wordlist (one entry per line, case-insensitive):';
-    box.appendChild(wlLbl);
+    box.appendChild(_helpDiv('Wordlist (one entry per line, case-insensitive):'));
     const ta = document.createElement('textarea');
     ta.value = (rule.wordlist || []).join('\n');
     ta.rows = 6;
@@ -608,18 +598,13 @@ function renderTypeEditor(rule, commitData, opts) {
   }
 
   if (rule.type === 'callback:map') {
-    const note = document.createElement('div');
-    note.className = 'help';
-    note.textContent = 'Pattern auto-built from map keys (longest-first, '
-      + 'word-bounded, case-insensitive). Edit entries below.';
-    box.appendChild(note);
+    box.appendChild(_helpDiv('Pattern auto-built from map keys (longest-first, '
+      + 'word-bounded, case-insensitive). Edit entries below.'));
     // "n / cap" readout so a full dictionary is visible BEFORE a save
     // bounces off the server's entry cap. __mme defaults to the MapRule cap
     // (top of this file); /quick-config's load() overwrites it from the API.
     const mapCap = (typeof window.__mme === 'number') ? window.__mme : 0;
-    const cnt = document.createElement('div');
-    cnt.className = 'help';
-    box.appendChild(cnt);  // text painted by paintCount() once the table exists
+    const cnt = box.appendChild(_helpDiv());  // text painted by paintCount() once the table exists
     const showDate = !!opts.showMapDates;
     const meta = rule.map_meta || {};
     const tbl = document.createElement('table');
@@ -708,12 +693,9 @@ function renderTypeEditor(rule, commitData, opts) {
     box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
       rule.pattern = v; commitData();
     }, onEnter));
-    const note = document.createElement('div');
-    note.className = 'help';
-    note.textContent = rule.type === 'callback:dedup'
+    box.appendChild(_helpDiv(rule.type === 'callback:dedup'
       ? 'Callback: collapse each match — last non-comma wins; pure-comma run → single comma.'
-      : 'Callback: uppercase group(2) (or whole match if pattern has fewer than 2 groups).';
-    box.appendChild(note);
+      : 'Callback: uppercase group(2) (or whole match if pattern has fewer than 2 groups).'));
     _appendSaveRow(box);
     return box;
   }
