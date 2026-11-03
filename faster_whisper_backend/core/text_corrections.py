@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-# Caps applied server-side before insert. The route layer already validates
-# via Pydantic, but accept-then-trim is what protects against future code
-# paths that bypass the route (admin scripts, migrations).
+# Caps applied server-side before insert. /captures rejects past them at the
+# route; /reports' route bounds far higher on purpose (a shift-click range makes
+# `wrong` a slice of `final`), so for reports this trim is the actual bound.
 CAP_CORRECTION_FIELD = 200
 # Also the captures schemas' list bound (max_length=CAP_CORRECTIONS), so a
 # chip the route accepted is never dropped here without a word; 200 because a
