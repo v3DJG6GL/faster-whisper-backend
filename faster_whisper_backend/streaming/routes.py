@@ -200,8 +200,7 @@ def _handshake_language(raw: object) -> "str | None":
     fails every partial and final with no error frame, and the
     language-tagged pipeline rules are keyed by these codes too. A value that
     reduces to no code is unusable, so it is treated as absent (None), as is
-    anything not even shaped like a language code (CR/LF would reach the
-    WARNING log raw).
+    anything not even shaped like a language code.
     """
     if not isinstance(raw, str):
         return None
@@ -904,7 +903,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                                     "message": message}, close=True)
             return
 
-        # Resolve the caller's effective per-identity config ONCE for this
+        # Resolve the caller's effective per-identity config for this
         # connection. ident is built with final_model (per-model rule folding +
         # output wrappers + postprocess use final_model); identity scalar
         # overrides are model-independent, so they apply to the partial decode
