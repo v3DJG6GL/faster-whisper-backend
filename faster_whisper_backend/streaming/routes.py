@@ -985,8 +985,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # only for theirs). It must be known before an utterance is formatted,
         # so decode_final sets it from the decode it just ran; set any later (in
         # on_final, after the format) and an auto-language session's first
-        # sentence runs every language's rules (a German question gets a Spanish
-        # '¿'). Until a final has run, the partials' guess stands in.
+        # sentence goes out in the partials' guess, and the next final can
+        # format the already-sent sentence differently. Until a final has run,
+        # the partials' guess stands in.
         _detected_lang = [req_language or None]
         _partial_lang: list = [None]
 
