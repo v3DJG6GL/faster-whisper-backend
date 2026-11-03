@@ -1606,8 +1606,8 @@ def document(
 BREAKDOWNS: tuple[str, ...] = ("kind", "user", "key", "model", "stage")
 BUCKETS: tuple[str, ...] = ("auto", "day", "week", "month")
 COMPARES: tuple[str, ...] = ("off", "prev", "yoy")
-# Past this many buckets the auto rule steps up a size regardless of span
-# (ten years of days is 3 650 points × K lines — nothing a chart can show).
+# Past this many buckets even an explicit bucket steps up a size (auto never
+# gets there; ten years of days is 3 650 points × K lines — nothing a chart can show).
 MAX_BUCKETS = 1500
 
 
