@@ -15,6 +15,7 @@ import pytest
 
 from faster_whisper_backend.media import captions as cc
 from faster_whisper_backend.media import subtitle_mux as pk
+from tests.media.test_subtitle_mux import packaged
 
 PAD = (0xFC, 0x80, 0x80)          # CEA-608 field 1, valid, padding
 HI = (0xFC, 0xC8, 0xE9)           # CEA-608 "Hi" with odd parity
@@ -216,22 +217,14 @@ def test_generated_clip_without_captions(tmp_path):
 def test_package_strips_empty_captions_end_to_end(tmp_path):
     src = _video_with(tmp_path, _sei(PAD, PAD))
     tracks = [pk.SubtitleTrack("en", "English", "1\n00:00:00,000 --> 00:00:00,500\nHi\n")]
-    out = asyncio.run(pk.package(src, tracks, container="mkv", default_track=0,
-                                 timeout=120, video_codec="h264"))
-    try:
+    with packaged(src, tracks, container="mkv", default_track=0,
+                  timeout=120, video_codec="h264") as out:
         assert _ga94_count(out) == 0
-    finally:
-        import shutil
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 def test_package_keeps_real_captions_end_to_end(tmp_path):
     src = _video_with(tmp_path, _sei(PAD, HI))
     tracks = [pk.SubtitleTrack("en", "English", "1\n00:00:00,000 --> 00:00:00,500\nHi\n")]
-    out = asyncio.run(pk.package(src, tracks, container="mkv", default_track=0,
-                                 timeout=120, video_codec="h264"))
-    try:
+    with packaged(src, tracks, container="mkv", default_track=0,
+                  timeout=120, video_codec="h264") as out:
         assert _ga94_count(out) >= 5
-    finally:
-        import shutil
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)

@@ -4,6 +4,7 @@ the ffmpeg argv, the runner against a fake ffmpeg, and the capability probe."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import subprocess
@@ -17,6 +18,16 @@ from faster_whisper_backend.media import subtitle_mux as pk
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+@contextlib.contextmanager
+def packaged(src, tracks, **kw):
+    """pk.package's output; its fwb-pkg- workdir is removed on exit."""
+    out = _run(pk.package(src, tracks, **kw))
+    try:
+        yield out
+    finally:
+        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 def run_ffmpeg(*args):
@@ -152,16 +163,13 @@ open(r"__OUT__", "wb").write(b"x" * 64)
 def test_package_success_returns_output_in_a_pkg_workdir(monkeypatch):
     _patch_argv(monkeypatch, _OK)
     tracks = [pk.SubtitleTrack("en", "English", "1\r\n00:00:00,000 --> 00:00:01,000\r\nHi\r\n")]
-    out = _run(pk.package("/nonexistent/src.mkv", tracks, container="mkv",
-                          default_track=0, timeout=10))
-    try:
+    with packaged("/nonexistent/src.mkv", tracks, container="mkv",
+                  default_track=0, timeout=10) as out:
         assert os.path.basename(out) == "out.mkv"
         workdir = os.path.dirname(out)
         assert os.path.basename(workdir).startswith("fwb-pkg-")
         with open(os.path.join(workdir, "sub_0.srt"), "rb") as f:
             assert b"\r" not in f.read()   # normalised line endings
-    finally:
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 def test_package_timeout_kills_the_child_and_cleans_the_workdir(monkeypatch):
@@ -363,8 +371,7 @@ def test_package_real_ffmpeg_muxes_language_tags(tmp_path):
     run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
                "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src)
-    out = _run(pk.package(src, _tracks(), container="mkv", default_track=1, timeout=60))
-    try:
+    with packaged(src, _tracks(), container="mkv", default_track=1, timeout=60) as out:
         with av.open(out) as c:
             subs = [s for s in c.streams if s.type == "subtitle"]
             assert [s.metadata.get("language") for s in subs] == ["eng", "deu"]
@@ -372,15 +379,10 @@ def test_package_real_ffmpeg_muxes_language_tags(tmp_path):
         streams = pk.probe_streams(out)
         assert streams.video_codec == "h264" and streams.audio_codec == "aac"
         assert streams.mp4_ok and streams.width == 64
-    finally:
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
-    out = _run(pk.package(src, _tracks()[:1], container="mp4", default_track=0, timeout=60))
-    try:
+    with packaged(src, _tracks()[:1], container="mp4", default_track=0, timeout=60) as out:
         with av.open(out) as c:
             subs = [s for s in c.streams if s.type == "subtitle"]
             assert len(subs) == 1 and subs[0].metadata.get("language") == "eng"
-    finally:
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 @pytest.mark.skipif(shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None,
@@ -399,9 +401,8 @@ def test_package_real_ffmpeg_writes_per_track_dispositions(tmp_path):
         return json.loads(r.stdout)["streams"]
 
     for container in ("mkv", "mp4"):
-        out = _run(pk.package(src, _flagged_tracks(), container=container,
-                              default_track=None, timeout=60))
-        try:
+        with packaged(src, _flagged_tracks(), container=container,
+                      default_track=None, timeout=60) as out:
             subs = _subs(out)
             d = [(s["disposition"]["default"], s["disposition"]["original"],
                   s["disposition"]["hearing_impaired"]) for s in subs]
@@ -411,8 +412,6 @@ def test_package_real_ffmpeg_writes_per_track_dispositions(tmp_path):
                 assert d == [(1, 0, 0), (0, 0, 1), (1, 0, 0), (0, 0, 0)]
                 assert [s["tags"].get("handler_name") for s in subs] == [
                     "Whisper", "Site", "Translation", "Auto"]
-        finally:
-            shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
@@ -591,12 +590,9 @@ def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_before_an_empty_last_cu
     tracks = [pk.SubtitleTrack("en", "English",
                                "1\n00:00:00,500 --> 00:00:00,200\nHello\n\n"
                                "2\n00:00:00,900 --> 00:00:01,000\n\n")]
-    out = _run(pk.package(src, tracks, container="mp4", default_track=0, timeout=60))
-    try:
+    with packaged(src, tracks, container="mp4", default_track=0, timeout=60) as out:
         with av.open(out) as c:
             assert [s.type for s in c.streams].count("subtitle") == 1
-    finally:
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
@@ -607,12 +603,9 @@ def test_package_real_ffmpeg_mp4_accepts_a_cue_that_ends_before_it_starts(tmp_pa
     tracks = [pk.SubtitleTrack("en", "English",
                                "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n"
                                "2\n00:00:00,900 --> 00:00:00,600\nThere\n")]
-    out = _run(pk.package(src, tracks, container="mp4", default_track=0, timeout=60))
-    try:
+    with packaged(src, tracks, container="mp4", default_track=0, timeout=60) as out:
         with av.open(out) as c:
             assert [s.type for s in c.streams].count("subtitle") == 1
-    finally:
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 @pytest.mark.skipif(shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None,
@@ -627,15 +620,12 @@ def test_package_real_ffmpeg_keeps_a_mid_file_inverted_cue_on_screen(tmp_path):
                                "2\n00:00:01,000 --> 00:00:00,800\nTypo\n\n"
                                "3\n00:00:02,000 --> 00:00:02,500\nC\n")]
     for container in ("mp4", "mkv"):
-        out = _run(pk.package(src, tracks, container=container, default_track=0,
-                              timeout=60))
-        try:
+        with packaged(src, tracks, container=container, default_track=0,
+                      timeout=60) as out:
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-select_streams", "s:0", "-show_packets",
                  "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", out],
                 capture_output=True, text=True, check=True, timeout=60).stdout
-        finally:
-            shutil.rmtree(os.path.dirname(out), ignore_errors=True)
         rows = [tuple(r.split(",")) for r in probe.split()]
         assert ("1.000000", "1.000000") in rows, (container, rows)
 
@@ -650,9 +640,6 @@ def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_with_a_stray_space_or_s
     for timing in ("00:00:00,800 --> 00:00:00, 200", "+00:00:00,800 --> -00:00:00,200",
                    "\v00:00:00,800 --> 00: 00:00,200"):
         tracks = [pk.SubtitleTrack("en", "English", f"1\n{timing}\nHello\n")]
-        out = _run(pk.package(src, tracks, container="mp4", default_track=0, timeout=60))
-        try:
+        with packaged(src, tracks, container="mp4", default_track=0, timeout=60) as out:
             with av.open(out) as c:
                 assert [s.type for s in c.streams].count("subtitle") == 1, timing
-        finally:
-            shutil.rmtree(os.path.dirname(out), ignore_errors=True)
