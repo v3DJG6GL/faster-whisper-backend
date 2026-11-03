@@ -3,7 +3,7 @@ non-admin keys, host gate, cross-user 404, and the SSE credential carriers."""
 
 from starlette.testclient import TestClient
 
-from tests.conftest import bearer
+from tests.conftest import bearer, fake_request
 from tests.conftest import status_of as _status_of
 from faster_whisper_backend.admin import logs_routes
 
@@ -99,20 +99,7 @@ def test_cross_user_report_read_is_404(client, make_user_key):
 # require_user_or_admin_sse and runs before any streaming, so call it directly.
 
 def _fake_request(headers=None, query=b""):
-    from starlette.requests import Request
-
-    raw_headers = [
-        (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
-    ]
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/quick-config/stream",
-        "headers": raw_headers,
-        "query_string": query,
-        "client": ("127.0.0.1", 12345),
-    }
-    return Request(scope)
+    return fake_request(headers, path="/quick-config/stream", query=query)
 
 
 def test_sse_bearer_header_admits(client, make_user_key):
@@ -294,16 +281,11 @@ def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
 
 def _sse_request(path, raw_key):
     import asyncio
-    from starlette.requests import Request
 
     async def _receive():
         await asyncio.Event().wait()
 
-    return Request({
-        "type": "http", "method": "GET", "path": path,
-        "headers": [(b"authorization", f"Bearer {raw_key}".encode())],
-        "query_string": b"", "client": ("127.0.0.1", 12345),
-    }, _receive)
+    return fake_request(bearer(raw_key), path=path, receive=_receive)
 
 
 def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,

@@ -837,10 +837,10 @@ def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
     trace it woke up for through in the old scope. Driven directly, never
     via TestClient streaming."""
     import asyncio
-    from starlette.requests import Request
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import routes as qc
     from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
+    from tests.conftest import bearer, fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "all"})
@@ -848,11 +848,7 @@ def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
     async def _receive():
         await asyncio.Event().wait()
 
-    req = Request({
-        "type": "http", "method": "GET", "path": "/quick-config/stream",
-        "headers": [(b"authorization", f"Bearer {raw}".encode())],
-        "query_string": b"", "client": ("127.0.0.1", 12345),
-    }, _receive)
+    req = fake_request(bearer(raw), path="/quick-config/stream", receive=_receive)
 
     async def drive():
         resp = await qc.stream_recent(req, qc.require_user_or_admin_sse(req))

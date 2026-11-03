@@ -766,21 +766,23 @@ def bearer(raw_key):
     return {"Authorization": f"Bearer {raw_key}"}
 
 
-def fake_request(headers=None, client=("127.0.0.1", 12345)):
-    """A bare GET Request on /stats/stream for exercising auth dependencies
-    directly (the SSE bodies are infinite, so they are never driven over HTTP)."""
-    from starlette.requests import Request
+def fake_request(headers=None, client=("127.0.0.1", 12345), *,
+                 path="/stats/stream", query=b"", receive=None):
+    """A bare GET Request (on /stats/stream by default) for exercising auth
+    dependencies directly (the SSE bodies are infinite, so they are never
+    driven over HTTP). `receive` defaults to Starlette's empty_receive."""
+    from starlette.requests import Request, empty_receive
     raw_headers = [
         (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
     ]
     return Request({
         "type": "http",
         "method": "GET",
-        "path": "/stats/stream",
+        "path": path,
         "headers": raw_headers,
-        "query_string": b"",
+        "query_string": query,
         "client": client,
-    })
+    }, receive or empty_receive)
 
 
 def status_of(fn, *args, **kwargs):
