@@ -184,9 +184,9 @@ def _reader_conn() -> Iterator[sqlite3.Connection]:
 
 def _truncate_steps(steps: list) -> list:
     """Same algorithm as reports_store._truncate_steps, on this module's
-    own (equal-valued) caps. Drops oldest pipeline stages first when over-cap;
-    preserves the output-wrapper + terminal-trim trailers (the part admins
-    care about)."""
+    own caps, which match reports_store's except the step-name cap (512
+    here, 200 there). Drops oldest pipeline stages first when over-cap; preserves the
+    output-wrapper + terminal-trim trailers (the part admins care about)."""
     out: list = []
     for s in steps:
         if not isinstance(s, (list, tuple)) or len(s) < 3:
