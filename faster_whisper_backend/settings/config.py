@@ -1483,55 +1483,36 @@ _ENV_UNPARSED: "set[str]" = set()
 def _truthy(s: str) -> bool:
     return s.strip().lower() in ("1", "true", "yes", "on", "y", "t", "enabled")
 
-def _env_int(name: str, current: int) -> int:
+def _env_unparsed(name: str, raw: str, current, what: str):
+    """Warn that `name` is not a valid `what`, mark it unparsed, keep `current`."""
+    _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid {what}; keeping {current!r}")
+    _ENV_UNPARSED.add(name)
+    return current
+
+def _env_number(name: str, current, parse, what: str):
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return current
     try:
-        return int(raw)
+        return parse(raw)
     except ValueError:
-        _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid integer; keeping {current!r}")
-        _ENV_UNPARSED.add(name)
-        return current
+        return _env_unparsed(name, raw, current, what)
+
+def _env_int(name: str, current: int) -> int:
+    return _env_number(name, current, int, "integer")
 
 def _env_float(name: str, current: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return current
-    try:
-        return float(raw)
-    except ValueError:
-        _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid number; keeping {current!r}")
-        _ENV_UNPARSED.add(name)
-        return current
+    return _env_number(name, current, float, "number")
 
 def _env_float_or_none(name: str, current: "float | None") -> "float | None":
     """Like _env_float but an explicit empty string means None (disable)."""
     raw = os.environ.get(name)
-    if raw is None:
-        return current
-    if not raw.strip():
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid number; keeping {current!r}")
-        _ENV_UNPARSED.add(name)
-        return current
+    return None if raw is not None and not raw.strip() else _env_float(name, current)
 
 def _env_int_or_none(name: str, current: "int | None") -> "int | None":
     """Like _env_int but an explicit empty string means None (disable)."""
     raw = os.environ.get(name)
-    if raw is None:
-        return current
-    if not raw.strip():
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid integer; keeping {current!r}")
-        _ENV_UNPARSED.add(name)
-        return current
+    return None if raw is not None and not raw.strip() else _env_int(name, current)
 
 
 _FALSY = ("0", "false", "no", "off", "n", "f", "disabled")
@@ -1551,10 +1532,7 @@ def _env_bool(name: str, current: bool) -> bool:
         return False
     if _truthy(raw):
         return True
-    _ENV_WARNINGS.append(
-        f"{name}={raw!r} is not a valid boolean; keeping {current!r}")
-    _ENV_UNPARSED.add(name)
-    return current
+    return _env_unparsed(name, raw, current, "boolean")
 
 def _env_str(name: str, current: str) -> str:
     """Stripped-string env passthrough — empty / unset → keep current."""
