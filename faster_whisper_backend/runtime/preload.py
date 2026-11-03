@@ -168,6 +168,23 @@ def stats_key(family: str, model_id: str) -> str:
     return mid
 
 
+def _family_module(family: str):
+    """The module that owns this family's cache (imported lazily), or None
+    for an unknown family."""
+    if family == "whisper":
+        return tx_models
+    if family == "translation":
+        from faster_whisper_backend.translation import engine as translation
+        return translation
+    if family == "diarization":
+        from faster_whisper_backend.audio import diarization
+        return diarization
+    if family == "separation":
+        from faster_whisper_backend.audio import bgm_separation
+        return bgm_separation
+    return None
+
+
 def is_resident(family: str, model_id: str) -> bool:
     """Is this model loaded right now?
 
@@ -178,20 +195,10 @@ def is_resident(family: str, model_id: str) -> bool:
     if not mid:
         return False
     try:
-        if family == "whisper":
-            return tx_models.is_resident(mid)
-        if family == "translation":
-            from faster_whisper_backend.translation import engine as translation
-            return translation.is_resident(mid)
-        if family == "diarization":
-            from faster_whisper_backend.audio import diarization
-            return diarization.is_resident(mid)
-        if family == "separation":
-            from faster_whisper_backend.audio import bgm_separation
-            return bgm_separation.is_resident(mid)
+        mod = _family_module(family)
+        return mod.is_resident(mid) if mod is not None else False
     except Exception:  # noqa: BLE001 — a residency probe must never raise
         return False
-    return False
 
 
 def _ttl() -> int:
@@ -361,11 +368,9 @@ def _needs_room(family: str, model_id: str) -> bool:
     try:
         if family in ("whisper", "translation"):
             return _cache_full(family)
-        if family == "diarization":
-            from faster_whisper_backend.audio import diarization
-            return diarization.holds_other(mid)
-        from faster_whisper_backend.audio import bgm_separation
-        return bgm_separation.holds_other(mid)
+        # An unknown family is routed to separation.
+        return (_family_module(family)
+                or _family_module("separation")).holds_other(mid)
     except Exception:  # noqa: BLE001 — unknown state: assume room is needed
         return True
 
@@ -382,16 +387,8 @@ def _idle_peer(family: str, model_id: str) -> "str | None":
         return model_registry.is_warm(stats_key(family, peer_id))
 
     try:
-        if family == "whisper":
-            return tx_models.idle_peer(mid, _warm)
-        if family == "translation":
-            from faster_whisper_backend.translation import engine as translation
-            return translation.idle_peer(mid, _warm)
-        if family == "diarization":
-            from faster_whisper_backend.audio import diarization
-            return diarization.idle_peer(mid, _warm)
-        from faster_whisper_backend.audio import bgm_separation
-        return bgm_separation.idle_peer(mid, _warm)
+        return (_family_module(family)
+                or _family_module("separation")).idle_peer(mid, _warm)
     except Exception:  # noqa: BLE001 — no peer is the conservative answer
         return None
 
