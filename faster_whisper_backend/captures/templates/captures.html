@@ -2408,7 +2408,8 @@
   // Prefer the EXCLUDE-aware training token (`train_word`) so the strip, the
   // chip `wrong` text, the Final result preview and the server export all
   // agree on what CAPTURES_PIPELINE_RULES_EXCLUDE leaves in the text; fall
-  // back to the runtime `final` token when no excluded rule changed this word.
+  // back to the runtime `final` token when the server sent none (the
+  // training text equals `final`).
   function _dispWord(w) {
     return (w && w.train_word !== undefined) ? (w.train_word || '')
                                              : ((w && w.word) || '');
