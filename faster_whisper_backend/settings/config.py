@@ -1017,11 +1017,12 @@ REPORTS_ALLOW_USER_SUBMIT = _D("REPORTS_ALLOW_USER_SUBMIT")
 # =============================================================================
 # Recent transcriptions (persistent /quick-config trace panel + /stats widget)
 # =============================================================================
-# Every /transcribe request UPSERTs a row into the recent-transcriptions
-# SQLite store. The store backs both the /quick-config trace panel
-# (full payload: raw/final/steps/tokens/bigrams) and the /stats dashboard
-# "Recent transcriptions" widget (timing-only projection). Survives
-# service restart; pruned lazily by row-cap AND TTL.
+# Every finished job (transcription, streaming final, translation, model
+# download) UPSERTs a row into the recent-transcriptions SQLite store. The
+# store backs both the /quick-config trace panel (full payload:
+# raw/final/steps/tokens/bigrams) and the /stats dashboard "Recent jobs"
+# widget (timing-only projection). Survives service restart; pruned lazily
+# by row-cap AND TTL.
 
 # DB file path, default {DB_DIR}/recent_transcriptions.local.sqlite3. SQLite
 # uses three runtime files (.sqlite3, -wal, -shm); .gitignore matches all three.
@@ -1061,7 +1062,7 @@ QUICK_CONFIG_WORD_SUGGESTIONS_MAX: int = _D("QUICK_CONFIG_WORD_SUGGESTIONS_MAX")
 # accumulate until the startup / hourly sweep).
 RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _D("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
 
-# /stats "Recent transcriptions" widget row count. The dashboard is
+# /stats "Recent jobs" widget row count. The dashboard is
 # intentionally a small ticker — bumping this past ~50 makes the widget
 # scroll badly without adding value.
 STATS_RECENT_TRANSCRIPTIONS_COUNT = _D("STATS_RECENT_TRANSCRIPTIONS_COUNT")
