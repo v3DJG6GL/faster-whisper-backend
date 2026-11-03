@@ -339,7 +339,8 @@ def prompt_tail_text(kwargs) -> str:
     """The text the decoder was conditioned on, as far as an echo can come from
     it: ``initial_prompt`` when set (streaming sends the rolling dictation
     context there), else ``hotwords`` (faster-whisper puts them in the same
-    prompt slot when there is no initial prompt). "" when neither is set."""
+    prompt slot, ahead of the initial prompt, so they end the prompt only when
+    there is none). "" when neither is set."""
     kwargs = kwargs or {}
     ip = kwargs.get("initial_prompt")
     if isinstance(ip, str) and ip.strip():
