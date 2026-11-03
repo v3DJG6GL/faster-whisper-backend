@@ -1,4 +1,5 @@
-"""Source pins for the /logs viewer script (admin/logs_routes.py serves it)."""
+"""/logs viewer: source pins for its page script (admin/logs_routes.py serves
+it), plus direct drives of logs_routes' stream generator and its re-auth."""
 
 
 def test_logs_page_search_skips_fold_controls_and_button_labels(client):
