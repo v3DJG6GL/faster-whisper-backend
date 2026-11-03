@@ -148,6 +148,11 @@ def _parse_model_ref(ref: str) -> "tuple[str, str | None]":
     return repo, (quant or None)
 
 
+def _gguf_glob(quant: "str | None") -> str:
+    """The *.gguf filename glob Llama.from_pretrained applies for ``quant``."""
+    return f"*{quant}.gguf" if quant else "*.gguf"
+
+
 # Chinese language names for HY-MT's official contextual template (the
 # instruction that carries them is Chinese — see _build_hunyuan): the 38
 # HY-MT1.5 languages as its model card names them, plus a few more. Keys are
@@ -595,8 +600,7 @@ def _load_blocking_inner(ref: str, device: str, family: str,
                 if local_path:
                     logger.warning("[translate] no unique %s file on the hub "
                                    "for %s — loading the cached copy",
-                                   f"*{quant}.gguf" if quant else "*.gguf",
-                                   ref)
+                                   _gguf_glob(quant), ref)
     try:
         if local_path:
             return llama_cpp.Llama(
@@ -607,7 +611,7 @@ def _load_blocking_inner(ref: str, device: str, family: str,
             )
         return llama_cpp.Llama.from_pretrained(
             repo_id=repo,
-            filename=(f"*{quant}.gguf" if quant else "*.gguf"),
+            filename=_gguf_glob(quant),
             cache_dir=hf_cache.hub_cache_dir(),
             n_gpu_layers=(-1 if device == "cuda" else 0),
             n_ctx=_ctx_for(family),
@@ -713,7 +717,7 @@ def _predownload_gguf(repo: str, quant: "str | None",
     from faster_whisper_backend.runtime import download_progress
     from faster_whisper_backend.core import jobs
 
-    pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
+    pattern = _gguf_glob(quant).lower()
     # model_info has no deadline by default: a stalled hub would pin the
     # loader thread (and the model's load lock) forever. Bound it like the
     # hub bounds its own metadata calls, so a stall fails the load instead.
@@ -765,7 +769,7 @@ def _cached_gguf(repo: str, quant: "str | None") -> "str | None":
     from huggingface_hub import scan_cache_dir
     from huggingface_hub.errors import CacheNotFound
 
-    pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
+    pattern = _gguf_glob(quant).lower()
     try:
         info = scan_cache_dir(cache_dir=hf_cache.hub_cache_dir())
     except CacheNotFound:
