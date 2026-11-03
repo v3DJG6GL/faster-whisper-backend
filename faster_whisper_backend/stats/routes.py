@@ -347,6 +347,14 @@ def _kinds_param(raw: str | None, allowed: Collection[str]) -> list[str]:
     return kinds
 
 
+def _users_param(raw: str | None, scope: StatsScope) -> list[str]:
+    """`_csv(raw)`; 403 when an own-scope viewer filters by user."""
+    users = _csv(raw)
+    if users and scope.scope == "own":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="users= needs stats scope 'all'")
+    return users
+
+
 def _window_param(*, days: int | None, from_: int | None, to: int | None,
                   all_time: bool, tz: str | None,
                   with_: str | None = None) -> usage_store.WindowSpec:
@@ -498,10 +506,7 @@ async def stats_usage(
     caller_uid = user.get("user_id") or None
     scrub = not scope.include_identity
     kind_list = _kinds_param(kinds, usage_store.KINDS)
-    user_list = _csv(users)
-    if user_list and scope.scope == "own":
-        raise HTTPException(status.HTTP_403_FORBIDDEN,
-                            detail="users= needs stats scope 'all'")
+    user_list = _users_param(users, scope)
     key_list = _csv(keys) or ([key] if key else [])
     w = _window_param(days=days, from_=from_, to=to, all_time=all, tz=tz, with_=with_)
     jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
@@ -645,9 +650,7 @@ async def stats_jobs(
     kind_list = _kinds_param(kind, JOB_KINDS)
     if status_q and status_q not in JOB_STATUSES:
         raise HTTPException(422, detail=f"unknown status: {status_q!r}")
-    user_list = _csv(users)
-    if user_list and scope.scope == "own":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="users= needs stats scope 'all'")
+    user_list = _users_param(users, scope)
     caller_uid = user.get("user_id") or None
     scrub = not scope.include_identity
     n = max(1, min(int(limit), 200))
@@ -704,9 +707,7 @@ async def stats_tail(
     scope = _scope_with_preview(user, user_q)
     w = _window_param(days=days, from_=from_, to=to, all_time=all, tz=tz)
     kind_list = _kinds_param(kind, usage_store.KINDS)
-    user_list = _csv(users)
-    if user_list and scope.scope == "own":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="users= needs stats scope 'all'")
+    user_list = _users_param(users, scope)
     key_list = _csv(keys) or ([key] if key else [])
     caller_uid = user.get("user_id") or None
     scrub = not scope.include_identity
