@@ -21,6 +21,11 @@ def _read(*rel):
         return fh.read()
 
 
+def _bash(script, env):
+    return subprocess.run([shutil.which("bash"), "-c", script], capture_output=True,
+                          text=True, timeout=60, env=env)
+
+
 def test_linux_installer_restarts_the_unit():
     # Re-runs must pick up the refreshed venv + rewritten unit: `enable --now`
     # is a no-op on an active unit, so the script must use an explicit restart.
@@ -51,10 +56,8 @@ def test_linux_installer_runs_venv_steps_without_sudo_as_root(tmp_path):
     (bindir / "sudo").chmod(0o755)
 
     def run(user):
-        out = subprocess.run(
-            [shutil.which("bash"), "-c", f"set -euo pipefail\n{helper}\nas_user echo hi"],
-            capture_output=True, text=True, timeout=60,
-            env={"PATH": f"{bindir}:/usr/bin:/bin", "RUN_USER": user})
+        out = _bash(f"set -euo pipefail\n{helper}\nas_user echo hi",
+                    {"PATH": f"{bindir}:/usr/bin:/bin", "RUN_USER": user})
         assert out.returncode == 0, out.stderr
         return out.stdout
     assert run("root") == "hi\n"
@@ -114,11 +117,8 @@ def test_linux_installer_unit_survives_a_checkout_path_with_space_and_percent(tm
     script = (f"set -euo pipefail\n{helpers}\n"
               "DATA_ENV_LINE=\"Environment=WHISPER_DATA_DIR=${REPO_DIR}/data\"\n"
               "MODELS_ENV_LINE='' LOG_ENV_LINE='' NVIDIA_ENV_LINE=''\n" + heredoc)
-    out = subprocess.run(
-        [shutil.which("bash"), "-c", script], capture_output=True, text=True,
-        timeout=60, env={"PATH": "/usr/bin:/bin", "UNIT": str(unit),
-                         "REPO_DIR": repo, "PY": f"{repo}/venv/bin/python",
-                         "RUN_USER": "u"})
+    out = _bash(script, {"PATH": "/usr/bin:/bin", "UNIT": str(unit), "REPO_DIR": repo,
+                         "PY": f"{repo}/venv/bin/python", "RUN_USER": "u"})
     assert out.returncode == 0, out.stderr
     lines = dict(ln.split("=", 1) for ln in unit.read_text().splitlines()
                  if "=" in ln and not ln.startswith("#"))
@@ -153,10 +153,7 @@ def test_linux_installer_env_sets_reads_dotenv_like_the_service(tmp_path):
         for n in names)
 
     def _run(repo_dir):
-        out = subprocess.run(
-            [bash, "-c", script], capture_output=True, text=True, timeout=60,
-            env={**os.environ, "REPO_DIR": str(repo_dir),
-                 "PY": sys.executable})
+        out = _bash(script, {**os.environ, "REPO_DIR": str(repo_dir), "PY": sys.executable})
         assert out.returncode == 0, out.stderr
         return dict(line.split("=", 1) for line in out.stdout.split())
     assert _run(tmp_path) == {
@@ -189,9 +186,7 @@ def test_linux_uninstaller_sees_an_installed_unit_in_a_long_listing(tmp_path):
     fake.chmod(0o755)
     script = ("set -euo pipefail\nSERVICE_NAME=whisper-api\n"
               f"{cond}\n  echo installed\nelse\n  echo missing\nfi\n")
-    out = subprocess.run(
-        [shutil.which("bash"), "-c", script], capture_output=True, text=True,
-        timeout=60, env={"PATH": f"{bindir}:/usr/bin:/bin"})
+    out = _bash(script, {"PATH": f"{bindir}:/usr/bin:/bin"})
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "installed"
 
@@ -463,11 +458,8 @@ def test_linux_installer_finds_a_python314_beside_an_older_python3(tmp_path):
         return path
 
     def run(**env):
-        out = subprocess.run(
-            [shutil.which("bash"), "-c",
-             f'set -euo pipefail\nas_user() {{ echo "ran: $*"; }}\n{block}'],
-            capture_output=True, text=True, timeout=60,
-            env={"PATH": str(bindir), "REPO_DIR": str(tmp_path), **env})
+        out = _bash(f'set -euo pipefail\nas_user() {{ echo "ran: $*"; }}\n{block}',
+                    {"PATH": str(bindir), "REPO_DIR": str(tmp_path), **env})
         return out.returncode, out.stdout, out.stderr
     stub("python3", (3, 13))
     py314 = stub("python3.14", (3, 14))
@@ -510,10 +502,8 @@ def test_linux_installer_removes_a_venv_whose_build_failed(tmp_path):
                     'chmod +x "$PY"; echo "ensurepip is not available" >&2; return 1; }')
 
     def run(as_user):
-        out = subprocess.run(
-            [shutil.which("bash"), "-c", f"set -euo pipefail\n{as_user}\n{block}"],
-            capture_output=True, text=True, timeout=60,
-            env={"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)})
+        out = _bash(f"set -euo pipefail\n{as_user}\n{block}",
+                    {"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)})
         return out.returncode, out.stdout, out.stderr
     rc, _, stderr = run(no_ensurepip)
     assert rc == 1 and not venv.exists()
@@ -546,11 +536,9 @@ def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_pat
 
     def run():
         # Echo every as_user step; run only the pip probe, against the stub.
-        out = subprocess.run(
-            [shutil.which("bash"), "-c",
-             f'set -euo pipefail\nas_user() {{ echo "ran: $*"; [ "$1" != "$PY" ] || "$@"; }}\n{block}'],
-            capture_output=True, text=True, timeout=60,
-            env={"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)})
+        out = _bash(
+            f'set -euo pipefail\nas_user() {{ echo "ran: $*"; [ "$1" != "$PY" ] || "$@"; }}\n{block}',
+            {"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)})
         assert out.returncode == 0, out.stderr
         return out.stdout
     py.symlink_to(tmp_path / "gone" / "python3.12")
@@ -709,10 +697,8 @@ def test_linux_installer_expands_a_dotenv_reference_to_a_unit_set_var(tmp_path):
 
     def run(dotenv: str) -> tuple[dict, str]:
         (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
-        out = subprocess.run(
-            ["bash", "-c", script], capture_output=True, text=True, timeout=60,
-            env={"REPO_DIR": str(tmp_path), "PY": sys.executable,
-                 "PATH": "/usr/bin:/bin"})
+        out = _bash(script, {"REPO_DIR": str(tmp_path), "PY": sys.executable,
+                             "PATH": "/usr/bin:/bin"})
         assert out.returncode == 0, out.stderr
         return dict(ln.split("=", 1) for ln in out.stdout.splitlines()), out.stderr
     data_line = f"Environment=WHISPER_DATA_DIR={tmp_path}/data"
@@ -799,11 +785,8 @@ def test_linux_installer_legacy_checks_expand_a_unit_set_var(tmp_path):
 
     def run(dotenv: str) -> str:
         (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
-        out = subprocess.run(
-            ["bash", "-c", section], capture_output=True,
-            text=True, timeout=60,
-            env={"REPO_DIR": str(tmp_path), "PY": sys.executable,
-                 "SERVICE_NAME": "w", "RUN_USER": "u", "PATH": "/usr/bin:/bin"})
+        out = _bash(section, {"REPO_DIR": str(tmp_path), "PY": sys.executable,
+                              "SERVICE_NAME": "w", "RUN_USER": "u", "PATH": "/usr/bin:/bin"})
         assert out.returncode == 0, out.stderr
         return out.stderr
     for dotenv in ("WHISPER_DB_DIR=${WHISPER_DATA_DIR}/stores\n"
@@ -857,20 +840,15 @@ def test_linux_legacy_captures_recipe_moves_the_audio_tree_with_its_store(tmp_pa
 
     def warnings(dotenv=""):
         (repo / ".env").write_text(dotenv, encoding="utf-8")
-        out = subprocess.run(["bash", "-c", section], capture_output=True,
-                             text=True, timeout=60, env=env)
+        out = _bash(section, env)
         assert out.returncode == 0, out.stderr
         return re.sub(r"\x1b\[[0-9;]*m", "", out.stderr)
 
     def recipe(warning, end):
         return warning[warning.index("Move it: ") + 9:warning.index(end)]
 
-    def run(cmd):
-        return subprocess.run(["bash", "-c", cmd], capture_output=True,
-                              text=True, timeout=60, env=env)
-
     layout()
-    out = run(recipe(warnings(), " (the rm drops"))
+    out = _bash(recipe(warnings(), " (the rm drops"), env)
     assert out.returncode == 0, out.stderr
     assert (repo / "data" / "captures" / "ab" / "cd" / "abcd.wav").read_text(
         encoding="utf-8") == "a"
@@ -887,7 +865,7 @@ def test_linux_legacy_captures_recipe_moves_the_audio_tree_with_its_store(tmp_pa
     # chain stops before the store moves (audio without its rows would be
     # unlinked as orphans by the next start).
     layout(conflict=True)
-    out = run(recipe(warnings(), " (the rm drops"))
+    out = _bash(recipe(warnings(), " (the rm drops"), env)
     assert out.returncode != 0 and "Directory not empty" in out.stderr
     assert (repo / "captures" / "ab" / "cd" / "abcd.wav").exists()
     assert (repo / "captures.local.sqlite3").read_text(encoding="utf-8") == "rows"
@@ -901,7 +879,7 @@ def test_linux_legacy_captures_recipe_moves_the_audio_tree_with_its_store(tmp_pa
         (repo / f).unlink()
     warning = warnings()
     assert "legacy captures audio" in warning
-    out = run(recipe(warning, " (mv -T stops"))
+    out = _bash(recipe(warning, " (mv -T stops"), env)
     assert out.returncode == 0, out.stderr
     assert (repo / "data" / "captures" / "ab" / "cd" / "abcd.wav").exists()
     assert "IGNORED" not in warnings()
