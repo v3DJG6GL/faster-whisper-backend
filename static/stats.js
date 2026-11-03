@@ -3,7 +3,7 @@
 //
 // Loaded as a classic script right after the grid markup and BEFORE the
 // page's inline dashboard IIFE, so the top-level declarations here
-// (GS_LAYOUT_KEY, grid) are the globals that IIFE reads; the usage section
+// (GS_LAYOUT_KEY, grid, onSeg) are the globals that IIFE reads; the usage section
 // is an IIFE of its own and only touches its own elements.
 //
 // Cache-busting: the page links this file as /static/stats.js?v=<version>;
@@ -98,15 +98,20 @@ function setPreset(name, persist = true) {
   if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === name));
 }
 window._fwSetPreset = setPreset;
+// Segmented control #id: a click on one of its buttons calls fn(value, button).
+function onSeg(id, fn) {
+  const g = document.getElementById(id); if (!g) return;
+  g.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || !g.contains(b)) return;
+    fn(b.dataset.v, b);
+  });
+}
 (() => {
   let initial = 'both';
   try { initial = localStorage.getItem(GS_PRESET_KEY) || 'both'; } catch (_) {}
   setPreset(initial, false);
-  const seg = document.getElementById('layout-preset');
-  if (seg) seg.addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (b && seg.contains(b)) setPreset(b.dataset.v);
-  });
+  onSeg('layout-preset', (v) => setPreset(v));
 })();
 
 let layoutEditing = false;
@@ -400,14 +405,6 @@ function seg(id) { return $(id); }
 function setSeg(id, val) {
   const g = seg(id); if (!g) return;
   g.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === String(val)));
-}
-function onSeg(id, fn) {
-  const g = seg(id); if (!g) return;
-  g.addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (!b || !g.contains(b)) return;
-    fn(b.dataset.v, b);
-  });
 }
 function renderChips() {
   const kinds = $('sb-kind');
