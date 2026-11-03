@@ -15,7 +15,8 @@ import asyncio
 
 import numpy as np
 
-from tests._streaming_helpers import AlwaysSpeech as _AlwaysSpeech, const_pcm, fast_config, ws_drain
+from tests._streaming_helpers import (
+    AlwaysSpeech as _AlwaysSpeech, const_pcm, fast_config, handshake, ws_drain)
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
@@ -459,9 +460,7 @@ def test_capture_segments_share_the_utterance_timeline(client, app_module, monke
     monkeypatch.setattr(streaming_routes, "StreamSession", _session)
 
     with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-        ws.send_json({"type": "config", "model": "whisper-1", "response_format": "verbose_json",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws, response_format="verbose_json")["type"] == "ready"
         ws.send_bytes(const_pcm(8000, 3500))
         ws.send_bytes(const_pcm(0, 1500))
         ws.send_json({"type": "stop"})

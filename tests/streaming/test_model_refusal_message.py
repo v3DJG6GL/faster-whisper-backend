@@ -4,7 +4,7 @@ route returns, while a genuine load failure keeps the generic text."""
 
 from fastapi import HTTPException
 
-from tests._streaming_helpers import ws_drain
+from tests._streaming_helpers import config_frame, ws_drain
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -12,8 +12,7 @@ from faster_whisper_backend.transcription import models as tx_models
 def _handshake_errors(client, raw_key):
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_key)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_json(config_frame())
         msgs = ws_drain(ws, 200)[0]
     return [m for m in msgs if m.get("type") == "error"]
 

@@ -1,4 +1,5 @@
-"""Helpers shared by the streaming test modules (PCM frames + WebSocket drain).
+"""Helpers shared by the streaming test modules (PCM frames, the config
+handshake, WebSocket drain).
 
 Kept out of conftest.py so the fixture file stays about fixtures; import as
 ``from tests._streaming_helpers import ...`` (tests/ is a package and
@@ -14,6 +15,18 @@ from faster_whisper_backend.streaming.session import StreamConfig
 def const_pcm(level: int, ms: int, sample_rate: int = 16000) -> bytes:
     """One constant-level int16 PCM frame of ``ms`` milliseconds."""
     return np.full(sample_rate * ms // 1000, level, dtype="<i2").tobytes()
+
+
+def config_frame(**extra) -> dict:
+    """The minimal raw-PCM handshake config frame, plus any extra keys."""
+    return {"type": "config", "model": "whisper-1",
+            "audio": {"format": "pcm_s16le", "sample_rate": 16000}, **extra}
+
+
+def handshake(ws, **extra) -> dict:
+    """Send ``config_frame(**extra)`` and return the server's first reply."""
+    ws.send_json(config_frame(**extra))
+    return ws.receive_json()
 
 
 def ws_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:

@@ -9,7 +9,8 @@ import time
 import pytest
 
 from faster_whisper_backend.settings import effective_config
-from tests._streaming_helpers import const_pcm, speak_and_stop, ws_drain
+from tests._streaming_helpers import (
+    config_frame, const_pcm, handshake, speak_and_stop, ws_drain)
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -63,9 +64,7 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         speak_and_stop(ws)
 
     # The final decode is the last transcribe call; it uses the assembler with
@@ -86,10 +85,7 @@ def test_stream_request_override_profile_applies(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "override_profile": "fast",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        ready = ws.receive_json()
+        ready = handshake(ws, override_profile="fast")
         assert ready["type"] == "ready"
         assert ready["profile_applied"] == "fast"
         speak_and_stop(ws)
@@ -116,9 +112,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
     from faster_whisper_backend.auth import api_keys_store
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         # utterance 1 under profile p7
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))
@@ -149,9 +143,7 @@ def test_final_drops_low_confidence_hallucination_segment(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         msgs = speak_and_stop(ws)[0]
 
     finals = [m for m in msgs if m["type"] == "final"]
@@ -173,10 +165,7 @@ def test_stream_prompt_sentinel_inherit_clear_value(
     def _run(conf_extra):
         with client.websocket_connect(
                 "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-            ws.send_json({"type": "config", "model": "whisper-1",
-                          "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-                          **conf_extra})
-            assert ws.receive_json()["type"] == "ready"
+            assert handshake(ws, **conf_extra)["type"] == "ready"
             speak_and_stop(ws)
         return fake_model.last_kwargs.get("initial_prompt")
 
@@ -197,10 +186,8 @@ def test_stream_handshake_drops_lone_surrogates(
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         # json.dumps escapes the surrogate as "\\ud83d", as a browser sends it.
-        ws.send_text(json.dumps({
-            "type": "config", "model": "whisper-1", "prompt": "Kardiologie \ud83d",
-            "decode_overrides": {"output_prefix": ">> \ud83d"},
-            "audio": {"format": "pcm_s16le", "sample_rate": 16000}}))
+        ws.send_text(json.dumps(config_frame(
+            prompt="Kardiologie \ud83d", decode_overrides={"output_prefix": ">> \ud83d"})))
         assert ws.receive_json()["type"] == "ready"
         msgs = speak_and_stop(ws)[0]
     assert fake_model.last_kwargs.get("initial_prompt") == "Kardiologie"
@@ -233,8 +220,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_json(config_frame())
         msgs = _drain(ws)
 
     errors = [m for m in msgs if m.get("type") == "error"]
@@ -261,8 +247,7 @@ def test_model_load_failure_delivers_generic_error_and_closes(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_json(config_frame())
         msgs = _drain(ws)
 
     errors = [m for m in msgs if m.get("type") == "error"]
@@ -295,8 +280,7 @@ def _refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, gon
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_json(config_frame())
         # No close frame ever reaches the test session (the refusal send failed),
         # so wait for the handler to reach its teardown — it drops the session
         # id AFTER the error branch would have logged / recorded the row —
@@ -382,8 +366,7 @@ def test_model_load_failure_records_a_classified_error_row(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_json(config_frame())
         msgs = _drain(ws)
 
     assert any(m.get("code") == "model_load_failed" for m in msgs), msgs
@@ -415,8 +398,7 @@ def test_partial_model_load_failure_row_names_the_partial_model(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ws.send_json(config_frame())
         msgs = _drain(ws)
 
     assert any(m.get("code") == "model_load_failed" for m in msgs), msgs
@@ -446,12 +428,9 @@ def test_handshake_drops_unknown_decode_override_keys(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "decode_overrides": {"beam_size": 5,
-                                           "not_a_real_key": "x" * 1024,
-                                           "__proto__": 1},
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        ready = ws.receive_json()
+        ready = handshake(ws, decode_overrides={"beam_size": 5,
+                                                "not_a_real_key": "x" * 1024,
+                                                "__proto__": 1})
         assert ready["type"] == "ready"
         assert "overrides_ignored" not in ready   # nothing LOCKED, so nothing surfaced
         speak_and_stop(ws)
@@ -474,9 +453,7 @@ def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1", "language": language,
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws, language=language)["type"] == "ready"
         speak_and_stop(ws)
 
     assert "language" in fake_model.last_kwargs   # a decode ran
@@ -518,9 +495,7 @@ def test_handshake_language_reaches_the_model_as_a_whisper_code(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1", "language": language,
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        ready = ws.receive_json()
+        ready = handshake(ws, language=language)
         assert ready["type"] == "ready"
         # An unusable value is reported, not silently swapped.
         assert ("language" in ready.get("overrides_ignored", [])) == (expected is None)
@@ -551,9 +526,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
         time.sleep(0.5)
         api_keys_store.revoke_user(uid)        # bumps the config version
@@ -591,9 +564,7 @@ def test_revoked_session_closes_without_a_further_client_frame(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
         time.sleep(0.5)
         api_keys_store.revoke_user(uid)        # bumps the config version
@@ -634,9 +605,7 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # first decode re-auths → revoked
         time.sleep(0.5)
         try:
@@ -665,9 +634,7 @@ def test_stream_survives_an_unrelated_config_bump(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         time.sleep(0.3)
         _profile(client, h, "p", BEAM_SIZE=7)   # unrelated bump, alice untouched
@@ -700,9 +667,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         msgs, _code = speak_and_stop(ws)
 
     assert any(m.get("type") == "final" for m in msgs), msgs
@@ -728,9 +693,7 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream",
             headers={"cookie": f"{cookie_name}={raw_cookie}"}) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
         time.sleep(0.5)
         sessions_store.revoke_session(raw_cookie)   # what /auth/logout does
@@ -767,9 +730,7 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # speech, utterance stays open
         time.sleep(0.5)                        # pump has drained the queue
         api_keys_store.revoke_user(uid)        # bumps the config version
@@ -802,10 +763,7 @@ def _knobs_handshake(client, monkeypatch, overrides, headers=None):
     monkeypatch.setattr(routes, "make_endpointer", _ep)
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=headers or {}) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "decode_overrides": overrides,
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        ready = ws.receive_json()
+        ready = handshake(ws, decode_overrides=overrides)
         ws.send_json({"type": "stop"})
         _drain(ws)
     return ready, seen
@@ -995,11 +953,8 @@ def test_stream_client_output_wrappers_survive_a_refresh(
     from faster_whisper_backend.auth import api_keys_store
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "decode_overrides": {"output_prefix": ">> ",
-                                           "output_suffix": " <<"},
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws, decode_overrides={"output_prefix": ">> ",
+                                               "output_suffix": " <<"})["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))
         # Any config bump makes the next utterance re-resolve ident.
@@ -1025,9 +980,7 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
     from faster_whisper_backend.auth import api_keys_store
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))        # final, document stays open
         early = []
@@ -1068,11 +1021,8 @@ def test_stream_output_suffix_closes_every_document_at_a_hard_break(
     _, raw_alice = make_user_key("alice")
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "decode_overrides": {"output_prefix": ">> ",
-                                           "output_suffix": " <<"},
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws, decode_overrides={"output_prefix": ">> ",
+                                               "output_suffix": " <<"})["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
         msgs = speak_and_stop(ws)[0]      # final, no second break
@@ -1099,10 +1049,7 @@ def test_stream_client_output_wrappers_master_gate_off(
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
     monkeypatch.setattr(app_module.cfg, "ALLOW_REQUEST_DECODE_OVERRIDES", False)
     with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "decode_overrides": {"output_prefix": ">> "},
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        ready = ws.receive_json()
+        ready = handshake(ws, decode_overrides={"output_prefix": ">> "})
         assert ready["overrides_ignored"] == ["output_prefix"]
         msgs = speak_and_stop(ws)[0]
     final = next(m for m in msgs if m.get("type") == "final" and m.get("committed"))

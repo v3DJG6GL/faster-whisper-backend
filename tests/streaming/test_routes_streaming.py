@@ -16,7 +16,8 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from tests._streaming_helpers import const_pcm, speak_and_stop, ws_drain
+from tests._streaming_helpers import (
+    const_pcm, handshake as _handshake, speak_and_stop, ws_drain)
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -34,11 +35,7 @@ def test_stream_happy_path_partials_then_final(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({
-                "type": "config", "model": "whisper-1", "response_format": "json",
-                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-            })
-            ready = ws.receive_json()
+            ready = _handshake(ws, response_format="json")
             assert ready["type"] == "ready"
             assert ready["sample_rate"] == 16000
 
@@ -64,11 +61,7 @@ def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({
-                "type": "config", "model": "whisper-1", "response_format": "json",
-                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-            })
-            ready = ws.receive_json()
+            ready = _handshake(ws, response_format="json")
             assert ready["type"] == "ready"
             assert ready["utterance_frames"] is True
 
@@ -326,12 +319,6 @@ def test_dictate_page_sends_a_cleared_language_as_auto_detect(client):
 # param is NOT one — it would land in every access log that records the
 # request line.
 
-def _handshake(ws):
-    ws.send_json({"type": "config", "model": "whisper-1",
-                  "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-    return ws.receive_json()
-
-
 def test_ws_authorization_header_admits(client, make_user_key):
     make_user_key("root", is_admin=True)   # locks the server down
     _uid, raw = make_user_key("alice")
@@ -408,9 +395,7 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         before = recent_transcriptions_store.count()
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({"type": "config", "model": "whisper-1",
-                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-            assert ws.receive_json()["type"] == "ready"
+            assert _handshake(ws)["type"] == "ready"
             speak_and_stop(ws)
         rows = recent_transcriptions_store.list_recent(limit=10)
         after = recent_transcriptions_store.count()
@@ -463,9 +448,7 @@ def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch):
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({"type": "config", "model": "whisper-1",
-                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-            assert ws.receive_json()["type"] == "ready"
+            assert _handshake(ws)["type"] == "ready"
             ws.send_bytes(_pcm(8000, 1000))   # utterance A
             ws.send_json({"type": "flush"})   # flush A (pump held for 0.4 s)
             ws.send_bytes(_pcm(8000, 1000))   # utterance B — new audio after A's flush
@@ -527,11 +510,7 @@ def test_stream_session_idle_timeout_closes_and_notifies(app_module, monkeypatch
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({
-                "type": "config", "model": "whisper-1", "response_format": "json",
-                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-            })
-            assert ws.receive_json()["type"] == "ready"
+            assert _handshake(ws, response_format="json")["type"] == "ready"
             msgs = _drain(ws)   # send nothing further → idle close
     assert any(m.get("code") == "idle_timeout" for m in msgs)
 
@@ -543,11 +522,7 @@ def test_stream_idle_timeout_zero_disables(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.0, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({
-                "type": "config", "model": "whisper-1", "response_format": "json",
-                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-            })
-            assert ws.receive_json()["type"] == "ready"
+            assert _handshake(ws, response_format="json")["type"] == "ready"
             ws.send_json({"type": "stop"})
             msgs = _drain(ws)
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
@@ -569,11 +544,7 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkey
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.5, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({
-                "type": "config", "model": "whisper-1", "response_format": "json",
-                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-            })
-            assert ws.receive_json()["type"] == "ready"
+            assert _handshake(ws, response_format="json")["type"] == "ready"
             for _ in range(3):            # 0.9 s of keepalive-ish traffic, no audio
                 time.sleep(0.3)
                 try:
@@ -599,11 +570,7 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 2.0, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({
-                "type": "config", "model": "whisper-1", "response_format": "json",
-                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-            })
-            assert ws.receive_json()["type"] == "ready"
+            assert _handshake(ws, response_format="json")["type"] == "ready"
             for _ in range(12):           # 3 s of streaming: 1.5x the idle timeout
                 time.sleep(0.25)
                 ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
@@ -816,10 +783,7 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
 
 def _dictate_one_utterance(client, conf_extra):
     with client.websocket_connect(_STREAM_URL) as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-                      **conf_extra})
-        assert ws.receive_json()["type"] == "ready"
+        assert _handshake(ws, **conf_extra)["type"] == "ready"
         speak_and_stop(ws)
 
 
@@ -1007,9 +971,7 @@ def _stream_once(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({"type": "config", "model": "whisper-1",
-                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-            assert ws.receive_json()["type"] == "ready"
+            assert _handshake(ws)["type"] == "ready"
             return speak_and_stop(ws)[0]
 
 

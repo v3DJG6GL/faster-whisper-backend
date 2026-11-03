@@ -22,20 +22,14 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config, speak_and_stop,
-    ws_drain as _drain)
+    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config, handshake as _config,
+    speak_and_stop, ws_drain as _drain)
 from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
 from faster_whisper_backend.transcription import models as tx_models
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
-
-
-def _config(ws, **extra):
-    ws.send_json({"type": "config", "model": "whisper-1",
-                  "audio": {"format": "pcm_s16le", "sample_rate": 16000}, **extra})
-    return ws.receive_json()
 
 
 def _grid_words(start_s: float, end_s: float):

@@ -8,6 +8,7 @@ buffer tail, high avg_logprob, T=0.0, nsp possibly below NO_SPEECH_THRESHOLD.
 
 import numpy as np
 
+from tests._streaming_helpers import handshake
 from tests.conftest import RATE, FakeSegment, FakeWord
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -266,10 +267,7 @@ def test_stream_final_cuts_prompt_echo(app_module, fake_model, monkeypatch, capl
     with caplog.at_level("INFO"):
         with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
             with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-                ws.send_json({"type": "config", "model": "whisper-1",
-                              "prompt": _ECHO_PROMPT,
-                              "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-                assert ws.receive_json()["type"] == "ready"
+                assert handshake(ws, prompt=_ECHO_PROMPT)["type"] == "ready"
                 ws.send_bytes(loud)
                 ws.send_bytes(b"\0\0" * int(RATE * 1.5))
                 ws.send_json({"type": "stop"})

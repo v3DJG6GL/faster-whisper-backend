@@ -4,7 +4,7 @@ language makes a captures re-apply run every language's rules on it."""
 
 import time
 
-from tests._streaming_helpers import const_pcm as _pcm, ws_drain as _drain
+from tests._streaming_helpers import const_pcm as _pcm, handshake, ws_drain as _drain
 from tests.conftest import FakeInfo
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
@@ -27,9 +27,7 @@ def _gate_skipped_utterance(client, app_module, monkeypatch):
 
     with client.websocket_connect(_STREAM_URL) as ws:
         # No `language` key: the session inherits DEFAULT_LANGUAGE.
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
-        assert ws.receive_json()["type"] == "ready"
+        assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         time.sleep(0.5)
         monkeypatch.setattr(streaming_session, "rms_dbfs", lambda a: -999.0)
