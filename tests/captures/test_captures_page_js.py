@@ -52,11 +52,15 @@ def _js_function(html, name):
     return _js_block(html, start)
 
 
+_TICK_JS = "function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }\n"
+
+
 def _run_node(tmp_path, code):
+    """Every probe gets `tick()`: await it for one macrotask turn."""
     f = tmp_path / "probe.js"
     # UTF-8 explicitly: the template has non-Latin-1 chars and Windows CI
     # defaults to cp1252.
-    f.write_text(code, encoding="utf-8")
+    f.write_text(_TICK_JS + code, encoding="utf-8")
     p = subprocess.run([_NODE, str(f)], capture_output=True, text=True,
                        encoding="utf-8", timeout=30)
     assert p.returncode == 0, p.stderr
@@ -221,7 +225,6 @@ async function _okToDropOpenEdits() { return true; }
 var _allCaptures = [{ id: 'a', status: 'new' }];
 function _clearSelection() {} function render() {} function reloadCounts() {}
 function toast(msg, err, action) { toasts.push({ msg: msg, action: !!action }); }
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   _bulkStatus('reviewed');
   await tick();
@@ -320,7 +323,6 @@ function toast(m) { toasts.push(m); } function reloadCounts() {}
 function _syncCapturePreview() {}
 var state = { cid: 'c1', corrections: [{ wrong: 'a', correct: 'A', idx: 1 }],
   baselineCorrections: [], adminNotes: '', dirty: false };
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   markDirty(state);
   var p = onSave(state, {});
@@ -753,7 +755,6 @@ var toggleBtn = { _setIcon: function(i) { toggleBtn.icon = i; } };
 var panel = {}, stripEl = {}, chipBox = {}, gtArea = {};
 function memberIdsFn() { return ['m1', 'm2']; }
 var onToggle = """ + _preview_click_handler(page) + r""";
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   onToggle();
   await tick();
@@ -808,7 +809,6 @@ function mk(ids) {
   function memberIdsFn() { return ids; }
   return { panel: panel, click: """ + _preview_click_handler(page) + r""" };
 }
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   var a = mk(['x', 'y']), b = mk(['x', 'z']);
   await a.click();
@@ -896,7 +896,6 @@ function _loadProposals() { return new Promise(function(r) { pending.push(r); })
 function _enterBatchMode() { entered++; _batchActive = true; }
 function _exitBatchMode() { _batchActive = false; }
 function _stopAnyPreview() {}
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   _openProposeModal({ startInBatch: true });
   _closePropose();                       // Close before the GET returned
@@ -1211,7 +1210,6 @@ function api() { return new Promise(function(r) { pending.push(r); }); }
 function applyServerSample() { applied++; sampleState.dirty = false; }
 function toast() {} function reloadCounts() {}
 var onSave = """ + handler + r""";
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   onSave();
   sampleState.adminNotes = 'n + typed meanwhile';
@@ -1245,7 +1243,6 @@ function api(m, u, body) { bodies.push(body); return Promise.resolve({ sample: {
 function applyServerSample() { sampleState.notesBaseline = sampleState.adminNotes; }
 function toast() {} function reloadCounts() {}
 var onSave = """ + handler + r""";
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   onSave(); await tick();               // chips only: the notes stay out
   sampleState.adminNotes = 'new';
@@ -1325,7 +1322,6 @@ global.fetch = function() { return new Promise(function(r) { pending.push(r); })
 global.URL = { createObjectURL: function(b) { made.push(b.n); return 'blob:' + b.n; },
   revokeObjectURL: function() {} };
 function reply(i, n) { pending[i]({ ok: true, blob: function() { return { n: n }; } }); }
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   refreshAudio();                 // expand
   refreshAudio();                 // Regenerate before the first landed
@@ -1683,7 +1679,6 @@ function _dirtyOpenEdits() { return []; }
 function api() { events.push('post'); return new Promise(function(r) { pending.push(r); }); }
 function _stopAnyPreview() { events.push('stop'); }
 function load() { events.push('load'); } function toast() {}
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   await commit();
   events.push('play');                 // ▶ while "Creating" is in flight
@@ -1705,7 +1700,6 @@ function _selectedRows() { return _allCaptures.slice(); }
 function _clearSelection() {} function render() { renders++; } function reloadCounts() {}
 function toast() {} function fmtHours() { return '1s'; } function collapse() {}
 global.document = { querySelector: function() { return null; } };
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 """
 
 
@@ -1770,7 +1764,6 @@ function api(m, u, body) {
 }
 var onStatus = """ + on_status + r""";
 var onSave = """ + on_save + r""";
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   onSave();
   await onStatus('ready');              // clicked while the Save runs
@@ -1944,7 +1937,6 @@ function reloadStats() {} function toast(m) { toasts.push(m); }
 var footer = { hidden: true };
 global.document = { getElementById: function() { return footer; },
                     body: { classList: { add: function() {} } } };
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 async function run(dirtyBefore, editMeanwhile, answer) {
   _samplesNext = cursor; _allSamples = [{ id: 'g0' }]; _allCaptures = [{ id: 'c0' }];
   var st = { dirty: false };
@@ -2010,7 +2002,6 @@ function _syncUrl() { urls.push(_filtSpeakers.join(',')); }
 function render() {} function toast() {}
 var footer = { hidden: true };
 global.document = { getElementById: function() { return footer; } };
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   var st = { dirty: false };
   _openRows = { c1: st };
@@ -2066,7 +2057,6 @@ function reloadStats() {} function toast() {} function _stopAnyPreview() {}
 var g = { id: 'g1' }, rows = [{ id: 'c1' }], modal = { classList: { remove: function() {} } };
 global.document = { getElementById: function() { return {}; },
                     body: { classList: { add: function() {} } } };
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   var st = { dirty: false };
   _openRows = { c9: st };
@@ -2105,7 +2095,6 @@ function _dirtyOpenEdits() { return []; }
 async function _renderUnlessKeptOpenEdits() {}
 global.document = { getElementById: function() { return null; },
                     body: { classList: { add: function() {} } } };
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 (async function() {
   var pl = load();
   await tick();
@@ -2351,7 +2340,6 @@ var r = { id: 'c1', status: 'new', corrections: [] };
 var state = { cid: 'c1', newStatus: 'new', corrections: [chip],
   baselineCorrections: [], adminNotes: '' };
 var onStatus = """ + handler + r""";
-function tick() { return new Promise(function(res) { setTimeout(res, 0); }); }
 (async function() {
   var p = onSave(state, r);
   await onStatus('ready');               // clicked while the Save runs
@@ -2460,7 +2448,6 @@ function applyServerSample() { applied++; sampleState.dirty = false; }
 function toast(m) { toasts.push(m); } function reloadCounts() {}
 """ + _js_function(page, "okToRegenerate") + "\n" + _js_function(page, "applyRegenerated")
         + "\nvar onRegen = " + handler + r""";
-function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 async function run(answer) {
   sampleState.dirty = false;
   await onRegen();
