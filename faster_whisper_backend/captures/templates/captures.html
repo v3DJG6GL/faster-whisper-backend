@@ -2198,13 +2198,9 @@
     function textLine(klass, label, value) {
       var row = document.createElement('div');
       row.className = 'cc-textline ' + klass;
-      var tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = label;
+      var tag = _el('span', 'tag', label);
       row.appendChild(tag);
-      var v = document.createElement('span');
-      v.className = 'val' + (value ? ' ws-region' : '');
-      v.textContent = value || '(empty)';
+      var v = _el('span', 'val' + (value ? ' ws-region' : ''), value || '(empty)');
       row.appendChild(v);
       return row;
     }
@@ -2281,9 +2277,7 @@
         var lg = trLangs[ti];
         var trRow = document.createElement('div');
         trRow.className = 'cc-tr-row';
-        var tag = document.createElement('span');
-        tag.className = 'cc-tr-lang' + (eligible && lg === enKey ? ' cc-tr-eligible' : '');
-        tag.textContent = lg.toUpperCase();
+        var tag = _el('span', 'cc-tr-lang' + (eligible && lg === enKey ? ' cc-tr-eligible' : ''), lg.toUpperCase());
         if (!(eligible && lg === enKey)) tag.title = 'review only — not training data';
         var val = _readonlyBox('cc-ground cc-tr-text');
         val.textContent = trs[lg] || '';
@@ -2306,9 +2300,7 @@
 
     var actions = document.createElement('div');
     actions.className = 'cc-actions';
-    var statusLbl = document.createElement('span');
-    statusLbl.className = 'cc-status-label';
-    statusLbl.textContent = 'status ';
+    var statusLbl = _el('span', 'cc-status-label', 'status ');
     var statusGrp = buildStatusButtonGroup(
       [{value: 'new',       label: 'New'},
        {value: 'reviewed',  label: 'Reviewed'},
@@ -2378,15 +2370,11 @@
     });
     actions.appendChild(reBtn);
 
-    var saveBtn = document.createElement('button');
-    saveBtn.className = 'primary';
-    saveBtn.textContent = 'Save';
+    var saveBtn = _el('button', 'primary', 'Save');
     saveBtn.addEventListener('click', function() { onSave(state, r, saveBtn); });
     actions.appendChild(saveBtn);
 
-    var delBtn = document.createElement('button');
-    delBtn.className = 'danger';
-    delBtn.textContent = 'Delete';
+    var delBtn = _el('button', 'danger', 'Delete');
     delBtn.addEventListener('click', function() { onDelete(r); });
     actions.appendChild(delBtn);
 
@@ -4034,14 +4022,10 @@
     scrub.className = 'compact-player-scrub';
     scrub.disabled = true;
 
-    var timeEl = document.createElement('span');
-    timeEl.className = 'compact-player-time';
-    timeEl.textContent = '0:00';
+    var timeEl = _el('span', 'compact-player-time', '0:00');
     var sep = document.createElement('span');
     sep.className = 'compact-player-time-sep'; sep.textContent = '/';
-    var totalEl = document.createElement('span');
-    totalEl.className = 'compact-player-time';
-    totalEl.textContent = '0:00';
+    var totalEl = _el('span', 'compact-player-time', '0:00');
 
     wrap.appendChild(btn);
     wrap.appendChild(scrub);
@@ -4197,14 +4181,10 @@
     scrub.type = 'range'; scrub.min = '0'; scrub.max = '1000'; scrub.value = '0';
     scrub.className = 'compact-player-scrub';
     scrub.disabled = true;
-    var timeEl = document.createElement('span');
-    timeEl.className = 'compact-player-time';
-    timeEl.textContent = '0:00';
+    var timeEl = _el('span', 'compact-player-time', '0:00');
     var sep = document.createElement('span');
     sep.className = 'compact-player-time-sep'; sep.textContent = '/';
-    var totalEl = document.createElement('span');
-    totalEl.className = 'compact-player-time';
-    totalEl.textContent = '0:00';
+    var totalEl = _el('span', 'compact-player-time', '0:00');
     if (opts.inlinePlayer) controls.appendChild(toggleBtn);
     controls.appendChild(scrub);
     controls.appendChild(timeEl);
@@ -4444,10 +4424,8 @@
     var listEl = document.getElementById('propose-list');
     listEl.innerHTML = '';
     if (!_proposals.length) {
-      var empty = document.createElement('div');
-      empty.className = 'empty';
-      empty.textContent = 'No more proposals — Refresh to re-rank against '
-        + 'the current state, or record a few more clips first.';
+      var empty = _el('div', 'empty', 'No more proposals — Refresh to re-rank against '
+        + 'the current state, or record a few more clips first.');
       listEl.appendChild(empty);
       return;
     }
@@ -4464,9 +4442,7 @@
     row1.className = 'row1';
 
     var n = Math.round((p.composite_score || 0) * 100);
-    var score = document.createElement('span');
-    score.className = 'score tier-' + _scoreTier(n);
-    score.textContent = n + ' / 100';
+    var score = _el('span', 'score tier-' + _scoreTier(n), n + ' / 100');
     score.title = 'Composite quality score (0-100).\n'
       + 'fill ' + (p.fill_score||0).toFixed(2)
       + ' · density ' + (p.density_score||0).toFixed(2)
@@ -4495,9 +4471,7 @@
     countLabel.textContent = (p.member_count || 0) + ' clips';
     row1.appendChild(countLabel);
 
-    var lang = document.createElement('span');
-    lang.className = 'lang-pill';
-    lang.textContent = p.language || '?';
+    var lang = _el('span', 'lang-pill', p.language || '?');
     row1.appendChild(lang);
 
     if (p.username || p.user_id) {
@@ -4527,9 +4501,7 @@
     row1.appendChild(accept);
     card.appendChild(row1);
 
-    var reason = document.createElement('div');
-    reason.className = 'reason';
-    reason.textContent = p.reason || '';
+    var reason = _el('div', 'reason', p.reason || '');
     card.appendChild(reason);
 
     card.appendChild(previewCtl.panel);
@@ -4548,14 +4520,10 @@
       ts.className = 'ts';
       stampTs(ts, m.created_ts || 0);
       line.appendChild(ts);
-      var dur = document.createElement('span');
-      dur.className = 'dur';
-      dur.textContent = (m.duration_s || 0).toFixed(1) + 's';
+      var dur = _el('span', 'dur', (m.duration_s || 0).toFixed(1) + 's');
       line.appendChild(dur);
       if (!allSameSpeaker && (m.username || m.user_id)) {
-        var spk = document.createElement('span');
-        spk.className = 'm-spk';
-        spk.textContent = m.username || String(m.user_id).slice(0, 8);
+        var spk = _el('span', 'm-spk', m.username || String(m.user_id).slice(0, 8));
         line.appendChild(spk);
       }
       var txt = document.createElement('span');
@@ -5175,13 +5143,9 @@
         function _textLine(klass, label, value) {
           var row = document.createElement('div');
           row.className = 'cc-textline ' + klass;
-          var tag = document.createElement('span');
-          tag.className = 'tag';
-          tag.textContent = label;
+          var tag = _el('span', 'tag', label);
           row.appendChild(tag);
-          var v = document.createElement('span');
-          v.className = 'val' + (value ? ' ws-region' : ' dim');
-          v.textContent = value || '(empty)';
+          var v = _el('span', 'val' + (value ? ' ws-region' : ' dim'), value || '(empty)');
           row.appendChild(v);
           return row;
         }
@@ -5277,9 +5241,7 @@
 
         var actions = document.createElement('div');
         actions.className = 'cc-actions';
-        var statusLbl = document.createElement('span');
-        statusLbl.className = 'cc-status-label';
-        statusLbl.textContent = 'status ';
+        var statusLbl = _el('span', 'cc-status-label', 'status ');
         var statusGrp = buildStatusButtonGroup(
           [{value: 'new',       label: 'New'},
            {value: 'reviewed',  label: 'Reviewed'},
@@ -5316,9 +5278,7 @@
         );
         statusLbl.appendChild(statusGrp.root);
         actions.appendChild(statusLbl);
-        var dirtyEl = document.createElement('span');
-        dirtyEl.className = 'dirty hidden';
-        dirtyEl.textContent = 'unsaved';
+        var dirtyEl = _el('span', 'dirty hidden', 'unsaved');
         actions.appendChild(dirtyEl);
         sampleState.dirtyEl = dirtyEl;
         var spc = document.createElement('span');
