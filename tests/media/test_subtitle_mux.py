@@ -35,6 +35,10 @@ def _tracks():
             pk.SubtitleTrack("de", "German", "1\n00:00:00,000 --> 00:00:01,000\nHallo\n")]
 
 
+def _disp(argv):
+    return [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
+
+
 def test_build_package_argv_mkv():
     argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
                                  container="mkv", out_path="/w/out.mkv", default_track=0)
@@ -46,8 +50,7 @@ def test_build_package_argv_mkv():
     assert argv[argv.index("-c:s") + 1] == "srt"
     assert "language=eng" in argv and "language=deu" in argv
     assert "title=German" in argv
-    d = [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
-    assert d == ["default", "0"]
+    assert _disp(argv) == ["default", "0"]
     assert argv[-3:] == ["-f", "matroska", "/w/out.mkv"]
 
 
@@ -57,16 +60,14 @@ def test_build_package_argv_original_flag_and_audio_language():
     argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
                                  container="mkv", out_path="/w/out.mkv", default_track=0,
                                  original_track=0, audio_lang="de", audio_label="German")
-    d = [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
-    assert d == ["default+original", "0"]
+    assert _disp(argv) == ["default+original", "0"]
     a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
     assert a == ["language=deu", "title=German"]
     # original without default; audio label defaults to the language name.
     argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
                                  container="mkv", out_path="/w/out.mkv", default_track=1,
                                  original_track=0, audio_lang="pt-BR")
-    d = [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
-    assert d == ["original", "default"]
+    assert _disp(argv) == ["original", "default"]
     a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
     assert a == ["language=por", "title=Portuguese (BR)"]
     # No audio language → no audio metadata at all.
@@ -86,10 +87,6 @@ def test_build_package_argv_mp4_mov_text_faststart_and_no_default():
     argv = pk.build_package_argv("/m/src.mp4", [], [], container="webm",
                                  out_path="/w/out.webm", default_track=None)
     assert argv[-2] == "matroska" and "-c:s" not in argv
-
-
-def _disp(argv):
-    return [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
 
 
 def _flagged_tracks():
