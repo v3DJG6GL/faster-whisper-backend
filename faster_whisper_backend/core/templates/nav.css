@@ -1034,9 +1034,8 @@ input[type="checkbox"].switch:focus-visible {
    per-card rationale (textarea.rule-note) and the per-entry note
    (.rl-enote textarea). Sans / --fs-md / dimmed in a distinct bordered box
    with a left accent, so a human note never reads like the monospace config
-   values around it. (Mirrors the Captures "Admin notes" box.) NAV_CSS is
-   injected after each page's CSS so these two-class selectors win over the
-   generic mono `.input-col textarea`. */
+   values around it. NAV_CSS is injected after each page's CSS so these
+   two-class selectors win over the generic mono `.input-col textarea`. */
 .rule-editor textarea.rule-note,
 .rule-editor .rl-enote textarea { width: 100%; box-sizing: border-box;
   font-family: var(--font-sans); font-size: var(--fs-md); line-height: 1.55;
