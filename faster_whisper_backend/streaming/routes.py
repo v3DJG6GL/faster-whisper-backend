@@ -106,6 +106,8 @@ _SHED_LOG_INTERVAL_S = 10.0
 # 2-byte frames, so without this a client could queue millions of tuples under
 # the byte cap (each PCM frame may re-arm one queued flush).
 _HARD_CAP_ITEMS = 4096
+# Client-facing text of every revocation `unauthorized` frame.
+_REVOKED_MSG = "credential no longer valid; closing"
 
 router = APIRouter()
 
@@ -126,6 +128,17 @@ async def _safe_ws_send(ws: WebSocket, message: dict, *, close: bool = False) ->
         return True
     except (RuntimeError, WebSocketDisconnect):
         return False
+
+
+async def _send_error_frame(ws: WebSocket, send_lock: asyncio.Lock, code: str,
+                            message: str) -> None:
+    """Send one terminal ``error`` frame under ``send_lock``. Wider catch than
+    _safe_ws_send: the session is ending anyway, so no failure may escape."""
+    async with send_lock:
+        try:
+            await ws.send_json({"type": "error", "code": code, "message": message})
+        except Exception:  # noqa: BLE001 — peer may be gone
+            pass
 
 
 def _write_pcm16_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
@@ -1840,7 +1853,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     async with send_lock:
                         try:
                             await ws.send_json({"type": "error", "code": "unauthorized",
-                                                "message": "credential no longer valid; closing"})
+                                                "message": _REVOKED_MSG})
                             await ws.close(code=_WS_UNAUTH)
                         except Exception:  # noqa: BLE001 — peer may be gone
                             pass
@@ -1901,12 +1914,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     msg = await _receive_idle(ws, budget)
                 except asyncio.TimeoutError:
                     logger.info("[stream %s] idle %.0fs — closing", session_id[:8], idle_timeout)
-                    async with send_lock:
-                        try:
-                            await ws.send_json({"type": "error", "code": "idle_timeout",
-                                                "message": f"no audio for {idle_timeout:.0f}s; closing"})
-                        except Exception:  # noqa: BLE001 — peer may be gone
-                            pass
+                    await _send_error_frame(ws, send_lock, "idle_timeout",
+                                            f"no audio for {idle_timeout:.0f}s; closing")
                     break
                 if msg.get("type") == "websocket.disconnect":
                     break
@@ -1914,12 +1923,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     # Latched by _refresh_ident on the consumer side. Every sink
                     # is already cut (the decode guards); this closes the socket
                     # too, at the first frame after the revocation.
-                    async with send_lock:
-                        try:
-                            await ws.send_json({"type": "error", "code": "unauthorized",
-                                                "message": "credential no longer valid; closing"})
-                        except Exception:  # noqa: BLE001 — peer may be gone
-                            pass
+                    await _send_error_frame(ws, send_lock, "unauthorized", _REVOKED_MSG)
                     break
                 if msg.get("bytes") is not None:
                     if msg["bytes"]:
@@ -1932,12 +1936,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         # end the session; the close still commits what decoded.
                         logger.info("[stream %s] audio decoder stopped — closing",
                                     session_id[:8])
-                        async with send_lock:
-                            try:
-                                await ws.send_json({"type": "error", "code": "decoder_failed",
-                                                    "message": "audio decoder stopped; closing"})
-                            except Exception:  # noqa: BLE001 — peer may be gone
-                                pass
+                        await _send_error_frame(ws, send_lock, "decoder_failed",
+                                                "audio decoder stopped; closing")
                         break
                 elif msg.get("text") is not None:
                     try:
@@ -1973,12 +1973,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # pump. Answer with the 4401 every other revocation path sends,
                 # not the blanket handler's "internal error".
                 _auth_revoked = True
-                async with send_lock:
-                    try:
-                        await ws.send_json({"type": "error", "code": "unauthorized",
-                                            "message": "credential no longer valid; closing"})
-                    except Exception:  # noqa: BLE001 — peer may be gone
-                        pass
+                await _send_error_frame(ws, send_lock, "unauthorized", _REVOKED_MSG)
         if _auth_revoked:
             # No session.close() here: its drain finalizes the in-flight
             # utterance and emits the closing document, i.e. it would hand a
@@ -1993,11 +1988,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     pass
         else:
             async with send_lock:
-                try:
-                    await ws.send_json({"type": "closing"})
-                    await ws.close()
-                except (RuntimeError, WebSocketDisconnect):
-                    pass
+                await _safe_ws_send(ws, {"type": "closing"}, close=True)
     except WebSocketDisconnect:
         pass  # peer gone; teardown happens in the finally
     except Exception as exc:  # noqa: BLE001
