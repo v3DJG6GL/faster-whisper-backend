@@ -1518,17 +1518,11 @@ async def preview_merge_audio_api(
                     getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)),
             )
         )
-    except audio_merge.WavFormatError as e:
-        try: os.unlink(tmp_path)
-        except OSError: pass
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    except ValueError as e:
-        try: os.unlink(tmp_path)
-        except OSError: pass
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    except Exception:
-        try: os.unlink(tmp_path)
-        except OSError: pass
+    except Exception as e:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        if isinstance(e, ValueError):  # incl. audio_merge.WavFormatError
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
         raise
 
     return _TempFileResponse(
