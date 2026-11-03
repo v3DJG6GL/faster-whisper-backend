@@ -4330,7 +4330,9 @@
           activeWordIdx: -1,
           dirty: false,
         };
-        // Wire UI before src so events fire correctly.
+        // Wire the panel and bind the audio before setting src: a
+        // loadedmetadata fired with no listener leaves the total, the
+        // scrubber and the "▶ X s" label unset.
         panel.hidden = false;
         if (panel._corrSec) panel._corrSec.hidden = false;
         if (panel._gtSec) panel._gtSec.hidden = false;
@@ -4965,8 +4967,8 @@
     }
     if (e.ctrlKey || e.metaKey) {
       // Ctrl+Space toggles play/pause — plain Space is left free to type
-      // into a correction chip. These fire regardless of where focus sits
-      // in the popup (incl. the focused word-strip).
+      // into a correction chip. These also fire from the focused word-strip,
+      // which passes Ctrl combos through.
       if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault();
         if (_previewAudio) {
