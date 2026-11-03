@@ -67,10 +67,11 @@ prefixes.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import functools
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 import logging
 import sqlite3
 import threading
@@ -353,27 +354,17 @@ def _fold_legacy_hourly(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if exists is None:
         return
-    with _lock:
-        conn.execute("BEGIN")
-        try:
-            cur = conn.execute(
-                "INSERT INTO usage_hourly"
-                " (hour, key_id, user_id, kind, requests, errors, words,"
-                "  audio_s, processing_s, sessions)"
-                " SELECT hour, key_id, user_id, ?, requests, errors, words,"
-                "  audio_s, 0, requests"
-                " FROM usage_hourly_legacy",
-                ("dictation",),
-            )
-            conn.execute("DROP TABLE usage_hourly_legacy")
-            conn.execute("COMMIT")
-        except Exception:
-            # SQLite may already have rolled back on its own (SQLITE_FULL,
-            # SQLITE_IOERR, ...); a bare ROLLBACK would then raise "no
-            # transaction is active" and replace the real error.
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
+    with _write_tx(conn):
+        cur = conn.execute(
+            "INSERT INTO usage_hourly"
+            " (hour, key_id, user_id, kind, requests, errors, words,"
+            "  audio_s, processing_s, sessions)"
+            " SELECT hour, key_id, user_id, ?, requests, errors, words,"
+            "  audio_s, 0, requests"
+            " FROM usage_hourly_legacy",
+            ("dictation",),
+        )
+        conn.execute("DROP TABLE usage_hourly_legacy")
     logger.info("[usage] migrated %d hourly rows to the per-kind rollup",
                 cur.rowcount or 0)
 
@@ -390,31 +381,24 @@ def _reclassify_unknown_hourly(conn: sqlite3.Connection) -> None:
     ).fetchone()[0]
     if not n:
         return
-    with _lock:
-        conn.execute("BEGIN")
-        try:
-            conn.execute(
-                "INSERT INTO usage_hourly"
-                " (hour, key_id, user_id, kind, requests, errors, words,"
-                "  audio_s, processing_s, sessions)"
-                " SELECT hour, key_id, user_id, 'dictation', requests, errors,"
-                "  words, audio_s, processing_s, sessions"
-                " FROM usage_hourly WHERE kind=?"
-                " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
-                "  requests = requests + excluded.requests,"
-                "  errors   = errors + excluded.errors,"
-                "  words    = words + excluded.words,"
-                "  audio_s  = audio_s + excluded.audio_s,"
-                "  processing_s   = processing_s + excluded.processing_s,"
-                "  sessions = sessions + excluded.sessions",
-                (UNKNOWN_KIND,),
-            )
-            conn.execute("DELETE FROM usage_hourly WHERE kind=?", (UNKNOWN_KIND,))
-            conn.execute("COMMIT")
-        except Exception:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
+    with _write_tx(conn):
+        conn.execute(
+            "INSERT INTO usage_hourly"
+            " (hour, key_id, user_id, kind, requests, errors, words,"
+            "  audio_s, processing_s, sessions)"
+            " SELECT hour, key_id, user_id, 'dictation', requests, errors,"
+            "  words, audio_s, processing_s, sessions"
+            " FROM usage_hourly WHERE kind=?"
+            " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
+            "  requests = requests + excluded.requests,"
+            "  errors   = errors + excluded.errors,"
+            "  words    = words + excluded.words,"
+            "  audio_s  = audio_s + excluded.audio_s,"
+            "  processing_s   = processing_s + excluded.processing_s,"
+            "  sessions = sessions + excluded.sessions",
+            (UNKNOWN_KIND,),
+        )
+        conn.execute("DELETE FROM usage_hourly WHERE kind=?", (UNKNOWN_KIND,))
     logger.info("[usage] reclassified %d unknown-kind hourly rows as dictation", n)
 
 
@@ -422,6 +406,24 @@ def _require_conn() -> sqlite3.Connection:
     if _conn is None:
         raise RuntimeError("usage_store.init_db() was not called before use.")
     return getattr(_reader, "conn", None) or _conn
+
+
+@contextlib.contextmanager
+def _write_tx(conn: sqlite3.Connection) -> Iterator[None]:
+    """One explicit transaction on the shared autocommit connection, under
+    `_lock`; leaving the block (a return included) commits."""
+    with _lock:
+        conn.execute("BEGIN")
+        try:
+            yield
+            conn.execute("COMMIT")
+        except Exception:
+            # SQLite may already have rolled back on its own (SQLITE_FULL,
+            # SQLITE_IOERR, ...); a bare ROLLBACK would then raise "no
+            # transaction is active" and replace the real error.
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
 
 
 def _reads_own_conn(fn):
@@ -620,104 +622,97 @@ def record_usage(
                 else None)
         stage_rows = _stage_rows(stages)
         conn = _require_conn()
-        with _lock:
-            conn.execute("BEGIN")
-            try:
-                if sjid is not None:
-                    sess = conn.execute(
-                        "SELECT user_id, kind FROM usage_jobs WHERE job_id = ?",
-                        (sjid,)).fetchone()
-                    if (sess is None or sess["user_id"] != uid
-                            or sess["kind"] != "dictation"):
-                        sjid = None   # client-supplied: never someone else's job
-                    else:
-                        jid = None    # part of that session, not a job of its own
-                new_session = sjid is None
-                late_outcome: sqlite3.Row | None = None
-                if jid is not None:
-                    owner = conn.execute(
-                        "SELECT user_id, utterances, created_ts, reported_ts,"
-                        " activation, delivery, translation, app_id"
-                        " FROM usage_jobs WHERE job_id = ?", (jid,)
-                    ).fetchone()
-                    if owner is not None and owner["user_id"] != uid:
-                        # Client-minted ids can collide across users in
-                        # theory: count the work, never merge it into
-                        # someone else's job.
-                        jid = None
-                    else:
-                        # A row with no utterance yet is record_outcome's
-                        # stub (the report raced the utterances): the session
-                        # is still uncounted in usage_hourly, and the stub's
-                        # open-mode key_id gives way to the real one.
-                        new_session = owner is None or not owner["utterances"]
-                        if (owner is not None and not owner["utterances"]
-                                and owner["reported_ts"] is not None
-                                and k in KINDS and k != "dictation"):
-                            # The stub's id turns out to be a file / url /
-                            # text run (its outcome was posted before the
-                            # run recorded): it never was a dictation, which
-                            # record_outcome's kind check refuses in the
-                            # usual order. The run takes the row over.
-                            _take_over_stub(conn, owner, jid, k, created_ts)
-                        elif owner is not None and owner["reported_ts"] is not None:
-                            late_outcome = owner
-                        conn.execute(
-                            "INSERT INTO usage_jobs"
-                            " (job_id, user_id, key_id, kind, created_ts, status,"
-                            "  audio_s, words, processing_s, utterances, model, language,"
-                            "  wait_s, error_class, error_stage)"
-                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
-                            " ON CONFLICT(job_id) DO UPDATE SET"
-                            "  key_id      = CASE WHEN utterances = 0"
-                            "                THEN excluded.key_id ELSE key_id END,"
-                            "  utterances  = utterances + 1,"
-                            "  audio_s     = audio_s + excluded.audio_s,"
-                            "  words       = words + excluded.words,"
-                            "  processing_s      = processing_s + excluded.processing_s,"
-                            # A dictation session's utterances share this
-                            # row: one failed utterance marks the session
-                            # failed (as error_class below is kept), a later
-                            # good one must not flip it back. A batch id is
-                            # re-posted whole, so its last run's status wins.
-                            "  status      = CASE WHEN kind = 'dictation' AND status <> 'ok'"
-                            "                THEN status ELSE excluded.status END,"
-                            "  model       = COALESCE(excluded.model, model),"
-                            "  language    = COALESCE(excluded.language, language),"
-                            "  wait_s      = wait_s + excluded.wait_s,"
-                            "  error_class = COALESCE(error_class, excluded.error_class),"
-                            "  error_stage = COALESCE(error_stage, excluded.error_stage)",
-                            # language capped like recent_transcriptions_store's
-                            # _CAP_LANGUAGE: a caller may hand a raw client value.
-                            (jid, uid, kid, k, created_ts, status, a, w, p,
-                             (model or "")[:_CAP_MODEL] or None,
-                             (language or "")[:32] or None,
-                             wt, ecls, estg),
-                        )
-                conn.execute(
-                    "INSERT INTO usage_hourly"
-                    " (hour, key_id, user_id, kind, requests, errors, words,"
-                    "  audio_s, processing_s, sessions)"
-                    " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
-                    " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
-                    "  requests = requests + 1,"
-                    "  errors   = errors + excluded.errors,"
-                    "  words    = words  + excluded.words,"
-                    "  audio_s  = audio_s + excluded.audio_s,"
-                    "  processing_s   = processing_s + excluded.processing_s,"
-                    "  sessions = sessions + excluded.sessions,"
-                    "  user_id  = excluded.user_id",
-                    (h, kid, uid, k, err, w, a, p, 1 if new_session else 0),
-                )
-                for st in stage_rows:
-                    _record_stage(conn, h, uid, sjid or jid, a, st)
-                if late_outcome is not None and (w or a):
-                    _roll_late_utterance(conn, late_outcome, w, a)
-                conn.execute("COMMIT")
-            except Exception:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-                raise
+        with _write_tx(conn):
+            if sjid is not None:
+                sess = conn.execute(
+                    "SELECT user_id, kind FROM usage_jobs WHERE job_id = ?",
+                    (sjid,)).fetchone()
+                if (sess is None or sess["user_id"] != uid
+                        or sess["kind"] != "dictation"):
+                    sjid = None   # client-supplied: never someone else's job
+                else:
+                    jid = None    # part of that session, not a job of its own
+            new_session = sjid is None
+            late_outcome: sqlite3.Row | None = None
+            if jid is not None:
+                owner = conn.execute(
+                    "SELECT user_id, utterances, created_ts, reported_ts,"
+                    " activation, delivery, translation, app_id"
+                    " FROM usage_jobs WHERE job_id = ?", (jid,)
+                ).fetchone()
+                if owner is not None and owner["user_id"] != uid:
+                    # Client-minted ids can collide across users in
+                    # theory: count the work, never merge it into
+                    # someone else's job.
+                    jid = None
+                else:
+                    # A row with no utterance yet is record_outcome's
+                    # stub (the report raced the utterances): the session
+                    # is still uncounted in usage_hourly, and the stub's
+                    # open-mode key_id gives way to the real one.
+                    new_session = owner is None or not owner["utterances"]
+                    if (owner is not None and not owner["utterances"]
+                            and owner["reported_ts"] is not None
+                            and k in KINDS and k != "dictation"):
+                        # The stub's id turns out to be a file / url /
+                        # text run (its outcome was posted before the
+                        # run recorded): it never was a dictation, which
+                        # record_outcome's kind check refuses in the
+                        # usual order. The run takes the row over.
+                        _take_over_stub(conn, owner, jid, k, created_ts)
+                    elif owner is not None and owner["reported_ts"] is not None:
+                        late_outcome = owner
+                    conn.execute(
+                        "INSERT INTO usage_jobs"
+                        " (job_id, user_id, key_id, kind, created_ts, status,"
+                        "  audio_s, words, processing_s, utterances, model, language,"
+                        "  wait_s, error_class, error_stage)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
+                        " ON CONFLICT(job_id) DO UPDATE SET"
+                        "  key_id      = CASE WHEN utterances = 0"
+                        "                THEN excluded.key_id ELSE key_id END,"
+                        "  utterances  = utterances + 1,"
+                        "  audio_s     = audio_s + excluded.audio_s,"
+                        "  words       = words + excluded.words,"
+                        "  processing_s      = processing_s + excluded.processing_s,"
+                        # A dictation session's utterances share this
+                        # row: one failed utterance marks the session
+                        # failed (as error_class below is kept), a later
+                        # good one must not flip it back. A batch id is
+                        # re-posted whole, so its last run's status wins.
+                        "  status      = CASE WHEN kind = 'dictation' AND status <> 'ok'"
+                        "                THEN status ELSE excluded.status END,"
+                        "  model       = COALESCE(excluded.model, model),"
+                        "  language    = COALESCE(excluded.language, language),"
+                        "  wait_s      = wait_s + excluded.wait_s,"
+                        "  error_class = COALESCE(error_class, excluded.error_class),"
+                        "  error_stage = COALESCE(error_stage, excluded.error_stage)",
+                        # language capped like recent_transcriptions_store's
+                        # _CAP_LANGUAGE: a caller may hand a raw client value.
+                        (jid, uid, kid, k, created_ts, status, a, w, p,
+                         (model or "")[:_CAP_MODEL] or None,
+                         (language or "")[:32] or None,
+                         wt, ecls, estg),
+                    )
+            conn.execute(
+                "INSERT INTO usage_hourly"
+                " (hour, key_id, user_id, kind, requests, errors, words,"
+                "  audio_s, processing_s, sessions)"
+                " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
+                "  requests = requests + 1,"
+                "  errors   = errors + excluded.errors,"
+                "  words    = words  + excluded.words,"
+                "  audio_s  = audio_s + excluded.audio_s,"
+                "  processing_s   = processing_s + excluded.processing_s,"
+                "  sessions = sessions + excluded.sessions,"
+                "  user_id  = excluded.user_id",
+                (h, kid, uid, k, err, w, a, p, 1 if new_session else 0),
+            )
+            for st in stage_rows:
+                _record_stage(conn, h, uid, sjid or jid, a, st)
+            if late_outcome is not None and (w or a):
+                _roll_late_utterance(conn, late_outcome, w, a)
     except Exception as e:
         logger.warning("[usage] record_usage failed: %s", e)
 
@@ -915,44 +910,36 @@ def record_outcome(
     store failure — the route maps that to a 5xx, unlike record_usage."""
     conn = _require_conn()
     now = time.time()
-    with _lock:
-        conn.execute("BEGIN")
-        try:
-            cur = conn.execute(
-                "UPDATE usage_jobs SET activation = ?, delivery = ?,"
-                " translation = ?, app_id = ?, reported_ts = ?"
-                " WHERE job_id = ? AND user_id = ? AND reported_ts IS NULL"
-                # Only a dictation reports an outcome (the sweep reads the
-                # same kind): naming one's own file / url job id must not
-                # fold its words and audio into the dictation rollups.
-                " AND kind = 'dictation'",
-                (activation, delivery, translation, app_id, now, job_id, user_id),
-            )
-            if cur.rowcount == 0:
-                exists = conn.execute(
-                    "SELECT 1 FROM usage_jobs WHERE job_id = ?", (job_id,)
-                ).fetchone()
-                if exists is not None:
-                    conn.execute("COMMIT")
-                    return "duplicate"
-                conn.execute(
-                    "INSERT INTO usage_jobs"
-                    " (job_id, user_id, key_id, kind, created_ts, status,"
-                    "  activation, delivery, translation, app_id, reported_ts)"
-                    " VALUES (?, ?, ?, 'dictation', ?, 'ok', ?, ?, ?, ?, ?)",
-                    (job_id, user_id, OPEN_MODE_ID, now, activation, delivery,
-                     translation, app_id, now),
-                )
-            job = conn.execute(
-                "SELECT user_id, created_ts, words, audio_s FROM usage_jobs"
-                " WHERE job_id = ?", (job_id,),
+    with _write_tx(conn):
+        cur = conn.execute(
+            "UPDATE usage_jobs SET activation = ?, delivery = ?,"
+            " translation = ?, app_id = ?, reported_ts = ?"
+            " WHERE job_id = ? AND user_id = ? AND reported_ts IS NULL"
+            # Only a dictation reports an outcome (the sweep reads the
+            # same kind): naming one's own file / url job id must not
+            # fold its words and audio into the dictation rollups.
+            " AND kind = 'dictation'",
+            (activation, delivery, translation, app_id, now, job_id, user_id),
+        )
+        if cur.rowcount == 0:
+            exists = conn.execute(
+                "SELECT 1 FROM usage_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
-            _roll_outcome(conn, job, activation, delivery, translation, app_id)
-            conn.execute("COMMIT")
-        except Exception:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
+            if exists is not None:
+                return "duplicate"
+            conn.execute(
+                "INSERT INTO usage_jobs"
+                " (job_id, user_id, key_id, kind, created_ts, status,"
+                "  activation, delivery, translation, app_id, reported_ts)"
+                " VALUES (?, ?, ?, 'dictation', ?, 'ok', ?, ?, ?, ?, ?)",
+                (job_id, user_id, OPEN_MODE_ID, now, activation, delivery,
+                 translation, app_id, now),
+            )
+        job = conn.execute(
+            "SELECT user_id, created_ts, words, audio_s FROM usage_jobs"
+            " WHERE job_id = ?", (job_id,),
+        ).fetchone()
+        _roll_outcome(conn, job, activation, delivery, translation, app_id)
     return "accepted"
 
 
@@ -990,52 +977,45 @@ def sweep(
     now = time.time()
     marked = pruned_jobs = pruned_apps = 0
     stale_cutoff = now - max(1, int(unreported_after_h)) * 3600
-    with _lock:
-        conn.execute("BEGIN")
-        try:
-            stale = conn.execute(_STALE_UNREPORTED_SQL, (stale_cutoff,)).fetchall()
-            for job in stale:
-                conn.execute(
-                    "UPDATE usage_jobs SET activation = ?, delivery = ?,"
-                    " translation = ?, reported_ts = ? WHERE job_id = ?",
-                    (UNREPORTED, UNREPORTED, UNREPORTED, now, job["job_id"]),
-                )
-                _roll_outcome(conn, job, UNREPORTED, UNREPORTED, UNREPORTED, None)
-                marked += 1
-            if jobs_retention_days > 0:
-                cutoff = now - int(jobs_retention_days) * 86400
-                # A dictation still waiting for its outcome outlives a
-                # retention shorter than the grace period: deleted early, a
-                # late report would find no job and roll the session a
-                # second time. The sweep that marks it above, once the grace
-                # ends, deletes it here in the same pass.
-                keep = " AND NOT (kind = 'dictation' AND reported_ts IS NULL)"
-                conn.execute(
-                    "DELETE FROM usage_job_stages WHERE job_id IN"
-                    " (SELECT job_id FROM usage_jobs WHERE created_ts < ?"
-                    + keep + ")",
-                    (cutoff,),
-                )
-                pruned_jobs = conn.execute(
-                    "DELETE FROM usage_jobs WHERE created_ts < ?" + keep,
-                    (cutoff,),
-                ).rowcount or 0
-            if app_retention_days > 0:
-                app_cutoff_h = now_hour() - int(app_retention_days) * 24
-                pruned_apps = conn.execute(
-                    "DELETE FROM usage_app_hourly WHERE hour < ?",
-                    (app_cutoff_h,),
-                ).rowcount or 0
-                # The job rows name the same program and outlive the app
-                # clock (a with= document reads them back): scrub it on the
-                # same hour boundary, so a job whose app bucket survives
-                # keeps the name _take_over_stub / _roll_late_utterance key on.
-                conn.execute(_APP_SCRUB_SQL, (app_cutoff_h * 3600,))
-            conn.execute("COMMIT")
-        except Exception:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
+    with _write_tx(conn):
+        stale = conn.execute(_STALE_UNREPORTED_SQL, (stale_cutoff,)).fetchall()
+        for job in stale:
+            conn.execute(
+                "UPDATE usage_jobs SET activation = ?, delivery = ?,"
+                " translation = ?, reported_ts = ? WHERE job_id = ?",
+                (UNREPORTED, UNREPORTED, UNREPORTED, now, job["job_id"]),
+            )
+            _roll_outcome(conn, job, UNREPORTED, UNREPORTED, UNREPORTED, None)
+            marked += 1
+        if jobs_retention_days > 0:
+            cutoff = now - int(jobs_retention_days) * 86400
+            # A dictation still waiting for its outcome outlives a
+            # retention shorter than the grace period: deleted early, a
+            # late report would find no job and roll the session a
+            # second time. The sweep that marks it above, once the grace
+            # ends, deletes it here in the same pass.
+            keep = " AND NOT (kind = 'dictation' AND reported_ts IS NULL)"
+            conn.execute(
+                "DELETE FROM usage_job_stages WHERE job_id IN"
+                " (SELECT job_id FROM usage_jobs WHERE created_ts < ?"
+                + keep + ")",
+                (cutoff,),
+            )
+            pruned_jobs = conn.execute(
+                "DELETE FROM usage_jobs WHERE created_ts < ?" + keep,
+                (cutoff,),
+            ).rowcount or 0
+        if app_retention_days > 0:
+            app_cutoff_h = now_hour() - int(app_retention_days) * 24
+            pruned_apps = conn.execute(
+                "DELETE FROM usage_app_hourly WHERE hour < ?",
+                (app_cutoff_h,),
+            ).rowcount or 0
+            # The job rows name the same program and outlive the app
+            # clock (a with= document reads them back): scrub it on the
+            # same hour boundary, so a job whose app bucket survives
+            # keeps the name _take_over_stub / _roll_late_utterance key on.
+            conn.execute(_APP_SCRUB_SQL, (app_cutoff_h * 3600,))
     pruned_hourly = prune(retention_days=hourly_retention_days)
     return {"marked": marked, "jobs": pruned_jobs, "apps": pruned_apps,
             "hourly": pruned_hourly}
