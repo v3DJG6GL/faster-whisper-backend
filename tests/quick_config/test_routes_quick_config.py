@@ -704,17 +704,23 @@ def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client)
     assert "for (const item of diff.added) out.push(item);" not in lst
 
 
+class _ExposedOnly:
+    def can_see_rule(self, rule):
+        return bool(rule.get("exposed"))
+
+
+def _exposed_only_user():
+    """A non-admin caller who sees exactly the exposed rules."""
+    return {"is_admin": False, "permissions": _ExposedOnly()}
+
+
 def test_redact_collapses_hidden_rule_ordinals():
     """The schema's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
     position and entry count."""
     from faster_whisper_backend.quick_config import routes as q
 
-    class _Perms:
-        def can_see_rule(self, rule):
-            return bool(rule.get("exposed"))
-
-    user = {"is_admin": False, "permissions": _Perms()}
+    user = _exposed_only_user()
     rules = [{"name": "geheim", "exposed": False},
              {"name": "meins", "exposed": True}]
     out = q._redact_invisible_slugs(
@@ -751,11 +757,7 @@ def test_redact_blanks_non_guard_errors_naming_a_hidden_rule():
     keys, and a duplicate-name error kept the hidden rule's index."""
     from faster_whisper_backend.quick_config import routes as q
 
-    class _Perms:
-        def can_see_rule(self, rule):
-            return bool(rule.get("exposed"))
-
-    user = {"is_admin": False, "permissions": _Perms()}
+    user = _exposed_only_user()
     rules = [{"name": "geheim", "exposed": False},
              {"name": "meins", "exposed": True}]
     out = q._redact_invisible_slugs(
@@ -784,11 +786,7 @@ def test_redact_keeps_own_map_keys_that_equal_a_hidden_slug():
     exists, one guess per save."""
     from faster_whisper_backend.quick_config import routes as q
 
-    class _Perms:
-        def can_see_rule(self, rule):
-            return bool(rule.get("exposed"))
-
-    user = {"is_admin": False, "permissions": _Perms()}
+    user = _exposed_only_user()
     rules = [{"name": "meins", "exposed": True},
              {"name": "geheim-rule", "exposed": False}]
     msg = ("rule 1 ('meins'): map keys ['Geheim-rule', 'geheim-rule'] "
