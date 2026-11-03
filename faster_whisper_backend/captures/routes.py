@@ -562,7 +562,8 @@ async def get_capture_api(
     _audit_cross_user_read(user, row, "capture", cid)
 
     # OFF the loop, like list_samples_api. `_align_member_words` runs
-    # `_align_words_to_final` twice, and that is a real O(n*m) DP — at the
+    # `_align_words_to_final` once (twice when the training text differs from
+    # `final`), and that is a real O(n*m) DP — at the
     # column caps (_CAP_WORDS_JSON ~10k words, _CAP_FINAL 50k chars) it
     # measures 129 ms at 1000x1000 and 1.87 s at 4000x4000. Plus
     # `_refresh_final_if_stale`, which re-runs the text pipeline.
