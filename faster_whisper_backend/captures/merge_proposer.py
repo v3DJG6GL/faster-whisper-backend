@@ -108,8 +108,8 @@ def trimmed_duration_s(row: dict[str, Any]) -> float:
     relpath = row.get("audio_relpath") or ""
     if not cid or not relpath:
         return raw
-    edge = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300))
-    max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
+    edge = capture_samples._global_edge_ms()
+    max_gap = capture_samples._global_silence_ms()
     try:
         import os
         from faster_whisper_backend.captures import merge as audio_merge
@@ -473,7 +473,7 @@ def _propose_merges_locked(
     hard_cap_s = float(cfg.CAPTURES_SAMPLE_MAX_DURATION_S)
     # Inter-member gap estimate mirrors the global silence knob (the merge
     # inserts this between members), so "packs to X s" matches the real WAV.
-    gap_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)) / 1000.0
+    gap_s = capture_samples._global_silence_ms() / 1000.0
     # Uniform outer margin on both ends of the merged WAV (counts toward cap),
     # but only when group trimming is on — the legacy/trim-off merge path emits
     # no outer margin (audio_merge.merge_wavs), so counting it here would
@@ -481,7 +481,7 @@ def _propose_merges_locked(
     # from captures/routes.py _validate_merge_payload's same trim-gated
     # estimate.
     edge_s = (
-        float(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300)) / 1000.0
+        capture_samples._global_edge_ms() / 1000.0
         if getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)
         else 0.0
     )
