@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from tests._page_helpers import js_body
+from tests._page_helpers import js_body, js_fn
 from tests.conftest import bearer
 
 _API = "/settings/api-keys/api"
@@ -330,13 +330,6 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
     )
 
 
-def _js_fn(html, name):
-    """Source of a top-level `function <name>(` in the page script (it ends at
-    the first two-space-indented closing brace)."""
-    src = html[html.index(f"  function {name}("):]
-    return src[:src.index("\n  }\n") + 4]
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_import_preview_uses_served_blob_cap(client):
     """The import preview gated on a hard-coded 500 KB long after the store
@@ -352,7 +345,7 @@ def test_import_preview_uses_served_blob_cap(client):
     busy = "  var _csImportBusy = false;\n"
     assert busy in html
     fns = busy + "\n".join(
-        _js_fn(html, n) for n in (
+        js_fn(html, f"  function {n}(") for n in (
             "escapeHtml", "fmtBytes", "csMetaFor", "csContainsSummary",
             "showCsImportModal",
         )

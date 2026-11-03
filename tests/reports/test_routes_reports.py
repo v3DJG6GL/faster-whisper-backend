@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from tests._page_helpers import js_body
+from tests._page_helpers import js_body, js_fn
 from tests.conftest import bearer
 
 _SUBMIT = "/quick-config/reports/api/submit"
@@ -81,8 +81,7 @@ def test_reports_page_403_landing_keys_on_reports_scope(client):
     on is_admin===false wiped <main> for a non-admin who DOES have the
     reports page; it must render only when whoami shows no reports scope."""
     html = client.get("/reports").text
-    fn = html[html.index("async function _renderAdminOnlyIfNonAdmin()"):]
-    fn = fn[:fn.index("\n  }\n") + 4]
+    fn = js_fn(html, "async function _renderAdminOnlyIfNonAdmin()")
     script = fn + """
 const window = {};
 let landed = 0;

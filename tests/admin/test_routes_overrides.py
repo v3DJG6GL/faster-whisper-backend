@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from faster_whisper_backend.pipeline import apply as pl_apply
-from tests._page_helpers import js_body
+from tests._page_helpers import js_body, js_fn
 from tests.conftest import bearer
 
 PERMS = "/settings/api-keys/api/users"
@@ -704,12 +704,8 @@ def test_page_commit_rename_rechecks_dirty(client, tmp_path):
     server rename's reload would drop those later edits without a warning."""
     html = client.get(OV).text
 
-    def fn(name):
-        start = html.index("  function " + name + "(")
-        return html[start:html.index("\n  }\n", start) + 4]
-
     dirty = html[html.index("  function dirty() {"):]
-    js = dirty[:dirty.index("\n") + 1] + fn("commitRename") + r"""
+    js = dirty[:dirty.index("\n") + 1] + js_fn(html, "  function commitRename(") + r"""
 var NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 var S = { profiles: { clinic: {} } };
 var profiles = { clinic: {} };
@@ -742,8 +738,7 @@ def test_page_textarea_field_keeps_its_newlines(client, tmp_path):
     """makeWidget's 'textarea' kind builds a <textarea> (a text <input> strips
     the newlines of a multi-line glossary) and hands its value back as is."""
     html = client.get(OV).text
-    start = html.index("  function makeWidget(")
-    js = html[start:html.index("\n  }\n", start) + 4] + r"""
+    js = js_fn(html, "  function makeWidget(") + r"""
 var document = { createElement: function (tag) { return { tag: tag }; } };
 var got = null;
 var el = makeWidget('TRANSLATION_GLOSSARY', { kind: 'textarea', maxlen: 4000 },

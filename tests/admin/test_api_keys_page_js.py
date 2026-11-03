@@ -10,15 +10,15 @@ import subprocess
 
 import pytest
 
+from tests._page_helpers import js_fn
+
 _NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
 
 
-def _fn(html, name, indent="  "):
-    """Source of `function <name>(` up to its closing brace at `indent`."""
-    start = html.index(indent + "function " + name + "(")
-    end = html.index("\n" + indent + "}\n", start)
-    return html[start:end + len(indent) + 2]
+def _fn(html, name):
+    """Source of `  function <name>(` through its closing brace."""
+    return js_fn(html, "  function " + name + "(")
 
 
 def _run(js, tmp_path):
@@ -140,8 +140,7 @@ def test_load_asks_before_discarding_dirty_override_drawers(client, tmp_path):
     edits of any other open overrides drawer, or of a permission-matrix row
     edited but not yet saved."""
     html = client.get("/settings/api-keys").text
-    start = html.index("  var _loadGen = 0;")
-    loadsrc = html[start:html.index("\n  }\n", start) + 4]
+    loadsrc = js_fn(html, "  var _loadGen = 0;")
     js = loadsrc + r"""
 function resp(body) { return { ok: true, status: 200, json: function () { return Promise.resolve(body); } }; }
 function api(method, url) {
@@ -202,8 +201,7 @@ def test_permission_save_is_not_undone_by_a_load_already_running(client, tmp_pat
     whose save was in flight also counted as unsaved, so that load() asked
     the discard-confirm for nothing."""
     html = client.get("/settings/api-keys").text
-    start = html.index("  var _loadGen = 0;")
-    loadsrc = html[start:html.index("\n  }\n", start) + 4]
+    loadsrc = js_fn(html, "  var _loadGen = 0;")
     js = (_fn(html, "permRowState") + "\n" + _fn(html, "recomputePermDirty")
           + "\n" + _fn(html, "savePerms") + "\n" + _fn(html, "_okJson")
           + "\n" + loadsrc + r"""

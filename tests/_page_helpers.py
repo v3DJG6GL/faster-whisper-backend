@@ -19,3 +19,9 @@ def js_body(html: str, start: str) -> str:
     """Page-script source from ``start`` up to (not including) the first
     two-space-indented closing brace: a top-level script function's body."""
     return js_upto(html, start, "\n  }\n")
+
+
+def js_fn(html: str, start: str) -> str:
+    """Page-script source from ``start`` through its two-space-indented
+    closing brace (the brace included, the newline after it not)."""
+    return js_body(html, start) + "\n  }"
