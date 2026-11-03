@@ -689,8 +689,8 @@ class AdminConfig(BaseModel):
     live in FIELD_DESCRIPTIONS (settings/descriptions.py; single source of truth — change there,
     every consumer reflects it on next reload)."""
 
-    # `protected_namespaces=()` disables Pydantic's "model_*" reserved-prefix
-    # warning so we can use MODEL_DEVICE / MODEL_COMPUTE_TYPE field names.
+    # `protected_namespaces=()` is defensive only: Pydantic's "model_" check is
+    # case-sensitive, so the uppercase MODEL_* fields never trip it.
     model_config = {"extra": "forbid", "protected_namespaces": ()}
 
     DEFAULT_MODEL: ModelId | None = _F(
