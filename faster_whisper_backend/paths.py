@@ -10,3 +10,12 @@ so a symlinked checkout keeps resolving the same paths.
 import os
 
 REPO_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def default_data_dir() -> str:
+    """WHISPER_DATA_DIR, else <repo>\\data on Windows ("/data" is drive-relative
+    there), else /data — the root config._DATA_DIR and the runtime ledgers share.
+    A function, not a constant: tests reload settings.config under a changed
+    env, and this module is not reloaded."""
+    return (os.environ.get("WHISPER_DATA_DIR") or "").strip() or (
+        os.path.join(REPO_ROOT, "data") if os.name == "nt" else "/data")

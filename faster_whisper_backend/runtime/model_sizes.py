@@ -32,18 +32,13 @@ import psutil
 from faster_whisper_backend.core import atomic_json
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import system_stats
-from faster_whisper_backend.paths import REPO_ROOT
+from faster_whisper_backend import paths
 
-_REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
 # Same precedence config_store uses for config.local.json:
 # WHISPER_MODEL_SIZES_PATH > WHISPER_DATA_DIR/model_sizes.json >
-# /data/model_sizes.json (Windows: <repo>\data — bare metal by definition, and
-# "/data" would be drive-relative there; keep in sync with config._DATA_DIR).
+# /data/model_sizes.json (Windows: <repo>\data — paths.default_data_dir).
 PATH = os.environ.get("WHISPER_MODEL_SIZES_PATH") or os.path.normpath(
-    os.path.join(
-        (os.environ.get("WHISPER_DATA_DIR") or "").strip()
-        or (os.path.join(_REPO_DIR, "data") if os.name == "nt" else "/data"),
-        "model_sizes.json"))
+    os.path.join(paths.default_data_dir(), "model_sizes.json"))
 
 # Bumped only on an incompatible layout change; an unknown version reads as
 # "no data" so a downgrade cannot mis-parse a newer file into a wrong estimate.

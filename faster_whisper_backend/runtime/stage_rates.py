@@ -28,15 +28,12 @@ import threading
 import time
 
 from faster_whisper_backend.core import atomic_json
-from faster_whisper_backend.paths import REPO_ROOT
+from faster_whisper_backend import paths
 
 # WHISPER_STAGE_RATES_PATH > WHISPER_DATA_DIR/stage_rates.json >
 # /data/stage_rates.json (Windows: <repo>\data) — the model_sizes rule.
 PATH = os.environ.get("WHISPER_STAGE_RATES_PATH") or os.path.normpath(
-    os.path.join(
-        (os.environ.get("WHISPER_DATA_DIR") or "").strip()
-        or (os.path.join(REPO_ROOT, "data") if os.name == "nt" else "/data"),
-        "stage_rates.json"))
+    os.path.join(paths.default_data_dir(), "stage_rates.json"))
 
 SCHEMA_VERSION = 1
 

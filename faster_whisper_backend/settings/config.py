@@ -106,8 +106,7 @@ _REPO_DIR = _paths.REPO_ROOT
 # captures/, logs/, config.local.json) is IDENTICAL to Linux. Linux
 # bare-metal/dev runs that want the same: WHISPER_DATA_DIR=$PWD/data.
 _IS_WINDOWS = os.name == "nt"
-_DATA_DIR = (os.environ.get("WHISPER_DATA_DIR") or "").strip() or (
-    os.path.join(_REPO_DIR, "data") if _IS_WINDOWS else "/data")
+_DATA_DIR = _paths.default_data_dir()
 _DB_DIR = (os.environ.get("WHISPER_DB_DIR") or "").strip() or os.path.join(
     _DATA_DIR, "db")
 _MODELS_DIR = (os.environ.get("WHISPER_MODELS_DIR") or "").strip() or (

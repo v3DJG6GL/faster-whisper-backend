@@ -27,7 +27,7 @@ from faster_whisper_backend.settings import config_renames as _renames
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.core import atomic_json
-from faster_whisper_backend.paths import REPO_ROOT
+from faster_whisper_backend.paths import REPO_ROOT, default_data_dir
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticCustomError
@@ -36,12 +36,9 @@ from pydantic_core import PydanticCustomError
 _REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
 # Admin-edited overrides file, in the data dir like every other runtime-state
 # path. Windows uses <repo>\data: bare metal by definition, and "/data" would
-# be drive-relative there. Keep in sync with config._DATA_DIR.
+# be drive-relative there (paths.default_data_dir, shared with config._DATA_DIR).
 OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
-    os.path.join(
-        (os.environ.get("WHISPER_DATA_DIR") or "").strip()
-        or (os.path.join(_REPO_DIR, "data") if os.name == "nt" else "/data"),
-        "config.local.json"))
+    os.path.join(default_data_dir(), "config.local.json"))
 # Committed factory defaults (every setting, PIPELINE_RULES included). Unlike
 # config.local.json this file IS version-controlled — the admin WebUI's
 # "Defaults" mode edits its rules so rule fixes can be git-pushed to every
