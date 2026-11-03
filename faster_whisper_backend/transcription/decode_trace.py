@@ -257,9 +257,9 @@ class DecodeTrace:
 
 def residual_stop_active(kwargs: "dict | None", skip: bool) -> bool:
     """The residual-window stop as actually applied: an active
-    hallucination_silence_threshold (with word timestamps) turns it off,
-    its re-seek starts a window after a short one. The receipt logs THIS,
-    not the requested value."""
+    hallucination_silence_threshold (with word timestamps) turns it off
+    because its re-seek starts a window after a short one. The receipt logs
+    THIS, not the requested value."""
     kw = kwargs or {}
     return bool(skip) and not (kw.get("hallucination_silence_threshold")
                                and kw.get("word_timestamps"))
