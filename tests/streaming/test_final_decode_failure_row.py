@@ -7,6 +7,11 @@ from tests._streaming_helpers import const_pcm as _pcm, ws_drain as _drain
 _STREAM_URL = "/v1/audio/transcriptions/stream"
 
 
+def _oom(*a, **kw):
+    # Patched over _trim_trailing_nonspeech: only decode_final calls it, so the previews still decode.
+    raise RuntimeError("CUDA failed with error out of memory")
+
+
 def _stream_rows():
     from faster_whisper_backend.stats import recent_transcriptions_store
     return [r for r in recent_transcriptions_store.list_recent(limit=10)
@@ -18,10 +23,6 @@ def test_failed_final_decode_is_recorded_as_a_classified_error(
     from faster_whisper_backend.streaming import routes as s_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-
-    def _oom(*a, **kw):
-        # Only decode_final calls this, so the previews still decode.
-        raise RuntimeError("CUDA failed with error out of memory")
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
 
@@ -51,9 +52,6 @@ def test_failed_final_decode_receipt_says_the_decode_failed(
     from faster_whisper_backend.streaming import routes as s_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-
-    def _oom(*a, **kw):
-        raise RuntimeError("CUDA failed with error out of memory")
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
@@ -99,9 +97,6 @@ def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
 
-    def _oom(*a, **kw):
-        raise RuntimeError("CUDA failed with error out of memory")
-
     real_kwargs = s_routes._build_transcribe_kwargs
 
     def _kwargs(*a, final, **kw):
@@ -142,9 +137,6 @@ def test_failed_final_decode_broadcasts_an_error_entry(client, app_module, monke
     from faster_whisper_backend.streaming import routes as s_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-
-    def _oom(*a, **kw):
-        raise RuntimeError("CUDA failed with error out of memory")
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     q = recent_feed.subscribe()
