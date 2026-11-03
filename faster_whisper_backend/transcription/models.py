@@ -30,7 +30,7 @@ from fastapi import HTTPException
 from faster_whisper_backend.transcription import decode_trace as _decode_trace
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.core import languages
-from faster_whisper_backend.core.loop_lock import CancelLatch
+from faster_whisper_backend.core.loop_lock import CancelLatch, release_count
 from faster_whisper_backend.core.store_common import log_safe
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
@@ -660,19 +660,11 @@ def _release_model_lease(name: str, model: "WhisperModel") -> None:
     if _loaded_models.get(name) is not model:
         # A holder of a force-dropped instance (see _orphan_leases): the
         # cached reload's own count, and so its trim, stay untouched.
-        orphaned = _orphan_leases.get(name, 0) - 1
-        if orphaned > 0:
-            _orphan_leases[name] = orphaned
-        else:
-            _orphan_leases.pop(name, None)
+        release_count(_orphan_leases, name)
         model_registry.touch_loaded_model(name)
         return
-    n = _model_leases.get(name, 0) - 1
-    if n <= 0:
-        _model_leases.pop(name, None)
+    if release_count(_model_leases, name) <= 0:
         _schedule_trim_to_cap(keep=name)
-    else:
-        _model_leases[name] = n
     model_registry.touch_loaded_model(name)
 
 

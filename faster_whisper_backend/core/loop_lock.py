@@ -16,9 +16,10 @@ are pruned. It does NOT exclude two live loops from each other — nothing
 built on ``asyncio.Lock`` can; with one loop it is exactly an
 ``asyncio.Lock``.
 
-``CancelLatch`` is the model caches' other shared primitive: it finishes an
-un-stoppable load / registry write under such a lock and defers the
-caller's cancellation until it has landed.
+``CancelLatch`` and ``release_count`` are the model caches' other shared
+primitives: the latch finishes an un-stoppable load / registry write under
+such a lock and defers the caller's cancellation until it has landed;
+``release_count`` drops a lease / in-flight count.
 """
 
 from __future__ import annotations
@@ -94,3 +95,15 @@ class CancelLatch:
                 if fut.cancelled():
                     raise
                 self.cancelled = self.cancelled or c
+
+
+def release_count(counts: dict, key) -> int:
+    """Decrement ``counts[key]`` (missing = 0) and return the new value;
+    the key is dropped once it reaches 0 or below (a lease / in-flight
+    count release). The caller holds whatever lock guards ``counts``."""
+    n = counts.get(key, 0) - 1
+    if n <= 0:
+        counts.pop(key, None)
+    else:
+        counts[key] = n
+    return n

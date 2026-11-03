@@ -26,7 +26,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
-from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count
 
 logger = logging.getLogger("whisper-server")
 
@@ -312,11 +312,7 @@ def _release_locked(model_id: str, pipe=None) -> None:
             _orphans.pop(model_id, None)
             _free_locked(model_id)
         return
-    n = _leases.get(model_id, 0) - 1
-    if n <= 0:
-        _leases.pop(model_id, None)
-    else:
-        _leases[model_id] = n
+    release_count(_leases, model_id)
     if _pipeline is not None and _pipeline_key and _pipeline_key[0] == model_id:
         # Restart the idle clock: a long job must not be evicted the instant
         # it ends because the LOAD timestamp aged past the timeout.

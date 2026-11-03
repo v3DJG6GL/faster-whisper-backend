@@ -57,7 +57,7 @@ from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
     _NAMES, ZH_HANT_REGIONS, _normalise_code, canonical_code, language_codes,
     language_label, language_name, lookup, same_language)
-from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count
 from faster_whisper_backend.translation import gating as tr_gating
 
 logger = logging.getLogger("whisper-server")
@@ -993,11 +993,7 @@ def _release_model(ref: str) -> None:
     awaiting release could be abandoned by a cancellation delivered while
     suspended on the lock, leaking the lease and pinning the model against
     eviction forever (same shape as transcription.models._release_model_lease)."""
-    n = _active.get(ref, 0) - 1
-    if n <= 0:
-        _active.pop(ref, None)
-    else:
-        _active[ref] = n
+    release_count(_active, ref)
     if ref in _models:
         _last_used[ref] = time.monotonic()
 
@@ -1649,11 +1645,7 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
 
     def _settle() -> None:
         with _decoding_mutex:
-            n = _decoding.get(key, 0) - 1
-            if n > 0:
-                _decoding[key] = n
-            else:
-                _decoding.pop(key, None)
+            release_count(_decoding, key)
 
     def _decode() -> str:
         # Claimed only once _infer_mutex is ours: a job cancelled while its

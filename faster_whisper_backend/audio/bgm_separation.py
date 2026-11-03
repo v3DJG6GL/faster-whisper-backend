@@ -27,7 +27,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core import store_common
-from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count
 
 logger = logging.getLogger("whisper-server")
 
@@ -542,11 +542,7 @@ def _release_locked(model: str, sep) -> None:
             _orphans.pop(model, None)
             _free_locked(model)
         return
-    n = _leases.get(model, 0) - 1
-    if n <= 0:
-        _leases.pop(model, None)
-    else:
-        _leases[model] = n
+    release_count(_leases, model)
     if _separator is not None and _separator_key and _separator_key[0] == model:
         # Restart the idle clock: a long separation must not be evicted the
         # instant it ends because the LOAD timestamp aged past the timeout.
