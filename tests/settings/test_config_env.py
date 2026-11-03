@@ -1033,15 +1033,19 @@ def test_env_supplied_override_with_unknown_rule_slug_is_rejected(monkeypatch, r
     assert any("no-such-rule" in m for m in config._ENV_WARNINGS)
 
 
+def _stray_symbols_only():
+    """WHISPER_PIPELINE_RULES holding only strip-stray-symbols: it lacks the
+    rules CAPTURES_PIPELINE_RULES_EXCLUDE names (a pre-env error)."""
+    return json.dumps([r for r in _factory_rules() if r["name"] == "strip-stray-symbols"])
+
+
 def test_env_rules_that_break_a_stored_exclude_do_not_revert_every_scalar(
         monkeypatch, restore_config):
     """A WHISPER_PIPELINE_RULES without the rules CAPTURES_PIPELINE_RULES_
     EXCLUDE names fails validation with every env scalar reverted. That error
     used to fail each isolation pass too, so every env scalar (the cookie
     flag included) was reverted and blamed for it."""
-    rules = _factory_rules()
-    one = [r for r in rules if r["name"] == "strip-stray-symbols"]
-    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=_stray_symbols_only(),
                      WHISPER_BEAM_SIZE="3",
                      WHISPER_SESSION_COOKIE_SECURE="true")
     assert config.BEAM_SIZE == 3
@@ -1055,9 +1059,7 @@ def test_env_rules_that_break_a_stored_exclude_do_not_revert_every_scalar(
 
 
 def test_env_scalar_still_reverted_next_to_a_pre_env_error(monkeypatch, restore_config):
-    rules = _factory_rules()
-    one = [r for r in rules if r["name"] == "strip-stray-symbols"]
-    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=_stray_symbols_only(),
                      WHISPER_BEAM_SIZE="9999",
                      WHISPER_SESSION_COOKIE_SECURE="true")
     assert "BEAM_SIZE" in config._ENV_REJECTED
@@ -1472,9 +1474,7 @@ def test_env_values_are_normalized_next_to_a_pre_env_error(monkeypatch, restore_
     """A pre-env error fails the full normalization pass whatever the env
     values are, so a surviving mixed-case env origin stayed unmatched by the
     exact-match origin guard; each survivor is normalized on its own then."""
-    rules = _factory_rules()
-    one = [r for r in rules if r["name"] == "strip-stray-symbols"]
-    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=_stray_symbols_only(),
                      WHISPER_TRUSTED_ORIGINS="https://App.Example.com",
                      WHISPER_CONSOLE_LOG_LEVEL="WARNING")
     assert config.TRUSTED_ORIGINS == ["https://app.example.com"]
