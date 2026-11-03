@@ -5,7 +5,8 @@
   caller-supplied labels in log lines (used well beyond the stores).
 - `LONE_SURROGATE_RE`: the lone-UTF-16-surrogate screen for client strings.
 - `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB;
-  `close_quietly()` drops the previous one on a re-init.
+  `close_quietly()` drops the previous one on a re-init; `transaction()`
+  wraps an explicit BEGIN..COMMIT on it.
 - `job_columns_ddl()` / `missing_job_columns()`: the job-label columns shared
   by usage_jobs and recent_transcriptions.
 - `rename_columns()` / `add_missing_columns()`: the legacy column-rename and
@@ -23,10 +24,11 @@ store must never fail to open over a file mode. OSError is swallowed.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 # Cap and control-character screen for a CALLER-supplied label that goes into a
 # log line. Lives here rather than in main so the stores can reach it without an
@@ -184,6 +186,25 @@ def close_quietly(conn: sqlite3.Connection | None) -> None:
             conn.close()
         except sqlite3.Error:
             pass
+
+
+@contextlib.contextmanager
+def transaction(conn: sqlite3.Connection, begin: str = "BEGIN") -> Iterator[None]:
+    """One explicit transaction on an autocommit (open_wal_db) connection,
+    where `with conn:` would open none. COMMIT runs inside the guarded span: a
+    failed COMMIT (SQLITE_FULL / IOERR / BUSY) can leave the transaction open
+    on the shared connection, and every later BEGIN would then fail. ROLLBACK
+    only while still in a transaction: SQLite may already have rolled back on
+    its own, and a bare ROLLBACK would then raise and replace the real error.
+    The caller holds its store lock(s) around the whole `with`."""
+    conn.execute(begin)
+    try:
+        yield
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 # WAL keeps recently written rows in the -wal sidecar until a checkpoint, and

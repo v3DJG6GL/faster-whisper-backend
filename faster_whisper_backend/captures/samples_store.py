@@ -316,22 +316,13 @@ def dissolve_sample(sid: str, *, refuse_locked: bool = False) -> None:
             raise SampleLockedError(sid)
         if g is not None:
             with _lock, captures_store._lock:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
+                with store_common.transaction(conn, "BEGIN IMMEDIATE"):
                     conn.execute(
                         "UPDATE captures SET sample_id = NULL, sample_order = NULL"
                         " WHERE sample_id = ?",
                         (sid,),
                     )
                     conn.execute("DELETE FROM capture_samples WHERE id = ?", (sid,))
-                    conn.execute("COMMIT")
-                except BaseException:
-                    # SQLite may already have rolled back on its own (SQLITE_FULL,
-                    # SQLITE_IOERR, ...); a bare ROLLBACK would then raise and
-                    # replace the real error.
-                    if conn.in_transaction:
-                        conn.execute("ROLLBACK")
-                    raise
             try:
                 abs_p = abs_path_for(g["merged_wav_relpath"])
                 if os.path.exists(abs_p):

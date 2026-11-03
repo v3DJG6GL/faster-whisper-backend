@@ -1136,8 +1136,7 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
             sql, head = "UPDATE captures SET status = ?, reviewed_ts = NULL", [new_status]
         else:
             sql, head = "UPDATE captures SET status = ?, reviewed_ts = ?", [new_status, now]
-        conn.execute("BEGIN")
-        try:
+        with store_common.transaction(conn):
             for off in range(0, len(found), 500):
                 chunk = found[off:off + 500]
                 conn.execute(
@@ -1145,13 +1144,6 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
                     f" AND status != ?",
                     [*head, *chunk, new_status],
                 )
-            # Inside the try (see samples_store.dissolve_sample): a failed
-            # COMMIT can leave the transaction open on the shared connection.
-            conn.execute("COMMIT")
-        except BaseException:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
     owners = {r["user_id"] for r in prev}
     _invalidate_proposals(*owners)
     return [{"id": r["id"], "prev_status": r["status"]} for r in prev]

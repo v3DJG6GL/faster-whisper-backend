@@ -510,8 +510,7 @@ def revoke_user(user_id: str) -> None:
         # One transaction (the connection is autocommit): a failing second
         # UPDATE would leave the user revoked — hidden from list_users, so no
         # UI retry — while their keys stay active and keep authenticating.
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with store_common.transaction(conn, "BEGIN IMMEDIATE"):
             conn.execute(
                 "UPDATE users SET revoked_ts = ? WHERE id = ? AND revoked_ts IS NULL",
                 (now, user_id),
@@ -521,12 +520,6 @@ def revoke_user(user_id: str) -> None:
                 " WHERE user_id = ? AND revoked_ts IS NULL",
                 (now, user_id),
             )
-            conn.execute("COMMIT")
-        except BaseException:
-            # SQLite may already have rolled back on its own (see rename_profile_refs).
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
         _rebuild_index_locked()
     settings_version.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] user revoked id=%s", user_id[:8])
@@ -1012,8 +1005,7 @@ def rename_profile_refs(old: str, new: str) -> int:
         # without BEGIN a mid-scan error would leave bindings split between
         # `old` and `new` — and the overrides route rolls the profile rename
         # back on that error, so the rows already moved would point at nothing.
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with store_common.transaction(conn, "BEGIN IMMEDIATE"):
             # Per-user bindings live under the permissions JSON's "config" sub-key.
             for r in conn.execute("SELECT id, permissions FROM users").fetchall():
                 perms = _parse_permissions(r["permissions"])
@@ -1034,14 +1026,6 @@ def rename_profile_refs(old: str, new: str) -> int:
                     conn.execute("UPDATE api_keys SET config = ? WHERE id = ?",
                                  (json.dumps(binding), r["id"]))
                     touched += 1
-            conn.execute("COMMIT")
-        except BaseException:
-            # SQLite may already have rolled back on its own (SQLITE_FULL,
-            # SQLITE_IOERR, ...); a bare ROLLBACK would then raise and
-            # replace the real error.
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
         if touched:
             _rebuild_index_locked()
     if touched:

@@ -1720,8 +1720,7 @@ def _insert_sample_with_sid(
     now = time.time()
     conn = capture_samples_store._require_conn()
     with capture_samples_store._lock, captures_store._lock:
-        conn.execute("BEGIN")
-        try:
+        with store_common.transaction(conn):
             conn.execute(
                 "INSERT INTO capture_samples"
                 " (id, user_id, created_ts, merged_wav_relpath,"
@@ -1750,17 +1749,6 @@ def _insert_sample_with_sid(
                     raise HTTPException(
                         status.HTTP_409_CONFLICT,
                         "capture already belongs to a sample")
-            # Inside the try, as in dissolve_sample: a COMMIT that fails
-            # (SQLITE_FULL / IOERR / BUSY) can leave the transaction open on
-            # the shared autocommit connection, and every later BEGIN then
-            # fails until a restart.
-            conn.execute("COMMIT")
-        except BaseException:
-            # Guarded like samples_store.dissolve_sample: keep the real error
-            # when SQLite already rolled back by itself.
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
     captures_merge_proposer.invalidate(user_id)
     logger.info(
         "[samples] created sid=%s user=%s n=%d dur=%.1fs",
