@@ -7,6 +7,7 @@ test_factory_rules.py.
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -24,6 +25,14 @@ def _ok(**fields):
 def _bad(**fields):
     with pytest.raises(ValidationError):
         settings_schema.AdminConfig.model_validate(fields)
+
+
+def _write_json(p, doc):
+    Path(p).write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _read_json(p):
+    return json.loads(Path(p).read_text(encoding="utf-8"))
 
 
 def test_unknown_key_rejected():
@@ -319,9 +328,7 @@ def test_translation_bounds_and_literals():
 
 def test_load_overrides_coerces_translation_allowed_models_to_set(tmp_path):
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps(
-        {"TRANSLATION_ALLOWED_MODELS": ["org/a", "org/b:Q4_0"]}),
-        encoding="utf-8")
+    _write_json(p, {"TRANSLATION_ALLOWED_MODELS": ["org/a", "org/b:Q4_0"]})
     out = cs.load_overrides(str(p))
     assert out["TRANSLATION_ALLOWED_MODELS"] == {"org/a", "org/b:Q4_0"}
     assert isinstance(out["TRANSLATION_ALLOWED_MODELS"], set)
@@ -378,7 +385,7 @@ def test_allowed_hosts_rewrites_ipv4_mapped_entries(tmp_path):
     assert host_in_allowlist(req, got)
     p = str(tmp_path / "config.local.json")
     cs.save_overrides({"USER_WEBUI_ALLOWED_HOSTS": ["::ffff:192.168.1.5"]}, p)
-    on_disk = json.loads(open(p, encoding="utf-8").read())
+    on_disk = _read_json(p)
     assert on_disk["USER_WEBUI_ALLOWED_HOSTS"] == ["192.168.1.5"]
 
 
@@ -489,7 +496,7 @@ def test_pipeline_deeply_nested_regex_is_invalid_not_a_crash(tmp_path):
     with pytest.raises(ValidationError, match="invalid regex"):
         _ok(PIPELINE_RULES=deep)
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": deep}), encoding="utf-8")
+    _write_json(p, {"PIPELINE_RULES": deep})
     assert cs.load_overrides(str(p)) == {}
     with pytest.raises(RuntimeError, match="invalid regex"):
         cs.load_factory_rules(str(p))
@@ -615,14 +622,13 @@ def test_save_overrides_guard_slugs_reaches_the_validator(tmp_path):
     bad = _regex("legacy-boom", pattern="(n|d|nd)+#", replacement="X")
     good = _regex("harmless", pattern="Komma", replacement=",")
     p = str(tmp_path / "config.local.json")
-    with open(p, "w", encoding="utf-8") as fh:
-        json.dump({"PIPELINE_RULES": [bad, good, _terminal()]}, fh)
+    _write_json(p, {"PIPELINE_RULES": [bad, good, _terminal()]})
 
     edited = _regex("harmless", pattern="Komma", replacement=";")
     changed = cs.save_overrides({"PIPELINE_RULES": [bad, edited, _terminal()]},
                                 p, guard_slugs=frozenset({"harmless"}))
     assert "PIPELINE_RULES" in changed
-    on_disk = json.loads(open(p, encoding="utf-8").read())
+    on_disk = _read_json(p)
     assert on_disk["PIPELINE_RULES"][1]["entries"][0]["replacement"] == ";"
 
     with pytest.raises(ValidationError) as ei:
@@ -909,7 +915,7 @@ def test_load_overrides_hand_edited_unhashable_rule_fields_never_raise(tmp_path,
     # The rename/upgrade migrations run before validation; a list where a
     # string belongs must end in the schema's rejection, not a TypeError.
     p = tmp_path / "h.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    _write_json(p, {"PIPELINE_RULES": rules})
     assert cs.load_overrides(str(p)) == {}
 
 
@@ -925,7 +931,7 @@ def test_overflowing_repeat_count_is_a_validation_error(tmp_path, rule):
         _ok_on_save(PIPELINE_RULES=[rule, _terminal()])
     assert "invalid regex" in str(ei.value)
     p = tmp_path / "o.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": [rule, _terminal()]}), encoding="utf-8")
+    _write_json(p, {"PIPELINE_RULES": [rule, _terminal()]})
     assert cs.load_overrides(str(p)) == {}
 
 
@@ -954,10 +960,10 @@ def test_suppress_tokens_ids_must_be_real_token_ids():
 
 def test_stored_out_of_range_suppress_tokens_is_dropped_not_fatal(tmp_path):
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    _write_json(p, {
         "SERVER_PORT": 9000, "SUPPRESS_TOKENS": "100000000",
         "OVERRIDE_PROFILES": {"p": {"SUPPRESS_TOKENS": "-1,100000000",
-                                    "BEAM_SIZE": 2}}}), encoding="utf-8")
+                                    "BEAM_SIZE": 2}}})
     out = cs.load_overrides(str(p))
     assert out["SERVER_PORT"] == 9000
     assert "SUPPRESS_TOKENS" not in out
@@ -966,13 +972,13 @@ def test_stored_out_of_range_suppress_tokens_is_dropped_not_fatal(tmp_path):
 
 def test_load_overrides_unknown_key_ignored_whole_file(tmp_path):
     p = tmp_path / "u.json"
-    p.write_text(json.dumps({"BEAM_SIZE": 5, "BOGUS": 1}), encoding="utf-8")
+    _write_json(p, {"BEAM_SIZE": 5, "BOGUS": 1})
     assert cs.load_overrides(str(p)) == {}
 
 
 def test_load_overrides_coerces_allowed_models_to_set(tmp_path):
     p = tmp_path / "a.json"
-    p.write_text(json.dumps({"ALLOWED_MODELS": ["a", "b"]}), encoding="utf-8")
+    _write_json(p, {"ALLOWED_MODELS": ["a", "b"]})
     out = cs.load_overrides(str(p))
     assert isinstance(out["ALLOWED_MODELS"], set)
     assert out["ALLOWED_MODELS"] == {"a", "b"}
@@ -983,10 +989,7 @@ def test_load_overrides_coerces_captures_excludes_to_set(tmp_path):
     # the config.local.json override path must match, or the pipeline engine's
     # _postprocess_text does `set | list` and raises TypeError on every captures consumer.
     p = tmp_path / "a.json"
-    p.write_text(
-        json.dumps({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["r1", "r2"]}),
-        encoding="utf-8",
-    )
+    _write_json(p, {"CAPTURES_PIPELINE_RULES_EXCLUDE": ["r1", "r2"]})
     out = cs.load_overrides(str(p))
     assert isinstance(out["CAPTURES_PIPELINE_RULES_EXCLUDE"], set)
     assert out["CAPTURES_PIPELINE_RULES_EXCLUDE"] == {"r1", "r2"}
@@ -1003,7 +1006,7 @@ def test_save_overrides_rejects_unknown_slug_without_local_rules(tmp_path, monke
     # A stale slug on disk must not brick unrelated saves.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"renamed"})
     cs.save_overrides({"BEAM_SIZE": 5}, p)
-    assert json.loads(open(p, encoding="utf-8").read())["BEAM_SIZE"] == 5
+    assert _read_json(p)["BEAM_SIZE"] == 5
 
 
 def test_empty_rule_list_leaves_no_valid_slug_on_save(tmp_path):
@@ -1028,8 +1031,7 @@ def test_empty_rule_list_leaves_no_valid_slug_on_save(tmp_path):
         cs.save_overrides(bad, p)
     assert not os.path.exists(p)
     # A stored [] with a dangling ref does not refuse an unrelated save.
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(bad, f)
+    _write_json(p, bad)
     cs.save_overrides({"BEAM_SIZE": 3}, p)
     assert cs.load_overrides(p)["BEAM_SIZE"] == 3
 
@@ -1052,11 +1054,11 @@ def test_stale_stored_slug_only_blocks_saves_of_its_own_key(tmp_path, monkeypatc
     # an OVERRIDE_PROFILES / captures save.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"MODEL_OVERRIDES": {"m": {
-        "PIPELINE_RULES_EXCLUDE": ["gone"]}}}), encoding="utf-8")
+    _write_json(p, {"MODEL_OVERRIDES": {"m": {
+        "PIPELINE_RULES_EXCLUDE": ["gone"]}}})
     cs.save_overrides({"OVERRIDE_PROFILES": {"p": {"BEAM_SIZE": 2}}}, str(p))
     cs.save_overrides({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["known"]}, str(p))
-    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    on_disk = _read_json(p)
     assert on_disk["OVERRIDE_PROFILES"] == {"p": {"BEAM_SIZE": 2}}
     # A typo in the key a save DOES submit is still refused.
     before = p.read_text(encoding="utf-8")
@@ -1075,13 +1077,13 @@ def test_stale_stored_slug_only_blocks_saves_of_its_own_entry(tmp_path, monkeypa
     # exclude in profile b 422 every edit of profile a.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"OVERRIDE_PROFILES": {
+    _write_json(p, {"OVERRIDE_PROFILES": {
         "a": {"BEAM_SIZE": 2},
-        "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}}}), encoding="utf-8")
+        "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}}})
     cs.save_overrides({"OVERRIDE_PROFILES": {
         "a": {"BEAM_SIZE": 3},
         "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}}}, str(p))
-    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    on_disk = _read_json(p)
     assert on_disk["OVERRIDE_PROFILES"]["a"] == {"BEAM_SIZE": 3}
     # A typo in an entry the save changes or adds is still refused.
     before = p.read_text(encoding="utf-8")
@@ -1101,10 +1103,10 @@ def test_stale_stored_slug_does_not_block_edits_of_its_own_entry(tmp_path, monke
     # Only the slugs a save adds are checked, as validate_binding does.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    _write_json(p, {
         "OVERRIDE_PROFILES": {"a": {"BEAM_SIZE": 3},
                               "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}},
-        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]}), encoding="utf-8")
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]})
     cs.save_overrides({"OVERRIDE_PROFILES": {
         "a": {"BEAM_SIZE": 3},
         "b": {"PIPELINE_RULES_EXCLUDE": ["gone"], "BEAM_SIZE": 2}}}, str(p))
@@ -1112,7 +1114,7 @@ def test_stale_stored_slug_does_not_block_edits_of_its_own_entry(tmp_path, monke
         "a": {"BEAM_SIZE": 3},
         "c": {"PIPELINE_RULES_EXCLUDE": ["gone"], "BEAM_SIZE": 2}}}, str(p))
     cs.save_overrides({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone", "known"]}, str(p))
-    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    on_disk = _read_json(p)
     assert on_disk["OVERRIDE_PROFILES"]["c"] == {
         "PIPELINE_RULES_EXCLUDE": ["gone"], "BEAM_SIZE": 2}
     assert "b" not in on_disk["OVERRIDE_PROFILES"]
@@ -1134,16 +1136,16 @@ def test_stored_top_level_guard_at_one_is_migrated_not_fatal(tmp_path, capsys):
     # stored it; one left in config.local.json dropped every override at boot
     # and 422'd every save, the failure the bundle migration already covers.
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"SERVER_PORT": 9000,
-                             "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1,
-                             "SEGMENT_HEAD_ECHO_MIN_WORDS": 1}), encoding="utf-8")
+    _write_json(p, {"SERVER_PORT": 9000,
+                    "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1,
+                    "SEGMENT_HEAD_ECHO_MIN_WORDS": 1})
     out = cs.load_overrides(str(p))
     assert out["SERVER_PORT"] == 9000
     assert out["SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS"] == 0
     assert out["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
     assert "SEGMENT_HEAD_ECHO_MIN_WORDS=1" in capsys.readouterr().err
     cs.save_overrides({"BEST_OF": 3}, str(p))
-    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    on_disk = _read_json(p)
     assert on_disk["SERVER_PORT"] == 9000 and on_disk["BEST_OF"] == 3
     assert on_disk["SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS"] == 0
 
@@ -1204,16 +1206,16 @@ def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["my-local-rule"]}},
     }
-    p.write_text(json.dumps(local), encoding="utf-8")
+    _write_json(p, local)
     before = p.read_text(encoding="utf-8")
     with pytest.raises(ValidationError, match="my-local-rule"):
         cs.save_overrides({"PIPELINE_RULES": None}, str(p))
     assert p.read_text(encoding="utf-8") == before
     # Without the stranded ref the reset goes through.
     local["MODEL_OVERRIDES"]["large-v3"]["PIPELINE_RULES_EXCLUDE"] = ["factory-rule"]
-    p.write_text(json.dumps(local), encoding="utf-8")
+    _write_json(p, local)
     cs.save_overrides({"PIPELINE_RULES": None}, str(p))
-    assert "PIPELINE_RULES" not in json.loads(p.read_text(encoding="utf-8"))
+    assert "PIPELINE_RULES" not in _read_json(p)
 
 
 def test_removing_a_local_copy_of_a_split_card_writes_its_refs_as_the_successors(
@@ -1227,15 +1229,15 @@ def test_removing_a_local_copy_of_a_split_card_writes_its_refs_as_the_successors
                       "type": "regex-list",
                       "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    _write_json(p, {
         "PIPELINE_RULES": rules,
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}},
         "OVERRIDE_PROFILES": {"p": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}},
-    }), encoding="utf-8")
+    })
     cs.save_overrides({"PIPELINE_RULES": None}, str(p))
-    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    on_disk = _read_json(p)
     assert "PIPELINE_RULES" not in on_disk
     assert sorted(on_disk["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == sorted(split)
     assert on_disk["MODEL_OVERRIDES"]["large-v3"] == {
@@ -1248,7 +1250,7 @@ def test_save_overrides_roundtrip_and_merge(tmp_path):
     changed = cs.save_overrides({"BEAM_SIZE": 5}, p)
     assert changed == {"BEAM_SIZE": 5}
     cs.save_overrides({"BEST_OF": 3}, p)
-    on_disk = json.loads(open(p, encoding="utf-8").read())
+    on_disk = _read_json(p)
     assert on_disk["BEAM_SIZE"] == 5 and on_disk["BEST_OF"] == 3
 
 
@@ -1257,7 +1259,7 @@ def test_save_overrides_none_removes(tmp_path):
     cs.save_overrides({"BEAM_SIZE": 5, "BEST_OF": 3}, p)
     changed = cs.save_overrides({"BEAM_SIZE": None}, p)
     assert "BEAM_SIZE" in changed and changed["BEAM_SIZE"] is None
-    on_disk = json.loads(open(p, encoding="utf-8").read())
+    on_disk = _read_json(p)
     assert "BEAM_SIZE" not in on_disk and on_disk["BEST_OF"] == 3
 
 
@@ -1273,11 +1275,10 @@ def test_save_factory_rules_preserves_sibling_defaults(tmp_path):
     # rules "Promote to factory" must read-modify-write, not clobber the
     # sibling scalar defaults.
     p = str(tmp_path / "config.json")
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump({"schema_version": 1, "DEFAULT_MODEL": "keep-me", "BEST_OF": 7,
-                   "PIPELINE_RULES": [{"name": "t", "label": "T", "type": "terminal"}]}, f)
+    _write_json(p, {"schema_version": 1, "DEFAULT_MODEL": "keep-me", "BEST_OF": 7,
+                    "PIPELINE_RULES": [{"name": "t", "label": "T", "type": "terminal"}]})
     cs.save_factory_rules([{"name": "trim", "label": "Trim", "type": "terminal"}], p)
-    on_disk = json.loads(open(p, encoding="utf-8").read())
+    on_disk = _read_json(p)
     assert on_disk["DEFAULT_MODEL"] == "keep-me"
     assert on_disk["BEST_OF"] == 7
     assert [r["name"] for r in on_disk["PIPELINE_RULES"]] == ["trim"]
@@ -1320,7 +1321,7 @@ def test_save_overrides_empty_existing_file_is_the_empty_case(tmp_path):
     p = tmp_path / "config.local.json"
     p.write_text("\n", encoding="utf-8")
     cs.save_overrides({"BEAM_SIZE": 7}, str(p))
-    assert json.loads(p.read_text(encoding="utf-8")) == {"BEAM_SIZE": 7}
+    assert _read_json(p) == {"BEAM_SIZE": 7}
 
 
 def test_load_overrides_non_utf8_file_is_ignored_not_raised(tmp_path):
@@ -1339,8 +1340,7 @@ def test_overrides_file_with_utf8_bom_is_read_and_saved_onto(tmp_path):
     p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"DEFAULT_PROMPT": "x"}).encode())
     assert cs.load_overrides(str(p)) == {"DEFAULT_PROMPT": "x"}
     cs.save_overrides({"BEAM_SIZE": 7}, str(p))
-    assert json.loads(p.read_text(encoding="utf-8")) == {
-        "DEFAULT_PROMPT": "x", "BEAM_SIZE": 7}
+    assert _read_json(p) == {"DEFAULT_PROMPT": "x", "BEAM_SIZE": 7}
 
 
 def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,
@@ -1411,9 +1411,9 @@ def test_save_overrides_stored_prefixed_cookie_blocks_only_cookie_saves(tmp_path
     keys, as guard_regex is scoped to saves that submit rules."""
     monkeypatch.setattr(cs, "_env_effective_values", lambda: {})
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"SESSION_COOKIE_NAME": "__Host-s"}), encoding="utf-8")
+    _write_json(p, {"SESSION_COOKIE_NAME": "__Host-s"})
     cs.save_overrides({"BEAM_SIZE": 3}, str(p))
-    assert json.loads(p.read_text(encoding="utf-8"))["BEAM_SIZE"] == 3
+    assert _read_json(p)["BEAM_SIZE"] == 3
     with pytest.raises(ValidationError):
         cs.save_overrides({"SESSION_COOKIE_SECURE": False}, str(p))
     with pytest.raises(ValidationError):
@@ -1432,8 +1432,7 @@ def test_save_overrides_silence_pair_checked_on_save_not_load(tmp_path,
     with pytest.raises(ValidationError, match="STREAMING_HARD_BREAK_SILENCE_MS"):
         cs.save_overrides({"STREAMING_VAD_OUTER_SILENCE_MS": 6000}, str(p))
     assert not p.exists()
-    p.write_text(json.dumps({"STREAMING_VAD_OUTER_SILENCE_MS": 6000}),
-                 encoding="utf-8")
+    _write_json(p, {"STREAMING_VAD_OUTER_SILENCE_MS": 6000})
     assert cs.load_overrides(str(p)) == {"STREAMING_VAD_OUTER_SILENCE_MS": 6000}
     cs.save_overrides({"BEAM_SIZE": 3}, str(p))
     with pytest.raises(ValidationError):
@@ -1579,7 +1578,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     assert not [t for t in ts if t.is_alive()]
     assert errors == []
 
-    on_disk = json.loads(open(p, encoding="utf-8").read())
+    on_disk = _read_json(p)
     assert on_disk["BEST_OF"] == 3
     assert on_disk["ADMIN_WEBUI_ALLOWED_HOSTS"] == ["10.0.0.1"]
     assert on_disk["BEAM_SIZE"] == 5          # the pre-existing key survived too
@@ -1712,10 +1711,9 @@ def test_origins_default_port_dropped_on_save_and_load(tmp_path):
     cs.save_overrides({"TRUSTED_ORIGINS": ["https://w.example.com:443",
                                            "http://[::1]:80", "https://a.com:80",
                                            "http://a.com:8443"]}, p)
-    with open(p, encoding="utf-8") as f:
-        assert json.load(f)["TRUSTED_ORIGINS"] == [
-            "https://w.example.com", "http://[::1]", "https://a.com:80",
-            "http://a.com:8443"]
+    assert _read_json(p)["TRUSTED_ORIGINS"] == [
+        "https://w.example.com", "http://[::1]", "https://a.com:80",
+        "http://a.com:8443"]
     # A hand-written stored entry is normalised at load too.
     assert _ok(CORS_ALLOW_ORIGINS=["HTTPS://B.com:443"]).CORS_ALLOW_ORIGINS == [
         "https://b.com"]
@@ -1748,8 +1746,7 @@ def test_origins_with_userinfo_or_junk_port_refused_on_save(tmp_path, bad):
     assert not os.path.exists(p)
     cs.save_overrides({"TRUSTED_ORIGINS": ["https://a.com:8443", "http://[::1]:8000"]}, p)
     # A stored one does not block an unrelated save.
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump({"TRUSTED_ORIGINS": [bad]}, f)
+    _write_json(p, {"TRUSTED_ORIGINS": [bad]})
     cs.save_overrides({"BEAM_SIZE": 3}, p)
 
 
@@ -1757,11 +1754,10 @@ def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
     # A stored file from before wildcard hosts were rejected must not wipe
     # every other override at boot: only the inert wildcard entries go.
     p = str(tmp_path / "config.local.json")
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump({"TRUSTED_ORIGINS": ["https://*.example.com"],
-                   "CORS_ALLOW_ORIGINS": ["*", "https://*.example.com",
-                                          "https://app.example.com"],
-                   "BEAM_SIZE": 7}, f)
+    _write_json(p, {"TRUSTED_ORIGINS": ["https://*.example.com"],
+                    "CORS_ALLOW_ORIGINS": ["*", "https://*.example.com",
+                                           "https://app.example.com"],
+                    "BEAM_SIZE": 7})
     out = cs.load_overrides(p)
     assert out["BEAM_SIZE"] == 7
     assert "TRUSTED_ORIGINS" not in out            # list emptied → key dropped
@@ -1774,8 +1770,7 @@ def test_load_overrides_drops_blank_map_key_keeps_rest(tmp_path):
     p = str(tmp_path / "config.local.json")
     rule = {"name": "m", "label": "m", "type": "callback:map",
             "map": {" ": "x", "Komma": ","}, "map_meta": {" ": 1, "Komma": 2}}
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump({"PIPELINE_RULES": [rule, _terminal()], "BEAM_SIZE": 7}, f)
+    _write_json(p, {"PIPELINE_RULES": [rule, _terminal()], "BEAM_SIZE": 7})
     out = cs.load_overrides(p)
     assert out["BEAM_SIZE"] == 7
     assert out["PIPELINE_RULES"][0]["map"] == {"Komma": ","}
@@ -1796,7 +1791,7 @@ def test_field_helper_rejects_unknown_evict_bucket():
 def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, capsys):
     # Values a later-tightened validator refuses must not make load drop every override.
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    _write_json(p, {
         "SERVER_PORT": 9000,
         "DEFAULT_LANGUAGE": "jp",
         "OVERRIDE_PROFILES": {"p": {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1,
@@ -1807,7 +1802,7 @@ def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, cap
                                          "SUPPRESS_TOKENS": "x,1",
                                          "DEFAULT_LANGUAGE": "xx",
                                          "BEAM_SIZE": 3}},
-    }), encoding="utf-8")
+    })
     out = cs.load_overrides(str(p))
     assert out["SERVER_PORT"] == 9000
     assert "DEFAULT_LANGUAGE" not in out
@@ -1824,7 +1819,7 @@ def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, cap
     assert "banana" in capsys.readouterr().err
     # ...and a later save merges onto the migrated file instead of 422ing.
     cs.save_overrides({"BEST_OF": 3}, str(p))
-    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    on_disk = _read_json(p)
     assert on_disk["SERVER_PORT"] == 9000 and on_disk["BEST_OF"] == 3
 
 
@@ -1832,38 +1827,35 @@ def test_stored_nul_in_a_path_or_token_is_dropped_not_fatal(tmp_path, capsys):
     # A file saved before the NUL rule must lose only those keys at boot,
     # not every override — and an unrelated save must not 422 on them.
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"URL_MEDIA_DIR": "data/x\x00y",
-                             "HF_TOKEN": "hf_secret\x00tail",
-                             "DEFAULT_MODEL": "small"}), encoding="utf-8")
+    _write_json(p, {"URL_MEDIA_DIR": "data/x\x00y",
+                    "HF_TOKEN": "hf_secret\x00tail",
+                    "DEFAULT_MODEL": "small"})
     out = cs.load_overrides(str(p))
     assert out == {"DEFAULT_MODEL": "small"}
     err = capsys.readouterr().err
     assert "dropped URL_MEDIA_DIR" in err and "dropped HF_TOKEN" in err
     assert "hf_secret" not in err
     cs.save_overrides({"BEAM_SIZE": 3}, str(p))
-    assert json.loads(p.read_text(encoding="utf-8")) == {
-        "DEFAULT_MODEL": "small", "BEAM_SIZE": 3}
+    assert _read_json(p) == {"DEFAULT_MODEL": "small", "BEAM_SIZE": 3}
 
 
 def test_save_keeps_env_per_model_values_out_of_the_file(tmp_path, monkeypatch):
     monkeypatch.setattr(cs_config, "_ENV_OVERRIDE_VALUES",
                         {"x": {"BEAM_SIZE": 3}, "y": {"BEAM_SIZE": 4}}, raising=False)
     p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"MODEL_OVERRIDES": {"y": {"BEAM_SIZE": 2}}}),
-                 encoding="utf-8")
+    _write_json(p, {"MODEL_OVERRIDES": {"y": {"BEAM_SIZE": 2}}})
     # The editor round-trips the live dict, env values included.
     cs.save_overrides({"MODEL_OVERRIDES": {
         "x": {"BEAM_SIZE": 3, "PATIENCE": 1.0},
         "y": {"BEAM_SIZE": 4},
         "z": {"BEAM_SIZE": 5}}}, str(p))
-    stored = json.loads(p.read_text(encoding="utf-8"))["MODEL_OVERRIDES"]
+    stored = _read_json(p)["MODEL_OVERRIDES"]
     assert stored["x"] == {"PATIENCE": 1.0}          # env value not persisted
     assert stored["y"] == {"BEAM_SIZE": 2}           # stored value restored
     assert stored["z"] == {"BEAM_SIZE": 5}           # not env-supplied
     # An admin edit that differs from the env value is theirs to keep.
     cs.save_overrides({"MODEL_OVERRIDES": {"x": {"BEAM_SIZE": 6}}}, str(p))
-    assert json.loads(p.read_text(encoding="utf-8"))["MODEL_OVERRIDES"]["x"] == {
-        "BEAM_SIZE": 6}
+    assert _read_json(p)["MODEL_OVERRIDES"]["x"] == {"BEAM_SIZE": 6}
     # The hot-apply path lays the env layer back over the reloaded file.
     assert cs.with_env_model_overrides({"x": {"PATIENCE": 1.0}}) == {
         "x": {"PATIENCE": 1.0, "BEAM_SIZE": 3}, "y": {"BEAM_SIZE": 4}}
