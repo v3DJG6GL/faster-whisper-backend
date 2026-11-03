@@ -266,6 +266,10 @@ def _reload_with_env(monkeypatch, **env):
     importlib.reload(config)
 
 
+def _assert_nothing_dropped():
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+
+
 def _stub_stored(monkeypatch, raw):
     """config.local.json holds `raw` (a fresh copy per read). config.py
     re-imports load_overrides from config_store on reload and the path
@@ -855,7 +859,7 @@ def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch, restore_
     assert config._ENV_PRE["MODEL_OVERRIDES"]["TINY"]["BEAM_SIZE"] == 3
     assert any("TINY" in m and "keeping the stored entry" in m
                for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS)
+    _assert_nothing_dropped()
 
 
 def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(
@@ -866,7 +870,7 @@ def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(
     assert "BOGUS" not in config.MODEL_OVERRIDES["TINY"]
     assert any("TINY" in m and "keeping the stored entry" in m
                for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS)
+    _assert_nothing_dropped()
 
 
 def test_per_model_env_override_invalid_reverts_to_the_json_env_value(monkeypatch, restore_config):
@@ -1306,7 +1310,7 @@ def test_env_wildcard_only_origins_are_rejected_not_pinned(monkeypatch, restore_
 def test_ignored_per_model_env_value_leaves_no_phantom_entry(monkeypatch, restore_config):
     _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__VAD_FILTER="maybe")
     assert "TINY" not in config.MODEL_OVERRIDES
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS)
+    _assert_nothing_dropped()
 
 
 def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch, restore_config):
@@ -1315,8 +1319,7 @@ def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch, resto
     _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
     assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_nothing_dropped()
 
 
 
@@ -1327,8 +1330,7 @@ def test_blank_model_overrides_var_does_not_drop_a_stored_entry(monkeypatch, res
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
                      WHISPER_MODEL_OVERRIDES="  ")
     assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_nothing_dropped()
 
 
 
@@ -1345,8 +1347,7 @@ def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
     assert any("WHISPER_MODEL_OVERRIDE__" in m and "BEST_OF" in m
                and "ignored" in m for m in config._ENV_WARNINGS), \
         config._ENV_WARNINGS
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_nothing_dropped()
 
 
 def test_stored_model_override_with_unknown_slug_keeps_its_other_fields(
@@ -1359,8 +1360,7 @@ def test_stored_model_override_with_unknown_slug_keeps_its_other_fields(
             "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
     _reload_with_env(monkeypatch)
     assert config.MODEL_OVERRIDES.get("large-v3", {}).get("BEAM_SIZE") == 3
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_nothing_dropped()
 
 def test_stored_model_override_survives_an_env_allowlist_over_a_stored_one(
         monkeypatch, restore_config):
@@ -1373,8 +1373,7 @@ def test_stored_model_override_survives_an_env_allowlist_over_a_stored_one(
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
     assert config.ALLOWED_MODELS == {"large-v3"}
     assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_nothing_dropped()
 
 
 def test_env_field_outside_env_allowlist_keeps_the_stored_allowlisted_entry(
@@ -1387,8 +1386,7 @@ def test_env_field_outside_env_allowlist_keeps_the_stored_allowlisted_entry(
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
                      WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
     assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_nothing_dropped()
 
 
 def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch, restore_config):
