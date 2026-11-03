@@ -93,8 +93,8 @@ def test_decoded_utterance_stays_an_ok_row(client, app_module, monkeypatch):
 def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
         client, app_module, monkeypatch):
     """The common shape of a real fault: the previews fail too, so nothing is
-    committed and the session drops the utterance. The error row must still
-    land — it used to be written only from on_final, which this path skipped."""
+    committed and the session drops the utterance. No `final` goes out, but
+    the error row must still land."""
     from faster_whisper_backend.streaming import routes as s_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
