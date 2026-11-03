@@ -404,10 +404,11 @@ def _build_merged_wav(
     file exists. Caller must have validated member_ids belong to the same
     user and the total is within the configured cap.
 
-    `member_trims` maps member_id → {lead_ms, new_duration_ms, segments} when
-    CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES trims each member; _build_merged_words
-    uses it to keep per-member karaoke timestamps in sync with the trimmed
-    audio. Empty/identity when trimming is disabled or VAD is unavailable."""
+    `member_trims` maps member_id → its merge_wavs `members` entry
+    {lead_ms, new_duration_ms, segments, plus offset_ms when trimmed};
+    _build_merged_words uses it to keep per-member karaoke timestamps in sync
+    with the trimmed audio. An identity entry when trimming is disabled or VAD
+    is unavailable."""
     from faster_whisper_backend.captures import merge as audio_merge
     from faster_whisper_backend.captures import samples_store as capture_samples_store
 
@@ -563,11 +564,11 @@ def _align_words_to_final(
     if n and m:
         # Longest common subsequence; among the longest, the one matching
         # most raw words that are a whole token by themselves (a leading
-        # space and no unspaced word glued after them). With plain LCS a tie
-        # skipped the raw word, so in "我用 Python 写代码，Python 很好" the
-        # spaced " Python" lost the first token to the later, glued "Python"
-        # and four words in between were struck as removed. A lead alone is
-        # not enough: " 好" of " 好的" is a piece of the token "好的", and a
+        # space and no unspaced word glued after them). Plain LCS breaks a tie
+        # by skipping the raw word: in "我用 Python 写代码，Python 很好" the
+        # spaced " Python" would lose the first token to the later, glued
+        # "Python" and the four words in between would be struck as removed.
+        # A lead alone is not enough: " 好" of " 好的" is a piece of the token "好的", and a
         # later standalone 好 is the token it matches. A match is worth `big`
         # (more than every bonus together) plus 1 for a whole-token word, so
         # the match count wins and uniform leads (spaced text) align exactly
@@ -664,8 +665,8 @@ def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None
     """Split the final tokens `toks` of one alignment gap among the gap's raw
     words, whose isolated post-processed forms (whitespace removed) are
     `texts`, character by character. In a script written without spaces the
-    whole sentence is one final token: handed to one raw word, it struck
-    every other word as removed by a rule although none fired. A final
+    whole sentence is one final token: handed whole to one raw word, it would
+    strike every other word as removed by a rule although none fired. A final
     character matched to a raw word's character goes to that word; the chars
     that replace raw chars (a substitution rule: 他 → 她) go to the words
     whose chars they replace, in proportion, the remainder to the last; an
