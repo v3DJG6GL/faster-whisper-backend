@@ -28,8 +28,8 @@ def _install(monkeypatch, versions):
         calls["n"] += 1
         return versions[min(calls["n"] - 1, len(versions) - 1)]
     monkeypatch.setattr(api_keys_store, "data_version", _dv)
-    # The sessions half of the probe is held still here (see
-    # tests/auth/test_session_auth.py for a sibling logout).
+    # The sessions half of the probe is held still here;
+    # test_sibling_session_revocation_bumps_after_window below moves it.
     monkeypatch.setattr(settings_version, "_SESSIONS_REV_GEN", -1)
     monkeypatch.setattr(sessions_store, "revocation_generation", lambda: 0)
     return calls, clock
