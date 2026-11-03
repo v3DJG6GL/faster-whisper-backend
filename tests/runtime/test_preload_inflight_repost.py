@@ -10,27 +10,17 @@ import asyncio
 
 import pytest
 
-from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.translation import engine as translation
+from tests.runtime.test_preload_registry import _enable as _registry_enable
+from tests.runtime.test_preload_registry import _fits
 
 
 def _enable(monkeypatch):
-    from faster_whisper_backend.settings import config as cfg
-    for k, v in {
-        "MODEL_PRELOAD_ENABLED": True,
-        "MODEL_PRELOAD_WARM_TTL_S": 180,
-        "MODEL_PRELOAD_EVICT_IDLE_MODELS": True,
-        "TRANSLATION_ENABLED": True,
-        "MODEL_DEVICE": "cpu",
-        "MODEL_COMPUTE_TYPE": "int8",
-        "MAX_LOADED_MODELS": 2,
-        "ALLOWED_MODELS": set(),
-        "DEFAULT_MODEL": "small",
-    }.items():
-        monkeypatch.setattr(cfg, k, v, raising=False)
-    monkeypatch.setattr(model_sizes, "fits", lambda *a, **k: (True, None))
+    _registry_enable(monkeypatch, MAX_LOADED_MODELS=2, ALLOWED_MODELS=set(),
+                     DEFAULT_MODEL="small")
+    _fits(monkeypatch)
 
 
 @pytest.mark.parametrize("family, model_id, busy_module", [

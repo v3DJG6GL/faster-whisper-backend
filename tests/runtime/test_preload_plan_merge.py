@@ -18,12 +18,9 @@ from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import model_registry
 
 from tests.conftest import bearer
+from tests.runtime.test_preload_registry import _enable as _registry_enable
+from tests.runtime.test_preload_registry import _fits
 from faster_whisper_backend.transcription import models as tx_models
-
-
-def _fits(monkeypatch, verdict=(True, None)):
-    monkeypatch.setattr(model_sizes, "fits",
-                        lambda *a, **k: verdict, raising=True)
 
 
 def _record_evict_and_load(monkeypatch):
@@ -41,26 +38,9 @@ def _record_evict_and_load(monkeypatch):
 
 
 def _enable(monkeypatch, **over):
-    from faster_whisper_backend.settings import config as cfg
-    defaults = {
-        "MODEL_PRELOAD_ENABLED": True,
-        "MODEL_PRELOAD_WARM_TTL_S": 180,
-        "MODEL_PRELOAD_VRAM_RESERVE_MB": 1024,
-        "MODEL_PRELOAD_RAM_RESERVE_MB": 2048,
-        "MODEL_PRELOAD_EVICT_IDLE_MODELS": True,
-        "DIARIZATION_ENABLED": True,
-        "BGM_SEPARATION_ENABLED": True,
-        "TRANSLATION_ENABLED": True,
-        "MODEL_DEVICE": "cpu",
-        "MODEL_COMPUTE_TYPE": "int8",
-        "MAX_LOADED_MODELS": 1,
-        "ALLOWED_MODELS": set(),
-        "DEFAULT_MODEL": "large-v3",
-    }
-    defaults.update(over)
-    for k, v in defaults.items():
-        monkeypatch.setattr(cfg, k, v, raising=False)
-    return cfg
+    return _registry_enable(monkeypatch, **{
+        "MAX_LOADED_MODELS": 1, "ALLOWED_MODELS": set(),
+        "DEFAULT_MODEL": "large-v3", **over})
 
 
 def test_merge_restores_stage_order_so_stage_ahead_picks_the_nearer_stage(
