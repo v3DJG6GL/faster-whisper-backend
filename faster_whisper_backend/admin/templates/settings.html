@@ -881,9 +881,7 @@ function renderServerIdent(ident) {
   dl.appendChild(pathsDt);
   const pathsDd = document.createElement('dd');
   pathsDd.textContent = (ident.data_dir || '') + ' ';
-  const faint = document.createElement('span');
-  faint.className = 'faint';
-  faint.textContent = '(db ' + (ident.db_dir || '') + ')';
+  const faint = _el('span', 'faint', '(db ' + (ident.db_dir || '') + ')');
   pathsDd.appendChild(faint);
   pathsDd.appendChild(document.createTextNode(' · models ' + (ident.models_dir || '')));
   dl.appendChild(pathsDd);
@@ -1078,11 +1076,16 @@ function setHelpText(el, text) {
 const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
 
 function envPinnedNote(name) {
-  const note = document.createElement('div');
-  note.className = 'help help-env-pinned';
-  note.textContent = 'Set by ' + fieldDef(name).env_var
-    + ' — read-only here; unset the environment variable to edit it in the UI.';
+  const note = _el('div', 'help help-env-pinned', 'Set by ' + fieldDef(name).env_var
+    + ' — read-only here; unset the environment variable to edit it in the UI.');
   return note;
+}
+
+function _el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
 }
 
 function _button(className, text, title) {
@@ -1115,9 +1118,7 @@ function fieldRow(name) {
 
   const labelCol = document.createElement('div');
   labelCol.className = 'label-col';
-  const nameEl = document.createElement('div');
-  nameEl.className = 'name';
-  nameEl.textContent = name;
+  const nameEl = _el('div', 'name', name);
   labelCol.appendChild(nameEl);
   labelCol.appendChild(makeBadges(name));
   row.appendChild(labelCol);
@@ -1517,9 +1518,7 @@ function modelOverridesEditor(name, v) {
       mainpane.classList.toggle('diff-mode', diffMode);
     });
     toggleWrap.appendChild(toggleCb);
-    const toggleLbl = document.createElement('span');
-    toggleLbl.className = 'mo-toggle-label';
-    toggleLbl.textContent = 'Global — dim what matches';
+    const toggleLbl = _el('span', 'mo-toggle-label', 'Global — dim what matches');
     toggleWrap.appendChild(toggleLbl);
     sidebar.appendChild(toggleWrap);
 
@@ -1540,14 +1539,10 @@ function modelOverridesEditor(name, v) {
       lbl.className = 'mo-list-label';
       lbl.title = id;
       lbl.textContent = id;
-      const cnt = document.createElement('span');
-      cnt.className = 'mo-count';
-      cnt.textContent = (n ? '(' + n + ')' : '');
+      const cnt = _el('span', 'mo-count', (n ? '(' + n + ')' : ''));
       // Collapse indicator; CSS shows it only on the .active row.
       const collapsed = (_lsGet('mo.detail.' + id) === '0');
-      const ind = document.createElement('span');
-      ind.className = 'mo-collapse-ind';
-      ind.textContent = (collapsed ? '▸' : '▾');
+      const ind = _el('span', 'mo-collapse-ind', (collapsed ? '▸' : '▾'));
       item.replaceChildren(dot, lbl, cnt, ind);
       item.addEventListener('click', () => {
         if (selectedId === id) {
@@ -1654,9 +1649,7 @@ function modelOverridesEditor(name, v) {
     const h4 = document.createElement('h4');
     h4.textContent = sec.title;
     if (sec.id === 'hardware') {
-      const reload = document.createElement('span');
-      reload.className = 'badge restart';
-      reload.textContent = 'drain-then-evict on edit';
+      const reload = _el('span', 'badge restart', 'drain-then-evict on edit');
       reload.style.marginLeft = '0.5rem';
       h4.appendChild(reload);
     }
@@ -1667,9 +1660,7 @@ function modelOverridesEditor(name, v) {
     if (sec.adv.length) {
       const det = document.createElement('details');
       det.className = 'subgroup-details mo-advanced';
-      const sum = document.createElement('summary');
-      sum.className = 'subgroup-summary';
-      sum.textContent = 'Advanced — ' + (sec.advTitle || 'more knobs');
+      const sum = _el('summary', 'subgroup-summary', 'Advanced — ' + (sec.advTitle || 'more knobs'));
       det.appendChild(sum);
       const lsKey = 'mo.adv.' + sec.id;
       det.open = _lsGet(lsKey) === '1';
@@ -1702,13 +1693,9 @@ function modelOverridesEditor(name, v) {
     dot.className = 'mo-dot ' + (isOverridden ? 'override' : 'inherit');
     row.appendChild(dot);
 
-    const labelWrap = document.createElement('span');
-    labelWrap.className = 'mo-name';
-    labelWrap.textContent = field;
+    const labelWrap = _el('span', 'mo-name', field);
     if (LOAD_TIME_FIELDS.has(field)) {
-      const reload = document.createElement('span');
-      reload.className = 'badge restart';
-      reload.textContent = '⚠ reload';
+      const reload = _el('span', 'badge restart', '⚠ reload');
       reload.title = 'Editing this field evicts and reloads the model on save';
       reload.style.marginLeft = '0.4rem';
       labelWrap.appendChild(reload);
@@ -2171,9 +2158,7 @@ function translationTemplateEditor(name, v) {
 
   const right = document.createElement('div');
   right.className = 'lab-col';
-  const rHead = document.createElement('div');
-  rHead.className = 'lab-head';
-  rHead.textContent = 'What the model receives';
+  const rHead = _el('div', 'lab-head', 'What the model receives');
   const famChip = document.createElement('span');
   famChip.className = 'lab-chip';
   rHead.appendChild(famChip);
@@ -2243,18 +2228,12 @@ function translationTemplateEditor(name, v) {
     readout.textContent = '';
     if (p.messages) {
       p.messages.forEach(m => {
-        const role = document.createElement('div');
-        role.className = 'lab-role';
-        role.textContent = m.role;
-        const txt = document.createElement('pre');
-        txt.className = 'lab-msg';
-        txt.textContent = m.content;
+        const role = _el('div', 'lab-role', m.role);
+        const txt = _el('pre', 'lab-msg', m.content);
         readout.appendChild(role); readout.appendChild(txt);
       });
     } else {
-      const txt = document.createElement('pre');
-      txt.className = 'lab-msg';
-      txt.textContent = p.text || '';
+      const txt = _el('pre', 'lab-msg', p.text || '');
       readout.appendChild(txt);
     }
     const samp = Object.entries(p.sampling || {})
@@ -2961,19 +2940,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
       // idx indexes the full PIPELINE_RULES list (terminal included), so #idx+1
       // matches the /settings/pipeline card number and the /logs trace.
-      const ord = document.createElement('span');
-      ord.className = 'card-no';
-      ord.textContent = '#' + (idx + 1);
+      const ord = _el('span', 'card-no', '#' + (idx + 1));
       head.appendChild(ord);
 
-      const lbl = document.createElement('span');
-      lbl.className = 'rule-label';
-      lbl.textContent = rule.label || rule.name;
+      const lbl = _el('span', 'rule-label', rule.label || rule.name);
       head.appendChild(lbl);
 
-      const pill = document.createElement('span');
-      pill.className = 'type-pill';
-      pill.textContent = _typePill(rule.type);
+      const pill = _el('span', 'type-pill', _typePill(rule.type));
       head.appendChild(pill);
 
       if (!isTerminal) {
@@ -3001,16 +2974,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       let gdTag = null;
       let fiTag = null;
       if (!isTerminal) {
-        gdTag = document.createElement('span');
-        gdTag.className = 'rule-globally-disabled-tag';
-        gdTag.textContent = 'globally disabled';
+        gdTag = _el('span', 'rule-globally-disabled-tag', 'globally disabled');
         gdTag.title = 'This rule is disabled in the global pipeline. '
                     + 'Check the box to force-enable it for this model only.';
         head.appendChild(gdTag);
 
-        fiTag = document.createElement('span');
-        fiTag.className = 'rule-force-included-tag';
-        fiTag.textContent = 'force-included';
+        fiTag = _el('span', 'rule-force-included-tag', 'force-included');
         fiTag.title = 'Globally disabled but force-enabled for this model.';
         head.appendChild(fiTag);
       }
@@ -3089,9 +3058,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const headLine2 = document.createElement('div');
     headLine2.className = 'row-header-line2';
 
-    const drag = document.createElement('span');
-    drag.className = 'drag-handle';
-    drag.textContent = '⠿';   // grip; lock state is shown by the rail padlock
+    const drag = _el('span', 'drag-handle', '⠿');   // grip; lock state is shown by the rail padlock
     drag.title = 'Drag to reorder';
     if (rule.type !== 'terminal') {
       drag.draggable = true;
@@ -3184,9 +3151,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     upBtn.title = 'Move up one position'; upBtn.setAttribute('aria-label', upBtn.title);
     if (rule.type === 'terminal' || idx <= 0) upBtn.disabled = true;
     upBtn.addEventListener('click', () => { if (!upBtn.disabled) _moveRuleBy(-1); });
-    const ord = document.createElement('span');
-    ord.className = 'ordinal';
-    ord.textContent = String(idx + 1);
+    const ord = _el('span', 'ordinal', String(idx + 1));
     downBtn = document.createElement('button');
     downBtn.type = 'button'; downBtn.className = 'move-btn move-down';
     downBtn.innerHTML = MOVE_CHEV_DOWN;
@@ -3237,20 +3202,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
     rail.appendChild(lockBtn);
 
-    const lbl = document.createElement('span');
-    lbl.className = 'rule-label';
-    lbl.textContent = rule.label || rule.name;
+    const lbl = _el('span', 'rule-label', rule.label || rule.name);
     lbl.title = rule.label || rule.name;   // hover reveals full text when ellipsised
     headLine1.appendChild(lbl);
 
-    const slug = document.createElement('span');
-    slug.className = 'rule-slug';
-    slug.textContent = '(' + (rule.name || '?') + ')';
+    const slug = _el('span', 'rule-slug', '(' + (rule.name || '?') + ')');
     headLine1.appendChild(slug);
 
-    const pill = document.createElement('span');
-    pill.className = 'type-pill';
-    pill.textContent = _typePill(rule.type);
+    const pill = _el('span', 'type-pill', _typePill(rule.type));
     headLine1.appendChild(pill);
 
     // Origin badge — how this rule relates to config.json; repainted live by
@@ -3268,9 +3227,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       syncSlot.className = 'rule-sync-slot';
       // Position-diverged marker (rank differs from config.json, see _ruleMoved).
       // Toggled live by refreshControlsVisibility.
-      const movedBadge = document.createElement('span');
-      movedBadge.className = 'rule-moved-badge';
-      movedBadge.textContent = '⇅ moved';
+      const movedBadge = _el('span', 'rule-moved-badge', '⇅ moved');
       movedBadge.title = 'Same content as config.json, but in a different '
         + 'position — use "↑ Promote order" to update config.json.';
       movedBadge.style.display = _ruleMoved(rule) ? '' : 'none';
@@ -3432,9 +3389,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Tags + user-editable line; terminal rules have neither tags nor an
     // exposed flag.
     if (rule.type !== 'terminal') {
-      const tagsLbl = document.createElement('span');
-      tagsLbl.className = 'meta-label';
-      tagsLbl.textContent = 'tags:';
+      const tagsLbl = _el('span', 'meta-label', 'tags:');
       headLine2.appendChild(tagsLbl);
 
       const tagWrap = document.createElement('span');
@@ -3468,9 +3423,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
       // Exposed + untagged reaches every non-admin user: flag rules the
       // admin probably meant to scope but forgot to tag.
-      _untaggedBadge = document.createElement('span');
-      _untaggedBadge.className = 'rule-untagged-badge';
-      _untaggedBadge.textContent = '⚠ untagged · visible to all users';
+      _untaggedBadge = _el('span', 'rule-untagged-badge', '⚠ untagged · visible to all users');
       _untaggedBadge.title = 'Exposed but untagged — every authenticated user '
         + 'with /quick-config access sees this rule. Add tags to scope it '
         + 'to specific users.';
@@ -3570,9 +3523,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     body.appendChild(renderTypeEditor(rule, commitData, { showNote: true, showRepeat: true }));
 
     if (rule.type !== 'terminal') {
-      const status = document.createElement('div');
-      status.className = 'regex-status empty';
-      status.textContent = '∅ click "Run test" in the panel below, or edit any field to refresh';
+      const status = _el('div', 'regex-status empty',
+        '∅ click "Run test" in the panel below, or edit any field to refresh');
       body.appendChild(status);
 
       let timer = null;
@@ -3709,9 +3661,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       + active + ' active for this model';
   }
   if (isChecklist) {
-    footer = document.createElement('div');
-    footer.className = 'help rule-checklist-footer';
-    footer.textContent = _footerText();
+    footer = _el('div', 'help rule-checklist-footer', _footerText());
     wrap.appendChild(footer);
     paintAll();
     return wrap;
@@ -3797,9 +3747,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     txt.className = 'sync-notice-text';
     const b = document.createElement('b');
     b.textContent = 'config.json has ' + _count(missing.length, 'rule') + ' this server does not have yet.';
-    const names = document.createElement('div');
-    names.className = 'sync-notice-names';
-    names.textContent = missing.map(m => m.label || m.name).join(', ');
+    const names = _el('div', 'sync-notice-names', missing.map(m => m.label || m.name).join(', '));
     txt.appendChild(b); txt.appendChild(names);
     const btn = _button('sync-btn down', '↓ Review and add');
     btn.addEventListener('click', () => _addFromConfig());
@@ -3899,9 +3847,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     catch (_) { return false; }
   }
   function _toast(msg) {
-    const t = document.createElement('div');
-    t.className = 'rule-toast';
-    t.textContent = msg;
+    const t = _el('div', 'rule-toast', msg);
     document.body.appendChild(t);
     setTimeout(() => { if (t.parentNode) t.parentNode.removeChild(t); }, 4500);
   }
@@ -3911,9 +3857,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     backdrop.className = 'rule-modal-backdrop';
     const panel = document.createElement('div');
     panel.className = 'rule-modal';
-    const h = document.createElement('div');
-    h.className = 'rule-modal-title';
-    h.textContent = o.title || '';
+    const h = _el('div', 'rule-modal-title', o.title || '');
     panel.appendChild(h);
     if (o.bodyEl) panel.appendChild(o.bodyEl);
     const btnRow = document.createElement('div');
@@ -4069,9 +4013,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     panel.className = 'rule-modal review';
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
-    const h = document.createElement('div');
-    h.className = 'rule-modal-title';
-    h.textContent = o.title;
+    const h = _el('div', 'rule-modal-title', o.title);
     panel.appendChild(h);
 
     const flow = document.createElement('div');
@@ -4086,9 +4028,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       b.appendChild(t); b.appendChild(sub);
       return b;
     };
-    const arrow = document.createElement('div');
-    arrow.className = 'rv-arrow';
-    arrow.textContent = '── ' + (o.verb || 'overwrites') + ' ──▶';
+    const arrow = _el('div', 'rv-arrow', '── ' + (o.verb || 'overwrites') + ' ──▶');
     flow.appendChild(node(o.up ? _RV_SERVER : _RV_CONFIG, 'src', 'source'));
     flow.appendChild(arrow);
     flow.appendChild(node(o.up ? _RV_CONFIG : _RV_SERVER, 'dst', 'gets changed'));
@@ -4133,9 +4073,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           sum.appendChild(m);
         }
         const sp = document.createElement('span'); sp.className = 'rv-grp-sp';
-        const cnt = document.createElement('span');
-        cnt.className = 'rv-chip';
-        cnt.textContent = _count(g.rows.length, 'change');
+        const cnt = _el('span', 'rv-chip', _count(g.rows.length, 'change'));
         sum.appendChild(sp); sum.appendChild(cnt);
         det.appendChild(sum);
         det.appendChild(_rvTable(g.rows, g.left || o.left, g.right || o.right));
@@ -4151,9 +4089,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     const foot = document.createElement('div');
     foot.className = 'rv-foot';
-    const fn = document.createElement('span');
-    fn.className = 'rv-foot-note';
-    fn.textContent = 'Esc closes. Nothing is written until you confirm.';
+    const fn = _el('span', 'rv-foot-note', 'Esc closes. Nothing is written until you confirm.');
     const cancel = document.createElement('button');
     cancel.type = 'button'; cancel.className = 'sync-btn'; cancel.textContent = 'Cancel';
     const ok = document.createElement('button');
@@ -4355,10 +4291,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (!_pipelineDirty()) return null;
     const fd = fieldDef(name);
     if (!fd || fd.provenance !== 'local.json') return null;
-    const w = document.createElement('div');
-    w.className = 'promote-unsaved-note';
-    w.textContent = '⚠ You have unsaved edits on this page. Promote writes them into '
-      + 'config.json now; press Save as well to keep them on this server.';
+    const w = _el('div', 'promote-unsaved-note',
+      '⚠ You have unsaved edits on this page. Promote writes them into '
+      + 'config.json now; press Save as well to keep them on this server.');
     return w;
   }
   // Build the full config.json array from the CURRENT pipeline order.
@@ -4585,11 +4520,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     body.appendChild(_orderChangeEl());
     const localOnly = _localOnlyNames();
     if (localOnly.length) {
-      const w = document.createElement('div');
-      w.className = 'promote-unsaved-note';
-      w.textContent = '⚠ ' + localOnly.length + ' rule(s) that exist only on this server are NOT '
+      const w = _el('div', 'promote-unsaved-note',
+        '⚠ ' + localOnly.length + ' rule(s) that exist only on this server are NOT '
         + 'written to config.json: ' + localOnly.join(', ') + '. Their position is not '
-        + 'part of the config.json order — use "↑ Promote all" to write them as well.';
+        + 'part of the config.json order — use "↑ Promote all" to write them as well.');
       body.appendChild(w);
     }
     const note = _unsavedNoteEl();
@@ -4636,9 +4570,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         + 'rule list, which is used instead of config.json. Drop it so config.json '
         + 'runs directly here? config.json can be committed either way.'));
     const _warn = (text) => {
-      const w = document.createElement('div');
-      w.className = 'promote-unsaved-note';
-      w.textContent = text;
+      const w = _el('div', 'promote-unsaved-note', text);
       body.appendChild(w);
     };
     if (orphaned.length) {
@@ -4766,17 +4698,12 @@ function pipelineTestPanel() {
   // Status tag next to a step's label. Built as an element (not an HTML
   // string) because it sits in the same cell as the free-form rule label.
   function testBadge(kind, text) {
-    const el = document.createElement('span');
-    el.className = 'tag ' + kind;
-    el.textContent = text;
-    return el;
+    return _el('span', 'tag ' + kind, text);
   }
 
   function showErr(text) {
     out.textContent = '';
-    const em = document.createElement('em');
-    em.className = 'err';
-    em.textContent = text;
+    const em = _el('em', 'err', text);
     out.appendChild(em);
   }
 
@@ -4843,17 +4770,13 @@ function pipelineTestPanel() {
       const outCell = document.createElement('td');
       outCell.className = 'out';
       if (step.error && !advisory && !step.not_run) {
-        const err = document.createElement('span');
-        err.className = 'err';
-        err.textContent = step.error;
+        const err = _el('span', 'err', step.error);
         outCell.appendChild(err);
       } else {
         if (!changed) outCell.innerHTML = '<span class="nochange">(no change)</span>';
         else outCell.textContent = step.after;
         if ((step.not_run && step.error) || advisory) {
-          const warn = document.createElement('span');
-          warn.className = 'err';
-          warn.textContent = ' ⚠ ' + step.error;
+          const warn = _el('span', 'err', ' ⚠ ' + step.error);
           outCell.appendChild(warn);
         }
       }
@@ -4868,9 +4791,7 @@ function pipelineTestPanel() {
       }
       tr.appendChild(labelCell);
       const typeCell = document.createElement('td');
-      const typePill = document.createElement('span');
-      typePill.className = 'type-pill';
-      typePill.textContent = _typePill(step.type);
+      const typePill = _el('span', 'type-pill', _typePill(step.type));
       typeCell.appendChild(typePill);
       tr.appendChild(typeCell);
       tr.appendChild(outCell);
@@ -4881,9 +4802,7 @@ function pipelineTestPanel() {
     finalCell.colSpan = 3;
     finalCell.innerHTML = '<strong>Final →</strong>';
     finalRow.appendChild(finalCell);
-    const finalOut = document.createElement('td');
-    finalOut.className = 'out';
-    finalOut.textContent = j.final;
+    const finalOut = _el('td', 'out', j.final);
     finalRow.appendChild(finalOut);
     tbl.appendChild(finalRow);
     out.innerHTML = '';
@@ -5141,11 +5060,10 @@ function highlightNavChip(id) {
 function pipelineMovedStub() {
   const box = document.createElement('div');
   box.className = 'pipeline-moved-stub';
-  const txt = document.createElement('div');
-  txt.className = 'pms-text';
-  txt.textContent = 'The pipeline rule editor now has its own page — the global '
+  const txt = _el('div', 'pms-text',
+    'The pipeline rule editor now has its own page — the global '
     + 'rule list, drag-reorder, lock, colour and the dry-run tester all live there. '
-    + 'Per-model and capture rule scoping stay below.';
+    + 'Per-model and capture rule scoping stay below.');
   const a = document.createElement('a');
   a.className = 'pms-link';
   a.href = '/settings/pipeline';
@@ -5212,9 +5130,7 @@ function render() {
       if (sub.title) {
         const det = document.createElement('details');
         det.className = 'subgroup-details';
-        const sum = document.createElement('summary');
-        sum.className = 'subgroup-summary';
-        sum.textContent = sub.title;
+        const sum = _el('summary', 'subgroup-summary', sub.title);
         det.appendChild(sum);
         det.appendChild(fieldsWrap);
         const lsKey = 'adv.global.' + g.title + '.' + sub.title;

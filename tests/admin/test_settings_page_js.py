@@ -106,6 +106,7 @@ def _captures_harness(html, body, real_list=False):
     if real_list:
         rle = (_block(html, "function makeRuleListEditor(", "\n}\n")
                + _block(html, "function _helpDiv(text) {", "\n}\n")
+               + _block(html, "function _el(", "\n}\n")
                + _block(html, "function _button(", "\n}\n"))
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
@@ -212,7 +213,8 @@ def test_model_override_seeds_from_the_current_global_value(client):
     """'+ override' seeded the global value captured when the row was built;
     an unsaved global edit later only refreshed the 'inherits' hint."""
     html = _html(client)
-    row_fn = (_block(html, "function _button(", "\n}\n")
+    row_fn = (_block(html, "function _el(", "\n}\n")
+              + _block(html, "function _button(", "\n}\n")
               + _block(html, "  function renderFieldRow(field) {"))
     out = _node(_FAKE_DOM + """
 let selectedId = 'm';
@@ -507,8 +509,9 @@ def test_add_rule_label_input_is_capped(client):
 def _test_panel_harness(html, body):
     """The pipeline test panel's run() (plus the helpers declared beside it)
     against a hand-driven api()."""
-    panel = _block(html, "  function testBadge(kind, text) {",
-                   "  runBtn.addEventListener('click', run);\n")
+    panel = (_block(html, "function _el(", "\n}\n")
+             + _block(html, "  function testBadge(kind, text) {",
+                      "  runBtn.addEventListener('click', run);\n"))
     return _FAKE_DOM + """
 const out = document.createElement('div');
 const runBtn = document.createElement('button');
@@ -568,6 +571,7 @@ def test_pipeline_test_panel_sends_the_sample_language(client):
         _block(html, "function pipelineTestPanel() {", "\n}\n"),
         _block(html, "async function _testOneRule(rule) {", "\n}\n"),
         _block(html, "function _helpDiv(text) {", "\n}\n"),
+        _block(html, "function _el(", "\n}\n"),
     ])
     out = _node(_FAKE_DOM + """
 const TEST_PRESETS = { 'default': 'Hallo' };
@@ -812,7 +816,8 @@ def test_prompt_lab_empty_glossary_box_uses_the_glossary_setting(client):
     request inherits; a glossary edit on the page did not re-render either."""
     html = _html(client)
     ed = (_block(html, "function translationTemplateEditor(name, v) {", "\n}\n")
-          + _block(html, "function _helpDiv(text) {", "\n}\n"))
+          + _block(html, "function _helpDiv(text) {", "\n}\n")
+          + _block(html, "function _el(", "\n}\n"))
     out = _node(_FAKE_DOM + """
 const state = { TRANSLATION_PROMPT_FAMILY: 'hunyuan',
                 TRANSLATION_GLOSSARY: 'Niere = kidney',
@@ -1161,6 +1166,7 @@ def test_env_pinned_full_row_field_says_why_it_is_read_only(client):
         _block(html, "const FULLROW_FIELDS = ", ";\n"),
         _block(html, "function makeBadges(name) {", "\n}\n"),
         _block(html, "function envPinnedNote(name) {", "\n}\n"),
+        _block(html, "function _el(", "\n}\n"),
         _block(html, "function _button(", "\n}\n"),
         _block(html, "function fieldRow(name) {", "\n}\n"),
     ])
@@ -1200,6 +1206,7 @@ def test_env_pinned_field_offers_no_reset_to_default(client):
         _block(html, "const FULLROW_FIELDS = ", ";\n"),
         _block(html, "function makeBadges(name) {", "\n}\n"),
         _block(html, "function envPinnedNote(name) {", "\n}\n"),
+        _block(html, "function _el(", "\n}\n"),
         _block(html, "function _button(", "\n}\n"),
         _block(html, "function fieldRow(name) {", "\n}\n"),
     ])
