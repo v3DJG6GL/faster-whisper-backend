@@ -476,8 +476,8 @@
   // totals twice, and a delete meanwhile decremented the old status.
   var _statusBusy = {};
   // Unsaved admin-notes drafts by report id. render() rebuilds every card
-  // (search keystroke, filter change, a delete, Refresh), so a draft held
-  // only in the old textarea was silently lost; renderCard seeds from here.
+  // (search keystroke, filter change, a delete, Refresh), which would drop a
+  // draft held only in the old textarea; renderCard seeds from here.
   var _drafts = {};
   function _hasDraft(id) { return Object.prototype.hasOwnProperty.call(_drafts, id); }
 
