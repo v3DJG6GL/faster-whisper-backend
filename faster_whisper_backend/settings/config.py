@@ -114,9 +114,6 @@ _MODELS_DIR = (os.environ.get("WHISPER_MODELS_DIR") or "").strip() or (
     os.path.join(_REPO_DIR, "models") if _IS_WINDOWS else "/models")
 
 
-# Factory defaults from config.json. Path values are stored with
-# {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders so they stay portable across
-# machines (resolved against the data layout above).
 # Fields stored as JSON arrays but used as sets in code -- mirror of
 # schema._POST_LOAD_COERCERS (kept here too: this runs before config_store /
 # schema are imported).
@@ -1265,10 +1262,10 @@ CAPTURES_SAMPLE_JOIN_STRATEGY = _D("CAPTURES_SAMPLE_JOIN_STRATEGY")
 #     so the rule would partial-fire only on `\n`. Cleaner to skip
 #     entirely; the training text matches raw Whisper casing exactly.
 #
-# All other rules (ß→ss, ẞ→SS, digit-range normalisation, dedup-space,
-# edge-trim, etc.) continue to run — those are general-correction
-# rules that improve training data quality without changing the
-# punctuation distribution.
+# All other rules (ch-symbol-cleanup's ß→ss / ẞ→SS, normalize-digit-range,
+# digit-and-whitespace-tidy, trim-edges, etc.) continue to run — those are
+# general-correction rules that improve training data quality without
+# changing the punctuation distribution.
 CAPTURES_PIPELINE_RULES_EXCLUDE: "set[str]" = _D("CAPTURES_PIPELINE_RULES_EXCLUDE")
 
 
@@ -1933,7 +1930,8 @@ except ImportError:
 
 
 # The set-typed fields (_SET_FIELDS): CSV → set; explicit "" means an empty
-# set ("any well-formed name/ref passes" — see each field's comment above).
+# set (for the two model allowlists "any well-formed name/ref passes", for
+# CAPTURES_PIPELINE_RULES_EXCLUDE "skip no rule").
 # All three use the plain WHISPER_<NAME> env form (none pass env= to _F).
 for _f in sorted(_SET_FIELDS):
     _raw = os.environ.get("WHISPER_" + _f)
