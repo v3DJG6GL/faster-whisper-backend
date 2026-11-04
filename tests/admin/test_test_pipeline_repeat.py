@@ -7,6 +7,7 @@ the passes that changed the text, not the last one that found nothing."""
 import pytest
 
 from faster_whisper_backend.pipeline import engine as pl_engine
+from tests.admin._pipeline_helpers import dry_run
 
 _HYPHEN = {"name": "hyphen", "label": "Hyphen", "type": "callback:upper",
            "enabled": True, "pattern": "(\\b[A-ZÄÖÜ]\\w*-)([a-zäöüß])"}
@@ -15,12 +16,6 @@ _BATCH = {"name": "batch", "label": "Batch", "type": "regex-list", "enabled": Tr
                       {"pattern": "bb", "replacement": "a"}]}
 _GROW = {"name": "grow", "label": "Grow", "type": "regex-list", "enabled": True,
          "entries": [{"pattern": "$", "replacement": "x"}]}
-
-
-def _dry(client, rules, sample):
-    r = client.post("/settings/test-pipeline", json={"sample": sample, "rules": rules})
-    assert r.status_code == 200, r.text
-    return r.json()
 
 
 def _engine(app_module, rules, sample):
@@ -41,7 +36,7 @@ def _engine(app_module, rules, sample):
 def test_a_repeating_rule_dry_runs_as_the_engine_runs_it(
         client, app_module, rule, sample, want, passes, matches):
     rules = [dict(rule, repeat=True)]
-    j = _dry(client, rules, sample)
+    j = dry_run(client, rules, sample)
     step = j["steps"][0]
     assert (step["before"], step["after"], j["final"]) == (sample, want, want)
     assert (step["passes"], step["matches"]) == (passes, matches)
@@ -54,7 +49,7 @@ def test_the_rules_after_a_repeating_one_get_its_last_pass(client, app_module):
     rules = [dict(_BATCH, repeat=True),
              {"name": "up", "label": "Up", "type": "callback:upper", "enabled": True,
               "pattern": "(^)(b)"}]
-    j = _dry(client, rules, "aaaa")
+    j = dry_run(client, rules, "aaaa")
     assert [s["after"] for s in j["steps"]] == ["b", "B"]
     assert not any(s.get("not_run") or s.get("error") for s in j["steps"])
     assert j["final"] == _engine(app_module, rules, "aaaa") == "B"
@@ -63,7 +58,7 @@ def test_the_rules_after_a_repeating_one_get_its_last_pass(client, app_module):
 @pytest.mark.parametrize("extra", [{}, {"repeat": False}, {"repeat": "yes"}])
 def test_without_repeat_the_dry_run_is_one_pass(client, app_module, extra):
     rules = [dict(_HYPHEN, **extra)]
-    step = _dry(client, rules, "Hals-nasen-ohren-arzt")["steps"][0]
+    step = dry_run(client, rules, "Hals-nasen-ohren-arzt")["steps"][0]
     assert step["after"] == "Hals-Nasen-ohren-arzt"
     assert "passes" not in step
     # The engine reads a hand-edited "yes" the same way (`is True`).
@@ -73,7 +68,7 @@ def test_without_repeat_the_dry_run_is_one_pass(client, app_module, extra):
 
 
 def test_a_disabled_repeating_rule_is_skipped_once(client):
-    step = _dry(client, [dict(_HYPHEN, repeat=True, enabled=False)],
-                "Hals-nasen-ohren-arzt")["steps"][0]
+    step = dry_run(client, [dict(_HYPHEN, repeat=True, enabled=False)],
+                   "Hals-nasen-ohren-arzt")["steps"][0]
     assert step["skipped"] and step["after"] == "Hals-nasen-ohren-arzt"
     assert step["passes"] == 0

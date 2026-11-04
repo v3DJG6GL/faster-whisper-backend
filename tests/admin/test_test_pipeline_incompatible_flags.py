@@ -3,19 +3,14 @@ re.compile raises a plain ValueError (not re.error) for `(?a)(?u)`, so the dry
 run must catch it itself: a step error on a callback rule, a skipped entry in
 a regex list whose valid siblings still apply."""
 
-from tests.admin._pipeline_helpers import list_step
+from tests.admin._pipeline_helpers import dry_run, list_step
 
 _BAD_FLAGS = "(?a)(?u)bar"
 
 
 def test_test_pipeline_incompatible_flags_is_a_step_error(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "foo bar",
-        "rules": [{"name": "up", "type": "callback:upper", "enabled": True,
-                   "pattern": _BAD_FLAGS}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = dry_run(client, [{"name": "up", "type": "callback:upper", "enabled": True,
+                             "pattern": _BAD_FLAGS}], "foo bar")["steps"][0]
     assert step["after"] == "foo bar"
     assert "incompatible" in (step["error"] or "")
 

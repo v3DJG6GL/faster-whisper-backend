@@ -13,7 +13,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto
 from tests._translation_helpers import enable_translation
-from tests.admin._pipeline_helpers import list_step
+from tests.admin._pipeline_helpers import dry_run, list_step
 from tests.conftest import _repoint_path_default, bearer
 
 
@@ -566,9 +566,7 @@ def test_test_pipeline_map_preview_matches_the_engine(client, app_module):
     rule = next(r for r in app_module.cfg.PIPELINE_RULES if r.get("type") == "callback:map")
     engine = next(cr for cr in pl_engine._COMPILED_RULES if cr.name == rule["name"])
     sample = " Der Wert ist grösser als 5, HB 12... Komma 5"
-    r = client.post("/settings/test-pipeline", json={"sample": sample, "rules": [rule]})
-    assert r.status_code == 200, r.text
-    after = r.json()["steps"][0]["after"]
+    after = dry_run(client, [rule], sample)["steps"][0]["after"]
     assert after == pl_engine._apply_rule(engine, sample)
     assert after == " Der Wert ist > 5, HB 12, 5"
 
@@ -614,20 +612,12 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
     timed-out dry-run thread is abandoned, not killed, and would pin a core
     for the life of the process. Both the regex-list and single-pattern paths
     screen with regex_guard before compiling."""
-    r = client.post(
-        "/settings/test-pipeline",
-        json={
-            "sample": "aaaaaaaaaaaaaaaaaaaa!",
-            "rules": [
-                {"name": "boom-list", "type": "regex-list", "enabled": True,
-                 "entries": [{"pattern": r"(\w+ )+$", "replacement": ""}]},
-                {"name": "boom-single", "type": "callback:upper",
-                 "enabled": True, "pattern": r"(\w+ ?)+"},
-            ],
-        },
-    )
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    steps = dry_run(client, [
+        {"name": "boom-list", "type": "regex-list", "enabled": True,
+         "entries": [{"pattern": r"(\w+ )+$", "replacement": ""}]},
+        {"name": "boom-single", "type": "callback:upper",
+         "enabled": True, "pattern": r"(\w+ ?)+"},
+    ], "aaaaaaaaaaaaaaaaaaaa!")["steps"]
     assert "nested repetition" in (steps[0]["error"] or "")
     assert not steps[0]["slow"]
     assert "nested repetition" in (steps[1]["error"] or "")
@@ -684,14 +674,8 @@ def test_test_pipeline_map_rule_non_dict_map_is_step_error(client):
     """A callback:map rule whose `map` is a list/string (editor rules skip
     pl_apply._PIPELINE_RULE_ADAPTER) must degrade into a per-step error card, not an
     unhandled 500 from m.items()."""
-    r = client.post(
-        "/settings/test-pipeline",
-        json={"sample": "hallo",
-              "rules": [{"name": "x", "label": "x", "type": "callback:map",
-                         "enabled": True, "map": ["hallo"]}]},
-    )
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = dry_run(client, [{"name": "x", "label": "x", "type": "callback:map",
+                             "enabled": True, "map": ["hallo"]}], "hallo")["steps"][0]
     assert step["error"]
     assert step["after"] == "hallo"
 

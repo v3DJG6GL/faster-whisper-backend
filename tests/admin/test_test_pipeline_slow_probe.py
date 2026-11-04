@@ -11,7 +11,7 @@ import time
 import pytest
 
 from faster_whisper_backend.admin import routes as admin_routes
-from tests.admin._pipeline_helpers import list_step
+from tests.admin._pipeline_helpers import dry_run, list_step
 
 # Every probe round starts a `python -I` child inside its timeout. Sixty walks
 # against the 0.2 s rounds these tests need outlast it on a loaded Windows
@@ -36,13 +36,8 @@ def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch)
 
 def test_callback_pattern_too_slow_on_the_sample_is_not_run(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "aaaa",
-        "rules": [{"name": "up", "type": "callback:upper", "enabled": True,
-                   "pattern": _EMPTY_BACKTRACK}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = dry_run(client, [{"name": "up", "type": "callback:upper", "enabled": True,
+                             "pattern": _EMPTY_BACKTRACK}], "aaaa")["steps"][0]
     assert step["not_run"] is True
     assert step["after"] == "aaaa"
     assert "killable probe" in step["error"]
@@ -61,13 +56,8 @@ def _grow(n=100):
 
 def test_callback_pattern_slow_only_on_an_earlier_rules_output_is_not_run(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "x",
-        "rules": [_grow(), {"name": "up", "type": "callback:upper", "enabled": True,
-                            "pattern": _GROWN_BACKTRACK}],
-    })
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    steps = dry_run(client, [_grow(), {"name": "up", "type": "callback:upper", "enabled": True,
+                                       "pattern": _GROWN_BACKTRACK}], "x")["steps"]
     assert steps[0]["after"] == "a" * 100
     assert steps[1].get("not_run") is True
     assert "killable probe" in steps[1]["error"]
@@ -89,15 +79,10 @@ def test_text_a_callback_changed_is_probed_again_before_the_next_rule(client, mo
     # The child cannot replay a map, so the next rule's input digest differs
     # from the walk's and the probe walks again from there on the real text.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "xy",
-        "rules": [{"name": "m", "type": "callback:map", "enabled": True,
-                   "map": {"xy": "a" * 60}},
-                  {"name": "up", "type": "callback:upper", "enabled": True,
-                   "pattern": _GROWN_BACKTRACK}],
-    })
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    steps = dry_run(client, [{"name": "m", "type": "callback:map", "enabled": True,
+                              "map": {"xy": "a" * 60}},
+                             {"name": "up", "type": "callback:upper", "enabled": True,
+                              "pattern": _GROWN_BACKTRACK}], "xy")["steps"]
     assert steps[0]["after"] == "a" * 60
     assert steps[1].get("not_run") is True
 
@@ -107,15 +92,11 @@ def test_ordinary_chain_runs_with_one_probe(client, monkeypatch):
     real = admin_routes._probe_chain
     monkeypatch.setattr(admin_routes, "_probe_chain",
                         lambda text, *a: calls.append(text) or real(text, *a))
-    r = client.post("/settings/test-pipeline", json={
-        "sample": " x foo ",
-        "rules": [_grow(3),
-                  {"name": "up", "type": "callback:upper", "enabled": True,
-                   "pattern": "foo"},
-                  {"name": "t", "type": "terminal"}],
-    })
-    assert r.status_code == 200, r.text
-    assert r.json()["final"] == "aaa FOO"
+    j = dry_run(client, [_grow(3),
+                         {"name": "up", "type": "callback:upper", "enabled": True,
+                          "pattern": "foo"},
+                         {"name": "t", "type": "terminal"}], " x foo ")
+    assert j["final"] == "aaa FOO"
     # The upper callback changed the text, but no pattern rule follows it.
     assert calls == [" x foo "]
 
@@ -190,9 +171,7 @@ def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monk
                    "entries": [{"pattern": "a", "replacement": "1"}]}]
     rules.append({"name": "slow", "type": "callback:upper", "enabled": True,
                   "pattern": _EMPTY_BACKTRACK})
-    r = client.post("/settings/test-pipeline", json={"sample": "1 1 1 1", "rules": rules})
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    steps = dry_run(client, rules, "1 1 1 1")["steps"]
     assert [s["after"] for s in steps[1:3]] == ["a a a a", "1 1 1 1"]
     assert steps[-1].get("not_run") is True
     assert len(killed) == 1
@@ -220,10 +199,7 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch):
                    "map": {n: c * 60}},
                   {"name": "up" + n, "type": "callback:upper", "enabled": True,
                    "pattern": "(?:|%s){18}(?!)" % c}]
-    r = client.post("/settings/test-pipeline",
-                    json={"sample": "1 1 2 2 3 3 4 4 5 5 6 6", "rules": rules})
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    steps = dry_run(client, rules, "1 1 2 2 3 3 4 4 5 5 6 6")["steps"]
     assert all(s.get("not_run") is True for s in steps[1::2])
     assert budgets and all(b is budgets[0] for b in budgets)
     assert abs(budgets[0]["left"]) <= 1e-6
@@ -236,18 +212,13 @@ def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(cl
     # the map turns the real text into "ok", where the entry is instant, so
     # the walk from there must time it again instead of skipping it as slow.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "c" * 100,
-        "rules": [{"name": "up", "type": "callback:upper", "enabled": True,
-                   "pattern": "q"},
-                  {"name": "m", "type": "callback:map", "enabled": True,
-                   "map": {"c" * 100: "ok"}},
-                  {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-                      {"pattern": _GROWN_BACKTRACK.replace("|)", "|c)") + "|ok",
-                       "replacement": "DONE"}]}],
-    })
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    steps = dry_run(client, [{"name": "up", "type": "callback:upper", "enabled": True,
+                              "pattern": "q"},
+                             {"name": "m", "type": "callback:map", "enabled": True,
+                              "map": {"c" * 100: "ok"}},
+                             {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+                                 {"pattern": _GROWN_BACKTRACK.replace("|)", "|c)") + "|ok",
+                                  "replacement": "DONE"}]}], "c" * 100)["steps"]
     assert steps[1]["after"] == "ok"
     assert steps[2].get("not_run") is not True
     assert steps[2]["after"] == "DONE"
@@ -264,10 +235,7 @@ def test_healthy_walks_do_not_spend_the_probe_time(client, monkeypatch):
               "pattern": r"\b%s\b" % w} for w in words]
     rules.append({"name": "rl", "type": "regex-list", "enabled": True,
                   "entries": [{"pattern": "W59", "replacement": "end"}]})
-    r = client.post("/settings/test-pipeline",
-                    json={"sample": " ".join(words), "rules": rules})
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = dry_run(client, rules, " ".join(words))
     assert not [s["ordinal"] for s in body["steps"] if s.get("not_run")]
     assert body["final"] == " ".join(w.upper() for w in words[:-1]) + " end"
 
@@ -312,10 +280,7 @@ def test_probe_walks_that_each_finish_still_stop_at_the_request_wall_time(client
     words = ["w%d" % n for n in range(60)]
     rules = [{"name": w, "type": "callback:upper", "enabled": True,
               "pattern": r"\b%s\b" % w} for w in words]
-    r = client.post("/settings/test-pipeline",
-                    json={"sample": " ".join(words), "rules": rules})
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    steps = dry_run(client, rules, " ".join(words))["steps"]
     held = [s for s in steps if s.get("not_run")]
     assert held and held[-1]["ordinal"] == 60
     assert all("ran out" in s["error"] and "did not finish" not in s["error"]

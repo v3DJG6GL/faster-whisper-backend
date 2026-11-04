@@ -3,19 +3,14 @@ sre's parser. re.compile raises RecursionError (not re.error) for it, so the
 dry run must catch it itself, as the save path reports it as an invalid regex:
 a step error on a callback rule, a skipped entry in a regex list."""
 
-from tests.admin._pipeline_helpers import list_step
+from tests.admin._pipeline_helpers import dry_run, list_step
 
 _DEEP = "(" * 512
 
 
 def test_test_pipeline_deeply_nested_pattern_is_a_step_error(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "foo a",
-        "rules": [{"name": "up", "type": "callback:upper", "enabled": True,
-                   "pattern": _DEEP}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = dry_run(client, [{"name": "up", "type": "callback:upper", "enabled": True,
+                             "pattern": _DEEP}], "foo a")["steps"][0]
     assert step["after"] == "foo a"
     assert "recursion" in (step["error"] or "")
 

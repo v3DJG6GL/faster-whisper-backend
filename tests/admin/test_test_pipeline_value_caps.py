@@ -7,7 +7,7 @@ from typing import get_args
 from faster_whisper_backend.admin import routes as admin_routes
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import schema as settings_schema
-from tests.admin._pipeline_helpers import list_step
+from tests.admin._pipeline_helpers import dry_run, list_step
 
 
 def test_caps_are_read_off_the_schema():
@@ -48,18 +48,14 @@ def test_chained_entries_stop_before_passing_the_output_bound(client, monkeypatc
     # Entry 1 stays under the bound; entry 2 would multiply that text 512x in
     # one sub. The dry run must stop BEFORE running it, not after.
     monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "x" * 78,
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "x", "replacement": "x" * 512},
-            {"pattern": "x", "replacement": "x" * 512},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    j = dry_run(client, [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+        {"pattern": "x", "replacement": "x" * 512},
+        {"pattern": "x", "replacement": "x" * 512},
+    ]}], "x" * 78)
+    step = j["steps"][0]
     assert step["capped"] is True
     assert step["after"] == "x" * (78 * 512)
-    assert len(r.json()["final"]) <= 40_000
+    assert len(j["final"]) <= 40_000
 
 
 def test_backref_template_counts_its_expansion_against_the_bound(client, monkeypatch):
@@ -74,26 +70,22 @@ def test_backref_template_counts_its_expansion_against_the_bound(client, monkeyp
 
 def test_map_rule_stops_before_passing_the_output_bound(client, monkeypatch):
     monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "a" * 100,
-        "rules": [
-            {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-                {"pattern": "a", "replacement": "komma " * 60},
-            ]},
-            {"name": "m", "type": "callback:map", "enabled": True,
-             "map": {"komma": "," * 64}},
-            {"name": "up", "type": "callback:upper", "enabled": True,
-             "pattern": "(a)"},
-        ],
-    })
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
+    j = dry_run(client, [
+        {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+            {"pattern": "a", "replacement": "komma " * 60},
+        ]},
+        {"name": "m", "type": "callback:map", "enabled": True,
+         "map": {"komma": "," * 64}},
+        {"name": "up", "type": "callback:upper", "enabled": True,
+         "pattern": "(a)"},
+    ], "a" * 100)
+    steps = j["steps"]
     assert len(steps[0]["after"]) == 36_000
     assert steps[1]["capped"] is True
     assert steps[1]["after"] == steps[0]["after"]
     # Engine parity: every later rule is skipped once the bound is hit.
     assert steps[2]["skipped"] is True and steps[2]["capped"] is True
-    assert len(r.json()["final"]) <= 40_000
+    assert len(j["final"]) <= 40_000
 
 
 def test_pattern_cap_is_read_off_the_schema():
@@ -145,13 +137,8 @@ _LIST_PATTERN = ["](?:" + "|".join(f"w{i:06d}" for i in range(800)) + ")+["]
 
 def test_non_string_callback_pattern_is_refused_before_the_screens(client, monkeypatch):
     _no_screen(monkeypatch)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "w000001",
-        "rules": [{"name": "d", "type": "callback:dedup", "enabled": True,
-                   "pattern": _LIST_PATTERN}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = dry_run(client, [{"name": "d", "type": "callback:dedup", "enabled": True,
+                             "pattern": _LIST_PATTERN}], "w000001")["steps"][0]
     assert step["error"] == "pattern must be a string"
     assert step["after"] == "w000001"
 
