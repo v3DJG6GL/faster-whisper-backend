@@ -180,13 +180,17 @@ def merge_wavs(
                 f"{i+1} of {len(src_paths)} sources"
             )
 
+    def _emit(data: bytes, n_samples: int) -> None:
+        nonlocal total_samples
+        pieces.append(data)
+        total_samples += n_samples
+
     if trimmer is not None:
         edge = silence_bytes(edge_pad_ms)
         edge_samples = len(edge) // BYTES_PER_SAMPLE
         join = silence_bytes(gap_ms)
         join_samples = len(join) // BYTES_PER_SAMPLE
-        pieces.append(edge)                 # leading outer margin
-        total_samples += edge_samples
+        _emit(edge, edge_samples)            # leading outer margin
         for i, sp in enumerate(src_paths):
             pcm, n = read_pcm(sp)
             if n == 0:
@@ -200,8 +204,7 @@ def merge_wavs(
             body = res["pcm"]
             bn = res["new_n_samples"]
             if i > 0:
-                pieces.append(join)
-                total_samples += join_samples
+                _emit(join, join_samples)
             offset_ms = samples_to_ms(total_samples)
             members.append({
                 "lead_ms": int(res["lead_ms"]),
@@ -209,11 +212,9 @@ def merge_wavs(
                 "segments": res["segments"],
                 "offset_ms": offset_ms,
             })
-            pieces.append(body)
-            total_samples += bn
+            _emit(body, bn)
             _over_cap(edge_samples, i)       # reserve the trailing margin
-        pieces.append(edge)                  # trailing outer margin
-        total_samples += edge_samples
+        _emit(edge, edge_samples)            # trailing outer margin
     else:
         # No-trim path: full members joined by gap_ms, no outer margin.
         gap = silence_bytes(gap_ms)
@@ -229,10 +230,8 @@ def merge_wavs(
                 "segments": [[0, dur_ms, 0]],
             })
             if i > 0:
-                pieces.append(gap)
-                total_samples += gap_samples
-            pieces.append(pcm)
-            total_samples += n
+                _emit(gap, gap_samples)
+            _emit(pcm, n)
             _over_cap(0, i)
 
     out_pcm = b"".join(pieces)
