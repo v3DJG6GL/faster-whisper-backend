@@ -28,6 +28,19 @@ def _write_src_wav(path, *, rate, nchannels, freq=440.0, dur_s=0.5):
     return write_wav(path, frames, nchannels=nchannels, rate=rate)
 
 
+def _spy_av_open(monkeypatch, wrap=lambda container, kwargs: container):
+    """Route av.open through a spy; return the list of (file, kwargs) it saw.
+    `wrap` may replace the container handed back to the caller."""
+    import av
+    opens, real_open = [], av.open
+
+    def spy_open(file, *args, **kwargs):
+        opens.append((file, kwargs))
+        return wrap(real_open(file, *args, **kwargs), kwargs)
+    monkeypatch.setattr(av, "open", spy_open)
+    return opens
+
+
 @pytest.mark.parametrize("in_rate,in_ch", [
     (16000, 1),
     (44100, 1),
@@ -144,10 +157,8 @@ def test_transcode_close_failure_raises_and_unlinks_dst(tmp_path, monkeypatch):
     """Closing the output writes the WAV trailer and flushes the buffered
     data (all of it for a short clip); a write error there (ENOSPC) must fail
     the transcode and unlink dst, not return a truncated file as success."""
-    import av
     src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
     dst = str(tmp_path / "out.wav")
-    real_open = av.open
 
     class _FailingClose:
         def __init__(self, container):
@@ -160,10 +171,7 @@ def test_transcode_close_failure_raises_and_unlinks_dst(tmp_path, monkeypatch):
             self._c.close()
             raise OSError(28, "No space left on device")
 
-    def spy_open(file, *args, **kwargs):
-        c = real_open(file, *args, **kwargs)
-        return _FailingClose(c) if kwargs.get("mode") == "w" else c
-    monkeypatch.setattr(av, "open", spy_open)
+    _spy_av_open(monkeypatch, lambda c, kw: _FailingClose(c) if kw.get("mode") == "w" else c)
 
     with pytest.raises(OSError, match="No space left"):
         audio_transcode.transcode_to_wav_16k_mono(src, dst)
@@ -175,16 +183,9 @@ def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch
     ``protocol_whitelist: file`` option — it is what stops a crafted
     ffconcat/HLS/SDP input from following external file:// or http://
     references (test_ssrf_guard.py is the URL-side twin)."""
-    import av
     src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
     dst = str(tmp_path / "out.wav")
-    opens = []
-    real_open = av.open
-
-    def spy_open(file, *args, **kwargs):
-        opens.append((file, kwargs))
-        return real_open(file, *args, **kwargs)
-    monkeypatch.setattr(av, "open", spy_open)
+    opens = _spy_av_open(monkeypatch)
 
     audio_transcode.transcode_to_wav_16k_mono(src, dst)
     in_opens = [kw for f, kw in opens if f == src]
@@ -267,15 +268,8 @@ def test_decode_pieces_refuses_non_file_protocols(tmp_path, monkeypatch):
     """decode_pieces_16k opens through the same pinned whitelist as the
     transcode path (an HLS playlist fails whatever the whitelist, so only
     a spy on av.open can pin it)."""
-    import av
     src = _two_tone(str(tmp_path / "two.wav"))
-    opens = []
-    real_open = av.open
-
-    def spy_open(file, *args, **kwargs):
-        opens.append((file, kwargs))
-        return real_open(file, *args, **kwargs)
-    monkeypatch.setattr(av, "open", spy_open)
+    opens = _spy_av_open(monkeypatch)
 
     audio_transcode.decode_pieces_16k(src, [0.0], 1.0)
     assert [kw.get("options") for f, kw in opens if f == src] == [
