@@ -12,7 +12,7 @@ import logging
 
 from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo, FakeSegment
-from tests._transcription_helpers import post_transcription as _post
+from tests._transcription_helpers import guard_line, post_transcription as _post
 
 
 def _stopping_generator():
@@ -28,10 +28,7 @@ def test_batch_keeps_segments_yielded_before_the_stop(client, app_module, fake_m
     body = r.json()
     assert body["text"].strip() == "erster satz"
     assert len(body["segments"]) == 1
-    block = "\n".join(rec.getMessage() for rec in caplog.records
-                      if "Post-decode guards" in rec.getMessage())
-    guard = next(l for l in block.splitlines() if "skip_residual_windows" in l)
-    assert guard.rstrip().endswith("true")
+    assert guard_line(caplog, "skip_residual_windows").endswith("true")
 
 
 def test_batch_off_switch_reaches_the_receipt(client, app_module, fake_model, caplog):
@@ -39,10 +36,7 @@ def test_batch_off_switch_reaches_the_receipt(client, app_module, fake_model, ca
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = _post(client, response_format="json")
     assert r.status_code == 200, r.text
-    block = "\n".join(rec.getMessage() for rec in caplog.records
-                      if "Post-decode guards" in rec.getMessage())
-    guard = next(l for l in block.splitlines() if "skip_residual_windows" in l)
-    assert guard.rstrip().endswith("false *")
+    assert guard_line(caplog, "skip_residual_windows").endswith("false *")
 
 
 def test_batch_capture_is_armed_from_config(client, app_module, fake_model, monkeypatch):
@@ -76,17 +70,11 @@ def test_batch_gets_the_token_cap_and_keeps_best_of(client, app_module, fake_mod
         assert _post(client).status_code == 200
     assert seen == [10.0]
     assert fake_model.last_kwargs["best_of"] == app_module.cfg.BEST_OF == 5
-    block = "\n".join(rec.getMessage() for rec in caplog.records
-                      if "Post-decode guards" in rec.getMessage())
-    guard = next(l for l in block.splitlines() if "token_cap_per_second" in l)
-    assert guard.rstrip().endswith("10.0")
+    assert guard_line(caplog, "token_cap_per_second").endswith("10.0")
 
     app_module.cfg.DECODE_TOKEN_CAP_PER_SECOND = 0.0
     seen.clear(); caplog.clear()
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         assert _post(client).status_code == 200
     assert seen == [0.0]
-    block = "\n".join(rec.getMessage() for rec in caplog.records
-                      if "Post-decode guards" in rec.getMessage())
-    guard = next(l for l in block.splitlines() if "token_cap_per_second" in l)
-    assert guard.rstrip().endswith("*")
+    assert guard_line(caplog, "token_cap_per_second").endswith("*")

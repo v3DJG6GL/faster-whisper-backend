@@ -68,3 +68,11 @@ def wav_bytes(seconds=1.0, sr=16000):
     buf = io.BytesIO()
     write_wav(buf, np.full(int(seconds * sr), 8000, dtype="<i2").tobytes(), rate=sr)
     return buf.getvalue()
+
+
+def guard_line(caplog, knob):
+    """The receipt's first "Post-decode guards" line naming `knob`,
+    right-stripped (StopIteration when no such line was logged)."""
+    block = "\n".join(r.getMessage() for r in caplog.records
+                      if "Post-decode guards" in r.getMessage())
+    return next(l for l in block.splitlines() if knob in l).rstrip()

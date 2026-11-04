@@ -18,6 +18,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     const_pcm, handshake as _handshake, speak_and_stop, ws_drain)
+from tests._transcription_helpers import guard_line
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -854,10 +855,7 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypa
         with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
             _dictate_one_utterance(client, {})
     assert seen == [True], "one final decode, stop rule armed"
-    block = "\n".join(r.getMessage() for r in caplog.records
-                      if "Post-decode guards" in r.getMessage())
-    assert next(l for l in block.splitlines()
-                if "skip_residual_windows" in l).rstrip().endswith("true")
+    assert guard_line(caplog, "skip_residual_windows").endswith("true")
 
     seen.clear(); caplog.clear()
     monkeypatch.setattr(app_module.cfg, "DECODE_SKIP_RESIDUAL_WINDOWS", False, raising=False)
@@ -865,10 +863,7 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypa
         with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
             _dictate_one_utterance(client, {})
     assert seen == [False]
-    block = "\n".join(r.getMessage() for r in caplog.records
-                      if "Post-decode guards" in r.getMessage())
-    assert next(l for l in block.splitlines()
-                if "skip_residual_windows" in l).rstrip().endswith("false *")
+    assert guard_line(caplog, "skip_residual_windows").endswith("false *")
 
 
 def _final_and_partial_kwargs(fake_model):
@@ -916,10 +911,7 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     assert len(finals) == 1 and finals[0]["best_of"] == 1
     assert all(kw["best_of"] == app_module.cfg.BEST_OF
                for kw in calls if not _is_final(kw)), "partials untouched"
-    block = "\n".join(r.getMessage() for r in caplog.records
-                      if "Post-decode guards" in r.getMessage())
-    assert next(l for l in block.splitlines()
-                if "token_cap_per_second" in l).rstrip().endswith("10.0")
+    assert guard_line(caplog, "token_cap_per_second").endswith("10.0")
 
     caps.clear(); calls.clear()
     monkeypatch.setattr(app_module.cfg, "DECODE_TOKEN_CAP_PER_SECOND", 0.0, raising=False)
