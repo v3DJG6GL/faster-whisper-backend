@@ -4,7 +4,7 @@
 // Loaded as a classic script right after the grid markup and BEFORE the
 // page's inline dashboard IIFE, so the top-level declarations here
 // (GS_LAYOUT_KEY, grid, onPick, onSeg, setSeg, restartClass, onResizeFrame,
-// flashCtl) are the globals that IIFE reads; the usage section is an IIFE
+// flashCtl, setRows) are the globals that IIFE reads; the usage section is an IIFE
 // of its own and only touches its own elements.
 //
 // Cache-busting: the page links this file as /static/stats.js?v=<version>;
@@ -133,6 +133,10 @@ function flashCtl(id) {
 // Call the optional cross-script hook window[name] if it is defined; a throw in it must not break the caller.
 function callHook(name, ...args) {
   if (typeof window[name] === 'function') { try { window[name](...args); } catch (_) {} }
+}
+function setRows(body, rows, cols, empty) {
+  body.innerHTML = rows.length
+    ? rows.join('') : '<tr><td colspan="' + cols + '" class="empty">— ' + empty + ' —</td></tr>';
 }
 (() => {
   let initial = 'both';
@@ -723,8 +727,7 @@ function load() {
       usageCards().forEach(el => el.classList.remove('updating'));
       if (!j) { showError(); return; }
       if (j._scopeDenied) {
-        $('usage-board-rows').innerHTML =
-          '<tr><td colspan="9" class="empty">— not available for your scope —</td></tr>';
+        setRows($('usage-board-rows'), [], 9, 'not available for your scope');
         return;
       }
       hideError();
@@ -1413,14 +1416,10 @@ function renderBoard() {
       : boardSort.key === 'rtf' ? (r.rtf == null ? -Infinity : r.rtf) : Number((r.totals || r)[boardSort.key] || 0);
     board.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * boardSort.dir; });
   }
-  if (!board.length) {
-    tb.innerHTML = '<tr><td colspan="9" class="empty">— no usage in this window —</td></tr>';
-    return;
-  }
   const colorById = {};
   curLines.forEach(ln => { if (!ln.others) colorById[ln.id] = ln.color; });
   const max = Math.max(1, ...board.map(r => Number((r.totals || r)[Q.metric] || 0)));
-  tb.innerHTML = board.map((r, i) => {
+  setRows(tb, board.map((r, i) => {
     const t = r.totals || r;
     const c = colorById[r.id] || (by === 'kind' ? KIND_COLOR[r.id] : null);
     const sw = c ? '<span class="usage-swatch" style="background:' + c + '"></span>' : '';
@@ -1444,7 +1443,7 @@ function renderBoard() {
       + '<td class="num" data-label="RTF"><span class="rtf' + (r.rtf > 0.35 ? ' slow' : '') + '">' + rtf + '</span></td>'
       + (Q.metric === 'errors' ? '' : '<td class="num' + (t.errors ? ' err' : '') + '" data-label="err">' + (t.errors ? fmtCount(t.errors) : '—') + '</td>')
       + '</tr>';
-  }).join('');
+  }), 9, 'no usage in this window');
   tb.querySelectorAll('tr.pick').forEach(tr => {
     const pick = () => {
       const id = tr.dataset.id;

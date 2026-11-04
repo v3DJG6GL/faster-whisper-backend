@@ -1430,7 +1430,7 @@ def test_stats_js_discloses_unscoped_stage_rollups_and_small_fixes(client):
               "const unscoped = rg.kind_scoped === false || rg.key_scoped === false;",
               "the kind or key filter does not reach the stage rollups",
               "lastDoc.bucket !== Q.bucket) setSeg('usage-bucket', lastDoc.bucket);",
-              '<td colspan="9" class="empty">— not available for your scope —</td>',
+              "setRows($('usage-board-rows'), [], 9, 'not available for your scope')",
               "if (e.altKey || e.ctrlKey || e.metaKey) return;   // Cmd+M",
               "rtf > 0 ? '× · ' + liveX(rtf) + '× live' : '×'",
               "(1 / r >= 10 ? (1 / r).toFixed(0) : (1 / r).toFixed(1))",

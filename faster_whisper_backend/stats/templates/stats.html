@@ -1468,10 +1468,6 @@ function setBar(barEl, pct) {
   barEl.classList.toggle('crit', pct >= 90);
 }
 function setVal(id, val, sub) { $(id).innerHTML = val + '<span class="sub">' + sub + '</span>'; }
-function setRows(body, rows, cols, empty) {
-  body.innerHTML = rows.length
-    ? rows.join('') : '<tr><td colspan="' + cols + '" class="empty">— ' + empty + ' —</td></tr>';
-}
 
 // The payload's `scope` ("own"|"all") and `machine` (bool) are decided
 // server-side (StatsScope). scope=own hides the per-user controls — the only
