@@ -2,6 +2,8 @@
 already-held transcript. llama_cpp is never imported: the tests stub
 `translation.translate_segments` at the handler boundary."""
 
+import asyncio
+import contextlib
 import logging
 import re
 
@@ -10,6 +12,7 @@ import pytest
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.transcription import receipt_hold
 from tests._transcription_helpers import bind_profile
 from tests._translation_helpers import (
     enable_translation as _enable,
@@ -26,7 +29,6 @@ _PID = "feed" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 def _park(key, *, hold_s, **extra):
     """Park a dictation receipt the way the transcribe route does — one
     entry shape for every test, so a new required key lands in one place."""
-    from faster_whisper_backend.transcription import receipt_hold
     payload = {"file_label": "utt#1", "model_name": "m", "raw": "r",
                "final": "f", "seg_diag": [], "kwargs": {}, "info": None}
     payload.update(extra)
@@ -154,8 +156,6 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     counted too: over the ceiling the request 429s with the config field
     named, and a parked dictation receipt is handed back instead of left to
     the sweeper."""
-    from faster_whisper_backend.transcription import receipt_hold
-
     _enable(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
     _stub_translate(monkeypatch)
     window = tr_routes._text_translate_rate
@@ -236,8 +236,6 @@ def test_inflight_slot_is_released_on_cancellation(client, app_module,
     the handler is skipped on a client disconnect — only the `finally` runs.
     That is why the release lives there and not in an except arm. The run is
     still recorded (as cancelled), like the batch handler's aborted runs."""
-    import asyncio
-
     _enable(app_module, monkeypatch)
     seen = {}
     recorded = []
@@ -267,7 +265,6 @@ def test_cancellation_stamps_the_job_row_cancelled(client, app_module,
     row, and it says "cancelled", not "error". The write runs on a worker,
     never on the event loop: it waits on jobs_store's lock, which a prune
     or a big finish can hold for a while."""
-    import asyncio
     import threading
 
     _enable(app_module, monkeypatch)
@@ -376,7 +373,6 @@ def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
     response (or the job row) is encoded, after the run was recorded as ok:
     refused up front instead, and a parked receipt is handed back."""
     import json
-    from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch)
     calls = _stub_translate(monkeypatch)
@@ -475,8 +471,6 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
                                                       monkeypatch):
     """The success payload (up to 2000 segments x 10 targets) is encoded and
     written on a worker thread, never on the loop."""
-    import asyncio
-
     from faster_whisper_backend.transcription import jobs_store
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
@@ -522,9 +516,6 @@ def test_cold_load_excludes_the_gpu_queue_wait(client, app_module,
     was held. The GpuGate queue before it is wait (metrics.take_wait
     reports it), never load — and a load another request finished while
     this one queued was not paid for here."""
-    import asyncio
-    import contextlib
-
     from faster_whisper_backend.transcription import models as tx_models
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(translation, "_resolve_device", lambda: "cuda")
@@ -565,8 +556,6 @@ def test_load_is_not_cut_short_by_an_early_callback(client, app_module,
     """A same-language first target (or a blank first group) calls back
     before any model is loaded: the cold load that follows is still load,
     not infer."""
-    import asyncio
-
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(translation, "is_resident", lambda ref: False)
 
@@ -591,11 +580,7 @@ def test_held_receipt_survives_a_gpu_queue_with_a_resident_model(
     """The other half of the heartbeat: the model is resident, but the
     request is queued behind batch runs for the GPU slot and reports no
     progress meanwhile. The receipt must outlive that queue."""
-    import asyncio
-    import contextlib
-
     from faster_whisper_backend.transcription import models as tx_models
-    from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(tr_routes, "_HOLD_HEARTBEAT_S", 0.05)
@@ -624,8 +609,6 @@ def test_plan_is_clocked_without_a_progress_id(client, app_module,
     """progress_id is optional: without one the registry has no entry to
     tick the plan through, so the handler ticks it itself — the response's
     plan reports what the run took, not 0 s."""
-    import asyncio
-
     _enable(app_module, monkeypatch)
 
     async def _slow(segments, targets, *, progress_cb=None, **kwargs):
@@ -668,8 +651,6 @@ def test_held_receipt_survives_a_queued_translation(client, app_module,
     """Queued for the GPU slot (or loading a model) the request reports no
     progress; the heartbeat keeps the held receipt's idle timer fresh, so
     the sweeper does not release it as "no result" meanwhile."""
-    from faster_whisper_backend.transcription import receipt_hold
-
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(tr_routes, "_HOLD_HEARTBEAT_S", 0.05)
     monkeypatch.setattr(translation, "is_resident", lambda ref: False)
@@ -678,7 +659,6 @@ def test_held_receipt_survives_a_queued_translation(client, app_module,
     async def _slow(segments, targets, **kwargs):
         # A model that is still loading: no progress callback for 0.5 s,
         # a hold of 0.2 s, the sweeper running all along.
-        import asyncio
         for _ in range(10):
             await asyncio.sleep(0.05)
             swept.extend(receipt_hold.sweep())
@@ -836,7 +816,6 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     reaches the `except HTTPException` release. The parked dictation receipt
     must still be released — not left for the sweeper to log 90 s later."""
     from faster_whisper_backend.transcription import receipt as tx_receipt
-    from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
@@ -858,8 +837,6 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
     """Every validation exit (422 shape, 413 size) runs inside the same
     release-on-reject bracket as the rate hit: a parked receipt must be
     handed back on a malformed request, not left for the 90 s sweeper."""
-    from faster_whisper_backend.transcription import receipt_hold
-
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
     _park("cap-v", hold_s=90)
@@ -1011,10 +988,7 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
     """With a held receipt, the translation becomes a second stage on the
     utterance's recent-jobs row instead of a separate translate row — the
     /stats table shows ONE dictate job with transcribing + translating."""
-    from faster_whisper_backend.transcription import receipt_hold
     from faster_whisper_backend.stats import recent_transcriptions_store as rts
-
-    import asyncio
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)

@@ -9,11 +9,14 @@ inside _load_blocking, and these tests stub either the module-level
 
 import asyncio
 import contextlib
+import gc
+import logging
 import os
 import re
 import sys
 import threading
 import time
+import types
 import unicodedata
 
 import pytest
@@ -1453,8 +1456,6 @@ def test_greedy_context_blind_family_skips_context_retry(base_cfg,
 
 
 def _install_fake_llama(monkeypatch, record, *, local_files_only=False):
-    import types
-
     mod = types.ModuleType("llama_cpp")
 
     class Llama:
@@ -1511,14 +1512,13 @@ def test_load_uses_predownloaded_path(monkeypatch):
 
 
 def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
-    import logging as _logging
     record = []
     _install_fake_llama(monkeypatch, record)
 
     def boom(repo, quant, cb=None):
         raise RuntimeError("listing failed")
     monkeypatch.setattr(translation, "_predownload_gguf", boom)
-    with caplog.at_level(_logging.WARNING, logger="whisper-server"):
+    with caplog.at_level(logging.WARNING, logger="whisper-server"):
         out = translation._load_blocking_inner("org/repo:Q4", "cuda", "chatml")
     assert out == "LLM-FP"
     assert record[0][0] == "from_pretrained"
@@ -1759,8 +1759,6 @@ def test_load_blocking_threads_offline_flag_explicitly(monkeypatch):
 
 def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
                       card_languages=None):
-    import types
-
     class _Sib:
         def __init__(self, name):
             self.rfilename = name
@@ -1845,8 +1843,6 @@ def _install_fake_progress(monkeypatch):
     """Stub download_progress.capture + the jobs registry around the real
     _predownload_gguf; returns the recorder (the capture cb lands in
     rec["cb"])."""
-    import contextlib
-
     from faster_whisper_backend.runtime import download_progress
     from faster_whisper_backend.core import jobs
 
@@ -2979,7 +2975,6 @@ class _ImportRecorder:
 
 
 def _stub_torch(monkeypatch, is_available):
-    import types
     emptied = []
     torch = types.ModuleType("torch")
     torch.cuda = types.SimpleNamespace(
@@ -2991,7 +2986,6 @@ def _stub_torch(monkeypatch, is_available):
 def test_drop_does_not_cold_import_torch(monkeypatch):
     """llama.cpp never imports torch: the unload must not pull libtorch +
     CUDA in on the event loop just to empty a cache it never had."""
-    import gc
     monkeypatch.setattr(gc, "collect", lambda *a: None)
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     recorder = _ImportRecorder()
@@ -3005,7 +2999,6 @@ def test_drop_does_not_cold_import_torch(monkeypatch):
 
 
 def test_drop_empties_an_already_imported_torch_cache(monkeypatch):
-    import gc
     monkeypatch.setattr(gc, "collect", lambda *a: None)
     emptied = _stub_torch(monkeypatch, lambda: True)
     translation._models["org/warm:Q4"] = _FakeLlama("org/warm:Q4")
@@ -3016,7 +3009,6 @@ def test_drop_empties_an_already_imported_torch_cache(monkeypatch):
 def test_drop_survives_a_broken_torch_install(monkeypatch, caplog):
     """A torch whose CUDA probe raises (OSError from a missing CUDA lib) must
     not escape after the model was already popped, skipping the unload log."""
-    import gc
     monkeypatch.setattr(gc, "collect", lambda *a: None)
 
     def broken():
@@ -3238,7 +3230,6 @@ def test_translation_logs_buckets_per_target(base_cfg, monkeypatch, caplog):
     """The server log shows the translating stage like every sibling: 5 %
     buckets per target, a line per finished target, and the same-language
     copy named as such."""
-    import logging
     _install_fake(monkeypatch, _xlate)
     # One segment per batch so the target crosses several buckets.
     monkeypatch.setattr(translation.cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
