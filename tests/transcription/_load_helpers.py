@@ -19,10 +19,12 @@ from faster_whisper_backend.transcription import models as tx_models
 
 def stub_whisper_load(monkeypatch, *, whisper_model=None, max_loaded=None):
     """Neutralise everything _get_or_load_model needs from the native stack;
-    `whisper_model` stands in for faster_whisper.WhisperModel."""
+    `whisper_model` stands in for faster_whisper.WhisperModel. Returns the
+    paths the default stand-in built."""
+    built = []
     fw = types.ModuleType("faster_whisper")
     fw.WhisperModel = (whisper_model if whisper_model is not None
-                       else lambda path, **kw: FakeModel())
+                       else lambda path, **kw: built.append(path) or FakeModel())
     # The short names these cases load, standing in for the size list.
     fw.available_models = lambda: ["a", "b", "c", "x", "y"]
     monkeypatch.setitem(sys.modules, "faster_whisper", fw)
@@ -36,6 +38,7 @@ def stub_whisper_load(monkeypatch, *, whisper_model=None, max_loaded=None):
     if max_loaded is not None:
         monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", max_loaded,
                             raising=False)
+    return built
 
 
 def register_fake_model(name, leases=0):

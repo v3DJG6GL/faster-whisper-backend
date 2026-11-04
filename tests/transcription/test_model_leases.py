@@ -307,10 +307,7 @@ def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
     RepositoryNotFoundError), on public repos too, and the constructor would
     send the same token: refused before the LRU loop with a pointer at the
     token. Any other HTTP error stays a best-effort pre-download failure."""
-    built = []
-    _stub_load(monkeypatch,
-               whisper_model=lambda path, **kw: built.append(path) or FakeModel(),
-               max_loaded=1)
+    built = _stub_load(monkeypatch, max_loaded=1)
 
     def _rejected(**kw):
         raise _hub_error("HfHubHTTPError", status, "org/public",
@@ -523,12 +520,7 @@ def test_release_in_an_all_leased_overflow_keeps_the_released_model(
     # A long streaming session pins "a"; each batch request for "b" overflows
     # the cap. Its release must not evict "b" (the only unleased entry), or
     # every later "b" request is a cold reload.
-    builds: "list[str]" = []
-
-    def _model(path, **kw):
-        builds.append(path)
-        return FakeModel()
-    _stub_load(monkeypatch, whisper_model=_model, max_loaded=1)
+    builds = _stub_load(monkeypatch, max_loaded=1)
     _register("a", leases=1)
 
     async def scenario():

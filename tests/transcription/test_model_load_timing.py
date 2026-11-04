@@ -93,10 +93,7 @@ def test_cancel_while_register_is_queued_still_registers(monkeypatch):
     lands, and a plain cancelled to_thread future drops the queued item. The
     cached model must still be registered (the idle evictor and /stats walk
     the registry, never the cache)."""
-    built = []
-    _stub_load(monkeypatch,
-               whisper_model=lambda path, **kw: built.append(path) or FakeModel(),
-               max_loaded=4)
+    built = _stub_load(monkeypatch, max_loaded=4)
     cancel_with_register_queued(
         monkeypatch, built, lambda: tx_models._get_or_load_model("x"))
     assert "x" in tx_models._loaded_models
