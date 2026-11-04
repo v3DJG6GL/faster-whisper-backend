@@ -17,30 +17,31 @@ from tests.conftest import bearer
 _PID = "beef" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 
 
-def _stub_translate(monkeypatch, calls=None):
+def _stub_translate(monkeypatch):
     """Deterministic translate_segments stub: every segment translates to
-    'XLATED-<target>'. Records the handler-side call shape in `calls`."""
+    'XLATED-<target>'. Returns the list recording the handler-side call shape."""
+    calls = []
+
     async def _fake(segments, targets, *, source_lang=None, model_ref=None,
                     mode="fluent", glossary="", context_segments=None,
                     progress_cb=None, cancel_check=None,
                     download_cb=None):
-        if calls is not None:
-            calls.append({"segments": segments, "targets": list(targets),
-                          "source_lang": source_lang, "model_ref": model_ref,
-                          "mode": mode, "glossary": glossary,
-                          "context_segments": context_segments})
+        calls.append({"segments": segments, "targets": list(targets),
+                      "source_lang": source_lang, "model_ref": model_ref,
+                      "mode": mode, "glossary": glossary,
+                      "context_segments": context_segments})
         per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
         return per_seg, [], {
             "model": (model_ref or "").strip() or "org/default-GGUF:Q4",
             "source": source_lang or "", "mode": mode}
     monkeypatch.setattr(translation, "translate_segments", _fake)
+    return calls
 
 
 def test_translation_stage_populates_segments_and_response(
         client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     r = _post(client, translate_to="en,fr")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -100,8 +101,7 @@ def test_translation_disabled_soft_fails_with_progress_skip(
     # TRANSLATION_ENABLED defaults off: the request still succeeds, no
     # translation runs, the warning explains why, and the progress entry
     # names the skipped stage the moment it is declined.
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     seen = watch_progress(monkeypatch, _PID)
     r = _post(client, translate_to="en", progress_id=_PID)
     assert r.status_code == 200, r.text
@@ -118,8 +118,7 @@ def test_translation_allowlist_miss_soft_fails(client, app_module, monkeypatch):
                         "org/default-GGUF:Q4", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
                         {"org/allowed-GGUF:Q4"}, raising=False)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
 
     r = _post(client, translate_to="en", translation_model="org/other-GGUF:Q4")
     assert r.status_code == 200, r.text
@@ -145,8 +144,7 @@ def test_translate_to_clamped_to_max_targets_with_warning(
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
     # Ask for 5 (+ a malformed entry and a duplicate, both dropped silently
     # BEFORE the clamp).
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     r = _post(client, translate_to="en,NOT_A_CODE,fr,en,it,es,pt")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -159,8 +157,7 @@ def test_translate_to_clamped_to_max_targets_with_warning(
 def test_locked_translate_to_ignores_client_param(client, app_module,
                                                   make_user_key, monkeypatch):
     enable_translation(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     _, raw_alice = bind_profile(
         client, make_user_key, "de-only",
         {"TRANSLATE_TO": "de", "locks": ["TRANSLATE_TO"]})
@@ -297,8 +294,7 @@ def test_context_segments_form_field_inherit_value_clamp(
         client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     assert _post(client, translate_to="en").status_code == 200
     assert calls[-1]["context_segments"] == 3          # absent → inherit
     assert _post(client, translate_to="en", context_segments="0").status_code == 200
@@ -321,8 +317,7 @@ def test_context_segments_form_field_inherit_value_clamp(
 def test_locked_context_segments_ignores_client_value(
         client, app_module, make_user_key, monkeypatch):
     enable_translation(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     _, raw_alice = bind_profile(
         client, make_user_key, "ctx",
         {"TRANSLATION_CONTEXT_SEGMENTS": 1,
