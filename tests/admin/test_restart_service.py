@@ -67,8 +67,9 @@ def _guard(monkeypatch):
 
 
 def _reexec(monkeypatch):
-    """Arm the restart and fire its callback with os.execve recorded; return
-    the {path, argv, env} it was called with."""
+    """On a linux platform, arm the restart and fire its callback with os.execve
+    recorded; return the {path, argv, env} it was called with."""
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     captured = {}
     monkeypatch.setattr(restart_service.os, "execve",
                         lambda path, argv, env: captured.update(path=path, argv=argv, env=env))
@@ -89,7 +90,6 @@ def test_reexec_label_and_timer_armed(monkeypatch):
 
 
 def test_reexec_callback_invokes_execv(monkeypatch):
-    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     captured = _reexec(monkeypatch)
     assert captured["path"] == restart_service.sys.executable
     assert captured["argv"][0] == restart_service.sys.executable
@@ -100,7 +100,6 @@ def test_reexec_replays_the_original_command_line_not_sys_argv(monkeypatch):
     the package's __main__.py; re-running THAT as a script puts the package
     dir on sys.path[0] and the exec'd process dies with ModuleNotFoundError.
     The re-exec must replay sys.orig_argv (module flag + interpreter flags)."""
-    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(restart_service.sys, "orig_argv",
                         ["/usr/bin/python3", "-X", "dev", "-m", "faster_whisper_backend"])
     monkeypatch.setattr(restart_service.sys, "argv",
@@ -142,7 +141,6 @@ def test_reexec_rereads_the_dotenv(monkeypatch):
     is already set; an exec that inherited those copies ran on the OLD .env
     after the operator edited or removed a line and pressed Restart. The
     re-exec drops exactly the .env-sourced vars."""
-    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(config, "_ENV_FROM_DOTENV", {"WHISPER_BEAM_SIZE"})
     monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
     monkeypatch.setenv("WHISPER_DEFAULT_PROMPT", "real")   # environment's: kept
@@ -154,7 +152,6 @@ def test_reexec_rereads_the_dotenv(monkeypatch):
 def test_reexec_does_not_restore_a_dotenv_hf_token(monkeypatch):
     """A bare HF_TOKEN from .env was recorded as the service environment's
     and put back, so removing it from .env never took effect on Restart."""
-    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(config, "_ENV_FROM_DOTENV", {"HF_TOKEN"})
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_dotenv")
     monkeypatch.setenv("HF_TOKEN", "hf_dotenv")
@@ -169,7 +166,6 @@ def test_reexec_drops_an_empty_hf_token_record(monkeypatch):
     Kept on exec, it blocked the record of a bare HF_TOKEN added to .env since
     (main.py only sets the record when absent), so clearing the config field
     later popped that .env token."""
-    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(config, "_ENV_FROM_DOTENV", set())
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
     monkeypatch.delenv("HF_TOKEN", raising=False)
@@ -183,7 +179,6 @@ def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
     reads. An exec that inherited the copy kept sending a token the operator
     had withdrawn (emptied secret file, field taken out of config): the new
     process promotes nothing and adopts the leftover as the environment's."""
-    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
     monkeypatch.setenv("HF_TOKEN", "hf_promoted")
     captured = _reexec(monkeypatch)
@@ -193,7 +188,6 @@ def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
 def test_reexec_restores_the_service_environments_hf_token(monkeypatch):
     """A token the service environment set (systemd Environment=) survives
     the restart even when a config token was promoted over it."""
-    monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_service")
     monkeypatch.setenv("HF_TOKEN", "hf_promoted")
     captured = _reexec(monkeypatch)
