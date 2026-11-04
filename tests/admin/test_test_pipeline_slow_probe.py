@@ -24,17 +24,20 @@ _SIXTY_WALKS_OUTRUN_WINDOWS_STARTS = pytest.mark.skipif(
 _EMPTY_BACKTRACK = "(?:|){22}(?!)"
 
 
-def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def _list_step(client, entries):
     r = client.post("/settings/test-pipeline", json={
         "sample": "aaaa",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "a", "replacement": "b"},
-            {"pattern": _EMPTY_BACKTRACK, "replacement": "x"},
-        ]}],
+        "rules": [{"name": "rl", "type": "regex-list", "enabled": True,
+                   "entries": entries}],
     })
     assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    return r.json()["steps"][0]
+
+
+def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch):
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    step = _list_step(client, [{"pattern": "a", "replacement": "b"},
+                               {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
     assert step["not_run"] is True
     assert "killable probe" in step["error"]
     assert step["after"] == "bbbb"
@@ -472,27 +475,10 @@ def test_an_unprobed_entry_after_a_slow_one_does_not_hide_the_slow_verdict(clien
     # its "may be harmless" reason must not replace the card's slow verdict.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "aaaa",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": _EMPTY_BACKTRACK, "replacement": "x"},
-            {"pattern": "a", "replacement": "b"},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = _list_step(client, [{"pattern": _EMPTY_BACKTRACK, "replacement": "x"},
+                               {"pattern": "a", "replacement": "b"}])
     assert step["not_run"] is True
     assert "killable probe" in step["error"] and "may be harmless" not in step["error"]
-
-
-def _list_step(client, entries):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "aaaa",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True,
-                   "entries": entries}],
-    })
-    assert r.status_code == 200, r.text
-    return r.json()["steps"][0]
 
 
 def test_an_unprobed_entry_after_a_screened_one_does_not_hide_the_screen_verdict(client, monkeypatch):
