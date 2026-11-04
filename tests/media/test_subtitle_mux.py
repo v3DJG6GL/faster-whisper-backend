@@ -30,6 +30,10 @@ def packaged(src, tracks, **kw):
         shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
+TESTSRC_1S = ("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1")
+SINE_1S = ("-f", "lavfi", "-i", "sine=frequency=440:duration=1")
+
+
 def run_ffmpeg(*args):
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
                    check=True, timeout=60)
@@ -370,8 +374,7 @@ def test_package_real_ffmpeg_muxes_language_tags(tmp_path):
     reads two subtitle streams back with the 639-2/T tags and titles."""
     av = pytest.importorskip("av")
     src = str(tmp_path / "src.mp4")
-    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-               "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+    run_ffmpeg(*TESTSRC_1S, *SINE_1S,
                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src)
     with packaged(src, _tracks(), container="mkv", default_track=1, timeout=60) as out:
         with av.open(out) as c:
@@ -425,8 +428,7 @@ def test_probe_streams_reads_a_non_utf8_title(tmp_path):
     src = tmp_path / "src.avi"
     # A Windows command line is Unicode and cannot carry the raw 0xFC byte,
     # so ffmpeg writes a same-length ASCII placeholder that is patched in.
-    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-               "-c:v", "mpeg4", "-metadata", "title=MQller", str(src))
+    run_ffmpeg(*TESTSRC_1S, "-c:v", "mpeg4", "-metadata", "title=MQller", str(src))
     data = src.read_bytes()
     assert data.count(b"MQller") == 1
     src.write_bytes(data.replace(b"MQller", b"M\xfcller"))
@@ -459,8 +461,7 @@ def test_probe_cover_art_only_file_has_no_video(tmp_path):
     src = str(tmp_path / "song.m4a")
     run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=1:duration=1",
                "-frames:v", "1", cover)
-    run_ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-               "-i", cover, "-map", "0:a", "-map", "1:v", "-c:a", "aac",
+    run_ffmpeg(*SINE_1S, "-i", cover, "-map", "0:a", "-map", "1:v", "-c:a", "aac",
                "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", src)
     streams = pk.probe_streams(src)
     assert streams.video_codec is None and streams.width is None
@@ -474,8 +475,7 @@ def test_probe_mp4_verdict_covers_every_audio_stream(tmp_path):
     carry blocks MP4 even when the first one is AAC."""
     pytest.importorskip("av")
     src = str(tmp_path / "dual.mkv")
-    run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-               "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+    run_ffmpeg(*TESTSRC_1S, *SINE_1S,
                "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
                "-map", "0:v", "-map", "1:a", "-map", "2:a",
                "-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -493,8 +493,7 @@ def test_probe_names_mp3_by_codec_not_decoder(tmp_path):
     pytest.importorskip("av")
     src = str(tmp_path / "t.mp4")
     try:
-        run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-                   "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        run_ffmpeg(*TESTSRC_1S, *SINE_1S,
                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
                    "-c:a", "libmp3lame", "-shortest", src)
     except subprocess.CalledProcessError:
