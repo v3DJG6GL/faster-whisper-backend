@@ -12,6 +12,7 @@ from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_upto
+from tests.conftest import bearer
 
 
 def _stats_js() -> str:
@@ -358,7 +359,6 @@ def test_snapshot_running_row_carries_the_username(client, app_module,
     """The running rows and the finished rows share one user column, so a
     job started from a request must register the caller's display name —
     the same value the finished rows show — not the opaque user_id."""
-    from tests.conftest import bearer
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     _, raw_admin = make_user_key("root", is_admin=True)
@@ -523,7 +523,6 @@ def test_nonadmin_all_scope_unchanged(client):
 
 
 def test_snapshot_route_own_user_over_http(client, make_user_key, monkeypatch):
-    from tests.conftest import bearer
     _with_gpu(monkeypatch)
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "own"})
@@ -548,7 +547,6 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     from faster_whisper_backend.stats import routes as stats_routes
     from fastapi import HTTPException
     from tests.conftest import fake_request as _fake_request
-    from tests.conftest import bearer
 
     import time
 
@@ -584,7 +582,7 @@ def test_stream_rechecks_the_caller_before_its_first_frame(
 
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.stats import routes as stats_routes
-    from tests.conftest import bearer, fake_request
+    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "all"})
@@ -683,7 +681,6 @@ def _two_users(make_user_key):
 
 
 def test_usage_own_scope_by_user_is_403(client, app_module, make_user_key):
-    from tests.conftest import bearer
     _, alice, raw_alice, bob, _, keys = _two_users(make_user_key)
     _seed_usage(alice, bob, keys[alice], keys[bob])
     r = client.get("/stats/usage?by=user", headers=bearer(raw_alice))
@@ -698,7 +695,6 @@ def test_usage_own_scope_by_user_is_403(client, app_module, make_user_key):
 
 def test_usage_own_scope_by_key_only_own_keys(client, app_module,
                                                make_user_key):
-    from tests.conftest import bearer
     _, alice, raw_alice, bob, _, keys = _two_users(make_user_key)
     _seed_usage(alice, bob, keys[alice], keys[bob])
     body = client.get("/stats/usage?by=key", headers=bearer(raw_alice)).json()
@@ -712,7 +708,6 @@ def test_usage_own_scope_by_key_only_own_keys(client, app_module,
 
 def test_usage_all_scope_nonadmin_scrubs_names_and_marks_me(
         client, app_module, make_user_key):
-    from tests.conftest import bearer
     _, alice, _, bob, raw_bob, keys = _two_users(make_user_key)
     _seed_usage(alice, bob, keys[alice], keys[bob])
     body = client.get("/stats/usage?by=user", headers=bearer(raw_bob)).json()
@@ -736,7 +731,6 @@ def test_usage_all_scope_nonadmin_scrubs_names_and_marks_me(
 
 def test_usage_admin_sees_names_and_can_preview_user(client, app_module,
                                                       make_user_key):
-    from tests.conftest import bearer
     raw_admin, alice, _, bob, _, keys = _two_users(make_user_key)
     _seed_usage(alice, bob, keys[alice], keys[bob])
     body = client.get("/stats/usage?by=user", headers=bearer(raw_admin)).json()
@@ -971,7 +965,6 @@ def test_transcription_records_the_gate_wait(client):
 def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
     import time
     from faster_whisper_backend.stats import system_metrics_store
-    from tests.conftest import bearer
     now = int(time.time()) // 10 * 10
     system_metrics_store.record(
         [{"ts": now - 600 + i * 10, "gpu_util": float(i), "slot_busy": 0.25}
@@ -1010,7 +1003,6 @@ def test_snapshot_carries_slot_busy(client):
 
 def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
     from faster_whisper_backend.stats import usage_store as us
-    from tests.conftest import bearer
     raw_admin, alice, raw_alice, bob, raw_bob, keys = _two_users(make_user_key)
     h = us.now_hour()
     us.record_usage(key_id=keys[alice], user_id=alice, audio_s=10.0, words=5, status="error",
@@ -1070,7 +1062,6 @@ def test_stats_jobs_pages_with_cursor_and_filters(client):
 
 
 def test_stats_jobs_scope_rules(client, make_user_key):
-    from tests.conftest import bearer
     raw_admin, alice, raw_alice, bob, raw_bob, _ = _two_users(make_user_key)
     _seed_jobs_pages(2, user_id=alice)
     _seed_jobs_pages(3, user_id=bob)
@@ -1099,7 +1090,6 @@ def test_stats_jobs_users_filter(client, make_user_key):
     """`users=` narrows the paged jobs server-side (the page's who-filter),
     the cursor walks inside the filter, own scope is refused, and a scrubbed
     viewer's unknown value hits the no-match path."""
-    from tests.conftest import bearer
     raw_admin, alice, raw_alice, bob, raw_bob, _ = _two_users(make_user_key)
     _seed_jobs_pages(2, user_id=alice)
     _seed_jobs_pages(3, user_id=bob)
@@ -1124,7 +1114,6 @@ def test_stats_usage_echoes_display_names_for_picked_users(client, make_user_key
     no name for the id and the jobs table's running rows (keyed by username)
     match nothing. The usage doc echoes the names; a scrubbed viewer gets
     only their own."""
-    from tests.conftest import bearer
     raw_admin, alice, _, bob, raw_bob, _ = _two_users(make_user_key)
     doc = client.get(f"/stats/usage?by=kind&users={alice},{bob}",
                      headers=bearer(raw_admin)).json()
@@ -1313,7 +1302,6 @@ def test_stats_usage_list_filters_respect_scope(client, make_user_key):
     """Own-scope users cannot widen to other users (users= is 403, and so is
     the user picker); a non-admin 'all' viewer sends the opaque labels it
     was shown and gets the matching rows back."""
-    from tests.conftest import bearer
     make_user_key("root", is_admin=True)
     alice_uid, alice_raw = make_user_key("alice", pages={"stats": "own"})
     _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
@@ -1338,7 +1326,6 @@ def test_stats_scrubbed_viewer_sees_sentinel_ids_literally(client, make_user_key
     """The open-mode sentinel names nobody, so a non-admin 'all' viewer sees
     "(open-mode)" on the user and key pickers, not an opaque label that reads
     like a real person; real users stay scrubbed."""
-    from tests.conftest import bearer
     from faster_whisper_backend.stats import usage_store as us
     make_user_key("root", is_admin=True)
     _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
@@ -1360,7 +1347,6 @@ def test_stats_usage_scrubbed_viewer_filters_by_picked_row_id(client, make_user_
     """A non-admin 'all' viewer filters by the row `id` /stats/pick and the
     leaderboard hand it (static/stats.js sends Q.users/Q.keys, never labels)
     — for other users, other keys and its own key alike."""
-    from tests.conftest import bearer
     make_user_key("root", is_admin=True)
     alice_uid, _ = make_user_key("alice", pages={"stats": "own"})
     viewer_uid, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
