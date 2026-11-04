@@ -1068,7 +1068,7 @@
       api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id))
         .then(function (r) {
           if (r.status === 409) {
-            return r.json().then(function (j) { throw new Error(j.detail || 'cannot revoke last admin'); });
+            return r.json().then(function (j) { throw new Error(_detailMsg(j, 'cannot revoke last admin')); });
           }
           if (!r.ok) throw new Error('HTTP ' + r.status);
           showToast('User revoked', 'ok');
@@ -1202,7 +1202,7 @@
             '/keys/' + encodeURIComponent(k.id))
           .then(function (r) {
             if (r.status === 409) {
-              return r.json().then(function (j) { throw new Error(j.detail || 'cannot revoke last admin key'); });
+              return r.json().then(function (j) { throw new Error(_detailMsg(j, 'cannot revoke last admin key')); });
             }
             if (!r.ok) throw new Error('HTTP ' + r.status);
             showToast('Key revoked', 'ok');
