@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from faster_whisper_backend.pipeline import engine as pl_engine
 from tests._page_helpers import js_body, js_upto
-from tests.conftest import bearer, install_fake_wav_transcode, write_wav
+from tests.conftest import bearer, install_fake_wav_transcode, write_bytes, write_wav
 
 
 def test_captures_page(client):
@@ -807,11 +807,7 @@ def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
 
 
 def _write_merged_wav(gs, sid, data):
-    abs_p = gs.abs_path_for(gs.get_sample(sid)["merged_wav_relpath"])
-    os.makedirs(os.path.dirname(abs_p), exist_ok=True)
-    with open(abs_p, "wb") as f:
-        f.write(data)
-    return abs_p
+    return write_bytes(gs.abs_path_for(gs.get_sample(sid)["merged_wav_relpath"]), data)
 
 
 def test_export_rereads_a_sample_rebuilt_after_its_list_snapshot(
@@ -1414,10 +1410,7 @@ def test_audio_original_switch_serves_the_untrimmed_file(client):
     rel = captures_store._relpath_for(cid, "wav")
     trel = os.path.join(cid[0:2], cid[2:4], f"{cid}.trim.wav")
     for r, payload in ((rel, b"RIFF....WAVEoriginal"), (trel, b"RIFF....WAVEtrimmed")):
-        path = captures_store.abs_audio_path(r)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as fh:
-            fh.write(payload)
+        write_bytes(captures_store.abs_audio_path(r), payload)
     conn.execute("UPDATE captures SET audio_trimmed_relpath = ? WHERE id = ?", (trel, cid))
 
     r = client.get(f"/captures/api/{cid}/audio")
