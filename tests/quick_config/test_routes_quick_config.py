@@ -9,6 +9,10 @@ from tests._page_helpers import js_upto
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
+def _post_patch(client, rules_patch, **kw):
+    return client.post("/quick-config/state", json={"rules_patch": rules_patch}, **kw)
+
+
 def _expose_first_regex_list_rule(app_module):
     return _expose_first(app_module, "regex-list")
 
@@ -51,16 +55,13 @@ def test_usage_open_mode(client):
 
 
 def test_post_patch_empty_is_noop(client):
-    r = client.post("/quick-config/state", json={"rules_patch": {}})
+    r = _post_patch(client, {})
     assert r.status_code == 200
     assert r.json()["saved"] == []
 
 
 def test_post_patch_unknown_slug_400(client):
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {"no-such-rule": {"enabled": False}}},
-    )
+    r = _post_patch(client, {"no-such-rule": {"enabled": False}})
     assert r.status_code == 400
 
 
@@ -68,10 +69,7 @@ def test_post_patch_unknown_field_400(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
     assert slug is not None
     # `label` is admin-only / not in the per-type allow-list -> 400.
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {slug: {"label": "hacked"}}},
-    )
+    r = _post_patch(client, {slug: {"label": "hacked"}})
     assert r.status_code == 400
 
 
@@ -86,10 +84,7 @@ def test_post_patch_unknown_top_level_field_422(client):
 
 def test_post_patch_valid_field_saves(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {slug: {"enabled": False}}},
-    )
+    r = _post_patch(client, {slug: {"enabled": False}})
     assert r.status_code == 200
     assert slug in r.json()["saved"]
 
@@ -111,10 +106,7 @@ def test_post_patch_succeeds_despite_guard_failing_untouched_rule(
                      "type": "regex-list",
                      "entries": [{"pattern": "(n|d|nd)+#", "replacement": "X"}]})
     app_module.cfg.PIPELINE_RULES = rules
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {slug: {"enabled": False}}},
-    )
+    r = _post_patch(client, {slug: {"enabled": False}})
     assert r.status_code == 200, r.text
     assert slug in r.json()["saved"]
 
@@ -124,11 +116,7 @@ def test_post_patch_own_guard_failing_pattern_still_422(client, app_module):
     patched rule is always in the guard set."""
     slug = _expose_first_regex_list_rule(app_module)
     assert slug is not None
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {slug: {
-            "entries": [{"pattern": "(n|d|nd)+#", "replacement": "X"}]}}},
-    )
+    r = _post_patch(client, {slug: {"entries": [{"pattern": "(n|d|nd)+#", "replacement": "X"}]}})
     assert r.status_code == 422, r.text
     assert "catastrophic backtracking" in r.text
 
@@ -145,19 +133,13 @@ def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module)
     rule = next(r for r in rules if isinstance(r, dict) and r.get("name") == slug)
     rule["entries"] = [{"pattern": "(n|d|nd)+#", "replacement": "X"}]
     app_module.cfg.PIPELINE_RULES = rules
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {slug: {"enabled": False}}},
-    )
+    r = _post_patch(client, {slug: {"enabled": False}})
     assert r.status_code == 200, r.text
     assert slug in r.json()["saved"]
     stored = next(x for x in app_module.cfg.PIPELINE_RULES
                   if isinstance(x, dict) and x.get("name") == slug)
     assert stored.get("enabled") is False
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {slug: {"enabled": True}}},
-    )
+    r = _post_patch(client, {slug: {"enabled": True}})
     assert r.status_code == 422, r.text
     assert "catastrophic backtracking" in r.text
     stored = next(x for x in app_module.cfg.PIPELINE_RULES
@@ -166,20 +148,13 @@ def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module)
     # Pydantic's lax bool turned 1 / "true" / "on" into True past the
     # `is True` check that scopes the guard, so the refused body went live.
     for truthy in (1, "true", "on"):
-        r = client.post(
-            "/quick-config/state",
-            json={"rules_patch": {slug: {"enabled": truthy}}},
-        )
+        r = _post_patch(client, {slug: {"enabled": truthy}})
         assert r.status_code == 400, (truthy, r.text)
         assert "must be true or false" in r.text
         stored = next(x for x in app_module.cfg.PIPELINE_RULES
                       if isinstance(x, dict) and x.get("name") == slug)
         assert stored.get("enabled") is False, truthy
-    r = client.post(
-        "/quick-config/state",
-        json={"rules_patch": {slug: {
-            "entries": [{"pattern": "(n|d|nd)+#", "replacement": "Y"}]}}},
-    )
+    r = _post_patch(client, {slug: {"entries": [{"pattern": "(n|d|nd)+#", "replacement": "Y"}]}})
     assert r.status_code == 422, r.text
     assert "catastrophic backtracking" in r.text
 
@@ -305,7 +280,7 @@ def test_post_patch_oversized_map_400(client, app_module):
     # layout changes, without failing on a deliberate schema-side cap change.
     assert cap == schema_map_cap()
     big = {f"wort{i}": str(i) for i in range(cap + 1)}
-    r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": big}}})
+    r = _post_patch(client, {slug: {"map": big}})
     assert r.status_code == 400, r.text
     assert str(cap) in r.json()["detail"]
     # One over-cap dictionary gets the per-dictionary wording; the
@@ -322,7 +297,7 @@ def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
     assert slug is not None
     at_cap = {f"wort{i}": str(i)
               for i in range(quick_config_routes._MAP_MAX_ENTRIES)}
-    r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": at_cap}}})
+    r = _post_patch(client, {slug: {"map": at_cap}})
     assert r.status_code == 200, r.text
 
 
@@ -353,21 +328,13 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
         _uid, admin_raw = make_user_key("root", is_admin=True)
         _uid2, user_raw = make_user_key("alice", pages={"quick_config": "own"})
 
-        r = client.post(
-            "/quick-config/state",
-            json={"rules_patch": {slug: {"enabled": False}}},
-            headers=bearer(user_raw),
-        )
+        r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(user_raw))
         assert r.status_code == 200, r.text
         assert slug in r.json()["saved"]
         assert r.json()["captures_count"] == 0
         assert calls == []
 
-        r = client.post(
-            "/quick-config/state",
-            json={"rules_patch": {slug: {"enabled": True}}},
-            headers=bearer(admin_raw),
-        )
+        r = _post_patch(client, {slug: {"enabled": True}}, headers=bearer(admin_raw))
         assert r.status_code == 200, r.text
         assert r.json()["captures_count"] == 7
         assert len(calls) == 1
@@ -404,8 +371,7 @@ def test_post_patch_falsy_nondict_map_400(client, app_module, bad):
     generic Pydantic 422 from save_overrides."""
     slug = _expose_first_map_rule(app_module)
     assert slug is not None
-    r = client.post("/quick-config/state",
-                    json={"rules_patch": {slug: {"map": bad}}})
+    r = _post_patch(client, {slug: {"map": bad}})
     assert r.status_code == 400, r.text
     assert "must be an object" in r.json()["detail"]
 
@@ -445,20 +411,17 @@ def test_post_patch_map_total_over_cap_400(client, app_module, monkeypatch):
     half = quick_config_routes._MAP_MAX_ENTRIES // 2 + 1
     map_a = {f"awort{i}": str(i) for i in range(half)}
     map_b = {f"bwort{i}": str(i) for i in range(half)}
-    r = client.post("/quick-config/state", json={"rules_patch": {
-        slug_a: {"map": map_a}, slug_b: {"map": map_b}}})
+    r = _post_patch(client, {slug_a: {"map": map_a}, slug_b: {"map": map_b}})
     assert r.status_code == 200, r.text
     monkeypatch.setattr(quick_config_routes, "_MAP_MAX_TOTAL_ENTRIES", 10)
     small_a = {f"awort{i}": str(i) for i in range(6)}
     small_b = {f"bwort{i}": str(i) for i in range(6)}
-    r = client.post("/quick-config/state", json={"rules_patch": {
-        slug_a: {"map": small_a}, slug_b: {"map": small_b}}})
+    r = _post_patch(client, {slug_a: {"map": small_a}, slug_b: {"map": small_b}})
     assert r.status_code == 400, r.text
     assert "in total" in r.json()["detail"]
     assert "10" in r.json()["detail"]
     # Each alone is under the (patched) request-wide cap and saves.
-    r = client.post("/quick-config/state",
-                    json={"rules_patch": {slug_a: {"map": small_a}}})
+    r = _post_patch(client, {slug_a: {"map": small_a}})
     assert r.status_code == 200, r.text
 
 
@@ -482,9 +445,7 @@ def test_hidden_rule_validation_error_is_fully_redacted(
     make_user_key("root", is_admin=True)  # flips lockdown
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
 
-    r = client.post("/quick-config/state",
-                    json={"rules_patch": {slug: {"enabled": False}}},
-                    headers=bearer(raw))
+    r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(raw))
     assert r.status_code == 422, r.text
     assert "geheim" not in r.text
     errs = r.json()["errors"]
@@ -515,9 +476,7 @@ def test_hidden_rule_guard_error_keeps_sentinel_for_page(
     make_user_key("root", is_admin=True)  # flips lockdown
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
 
-    r = client.post("/quick-config/state",
-                    json={"rules_patch": {slug: {"enabled": False}}},
-                    headers=bearer(raw))
+    r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(raw))
     assert r.status_code == 422, r.text
     assert "geheim" not in r.text
     assert "a hidden rule" not in r.text
@@ -919,8 +878,7 @@ def test_concurrent_patches_do_not_lose_an_update(client, app_module,
     monkeypatch.setattr(config_store, "save_overrides", _slow_save)
 
     def _patch(slug):
-        return client.post("/quick-config/state",
-                           json={"rules_patch": {slug: {"enabled": False}}})
+        return _post_patch(client, {slug: {"enabled": False}})
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         ra, rb = pool.map(lambda s: _patch(s), [slug_a, slug_b])
