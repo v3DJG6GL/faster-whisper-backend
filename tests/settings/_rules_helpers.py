@@ -12,6 +12,13 @@ def factory_rules():
         return json.load(fh)["PIPELINE_RULES"]
 
 
+def entry_by_label(rules, label):
+    """The first entry labelled `label` in any rule of `rules`
+    (StopIteration if none)."""
+    return next(e for r in rules for e in (r.get("entries") or [])
+                if e.get("label") == label)
+
+
 def load_saved(tmp_path, raw):
     """`raw` written as tmp_path/config.local.json, read back through
     config_store.load_overrides."""

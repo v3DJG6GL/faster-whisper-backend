@@ -17,6 +17,7 @@ from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
 from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    entry_by_label as _entry,
     factory_rules as _factory_rules,
     load_saved as _load_saved,
 )
@@ -44,11 +45,6 @@ def _install_one(app_module, name):
 
 def _pp(text, language="de"):
     return pl_engine._postprocess_text(text, model_name="", language=language)
-
-
-def _entry(rules, label):
-    return next(e for r in rules for e in (r.get("entries") or [])
-                if e.get("label") == label)
 
 
 def _hyphen_pattern():

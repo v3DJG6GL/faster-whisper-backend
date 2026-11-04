@@ -14,6 +14,7 @@ import pytest
 
 from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    entry_by_label as _entry,
     factory_rules as _factory_rules,
 )
 
@@ -24,11 +25,6 @@ _OLD = {
     "es-opening-exclamation-mark":
         ("(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)", "\\1¡\\2"),
 }
-
-
-def _entry(rules, label):
-    return next(e for r in rules for e in (r.get("entries") or [])
-                if e.get("label") == label)
 
 
 def test_stored_old_es_entries_are_upgraded_once():

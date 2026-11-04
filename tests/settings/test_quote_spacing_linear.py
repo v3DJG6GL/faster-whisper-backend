@@ -16,15 +16,11 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
 from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    entry_by_label as _entry,
     factory_rules as _factory_rules,
 )
 
 _LABEL = "tighten-quote-spacing"
-
-
-def _entry(rules):
-    return next(e for r in rules for e in (r.get("entries") or [])
-                if e.get("label") == _LABEL)
 
 
 def test_a_space_run_inside_a_dictated_quote_is_fast(app_module):
@@ -38,7 +34,7 @@ def test_a_space_run_inside_a_dictated_quote_is_fast(app_module):
 
 
 def test_a_space_run_inside_a_quote_is_fast():
-    e = _entry(_factory_rules())
+    e = _entry(_factory_rules(), _LABEL)
     for text in ('Er sagte "x' + " " * 20000 + "y",
                  'Er sagte "x' + " \t" * 10000 + "y\n",
                  '"a' + " " * 20000 + 'b "c' + " " * 20000 + "d",
@@ -67,7 +63,7 @@ _SENTENCES = (
 
 
 def test_the_output_is_unchanged():
-    e = _entry(_factory_rules())
+    e = _entry(_factory_rules(), _LABEL)
     old = renames.UPGRADED_RULE_ENTRIES[_LABEL][0]
     new, old_re = re.compile(e["pattern"]), re.compile(old[0])
     for s in _SENTENCES:
@@ -83,5 +79,5 @@ def test_a_stored_copy_of_either_earlier_entry_is_upgraded_once():
     for old in (renames.UPGRADED_RULE_ENTRIES[_LABEL][0],
                 *renames.EARLIER_RULE_ENTRIES[_LABEL]):
         rules = copy.deepcopy(_factory_rules())
-        _entry(rules)["pattern"], _entry(rules)["replacement"] = old
+        _entry(rules, _LABEL)["pattern"], _entry(rules, _LABEL)["replacement"] = old
         _assert_upgrades_to_factory_once(rules, [f"digit-and-whitespace-tidy/{_LABEL}"])

@@ -11,6 +11,7 @@ import pytest
 from faster_whisper_backend.settings import config_renames as renames
 from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    entry_by_label as _entry,
     factory_rules as _factory_rules,
     load_saved as _load_saved,
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
@@ -305,8 +306,7 @@ def test_entry_saved_under_its_old_label_is_upgraded_and_relabelled(old_label, l
 
 def test_edited_entry_under_an_old_label_stays_the_admins():
     rules = copy.deepcopy(_factory_rules())
-    e = next(e for r in rules for e in r.get("entries") or []
-             if e.get("label") == "delete-punct-before-hyphen")
+    e = _entry(rules, "delete-punct-before-hyphen")
     e["label"], e["pattern"], e["replacement"] = "replace-and", "(?:,)(-)", ""
     assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == []
     assert (e["label"], e["pattern"]) == ("replace-and", "(?:,)(-)")
