@@ -14,11 +14,7 @@ from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 
 
-def _make_session(*, postprocess, decode_partial=None, decode_final=None, cfg=None,
-                  **seams):
-    """``seams``: the optional holdback / format_key / diagnose hooks."""
-    return inert_session(cfg, decode_partial=decode_partial, decode_final=decode_final,
-                         postprocess=postprocess, **seams)
+_make_session = inert_session
 
 
 def _hold_trailing(word):
@@ -36,7 +32,7 @@ def test_committed_is_append_only_and_document_equals_postprocess():
     """Across successive finalizes the committed prefix only ever grows (never
     rewrites earlier text), and committed+tail always equals the post-processed
     whole document."""
-    s, msgs = _make_session(postprocess=lambda raw: raw)
+    s, msgs = _make_session()
 
     async def run():
         s.raw_confirmed = "der patient hat fieber."
@@ -90,7 +86,7 @@ def test_committed_never_holds_half_resolved_dictation_phrase():
 def test_close_commits_unterminated_tail():
     """An utterance with no sentence terminator is shown as a provisional tail
     during the session, then committed on close()."""
-    s, msgs = _make_session(postprocess=lambda raw: raw)
+    s, msgs = _make_session()
 
     async def run():
         s.raw_confirmed = "hallo welt"                # no terminator
@@ -119,7 +115,7 @@ def test_close_falls_back_on_a_failed_final_decode_and_still_commits(caplog):
     async def _df(audio, prompt):
         raise RuntimeError("CUDA out of memory")
 
-    s, msgs = _make_session(postprocess=lambda raw: raw, decode_final=_df,
+    s, msgs = _make_session(decode_final=_df,
                             cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
     async def run():
@@ -145,8 +141,7 @@ def test_close_survives_failing_on_final_and_still_commits(caplog):
     them: the closing commit re-runs it over the same text.)"""
     import logging
 
-    s, msgs = _make_session(postprocess=lambda raw: raw,
-                            cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
+    s, msgs = _make_session(cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
     async def _boom(info):
         raise RuntimeError("capture store down")
@@ -176,7 +171,7 @@ def test_close_abort_still_propagates_without_closing_document():
     async def _df(audio, prompt):
         raise CloseAbort("credential revoked mid-session")
 
-    s, msgs = _make_session(postprocess=lambda raw: raw, decode_final=_df,
+    s, msgs = _make_session(decode_final=_df,
                             cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
     async def run():
@@ -201,10 +196,7 @@ def test_pcm_loop_emits_partials_then_a_final_after_silence():
     async def decode_final(audio, prompt):
         return ("hallo welt.", [], False)
 
-    s, msgs = _make_session(
-        postprocess=lambda raw: raw, decode_partial=decode_partial,
-        decode_final=decode_final, cfg=cfg,
-    )
+    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
 
     feed_levels(s, (8000, 500),   # ~0.5 s speech (loud)
                 (0, 400))     # ~0.4 s silence → finalize
@@ -228,9 +220,7 @@ def test_hard_break_resets_document_after_long_silence():
     async def decode_final(audio, prompt):
         return ("hallo welt.", [], False)
 
-    s, msgs = _make_session(
-        postprocess=lambda raw: raw, decode_final=decode_final, cfg=cfg,
-    )
+    s, msgs = _make_session(decode_final=decode_final, cfg=cfg)
 
     feed_levels(s, (8000, 300),   # speech → one utterance
                 (0, 700))     # silence: finalize (192 ms) then hard break (500 ms)
@@ -262,10 +252,7 @@ def test_no_partial_decode_storm_during_trailing_silence():
     async def decode_final(audio, prompt):
         return ("x.", [], False)
 
-    s, msgs = _make_session(
-        postprocess=lambda raw: raw, decode_partial=decode_partial,
-        decode_final=decode_final, cfg=cfg,
-    )
+    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
 
     feed_levels(s, (8000, 300),   # 0.3 s speech
                 (0, 1000))    # 1.0 s silence (≈31 frames) → no finalize yet
@@ -286,10 +273,7 @@ def test_silence_only_input_never_finalizes_or_hallucinates():
         called["final"] += 1
         return ("x", [], False)
 
-    s, msgs = _make_session(
-        postprocess=lambda raw: raw, decode_partial=decode_partial,
-        decode_final=decode_final, cfg=cfg,
-    )
+    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
     asyncio.run(s.feed_pcm(_pcm(0, 1000)))   # 1 s of pure silence
     assert called["partial"] == 0
     assert called["final"] == 0
@@ -312,10 +296,7 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
         calls["final"] += 1
         return ("x.", [], False)
 
-    s, msgs = _make_session(
-        postprocess=lambda raw: raw, decode_partial=decode_partial,
-        decode_final=decode_final, cfg=cfg,
-    )
+    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
 
     async def run():
         s._skip_partials = True
@@ -342,10 +323,7 @@ def test_prompt_words_zero_carries_no_confirmed_words():
         final_prompts.append(prompt)
         return (" eins zwei drei.", [], False)
 
-    s, _msgs = _make_session(
-        postprocess=lambda raw: raw, decode_final=decode_final, cfg=cfg,
-        base_prompt="Glossar",
-    )
+    s, _msgs = _make_session(decode_final=decode_final, cfg=cfg, base_prompt="Glossar")
 
     feed_levels(s, (8000, 500), (0, 400), (8000, 500), (0, 400))
     assert final_prompts == ["Glossar", "Glossar"]
@@ -365,10 +343,7 @@ def test_all_dropped_final_keeps_empty_and_does_not_resurrect_partials():
     async def decode_final(audio, prompt):
         return ("", [], True)   # decode produced segments, dropped them ALL
 
-    s, msgs = _make_session(
-        postprocess=lambda raw: raw, decode_partial=decode_partial,
-        decode_final=decode_final, cfg=cfg,
-    )
+    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
 
     async def run():
         await s.feed_pcm(_pcm(8000, 500))   # speech → partials commit "thank you"
@@ -397,10 +372,7 @@ def test_empty_final_still_falls_back_to_localagreement():
     async def decode_final(audio, prompt):
         return ("", [], False)   # genuinely empty decode (no segments)
 
-    s, msgs = _make_session(
-        postprocess=lambda raw: raw, decode_partial=decode_partial,
-        decode_final=decode_final, cfg=cfg,
-    )
+    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
 
     feed_levels(s, (8000, 500),
                 (0, 400))     # silence → finalize (empty → fall back)
