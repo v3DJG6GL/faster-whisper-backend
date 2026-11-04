@@ -186,6 +186,10 @@ def _refuse_over_cap(chip_lists: Iterable[list[Any] | None], holder: str) -> Non
         )
 
 
+# The targets a client may set: `audio_missing` is system-set.
+_ReviewStatus = Literal["new", "reviewed", "ready", "dismissed"]
+
+
 class _StrictIn(BaseModel):
     """Request body that 422s an unknown field."""
     model_config = {"extra": "forbid"}
@@ -202,7 +206,7 @@ class CorrectionIn(_StrictIn):
 
 
 class PatchCaptureIn(_StrictIn):
-    status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
+    status: _ReviewStatus | None = None
     # Bounds mirror what captures_store.update_capture truncates to
     # (_CAP_CORRECTED / _CAP_ADMIN_NOTES), so nothing a client may
     # legitimately save is rejected here.
@@ -225,7 +229,7 @@ class BulkStatusIn(_StrictIn):
     the list endpoint's page cap, so a "select all loaded" is always one
     request. `audio_missing` is system-set and never a target."""
     ids: list[str] = Field(min_length=1, max_length=1000)
-    status: Literal["new", "reviewed", "ready", "dismissed"]
+    status: _ReviewStatus
 
 
 class BulkIdsIn(_StrictIn):
@@ -1134,7 +1138,7 @@ class PatchSampleIn(_StrictIn):
     # / cross-tab admin saves survive. Omitted → legacy replace.
     baseline_corrections: list[CorrectionIn] | None = Field(
         default=None, max_length=_CAP_GROUP_CORRECTIONS)
-    status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
+    status: _ReviewStatus | None = None
     admin_notes: str | None = Field(default=None, max_length=8000)
 
 
