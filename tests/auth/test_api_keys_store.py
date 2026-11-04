@@ -8,6 +8,7 @@ import threading
 import pytest
 
 from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend.settings import config_store
 from tests.auth._store_helpers import failing_conn, failing_rebuild_conn, sibling_write
 
 
@@ -24,31 +25,27 @@ def _store_key_binding(ak, kid, binding):
 
 
 def test_hash_key_deterministic_hex():
-    from faster_whisper_backend.auth import api_keys_store as ak
-    h1 = ak.hash_key("wk_abc")
-    h2 = ak.hash_key("wk_abc")
+    h1 = api_keys_store.hash_key("wk_abc")
+    h2 = api_keys_store.hash_key("wk_abc")
     assert h1 == h2 and len(h1) == 64
     int(h1, 16)  # valid hex
-    assert ak.hash_key("wk_abc") != ak.hash_key("wk_abd")
+    assert api_keys_store.hash_key("wk_abc") != api_keys_store.hash_key("wk_abd")
 
 
 def test_hash_key_unicode_safe():
-    from faster_whisper_backend.auth import api_keys_store as ak
-    assert len(ak.hash_key("schlüssel-Ω")) == 64
+    assert len(api_keys_store.hash_key("schlüssel-Ω")) == 64
 
 
 def test_generate_raw_key_shape_and_uniqueness():
-    from faster_whisper_backend.auth import api_keys_store as ak
-    keys = {ak.generate_raw_key() for _ in range(200)}
+    keys = {api_keys_store.generate_raw_key() for _ in range(200)}
     assert len(keys) == 200
     for k in list(keys)[:5]:
-        assert k.startswith(ak.KEY_PREFIX)
-        assert len(k) == len(ak.KEY_PREFIX) + 43
+        assert k.startswith(api_keys_store.KEY_PREFIX)
+        assert len(k) == len(api_keys_store.KEY_PREFIX) + 43
 
 
 def test_split_display_parts():
-    from faster_whisper_backend.auth import api_keys_store as ak
-    prefix, last4 = ak._split_display_parts("wk_abcdef1234567890wxyz")
+    prefix, last4 = api_keys_store._split_display_parts("wk_abcdef1234567890wxyz")
     assert prefix == "wk_abcde" and last4 == "wxyz"
 
 
@@ -466,7 +463,6 @@ def test_binding_saves_keep_a_stored_slug_a_rules_edit_removed(
     stored user / key binding already names (removed from the rules since)
     must not 422 an edit of another field, while a newly added unknown slug
     still does."""
-    from faster_whisper_backend.settings import config_store
     ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     _raw, rec = ak.create_key(uid)
@@ -560,8 +556,7 @@ def test_get_user_permissions_sentinel(api_keys_db):
 
 
 def test_open_mode_user_is_admin():
-    from faster_whisper_backend.auth import api_keys_store as ak
-    assert ak.OPEN_MODE_USER["is_admin"] is True
+    assert api_keys_store.OPEN_MODE_USER["is_admin"] is True
 
 
 def test_update_key_label_renames(api_keys_db):
@@ -685,8 +680,6 @@ def test_parse_binding_migrates_tightened_direct_values():
     """A binding stored before the bundle validators tightened (guard words 1,
     a non-Whisper DEFAULT_LANGUAGE) must not 422 every later edit of the key
     or user on a field the admin never touched."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.settings import config_store
     b = api_keys_store._parse_binding(
         {"direct": {"DEFAULT_LANGUAGE": "jp", "SEGMENT_HEAD_ECHO_MIN_WORDS": 1,
                     "locks": ["DEFAULT_LANGUAGE"]}, "profiles": []})
@@ -703,7 +696,6 @@ def test_parse_binding_migrates_renamed_direct_keys_and_locks():
     # a pre-rename direct blob must come back under the current names so the
     # admin's next re-save is accepted instead of "Extra inputs are not
     # permitted".
-    from faster_whisper_backend.auth import api_keys_store
     raw = '{"direct": {"SEGMENT_MAX_WORDS_PER_SEC": 3.0, "BEAM_SIZE": 2,' \
           ' "locks": ["SEGMENT_MAX_WORDS_PER_SEC", "BEAM_SIZE"]}, "profiles": []}'
     b = api_keys_store._parse_binding(raw)
@@ -715,8 +707,6 @@ def test_parse_binding_migrates_renamed_rule_slugs():
     # A binding stored before a RENAMED_RULES rename still names the old slug;
     # it must come back under the current one, or re-saving the binding
     # unchanged fails validate_binding's unknown-slug check.
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.settings import config_store
     inc = api_keys_store._parse_binding(
         '{"direct": {"PIPELINE_RULES_INCLUDE": ["dictation-map"]}, "profiles": []}')
     assert inc["direct"]["PIPELINE_RULES_INCLUDE"] == ["de-dictation-map"]
@@ -733,7 +723,6 @@ def test_parse_binding_keeps_a_split_card_the_rules_in_force_still_hold(monkeypa
     """config_renames.SPLIT_RULES maps strip-whisper-punctuation onto the
     cards that took it over, unless the rule list in force (a local copy from
     before the split) still holds it."""
-    from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.settings import config as cfg
     raw = '{"direct": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}}'
     assert set(api_keys_store._parse_binding(raw)["direct"]["PIPELINE_RULES_EXCLUDE"]) == {
