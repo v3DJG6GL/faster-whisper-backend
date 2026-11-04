@@ -200,6 +200,11 @@ def _root_and_alice(make_user_key):
     return raw_root, uid, raw, captures_store._require_conn()
 
 
+def _patch(client, raw, path, **body):
+    """PATCH /captures/api/{path} (a cid or samples/{sid}) as `raw`'s key."""
+    return client.patch(f"/captures/api/{path}", headers=bearer(raw), json=body)
+
+
 def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
     """A non-admin cannot mutate/delete a capture that is a member of a LOCKED
     sample — deleting it would auto-dissolve (and destroy the merged WAV of) an
@@ -319,9 +324,7 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
     _insert_member(conn, "locked01cid", "locked01sid", user_id=uid)
 
     h = bearer(raw)
-    assert client.patch(
-        "/captures/api/locked01cid", json={"status": "reviewed"}, headers=h,
-    ).status_code == 409
+    assert _patch(client, raw, "locked01cid", status="reviewed").status_code == 409
     assert client.delete(
         "/captures/api/locked01cid", headers=h,
     ).status_code == 409
@@ -338,32 +341,21 @@ def test_nonadmin_can_unlock_but_not_edit_a_locked_sample(client, make_user_key)
     undo. A non-admin may send the unlock and nothing else while locked."""
     _, uid, raw, conn = _root_and_alice(make_user_key)
     _insert_sample(conn, gs, "unlock01sid", locked=True, user_id=uid)
-    h = bearer(raw)
+    path = "samples/unlock01sid"
 
     # Any other edit stays frozen...
-    assert client.patch(
-        "/captures/api/samples/unlock01sid",
-        json={"status": "reviewed"}, headers=h,
-    ).status_code == 409
+    assert _patch(client, raw, path, status="reviewed").status_code == 409
     # ...including an unlock smuggled alongside one.
-    assert client.patch(
-        "/captures/api/samples/unlock01sid",
-        json={"is_locked": False, "status": "reviewed"}, headers=h,
-    ).status_code == 409
+    assert _patch(client, raw, path, is_locked=False,
+                  status="reviewed").status_code == 409
     assert gs.get_sample("unlock01sid")["is_locked"] == 1
 
     # The bare unlock goes through.
-    assert client.patch(
-        "/captures/api/samples/unlock01sid",
-        json={"is_locked": False}, headers=h,
-    ).status_code == 200
+    assert _patch(client, raw, path, is_locked=False).status_code == 200
     assert gs.get_sample("unlock01sid")["is_locked"] == 0
 
     # And once unlocked, ordinary edits work again.
-    assert client.patch(
-        "/captures/api/samples/unlock01sid",
-        json={"status": "reviewed"}, headers=h,
-    ).status_code == 200
+    assert _patch(client, raw, path, status="reviewed").status_code == 200
 
 
 def test_locked_member_view_does_not_rewrite_text(
@@ -1613,19 +1605,17 @@ def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
         return real(cid, patch)
 
     monkeypatch.setattr(captures_store, "update_capture", _spy)
-    h = bearer(raw_key)
-    r = client.patch("/captures/api/patchthr0001", headers=h,
-                     json={"admin_notes": "n"})
+    r = _patch(client, raw_key, "patchthr0001", admin_notes="n")
     assert r.status_code == 200, r.text
-    r = client.patch("/captures/api/patchthr0001", headers=h,
-                     json={"corrections": [], "baseline_corrections": []})
+    r = _patch(client, raw_key, "patchthr0001", corrections=[],
+               baseline_corrections=[])
     assert r.status_code == 200, r.text
     assert seen == [(False, False), (False, True)]
     # Guards still surface as their HTTP codes from inside the thread.
-    assert client.patch("/captures/api/nosuchcid000", headers=h,
-                        json={"admin_notes": "n"}).status_code == 404
-    assert client.patch("/captures/api/patchthr0001", headers=h,
-                        json={"status": "bogus"}).status_code in (400, 422)
+    assert _patch(client, raw_key, "nosuchcid000",
+                  admin_notes="n").status_code == 404
+    assert _patch(client, raw_key, "patchthr0001",
+                  status="bogus").status_code in (400, 422)
 
 
 def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
@@ -1701,8 +1691,7 @@ def test_patch_of_a_sample_dissolved_mid_apply_is_404(client, make_user_key,
     sid = "patchdis000001"
     _insert_sample(captures_store._require_conn(), gs, sid, locked=False)
     monkeypatch.setattr(gs, "update_sample", lambda s, patch: None)
-    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw_key),
-                     json={"admin_notes": "x"})
+    r = _patch(client, raw_key, f"samples/{sid}", admin_notes="x")
     assert r.status_code == 404, r.text
 
 
@@ -1724,8 +1713,8 @@ def test_sample_chip_save_holds_the_corrections_lock(client, make_user_key,
         return real(s)
 
     monkeypatch.setattr(gs, "get_members", _spy)
-    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw_key),
-                     json={"corrections": [], "baseline_corrections": []})
+    r = _patch(client, raw_key, f"samples/{sid}", corrections=[],
+               baseline_corrections=[])
     assert r.status_code == 200, r.text
     assert held and held[0] is True
 
@@ -1755,16 +1744,13 @@ def test_a_group_holding_more_chips_than_one_member_may_saves(
                  + [{"wrong": "", "correct": "x", "idx": n_words + i}
                     for i in range(half)])
     assert len(projected) > cap
-    h = bearer(raw_key)
-    r = client.patch(f"/captures/api/samples/{sid}", headers=h,
-                     json={"corrections": projected,
-                           "baseline_corrections": projected})
+    r = _patch(client, raw_key, f"samples/{sid}", corrections=projected,
+               baseline_corrections=projected)
     assert r.status_code == 200, r.text
     over = ([{"wrong": "", "correct": "y", "idx": i} for i in range(cap + 1)]
             + projected[half:])
-    r = client.patch(f"/captures/api/samples/{sid}", headers=h,
-                     json={"corrections": over,
-                           "baseline_corrections": projected})
+    r = _patch(client, raw_key, f"samples/{sid}", corrections=over,
+               baseline_corrections=projected)
     assert r.status_code == 422, r.text
     assert f"a member capture holds at most {cap}" in r.json()["detail"]
 
@@ -1827,8 +1813,8 @@ def test_group_chip_save_keeps_a_members_anchorless_chip(
                       headers=h).json()["sample"]["corrections"]
     assert [c["idx"] for c in proj] == [0, 2]
     edited = [proj[0], dict(proj[1], correct="Q")]
-    r = client.patch(f"/captures/api/samples/{sid}", headers=h,
-                     json={"corrections": edited, "baseline_corrections": proj})
+    r = _patch(client, raw_key, f"samples/{sid}", corrections=edited,
+               baseline_corrections=proj)
     assert r.status_code == 200, r.text
     m1 = captures_store.get_capture("anchlessmem1")["corrections"]
     assert any(c["wrong"] == "foo" and c["correct"] == "bar"
@@ -1851,8 +1837,8 @@ def test_group_chip_save_stores_the_transcript_with_the_new_chips(
         conn.execute("UPDATE captures SET final_text = 'x y' WHERE id = ?",
                      (cid,))
     chip = {"wrong": "x", "correct": "Z", "idx": 0}
-    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw_key),
-                     json={"corrections": [chip], "baseline_corrections": []})
+    r = _patch(client, raw_key, f"samples/{sid}", corrections=[chip],
+               baseline_corrections=[])
     assert r.status_code == 200, r.text
     assert gs.get_sample(sid)["transcript"] == "Z y x y"
 
@@ -1880,8 +1866,7 @@ def test_patch_keeps_every_chip_the_schema_accepts(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
     _insert_member(captures_store._require_conn(), "chipcap00001", None)
     chips = [{"wrong": "w", "correct": f"c{i}", "idx": i} for i in range(51)]
-    r = client.patch("/captures/api/chipcap00001", headers=bearer(raw),
-                     json={"corrections": chips})
+    r = _patch(client, raw, "chipcap00001", corrections=chips)
     assert r.status_code == 200, r.text
     assert len(r.json()["capture"]["corrections"]) == 51
     assert len(captures_store.get_capture("chipcap00001")["corrections"]) == 51
@@ -1896,12 +1881,12 @@ def test_patch_refuses_chip_text_past_the_stored_cap(client, make_user_key, fiel
     _insert_member(captures_store._require_conn(), "chipcap00003", None)
     cap = text_corrections.CAP_CORRECTION_FIELD
     chip = {"wrong": "w", "correct": "c", "idx": 0}
-    r = client.patch("/captures/api/chipcap00003", headers=bearer(raw),
-                     json={"corrections": [dict(chip, **{field: "x" * (cap + 1)})]})
+    r = _patch(client, raw, "chipcap00003",
+               corrections=[dict(chip, **{field: "x" * (cap + 1)})])
     assert r.status_code == 422
     assert captures_store.get_capture("chipcap00003")["corrections"] == []
-    r = client.patch("/captures/api/chipcap00003", headers=bearer(raw),
-                     json={"corrections": [dict(chip, **{field: "x" * cap})]})
+    r = _patch(client, raw, "chipcap00003",
+               corrections=[dict(chip, **{field: "x" * cap})])
     assert r.status_code == 200, r.text
     assert captures_store.get_capture("chipcap00003")["corrections"][0][field] == "x" * cap
 
@@ -1915,10 +1900,9 @@ def test_patch_refuses_a_merge_that_grows_past_the_chip_cap(
     cap = text_corrections.CAP_CORRECTIONS
     full = [{"wrong": "w", "correct": f"c{i}", "idx": i} for i in range(cap)]
     captures_store.update_capture("chipcap00002", {"corrections": full})
-    r = client.patch("/captures/api/chipcap00002", headers=bearer(raw),
-                     json={"corrections": [{"wrong": "w", "correct": "x",
-                                            "idx": cap + 5}],
-                           "baseline_corrections": []})
+    r = _patch(client, raw, "chipcap00002",
+               corrections=[{"wrong": "w", "correct": "x", "idx": cap + 5}],
+               baseline_corrections=[])
     assert r.status_code == 422
     assert str(cap) in r.json()["detail"]
     assert len(captures_store.get_capture("chipcap00002")["corrections"]) == cap

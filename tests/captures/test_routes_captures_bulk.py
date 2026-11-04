@@ -7,7 +7,7 @@ from faster_whisper_backend.captures import routes as captures_routes
 from faster_whisper_backend.captures import samples_store as gs
 from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import (
-    _insert_member, _insert_sample, _root_and_alice,
+    _insert_member, _insert_sample, _patch, _root_and_alice,
 )
 from tests.conftest import bearer, write_bytes
 
@@ -215,16 +215,14 @@ def test_single_patch_keeps_reviewed_ts_when_status_is_unchanged(
     _row(conn, "a3a3a3a3a3a3", user_id=uid_a, status="ready",
          reviewed_ts=old_ts)
 
-    r = client.patch("/captures/api/a3a3a3a3a3a3", headers=bearer(raw_root),
-                     json={"status": "ready", "admin_notes": "checked"})
+    r = _patch(client, raw_root, "a3a3a3a3a3a3", status="ready", admin_notes="checked")
     assert r.status_code == 200
     row = captures_store.get_capture("a3a3a3a3a3a3")
     assert row["admin_notes"] == "checked" and row["reviewed_ts"] == old_ts
     st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
     assert st["ready"]["week_n"] == 0
     # A real transition still stamps.
-    client.patch("/captures/api/a3a3a3a3a3a3", headers=bearer(raw_root),
-                 json={"status": "reviewed"})
+    _patch(client, raw_root, "a3a3a3a3a3a3", status="reviewed")
     assert captures_store.get_capture("a3a3a3a3a3a3")["reviewed_ts"] > old_ts
 
 
@@ -235,14 +233,12 @@ def test_single_patch_on_audio_missing_row_saves_edits_but_not_status(
     raw_root, uid, _, conn = _root_and_alice(make_user_key)
     _row(conn, "gone00000002", user_id=uid, status="audio_missing")
 
-    r = client.patch("/captures/api/gone00000002", headers=bearer(raw_root),
-                     json={"corrections": [], "admin_notes": "file lost"})
+    r = _patch(client, raw_root, "gone00000002", corrections=[], admin_notes="file lost")
     assert r.status_code == 200
     row = captures_store.get_capture("gone00000002")
     assert row["status"] == "audio_missing" and row["admin_notes"] == "file lost"
 
-    r = client.patch("/captures/api/gone00000002", headers=bearer(raw_root),
-                     json={"status": "ready"})
+    r = _patch(client, raw_root, "gone00000002", status="ready")
     assert r.status_code == 409
     assert captures_store.get_capture("gone00000002")["status"] == "audio_missing"
 
@@ -264,8 +260,7 @@ def test_audio_missing_row_with_restored_file_can_be_retriaged(
     _restore_audio(captures_store, "back00000001")
     _restore_audio(captures_store, "back00000002")
 
-    r = client.patch("/captures/api/back00000001", headers=bearer(raw_root),
-                     json={"status": "reviewed"})
+    r = _patch(client, raw_root, "back00000001", status="reviewed")
     assert r.status_code == 200, r.text
     assert captures_store.get_capture("back00000001")["status"] == "reviewed"
 

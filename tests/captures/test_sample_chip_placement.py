@@ -14,7 +14,7 @@ import json
 import pytest
 
 from faster_whisper_backend.captures import routes as captures_routes
-from tests.captures.test_routes_captures import _insert_member, _insert_sample
+from tests.captures.test_routes_captures import _insert_member, _insert_sample, _patch
 from tests.conftest import bearer
 
 _SID = "chipplacesid0001"
@@ -64,8 +64,7 @@ def test_chip_edit_stores_the_transcript_with_the_chip_on_its_aligned_word(
         client, sample):
     from faster_whisper_backend.captures import samples_store as gs
 
-    r = client.patch(f"/captures/api/samples/{_SID}",
-                     json={"corrections": [_CHIP]}, headers=bearer(sample))
+    r = _patch(client, sample, f"samples/{_SID}", corrections=[_CHIP])
     assert r.status_code == 200, r.text
     assert gs.get_sample(_SID)["transcript"] == _EXPECTED
 
