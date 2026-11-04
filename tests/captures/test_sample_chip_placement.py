@@ -14,7 +14,9 @@ import json
 import pytest
 
 from faster_whisper_backend.captures import routes as captures_routes
-from tests.captures.test_routes_captures import _insert_member, _insert_sample, _patch
+from tests.captures.test_routes_captures import (
+    _insert_member, _insert_sample, _patch, _post_members,
+)
 from tests.conftest import bearer
 
 _SID = "chipplacesid0001"
@@ -85,8 +87,7 @@ def test_merge_preview_places_a_chip_on_its_aligned_word(
                         lambda *a, **kw: [])
     monkeypatch.setattr(captures_routes, "_preview_member_trims",
                         lambda ids, paths: {})
-    r = client.post("/captures/api/samples/preview-words",
-                    json={"member_ids": [_CID]}, headers=bearer(raw))
+    r = _post_members(client, raw, "/captures/api/samples/preview-words", [_CID])
     assert r.status_code == 200, r.text
     assert r.json()["transcript"] == _EXPECTED
 
@@ -104,7 +105,6 @@ def test_merge_stores_the_transcript_with_the_chip_on_its_aligned_word(
     inserted = []
     monkeypatch.setattr(captures_routes, "_insert_sample_with_sid",
                         lambda **kw: inserted.append(kw))
-    r = client.post("/captures/api/samples",
-                    json={"member_ids": [_CID]}, headers=bearer(raw))
+    r = _post_members(client, raw, "/captures/api/samples", [_CID])
     assert r.status_code == 200, r.text
     assert [kw["transcript"] for kw in inserted] == [_EXPECTED]

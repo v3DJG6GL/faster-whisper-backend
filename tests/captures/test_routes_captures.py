@@ -205,6 +205,11 @@ def _patch(client, raw, path, **body):
     return client.patch(f"/captures/api/{path}", headers=bearer(raw), json=body)
 
 
+def _post_members(client, raw, path, ids, **body):
+    """POST `ids` as member_ids (plus `body`) to a sample route as `raw`'s key."""
+    return client.post(path, json={"member_ids": ids, **body}, headers=bearer(raw))
+
+
 def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
     """A non-admin cannot mutate/delete a capture that is a member of a LOCKED
     sample — deleting it would auto-dissolve (and destroy the merged WAV of) an
@@ -556,11 +561,8 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
 
-    r = client.post(
-        "/captures/api/samples/preview-audio",
-        json={"member_ids": ["prevcap00001"]},
-        headers=bearer(raw),
-    )
+    r = _post_members(client, raw, "/captures/api/samples/preview-audio",
+                      ["prevcap00001"])
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store"
 
@@ -582,8 +584,8 @@ def test_preview_merge_audio_removes_its_temp_file(
         return {"duration_ms": 1}
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
-    r = client.post("/captures/api/samples/preview-audio",
-                    json={"member_ids": ["prevcap00001"]}, headers=bearer(raw))
+    r = _post_members(client, raw, "/captures/api/samples/preview-audio",
+                      ["prevcap00001"])
     assert r.status_code == 200
     assert len(written) == 1
     assert not os.path.exists(written[0])
@@ -1476,7 +1478,7 @@ def test_merge_rejects_mixed_task_or_language(client, make_user_key,
     _uid, raw = make_user_key("root", is_admin=True)
     ids = _mixed_pair(task_b, lang_b)
     for path in ("/captures/api/samples/merge-estimate", "/captures/api/samples"):
-        r = client.post(path, json={"member_ids": ids}, headers=bearer(raw))
+        r = _post_members(client, raw, path, ids)
         assert r.status_code == 400, (path, r.text)
         assert r.json()["detail"] == detail
 
@@ -1484,8 +1486,7 @@ def test_merge_rejects_mixed_task_or_language(client, make_user_key,
 def test_merge_accepts_region_variants_of_one_language(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
     ids = _mixed_pair(None, "de-CH")
-    r = client.post("/captures/api/samples/merge-estimate",
-                    json={"member_ids": ids}, headers=bearer(raw))
+    r = _post_members(client, raw, "/captures/api/samples/merge-estimate", ids)
     assert r.status_code == 200, r.text
 
 
@@ -1774,9 +1775,8 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
 
     monkeypatch.setattr(captures_store, "get_captures_light", _light)
     monkeypatch.setattr(captures_store, "update_capture", _spy)
-    r = client.post("/captures/api/samples/preview-save-chips",
-                    headers=bearer(raw_key),
-                    json={"member_ids": ids, "corrections": []})
+    r = _post_members(client, raw_key, "/captures/api/samples/preview-save-chips",
+                      ids, corrections=[])
     assert r.status_code == 200, r.text
     assert seen == [(ids[0], False, True)]
     assert list(r.json()["saved"]) == [ids[0]]
@@ -1847,9 +1847,8 @@ def test_preview_save_chips_keeps_a_members_anchorless_chip(
     ids = _mixed_pair(None, "de")
     captures_store.update_capture(ids[0], {"corrections": [
         {"wrong": "foo", "correct": "bar"}]})
-    r = client.post("/captures/api/samples/preview-save-chips",
-                    headers=bearer(raw_key),
-                    json={"member_ids": ids, "corrections": []})
+    r = _post_members(client, raw_key, "/captures/api/samples/preview-save-chips",
+                      ids, corrections=[])
     assert r.status_code == 200, r.text
     kept = captures_store.get_capture(ids[0])["corrections"]
     assert [(c["wrong"], c["correct"]) for c in kept] == [("foo", "bar")]
