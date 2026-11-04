@@ -15,7 +15,7 @@ from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 from tests._streaming_helpers import (
     config_drain, config_frame, const_pcm, dictate_session, handshake, locked_down_user,
-    ready_ws, speak_and_stop, stop_and_drain, stream_ws, ws_drain)
+    ready_ws, speak, speak_and_stop, stop_and_drain, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -98,8 +98,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
 
     with ready_ws(client, raw_alice) as ws:
         # utterance 1 under profile p7
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
+        speak(ws)
         # admin re-binds alice p7 -> p3 mid-session (bumps the config version)
         api_keys_store.set_user_permissions(
             uid, {"pages": {}, "config": {"overrides": {}, "profiles": ["p3"], "locks": []}})
@@ -822,8 +821,7 @@ def test_stream_client_output_wrappers_survive_a_refresh(
     uid, raw_alice = locked_down_user(make_user_key)
     with ready_ws(client, raw_alice, decode_overrides={"output_prefix": ">> ",
                                                        "output_suffix": " <<"}) as ws:
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
+        speak(ws)
         # Any config bump makes the next utterance re-resolve ident.
         api_keys_store.set_user_permissions(
             uid, {"pages": {}, "config": {"overrides": {}, "profiles": [], "locks": []}})
@@ -844,8 +842,7 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[old] ")
     uid, raw_alice = make_user_key("alice")
     with ready_ws(client, raw_alice) as ws:
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))        # final, document stays open
+        speak(ws)        # final, document stays open
         early = []
         while True:
             m = ws.receive_json()
@@ -855,8 +852,7 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
         monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[new] ")
         api_keys_store.set_user_permissions(
             uid, {"pages": {}, "config": {"overrides": {}, "profiles": [], "locks": []}})
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
+        speak(ws, silence_ms=3000)        # final, then the hard break
         msgs = early + speak_and_stop(ws)[0]
     boundaries = [i for i, m in enumerate(msgs) if m.get("type") == "boundary"]
     assert len(boundaries) == 1
@@ -883,8 +879,7 @@ def test_stream_output_suffix_closes_every_document_at_a_hard_break(
     _, raw_alice = make_user_key("alice")
     with ready_ws(client, raw_alice, decode_overrides={"output_prefix": ">> ",
                                                        "output_suffix": " <<"}) as ws:
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
+        speak(ws, silence_ms=3000)        # final, then the hard break
         msgs = speak_and_stop(ws)[0]      # final, no second break
     boundaries = [i for i, m in enumerate(msgs) if m.get("type") == "boundary"]
     assert len(boundaries) == 1

@@ -88,11 +88,15 @@ def config_drain(client, raw_key, limit: int = 200) -> list[dict]:
         return drain_frames(ws, limit)
 
 
-def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
-    """One ~2.5 s loud utterance, ~1.5 s silence (finalizes it), then stop;
-    returns ``ws_drain``'s ``(msgs, close_code)``."""
+def speak(ws, silence_ms: int = 1500) -> None:
+    """One ~2.5 s loud utterance, then silence (finalizes it at the default)."""
     ws.send_bytes(const_pcm(8000, 2500))
-    ws.send_bytes(const_pcm(0, 1500))
+    ws.send_bytes(const_pcm(0, silence_ms))
+
+
+def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
+    """``speak``, then stop; returns ``ws_drain``'s ``(msgs, close_code)``."""
+    speak(ws)
     return stop_and_drain(ws, limit)
 
 
