@@ -84,6 +84,13 @@ def _doomed_constructor(built):
     return _build
 
 
+def _assert_refused_evicting_nothing(exc, built):
+    """A 400, the hot "a" still the only cached model, nothing built or leased."""
+    assert exc.value.status_code == 400
+    assert set(tx_models._loaded_models) == {"a"}
+    assert built == [] and tx_models._model_leases == {}
+
+
 def test_unknown_short_name_evicts_nothing(monkeypatch):
     """A typo'd size can only fail in the constructor, so it is rejected
     before the LRU loop and costs the hot model no cold reload."""
@@ -95,9 +102,7 @@ def test_unknown_short_name_evicts_nothing(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(tx_models._get_or_load_model("largev3", lease=True))
 
-    assert exc.value.status_code == 400
-    assert set(tx_models._loaded_models) == {"a"}
-    assert built == [] and tx_models._model_leases == {}
+    _assert_refused_evicting_nothing(exc, built)
 
 
 def test_unknown_short_name_fails_the_shared_gate(monkeypatch):
@@ -174,9 +179,7 @@ def test_an_unconfigured_dir_fails_the_shared_gate(monkeypatch, tmp_path,
     with pytest.raises(HTTPException) as exc:
         asyncio.run(tx_models._get_or_load_model(name, lease=True))
 
-    assert exc.value.status_code == 400
-    assert set(tx_models._loaded_models) == {"a"}
-    assert built == [] and tx_models._model_leases == {}
+    _assert_refused_evicting_nothing(exc, built)
 
 
 @pytest.mark.parametrize("absolute", [False, True])
@@ -222,10 +225,8 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(tx_models._get_or_load_model("org/nope", lease=True))
 
-    assert exc.value.status_code == 400
     assert err in exc.value.detail
-    assert set(tx_models._loaded_models) == {"a"}
-    assert built == [] and tx_models._model_leases == {}
+    _assert_refused_evicting_nothing(exc, built)
 
 
 def _concurrent_cold_loads(monkeypatch, snapshot, n=4):
@@ -333,10 +334,8 @@ def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(tx_models._get_or_load_model("org/public", lease=True))
 
-    assert exc.value.status_code == 400
     assert "rejected HF_TOKEN" in exc.value.detail
-    assert set(tx_models._loaded_models) == {"a"}
-    assert built == [] and tx_models._model_leases == {}
+    _assert_refused_evicting_nothing(exc, built)
 
 
 def test_lease_taken_on_cache_hit_and_on_load(monkeypatch):
