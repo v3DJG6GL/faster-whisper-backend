@@ -30,6 +30,11 @@ def _hf_repo(tmp_path, monkeypatch, repo):
     return tmp_path / "hf" / "hub" / f"models--{repo}"
 
 
+def _bytes_src(name, device, compute):
+    got = model_sizes.lookup(name, device, compute)
+    return got["bytes"], got["src"]
+
+
 @pytest.fixture
 def ledger(model_sizes_ledger):
     """The conftest model_sizes_ledger (PATH + the def-time path defaults)."""
@@ -71,8 +76,7 @@ def test_any_device_fallback_then_none(ledger, monkeypatch):
     # the real hub cache cannot decide the outcome.
     monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
     model_sizes.record("gguf:some/repo", "cuda", "int8_float16", 2 * GB)
-    got = model_sizes.lookup("gguf:some/repo", "cpu", "int8")
-    assert (got["bytes"], got["src"]) == (2 * GB, "proxy")
+    assert _bytes_src("gguf:some/repo", "cpu", "int8") == (2 * GB, "proxy")
     assert model_sizes.estimate("gguf:some/repo", "cpu", "int8") == 2 * GB
     assert model_sizes.estimate("never-loaded", "cuda", "float16") is None
 
@@ -525,8 +529,7 @@ def test_proxy_prefers_a_same_device_measurement_over_a_disk_row(ledger):
     model and preload deferred a model that fits."""
     model_sizes.record("large-v3", "cuda", "int8_float16", 2 * GB)
     model_sizes.record("large-v3", "cpu", "int8", 6 * GB, measured=False)
-    got = model_sizes.lookup("large-v3", "cuda", "float16")
-    assert (got["bytes"], got["src"]) == (2 * GB, "proxy")
+    assert _bytes_src("large-v3", "cuda", "float16") == (2 * GB, "proxy")
     # Same device family beats another device; a disk row comes last.
     model_sizes.record("large-v3", "cuda", "float32", 5 * GB)
     assert model_sizes.lookup("large-v3", "cuda", "float16")["bytes"] == 5 * GB
@@ -534,8 +537,7 @@ def test_proxy_prefers_a_same_device_measurement_over_a_disk_row(ledger):
     # A stray cpu "measured" row (an NVML delta an older build recorded)
     # ranks like a disk row, never above a cuda measurement.
     model_sizes.record("large-v3", "cpu", "float32", 9 * GB)
-    got = model_sizes.lookup("large-v3", "cpu", "int16")
-    assert (got["bytes"], got["src"]) == (5 * GB, "proxy")
+    assert _bytes_src("large-v3", "cpu", "int16") == (5 * GB, "proxy")
 
 
 def test_a_live_disk_walk_beats_the_exact_placements_disk_row(
@@ -551,14 +553,11 @@ def test_a_live_disk_walk_beats_the_exact_placements_disk_row(
     (blobs / "a").write_bytes(b"x" * 3000)
     model_sizes.record("pyannote:org/repo", "cuda", "float32", 30_000,
                        measured=False)
-    got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
-    assert (got["bytes"], got["src"]) == (3000, "disk")
+    assert _bytes_src("pyannote:org/repo", "cuda", "float32") == (3000, "disk")
     shutil.rmtree(tmp_path / "hf")
-    got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
-    assert (got["bytes"], got["src"]) == (30_000, "disk")
+    assert _bytes_src("pyannote:org/repo", "cuda", "float32") == (30_000, "disk")
     model_sizes.record("pyannote:org/repo", "cuda", "float32", 50_000)
-    got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
-    assert (got["bytes"], got["src"]) == (50_000, "measured")
+    assert _bytes_src("pyannote:org/repo", "cuda", "float32") == (50_000, "measured")
 
 
 def test_a_live_disk_walk_beats_another_placements_disk_row(ledger,
@@ -570,11 +569,9 @@ def test_a_live_disk_walk_beats_another_placements_disk_row(ledger,
     walk finds nothing."""
     model_sizes.record("m", "cpu", "int8", 2 * GB, measured=False)
     monkeypatch.setattr(model_sizes, "disk_size", lambda name: 1 * GB)
-    got = model_sizes.lookup("m", "cuda", "float16")
-    assert (got["bytes"], got["src"]) == (1 * GB, "disk")
+    assert _bytes_src("m", "cuda", "float16") == (1 * GB, "disk")
     monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
-    got = model_sizes.lookup("m", "cuda", "float16")
-    assert (got["bytes"], got["src"]) == (2 * GB, "disk")
+    assert _bytes_src("m", "cuda", "float16") == (2 * GB, "disk")
 
 
 def test_a_newer_disk_prior_replaces_an_older_one(ledger):
@@ -583,8 +580,7 @@ def test_a_newer_disk_prior_replaces_an_older_one(ledger):
     corrected walk, not survive as a high-water mark."""
     model_sizes.record("x", "cpu", "int8", 2000, measured=False)
     model_sizes.record("x", "cpu", "int8", 1000, measured=False)
-    got = model_sizes.lookup("x", "cpu", "int8")
-    assert (got["bytes"], got["src"]) == (1000, "disk")
+    assert _bytes_src("x", "cpu", "int8") == (1000, "disk")
 
 
 def test_a_disk_prior_replaces_a_stray_cpu_measurement(ledger):
@@ -593,8 +589,7 @@ def test_a_disk_prior_replaces_a_stray_cpu_measurement(ledger):
     prior forever, since a cpu load never produces a measurement again."""
     model_sizes.record("y", "cpu", "int8", 300)
     model_sizes.record("y", "cpu", "int8", 5000, measured=False)
-    got = model_sizes.lookup("y", "cpu", "int8")
-    assert (got["bytes"], got["src"]) == (5000, "disk")
+    assert _bytes_src("y", "cpu", "int8") == (5000, "disk")
 
 
 def test_an_exact_stray_cpu_measurement_reads_as_disk(ledger):
@@ -602,8 +597,7 @@ def test_an_exact_stray_cpu_measurement_reads_as_disk(ledger):
     fallback: a cpu row an older build wrote as "measured" is a VRAM delta,
     not a measurement of the cpu load, so /stats must not call it one."""
     model_sizes.record("z", "cpu", "int8", 300)
-    got = model_sizes.lookup("z", "cpu", "int8")
-    assert (got["bytes"], got["src"]) == (300, "disk")
+    assert _bytes_src("z", "cpu", "int8") == (300, "disk")
 
 
 def test_disk_size_sizes_a_local_model_directory(ledger, tmp_path):
