@@ -133,6 +133,14 @@ def _fetch(fetch, dest, *, url="https://example.com/v", **kw):
                       **{"max_bytes": 10_000, "timeout": 30, **kw}))
 
 
+def _fetch_progress(fetch, dest, **kw):
+    """`_fetch` with a progress_cb that records each call's args as a tuple;
+    returns (result, seen)."""
+    seen = []
+    out = _fetch(fetch, dest, progress_cb=lambda *a: seen.append(a), **kw)
+    return out, seen
+
+
 def test_extractor_allowlist_case_insensitive(monkeypatch):
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["youtube"],
@@ -960,9 +968,7 @@ open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 64)
 
 def test_download_success(tmp_path, monkeypatch):
     _patch_argv(monkeypatch, _OK_SCRIPT)
-    seen = []
-    out = _fetch(udl.download, tmp_path,
-                 progress_cb=lambda f, tot: seen.append((f, tot)))
+    out, seen = _fetch_progress(udl.download, tmp_path)
     assert os.path.basename(out) == "media.m4a"
     assert os.path.getsize(out) == 64
     assert seen and seen[0][1] == 1000
@@ -1983,9 +1989,7 @@ open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 
 def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeypatch):
     _patch_video_argv(monkeypatch, _TWO_STREAMS_SCRIPT)
-    seen = []
-    out = _fetch(udl.download_video, tmp_path, expected_total=1300,
-                 progress_cb=lambda f, tot, done: seen.append((f, tot, done)))
+    out, seen = _fetch_progress(udl.download_video, tmp_path, expected_total=1300)
     assert os.path.basename(out) == "media.mkv"
     fracs = [f for f, _t, _d in seen]
     assert fracs == sorted(fracs), fracs
@@ -2011,10 +2015,8 @@ def test_download_video_denominator_is_per_leg(tmp_path, monkeypatch):
     leg's estimate of 1000 becomes its measured 1200, the audio leg keeps
     its 300 estimate until its own series starts."""
     _patch_video_argv(monkeypatch, _TWO_LEGS_BY_ID_SCRIPT)
-    seen = []
-    out = _fetch(udl.download_video, tmp_path, format_ids=("616", "140"),
-                 leg_estimates={"616": 1000, "140": 300},
-                 progress_cb=lambda f, t, d: seen.append((f, t, d)))
+    out, seen = _fetch_progress(udl.download_video, tmp_path, format_ids=("616", "140"),
+                                leg_estimates={"616": 1000, "140": 300})
     assert os.path.basename(out) == "media.mkv"
     totals = [t for _f, t, _d in seen]
     assert totals[0] == 1300            # both estimates
@@ -2038,10 +2040,8 @@ def test_download_video_never_reads_100_percent_while_a_leg_is_pending(tmp_path,
     # The probe priced the video leg only: the bar must not sit at 100 %
     # through the whole audio leg.
     _patch_video_argv(monkeypatch, _UNPRICED_AUDIO_LEG_SCRIPT)
-    seen = []
-    _fetch(udl.download_video, tmp_path, format_ids=("616", "140"),
-           leg_estimates={"616": 1000}, expected_total=1000,
-           progress_cb=lambda f, t, d: seen.append((f, t, d)))
+    _, seen = _fetch_progress(udl.download_video, tmp_path, format_ids=("616", "140"),
+                              leg_estimates={"616": 1000}, expected_total=1000)
     fracs = [f for f, _t, _d in seen]
     assert len(seen) == 4 and all(f < 1.0 for f in fracs[:-1]), seen
     assert fracs == sorted(fracs), fracs
@@ -2063,10 +2063,8 @@ def test_download_video_fallback_legs_drop_the_rung_estimates(tmp_path, monkeypa
     # 299 + 251: the never-fetched rung legs' estimates must leave the
     # denominator, or the bar stops at 50 %.
     _patch_video_argv(monkeypatch, _OFF_RUNG_LEGS_SCRIPT)
-    seen = []
-    _fetch(udl.download_video, tmp_path, format_ids=("137", "140"),
-           leg_estimates={"137": 1000, "140": 200}, expected_total=1200,
-           progress_cb=lambda f, t, d: seen.append((f, t, d)))
+    _, seen = _fetch_progress(udl.download_video, tmp_path, format_ids=("137", "140"),
+                              leg_estimates={"137": 1000, "140": 200}, expected_total=1200)
     fracs = [f for f, _t, _d in seen]
     assert fracs == sorted(fracs), seen
     assert all(f < 1.0 for f in fracs[:-1]), seen
@@ -2084,9 +2082,8 @@ open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 
 def test_download_video_counter_reset_inside_one_leg_is_not_a_new_file(tmp_path, monkeypatch):
     _patch_video_argv(monkeypatch, _DROP_INSIDE_ONE_LEG_SCRIPT)
-    seen = []
-    _fetch(udl.download_video, tmp_path, max_bytes=1200, format_ids=("616", None),
-           progress_cb=lambda f, t, d: seen.append((f, t, d)))
+    _, seen = _fetch_progress(udl.download_video, tmp_path, max_bytes=1200,
+                              format_ids=("616", None))
     assert seen[-1] == (1.0, 1000, 1000)
 
 
@@ -2106,9 +2103,7 @@ def test_download_audio_counter_restart_is_not_double_counted(tmp_path, monkeypa
     # restarts the counter, and must not read as a finished first file
     # (600 + 1000 would trip the 1200 cap on a 1000-byte download).
     _patch_argv(monkeypatch, _AUDIO_RESTART_SCRIPT)
-    seen = []
-    out = _fetch(udl.download, tmp_path, max_bytes=1200,
-                 progress_cb=lambda f, tot: seen.append((f, tot)))
+    out, seen = _fetch_progress(udl.download, tmp_path, max_bytes=1200)
     assert os.path.basename(out) == "media.m4a"
     assert seen[-1] == (1.0, 1000)
     assert all(tot == 1000 for _f, tot in seen)

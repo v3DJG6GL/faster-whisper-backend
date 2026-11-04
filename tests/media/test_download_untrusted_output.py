@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from faster_whisper_backend.media import download as udl
-from tests.media.test_download import _fetch, _patch_argv
+from tests.media.test_download import _fetch, _fetch_progress, _patch_argv
 
 
 def test_download_over_long_filtered_line_is_still_a_policy_refusal(tmp_path, monkeypatch):
@@ -29,9 +29,7 @@ print("[generic] Extracting URL: https://x/" + "a" * 100_000, flush=True)
 print("dl:1000 1000 NA", flush=True)
 open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 64)
 """)
-    seen = []
-    out = _fetch(udl.download, tmp_path,
-                 progress_cb=lambda f, tot: seen.append((f, tot)))
+    out, seen = _fetch_progress(udl.download, tmp_path)
     assert out.endswith("media.m4a")
     assert seen and seen[-1] == (1.0, 1000)
 
