@@ -191,6 +191,9 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #      headers object `h` on a mutation (not GET/HEAD). The token is looked up
 #      at call time; quick_config and settings define their api() before the
 #      chrome scripts, hence this home.
+#  10. window._apiFetch(method, path, body), the raw-Response fetch behind the
+#      overrides, api_keys and quick_config pages' api(): Accept JSON, the CSRF
+#      stamp, and a JSON body only when one is given. No status handling.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -222,6 +225,10 @@ SCALE_BOOTSTRAP_HEAD = (
     "btn.classList.add('active');btn.setAttribute('aria-checked','true');return true;};"
     "window._csrfStamp=function(method,h){if(method!=='GET'&&method!=='HEAD')"
     "h['X-CSRF-Token']=window._csrfToken?window._csrfToken():'';};"
+    "window._apiFetch=function(method,path,body){var h={Accept:'application/json'};"
+    "window._csrfStamp(method,h);var opts={method:method,headers:h};"
+    "if(body!==undefined){h['Content-Type']='application/json';opts.body=JSON.stringify(body);}"
+    "return fetch(path,opts);};"
     "(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"

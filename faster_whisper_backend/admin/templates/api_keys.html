@@ -494,18 +494,9 @@
 
   // Sign-in is handled by the shared full-screen login gate (web_common):
   // on a 401 we call window._showLoginGate(), which prompts + reloads.
-  async function api(method, path, body) {
-    // The HttpOnly session cookie is sent automatically; mutations also
-    // carry the double-submit CSRF token.
-    var h = { Accept: 'application/json' };
-    window._csrfStamp(method, h);
-    var opts = { method: method, headers: h };
-    if (body !== undefined) {
-      h['Content-Type'] = 'application/json';
-      opts.body = JSON.stringify(body);
-    }
-    return fetch(path, opts);
-  }
+  // The HttpOnly session cookie is sent automatically; mutations also
+  // carry the double-submit CSRF token.
+  async function api(method, path, body) { return window._apiFetch(method, path, body); }
 
   function _userUrl(uid) {
     return '/settings/api-keys/api/users/' + encodeURIComponent(uid);

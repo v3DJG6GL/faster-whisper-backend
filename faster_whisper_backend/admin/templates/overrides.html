@@ -374,13 +374,7 @@ window._renderWaterfall = (function () {
   }
   var coll = new Intl.Collator('de', { sensitivity: 'base', numeric: true });
 
-  async function api(method, path, body) {
-    var h = { Accept: 'application/json' };
-    window._csrfStamp(method, h);
-    var opts = { method: method, headers: h };
-    if (body !== undefined) { h['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-    return fetch(path, opts);
-  }
+  async function api(method, path, body) { return window._apiFetch(method, path, body); }
   {{NOT_ADMIN_LANDING_JS}}
   async function guard403(r) {
     if (r && r.status === 403) {

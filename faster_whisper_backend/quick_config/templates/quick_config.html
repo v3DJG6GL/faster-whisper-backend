@@ -478,17 +478,8 @@ let dirty = new Set();      // slugs with changes
 // input, so without it a second trigger re-sent the same patch.
 let _saving = false;
 
-async function api(method, path, body) {
-  // Session cookie sent automatically; mutations carry the CSRF token.
-  const h = { 'Accept': 'application/json' };
-  window._csrfStamp(method, h);
-  const opts = { method, headers: h };
-  if (body !== undefined) {
-    h['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(body);
-  }
-  return fetch(path, opts);
-}
+// Session cookie sent automatically; mutations carry the CSRF token.
+async function api(method, path, body) { return window._apiFetch(method, path, body); }
 
 function showToast(msg, kind) {
   const el = document.getElementById('toast');
