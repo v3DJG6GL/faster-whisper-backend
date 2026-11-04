@@ -344,10 +344,9 @@ def test_import_preview_uses_served_blob_cap(client):
     # showCsImportModal reads this page-level flag.
     busy = "  var _csImportBusy = false;\n"
     assert busy in html
-    fns = busy + "\n".join(
+    fns = busy + "function escapeHtml(s) { return String(s); }\n" + "\n".join(
         js_fn(html, f"  function {n}(") for n in (
-            "escapeHtml", "fmtBytes", "csMetaFor", "csContainsSummary",
-            "showCsImportModal",
+            "fmtBytes", "csMetaFor", "csContainsSummary", "showCsImportModal",
         )
     )
     script = fns + """

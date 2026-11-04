@@ -1220,11 +1220,7 @@
     return wrap;
   }
 
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
+  var escapeHtml = window._escHtml;
 
   function _el(tag, cls, text) {
     var e = document.createElement(tag);
