@@ -7,7 +7,7 @@ from typing import get_args
 from faster_whisper_backend.admin import routes as admin_routes
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import schema as settings_schema
-from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
+from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
 
 
 def test_caps_are_read_off_the_schema():
@@ -21,9 +21,7 @@ def test_caps_are_read_off_the_schema():
 def test_oversized_regex_list_replacement_is_rejected(client):
     r = client.post("/settings/test-pipeline", json={
         "sample": "a" * 8192,
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "a", "replacement": "x" * 20000},
-        ]}],
+        "rules": [list_rule([{"pattern": "a", "replacement": "x" * 20000}])],
     })
     assert r.status_code == 400, r.status_code
     assert "replacement too long" in r.json()["error"]
@@ -48,10 +46,10 @@ def test_chained_entries_stop_before_passing_the_output_bound(client, monkeypatc
     # Entry 1 stays under the bound; entry 2 would multiply that text 512x in
     # one sub. The dry run must stop BEFORE running it, not after.
     monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
-    j = dry_run(client, [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+    j = dry_run(client, [list_rule([
         {"pattern": "x", "replacement": "x" * 512},
         {"pattern": "x", "replacement": "x" * 512},
-    ]}], "x" * 78)
+    ])], "x" * 78)
     step = j["steps"][0]
     assert step["capped"] is True
     assert step["after"] == "x" * (78 * 512)
@@ -71,9 +69,7 @@ def test_backref_template_counts_its_expansion_against_the_bound(client, monkeyp
 def test_map_rule_stops_before_passing_the_output_bound(client, monkeypatch):
     monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
     j = dry_run(client, [
-        {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "a", "replacement": "komma " * 60},
-        ]},
+        list_rule([{"pattern": "a", "replacement": "komma " * 60}]),
         {"name": "m", "type": "callback:map", "enabled": True,
          "map": {"komma": "," * 64}},
         upper_rule("(a)"),
@@ -109,10 +105,10 @@ def test_oversized_callback_pattern_is_rejected_before_the_screen(client, monkey
 def test_oversized_regex_list_pattern_is_rejected(client):
     r = client.post("/settings/test-pipeline", json={
         "sample": "a",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+        "rules": [list_rule([
             {"pattern": "a", "replacement": "b"},
             {"pattern": "a" * 513, "replacement": "b"},
-        ]}],
+        ])],
     })
     assert r.status_code == 400, r.status_code
     assert "pattern too long" in r.json()["error"]

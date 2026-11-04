@@ -13,7 +13,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto
 from tests._translation_helpers import enable_translation, lab_run
-from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
+from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
 from tests.conftest import _repoint_path_default, bearer
 
 
@@ -459,8 +459,7 @@ def test_clear_local_override_keeps_env_pinned_running_rules(
 
 def test_test_pipeline_dry_run(client):
     body = dry_run(client, [
-        {"name": "noop", "type": "regex-list", "enabled": True,
-         "entries": [{"pattern": "welt", "replacement": "world"}]},
+        list_rule([{"pattern": "welt", "replacement": "world"}], name="noop"),
     ], "  hallo welt  ")
     assert "steps" in body and "final" in body
     # The regex-list entry runs, then the implicit terminal trim strips edges.
@@ -474,8 +473,7 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
     # was handed, so nothing the dry run builds ever passes the bound.
     bound = pl_engine._POSTPROCESS_MAX_CHARS
     dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
-    rules = [{"name": f"r{i}", "type": "regex-list", "enabled": True,
-              "entries": [dbl]} for i in range(12)]
+    rules = [list_rule([dbl], name=f"r{i}") for i in range(12)]
     r = client.post("/settings/test-pipeline",
                     json={"sample": "a" * 8192, "rules": rules})
     assert r.status_code == 200, r.text[:200]
@@ -491,8 +489,7 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
     # The same bound inside ONE regex-list: each entry is its own engine row.
     r = client.post("/settings/test-pipeline", json={
         "sample": "a" * 8192,
-        "rules": [{"name": "x", "type": "regex-list", "enabled": True,
-                   "entries": [dbl] * 12}]})
+        "rules": [list_rule([dbl] * 12, name="x")]})
     assert r.status_code == 200
     step = r.json()["steps"][0]
     assert step["capped"] is True
@@ -505,11 +502,11 @@ def test_test_pipeline_regex_list_skips_bad_entry(client):
     # applies the valid ones. The dry-run mirrors that and reports the bad
     # pattern as an advisory rather than discarding every entry's effect.
     j = dry_run(client, [
-        {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+        list_rule([
             {"pattern": "foo", "replacement": "X"},
             {"pattern": "(", "replacement": "Y"},   # uncompilable
             {"pattern": "bar", "replacement": "Z"},
-        ]},
+        ]),
     ], "foo bar")
     step = j["steps"][0]
     assert step["after"] == "X Z"
@@ -563,8 +560,7 @@ def test_test_pipeline_skips_a_rule_scoped_to_other_languages(client):
     rules = [
         {"name": "de-only", "type": "regex-list", "enabled": True,
          "languages": ["de"], "entries": [{"pattern": "welt", "replacement": "world"}]},
-        {"name": "any", "type": "regex-list", "enabled": True,
-         "entries": [{"pattern": "hallo", "replacement": "hi"}]},
+        list_rule([{"pattern": "hallo", "replacement": "hi"}], name="any"),
     ]
 
     def run(language):
@@ -593,8 +589,7 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
     for the life of the process. Both the regex-list and single-pattern paths
     screen with regex_guard before compiling."""
     steps = dry_run(client, [
-        {"name": "boom-list", "type": "regex-list", "enabled": True,
-         "entries": [{"pattern": r"(\w+ )+$", "replacement": ""}]},
+        list_rule([{"pattern": r"(\w+ )+$", "replacement": ""}], name="boom-list"),
         upper_rule(r"(\w+ ?)+", name="boom-single"),
     ], "aaaaaaaaaaaaaaaaaaaa!")["steps"]
     assert "nested repetition" in (steps[0]["error"] or "")
@@ -617,8 +612,7 @@ def test_test_pipeline_fixed_count_nest_screened_not_run(client):
     pat = r"(?:(?:a{0}){3000}){3000}"
     t0 = _time.monotonic()
     steps = dry_run(client, [
-        {"name": "fc-list", "type": "regex-list", "enabled": True,
-         "entries": [{"pattern": pat, "replacement": ""}]},
+        list_rule([{"pattern": pat, "replacement": ""}], name="fc-list"),
         upper_rule(pat, name="fc-single"),
     ], "abcd")["steps"]
     assert _time.monotonic() - t0 < 1.0
