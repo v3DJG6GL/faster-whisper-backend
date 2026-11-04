@@ -1,6 +1,7 @@
 """Shared helpers for the tests/settings/ rule and config.local.json tests."""
 import json
 import os
+import re
 
 from faster_whisper_backend import paths
 from faster_whisper_backend.settings import schema as settings_schema
@@ -52,6 +53,16 @@ def assert_upgrades_to_factory_once(rules, paths):
     assert renames.upgrade_rule_entries(raw) == paths
     assert raw["PIPELINE_RULES"] == factory_rules()
     assert renames.upgrade_rule_entries(raw) == []
+
+
+def assert_same_output_as_old(label, samples):
+    """Factory entry `label` gives the same output on `samples` as the pair
+    it was upgraded from."""
+    from faster_whisper_backend.settings import config_renames as renames
+    entry = entry_by_label(factory_rules(), label)
+    old = renames.UPGRADED_RULE_ENTRIES[label][0]
+    for s in samples:
+        assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), repr(s)
 
 
 def old_strip_whisper_punctuation():

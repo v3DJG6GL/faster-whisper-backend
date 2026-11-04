@@ -16,6 +16,7 @@ from faster_whisper_backend.settings import config_renames as renames
 from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
 from tests.settings._rules_helpers import (
+    assert_same_output_as_old as _assert_same_output_as_old,
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     entry_by_label as _entry,
     factory_rules as _factory_rules,
@@ -428,13 +429,6 @@ def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_modul
     items took 7 s on /transcribe. A match now starts only at a run's first
     space (0.05 s)."""
     _assert_silence_loop_is_fast(app_module, unit, 40000)
-
-
-def _assert_same_output_as_old(label, samples):
-    entry = _entry(_factory_rules(), label)
-    old = renames.UPGRADED_RULE_ENTRIES[label][0]
-    for s in samples:
-        assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
 
 
 def test_space_before_closing_punct_output_is_unchanged():

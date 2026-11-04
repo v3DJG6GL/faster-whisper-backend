@@ -9,7 +9,6 @@ paragraph breaks started a scan to its end.
 """
 
 import copy
-import re
 import time
 
 import pytest
@@ -17,16 +16,12 @@ import pytest
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
 from tests.settings._rules_helpers import (
+    assert_same_output_as_old as _assert_same_output_as_old,
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     factory_rules as _factory_rules,
 )
 
 _LABELS = ("es-opening-question-mark", "es-opening-exclamation-mark")
-
-
-def _entries():
-    rules = {r["name"]: r for r in _factory_rules()}
-    return {e["label"]: e for e in rules["es-punctuation"]["entries"]}
 
 
 @pytest.mark.parametrize("text, want", [
@@ -59,10 +54,7 @@ _SPANISH = (
 
 @pytest.mark.parametrize("label", _LABELS)
 def test_the_output_is_unchanged(label):
-    e = _entries()[label]
-    old = renames.UPGRADED_RULE_ENTRIES[label][0]
-    for s in _SPANISH:
-        assert re.sub(e["pattern"], e["replacement"], s) == re.sub(*old, s), repr(s)
+    _assert_same_output_as_old(label, _SPANISH)
 
 
 def test_a_stored_copy_of_the_previous_entries_is_upgraded_once():

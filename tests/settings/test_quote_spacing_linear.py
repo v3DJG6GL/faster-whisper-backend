@@ -15,6 +15,7 @@ import time
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
 from tests.settings._rules_helpers import (
+    assert_same_output_as_old as _assert_same_output_as_old,
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     entry_by_label as _entry,
     factory_rules as _factory_rules,
@@ -63,11 +64,10 @@ _SENTENCES = (
 
 
 def test_the_output_is_unchanged():
+    _assert_same_output_as_old(_LABEL, _SENTENCES)
     e = _entry(_factory_rules(), _LABEL)
     old = renames.UPGRADED_RULE_ENTRIES[_LABEL][0]
     new, old_re = re.compile(e["pattern"]), re.compile(old[0])
-    for s in _SENTENCES:
-        assert new.sub(e["replacement"], s) == old_re.sub(old[1], s), repr(s)
     rnd = random.Random(0)
     alphabet = '"  \t\na.,!b\r'
     for _ in range(20000):
