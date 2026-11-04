@@ -10,7 +10,6 @@ with node so the /captures preview is pinned to the same output.
 import json
 import pathlib
 import shutil
-import subprocess
 import time
 
 import pytest
@@ -18,6 +17,7 @@ import pytest
 from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.pipeline import engine as pl_engine
+from tests._page_helpers import node_json
 
 _CASES = [
     # A chip on the second "the" leaves the first alone.
@@ -335,10 +335,7 @@ def _run_js_twin(cases):
     script = (fn + "\nprocess.stdout.write(JSON.stringify("
               + json.dumps(cases, ensure_ascii=False)
               + ".map(function(c) { return _applyChipsToText(c[0], c[1], c[2]); })));")
-    p = subprocess.run([_NODE, "-e", script], capture_output=True,
-                       text=True, encoding="utf-8")
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout)
+    return node_json(script)
 
 
 @pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
@@ -363,10 +360,7 @@ def test_js_twin_with_many_chips_on_a_long_spaced_text_stays_fast():
               + "\nvar out = _applyChipsToText(toks.join(' '), "
               + json.dumps(_LONG_CHIPS) + ", words);"
               + "\nprocess.stdout.write(JSON.stringify([Date.now() - t0, out]));")
-    p = subprocess.run([_NODE, "-e", script], capture_output=True,
-                       text=True, encoding="utf-8")
-    assert p.returncode == 0, p.stderr
-    ms, out = json.loads(p.stdout)
+    ms, out = node_json(script)
     assert ms < 2000
     assert out == _LONG_EXPECTED
 
