@@ -14,6 +14,7 @@ from tests.conftest import bearer
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 URL = "/v1/request-default-settings"
+_SERVER = {"source": "server", "label": "global default", "locked": False}
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +56,7 @@ def test_every_client_key_with_value_source_and_lock(client, app_module, monkeyp
     assert j["model"] == app_module.cfg.DEFAULT_MODEL
     assert j["profile_applied"] is None
     beam = j["settings"]["beam_size"]
-    assert beam == {"value": 7, "source": "server", "label": "global default", "locked": False}
+    assert beam == {"value": 7, **_SERVER}
     for entry in j["settings"].values():
         assert set(entry) == {"value", "source", "label", "locked"}
 
@@ -76,8 +77,7 @@ def test_per_model_value_says_model(client, app_module, monkeypatch):
 def test_multilingual_is_a_client_key(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "MULTILINGUAL", True)
     ml = client.get(URL).json()["settings"]["multilingual"]
-    assert ml == {"value": True, "source": "server", "label": "global default",
-                  "locked": False}
+    assert ml == {"value": True, **_SERVER}
 
 
 def test_unset_value_is_builtin(client, app_module, monkeypatch):
@@ -142,7 +142,7 @@ def test_lock_without_value_keeps_the_inherited_source(client, make_user_key, ap
     monkeypatch.setattr(app_module.cfg, "BEAM_SIZE", 9)
     ah = _bound_alice(client, make_user_key, locks=["BEAM_SIZE"])
     beam = client.get(URL, headers=ah).json()["settings"]["beam_size"]
-    assert beam == {"value": 9, "source": "server", "label": "global default", "locked": True}
+    assert beam == {"value": 9, **_SERVER, "locked": True}
 
 
 def test_request_profile_layers_under_identity(client, make_user_key):
@@ -186,8 +186,7 @@ def test_old_path_is_a_deprecated_alias(client):
 def test_translation_context_segments_entry(client, app_module, make_user_key, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3)
     j = client.get(URL).json()
-    assert j["translation"] == {"context_segments": {
-        "value": 3, "source": "server", "label": "global default", "locked": False}}
+    assert j["translation"] == {"context_segments": {"value": 3, **_SERVER}}
     ah = _bound_alice(client, make_user_key, profiles=["ctx"],
                       define={"ctx": {"TRANSLATION_CONTEXT_SEGMENTS": 0,
                                       "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]}})
@@ -205,11 +204,10 @@ def test_run_defaults_entries(client, app_module, monkeypatch):
                         "pyannote/speaker-diarization-community-1")
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-MDX-NET-Inst_HQ_4")
     j = client.get(URL).json()
-    srv = {"source": "server", "label": "global default", "locked": False}
-    assert j["language"] == {"value": "de", **srv}
-    assert j["diarize"] == {"value": False, **srv}
-    assert j["separate_bgm"] == {"value": False, **srv}
-    assert j["word_timestamps"] == {"value": True, **srv}
+    assert j["language"] == {"value": "de", **_SERVER}
+    assert j["diarize"] == {"value": False, **_SERVER}
+    assert j["separate_bgm"] == {"value": False, **_SERVER}
+    assert j["word_timestamps"] == {"value": True, **_SERVER}
     assert j["diarization_model"]["value"] == "pyannote/speaker-diarization-community-1"
     assert j["separation_model"]["value"] == "UVR-MDX-NET-Inst_HQ_4"
     # "" is auto-detect.
