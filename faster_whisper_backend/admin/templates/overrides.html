@@ -363,6 +363,11 @@ window._renderWaterfall = (function () {
     if (text != null) e.textContent = text;
     return e;
   }
+  function _btn(parent, cls, text, onclick) {
+    var b = _el('button', cls, text);
+    b.onclick = onclick;
+    parent.appendChild(b);
+  }
   // Set/unset dot shared by the sidebar, the pane head and the field rows.
   function dotHtml(on) {
     return '<span class="ov-dot ' + (on ? 'on' : 'off') + '">' + (on ? '●' : '○') + '</span>';
@@ -491,26 +496,19 @@ window._renderWaterfall = (function () {
       listEl.appendChild(addWrap);
     }
     var acts = _el('div', 'ov-side-actions');
-    var nb = _el('button', 'ghost', '+ New');
-    nb.onclick = function () {
+    _btn(acts, 'ghost', '+ New', function () {
       uiAdding = true; uiRenaming = false; uiConfirmDel = false; setStatus(''); render();
-    };
-    acts.appendChild(nb);
+    });
     if (sel) {
-      var rb = _el('button', 'ghost', '✎ Rename');
-      rb.onclick = startRename; acts.appendChild(rb);
-      var db = _el('button', 'ghost', '⧉ Duplicate');
-      db.onclick = duplicateProfile; acts.appendChild(db);
+      _btn(acts, 'ghost', '✎ Rename', startRename);
+      _btn(acts, 'ghost', '⧉ Duplicate', duplicateProfile);
       if (uiConfirmDel) {
         var cf = _el('span', 'ov-confirm', 'Delete?');
-        var yes = _el('button', 'danger', '✓ Yes');
-        yes.onclick = confirmDelete; cf.appendChild(yes);
-        var dno = _el('button', 'ghost', '✕');
-        dno.onclick = function () { uiConfirmDel = false; render(); };
-        cf.appendChild(dno); acts.appendChild(cf);
+        _btn(cf, 'danger', '✓ Yes', confirmDelete);
+        _btn(cf, 'ghost', '✕', function () { uiConfirmDel = false; render(); });
+        acts.appendChild(cf);
       } else {
-        var xb = _el('button', 'danger', '✕ Delete');
-        xb.onclick = startDelete; acts.appendChild(xb);
+        _btn(acts, 'danger', '✕ Delete', startDelete);
       }
     }
     listEl.appendChild(acts);
@@ -729,9 +727,7 @@ window._renderWaterfall = (function () {
 
     if (isSet(p, name)) {
       valCell.appendChild(makeWidget(name, meta, p[name], function (v) { setVal(p, name, v); }));
-      var rb = _el('button', 'reset', '↶ reset');
-      rb.onclick = function () { clearVal(p, name); };
-      ctrl.appendChild(rb);
+      _btn(ctrl, 'reset', '↶ reset', function () { clearVal(p, name); });
     } else {
       var dv = (S.defaults || {})[name];
       var inh = _el('span', 'ov-inherits');
@@ -742,14 +738,12 @@ window._renderWaterfall = (function () {
       inhVal.title = 'Inherited global default — ' + fmtVal(dv);
       inh.appendChild(inhLbl); inh.appendChild(inhVal);
       valCell.appendChild(inh);
-      var ab = _el('button', null, '+ override');
       // Seed from the inherited value so starting an override doesn't silently
       // change behaviour; with nothing inherited, fall back to the type default
       // (true / min / first option) — matches the per-model page.
-      ab.onclick = function () {
+      _btn(ctrl, null, '+ override', function () {
         setVal(p, name, (dv === null || dv === undefined) ? defaultFor(meta) : dv);
-      };
-      ctrl.appendChild(ab);
+      });
     }
     row.appendChild(valCell); row.appendChild(lockCell); row.appendChild(ctrl);
     return row;
