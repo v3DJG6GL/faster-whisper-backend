@@ -149,9 +149,10 @@ def fake_pipeline(monkeypatch):
     return fake
 
 
-def _insert(conn, cid, *, language, raw="hello", final="hello"):
+def _insert(conn, cid, *, language, raw="hello", final="hello", user_id="alice",
+            **cols):
     insert_capture(conn, cid, language=language, audio_relpath="x.wav",
-                   raw_text=raw, final_text=final, user_id="alice")
+                   raw_text=raw, final_text=final, user_id=user_id, **cols)
 
 
 def _insert_sample(conn, gs, sid, *, locked=0):
@@ -249,11 +250,10 @@ def test_run_scopes_a_translate_capture_by_its_english_text(
     monkeypatch.setattr(pl_engine, "_postprocess_text", _postprocess_text)
     conn = cs._require_conn()
     raw = "It is over. Was it good?"
-    _insert(conn, "reapplytr001", language="de", raw=raw, final=raw)
-    conn.execute("UPDATE captures SET task = 'translate', text_for_training = ?"
-                 " WHERE id = 'reapplytr001'", (raw,))
-    _insert(conn, "reapplytx001", language="de", raw=raw, final=raw)
-    conn.execute("UPDATE captures SET task = 'transcribe' WHERE id = 'reapplytx001'")
+    _insert(conn, "reapplytr001", language="de", raw=raw, final=raw,
+            task="translate", text_for_training=raw)
+    _insert(conn, "reapplytx001", language="de", raw=raw, final=raw,
+            task="transcribe")
 
     captures_reapply._run()
 
@@ -270,9 +270,8 @@ def test_run_skips_a_row_whose_owner_identity_fails_to_resolve(
     remaining rows were never processed."""
     cs = captures_store_db
     conn = cs._require_conn()
-    _insert(conn, "reapplyid001", language="de")
+    _insert(conn, "reapplyid001", language="de", user_id="bob")
     _insert(conn, "reapplyid002", language="de")
-    conn.execute("UPDATE captures SET user_id = 'bob' WHERE id = 'reapplyid001'")
 
     def build_ident(who, model_id):
         if who.get("user_id") == "bob":
@@ -366,12 +365,8 @@ def test_run_rebuilds_a_group_transcript_with_chips_on_their_aligned_word(
     gs = groups_store_db
     _insert_sample(conn, gs, "reapplysid000001")
     _insert(conn, "reapplychip1", language="de", raw="die katze die",
-            final="old")
-    conn.execute(
-        "UPDATE captures SET sample_id = ?, sample_order = 0, corrections = ?"
-        " WHERE id = 'reapplychip1'",
-        ("reapplysid000001",
-         json.dumps([{"idx": 3, "wrong": "DIE", "correct": "DER"}])))
+            final="old", sample_id="reapplysid000001", sample_order=0,
+            corrections=json.dumps([{"idx": 3, "wrong": "DIE", "correct": "DER"}]))
 
     captures_reapply._run()
 

@@ -29,11 +29,11 @@ def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
 
 
 def _insert_capture(cs, cid, *, sample_id=None, sample_order=None, language="de",
-                    user_id="u1", created_ts=1.0, corrections="[]"):
+                    user_id="u1", created_ts=1.0, corrections="[]", **cols):
     insert_capture(cs._require_conn(), cid, created_ts=created_ts, language=language,
                    audio_s=2.0, raw_text="raw", final_text="final",
                    corrections=corrections, user_id=user_id,
-                   sample_id=sample_id, sample_order=sample_order)
+                   sample_id=sample_id, sample_order=sample_order, **cols)
 
 
 def test_relpath_for_fanout(groups_store_db):
@@ -397,10 +397,8 @@ def test_get_members_carries_task_and_group_manifest_row_says_translate(
     sid = "gtasktranslate0a"
     relpath = _insert_group(gs, sid, status="ready", transcript="hello there")
     for i, cid in enumerate(("captask000000000", "captask000000001")):
-        _insert_capture(cs, cid, sample_id=sid, sample_order=i)
-        cs._require_conn().execute(
-            "UPDATE captures SET task = 'translate', text_for_training = 'hi'"
-            " WHERE id = ?", (cid,))
+        _insert_capture(cs, cid, sample_id=sid, sample_order=i,
+                        task="translate", text_for_training="hi")
     _touch(gs.abs_path_for(relpath), b"RIFF")
 
     members = gs.get_members(sid)
@@ -423,14 +421,10 @@ def test_get_members_carries_word_count(captures_store_db, groups_store_db):
     gs = groups_store_db
     sid = "gwordcount000000"
     _insert_group(gs, sid)
-    _insert_capture(cs, "capwc00000000001", sample_id=sid, sample_order=0)
-    _insert_capture(cs, "capwc00000000002", sample_id=sid, sample_order=1)
-    conn = cs._require_conn()
-    conn.execute("UPDATE captures SET words = ? WHERE id = ?",
-                 (json.dumps([{"w": "a"}, {"w": "b"}, {"w": "c"}]),
-                  "capwc00000000001"))
-    conn.execute("UPDATE captures SET words = ? WHERE id = ?",
-                 ("[1,", "capwc00000000002"))
+    _insert_capture(cs, "capwc00000000001", sample_id=sid, sample_order=0,
+                    words=json.dumps([{"w": "a"}, {"w": "b"}, {"w": "c"}]))
+    _insert_capture(cs, "capwc00000000002", sample_id=sid, sample_order=1,
+                    words="[1,")
     assert [m["word_count"] for m in gs.get_members(sid)] == [3, 0]
 
 
