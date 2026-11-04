@@ -392,10 +392,8 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
     only their OWN rows (the global cross-user breakdown must not leak);
     an admin keeps the global numbers. Pins the user_id= plumbing from the
     route into captures_store.count/counts_by_status."""
-    _uid_root, raw_root = make_user_key("root", is_admin=True)
-    uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
+    raw_root, uid_a, raw_a, conn = _root_and_alice(make_user_key)
     uid_b, _raw_b = make_user_key("bob", pages={"captures": "own"})
-    conn = captures_store._require_conn()
     _insert_member(conn, "alicecap0001", None, user_id=uid_a)
     _insert_member(conn, "bobcap000001", None, user_id=uid_b)
     _insert_member(conn, "bobcap000002", None, user_id=uid_b)
@@ -460,10 +458,8 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     stream."""
     import logging
 
-    make_user_key("root", is_admin=True)
-    uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
+    _, uid_owner, _, conn = _root_and_alice(make_user_key)
     _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
-    conn = captures_store._require_conn()
     _insert_member(conn, "byreqcap0001", None, user_id=uid_owner,
                    request_id="req-xyz")
 

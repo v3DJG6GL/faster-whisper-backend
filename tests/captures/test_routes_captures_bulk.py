@@ -34,10 +34,8 @@ def test_stats_empty_queue(client):
 
 
 def test_stats_arithmetic_median_ready_week_oldest_new(client, make_user_key):
-    _root, raw_root = make_user_key("root", is_admin=True)
-    uid_a, _ = make_user_key("alice", pages={"captures": "own"})
+    raw_root, uid_a, _, conn = _root_and_alice(make_user_key)
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
-    conn = captures_store._require_conn()
     now = time.time()
     _row(conn, "a1a1a1a1a1a1", user_id=uid_a, audio_s=1.0, created_ts=100.0)
     _row(conn, "a2a2a2a2a2a2", user_id=uid_a, audio_s=2.0, created_ts=50.0)
@@ -63,10 +61,8 @@ def test_stats_arithmetic_median_ready_week_oldest_new(client, make_user_key):
 
 
 def test_stats_scoped_to_caller_and_admin_only_override(client, make_user_key):
-    _root, raw_root = make_user_key("root", is_admin=True)
-    uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
+    raw_root, uid_a, raw_a, conn = _root_and_alice(make_user_key)
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
-    conn = captures_store._require_conn()
     _row(conn, "a1a1a1a1a1a1", user_id=uid_a, audio_s=1.0)
     _row(conn, "b1b1b1b1b1b1", user_id=uid_b, audio_s=5.0)
     _row(conn, "b2b2b2b2b2b2", user_id=uid_b, audio_s=5.0)
@@ -103,11 +99,9 @@ def test_stats_folds_speakers_past_eight_into_others(client, make_user_key):
 
 
 def test_list_user_id_accepts_several_speakers(client, make_user_key):
-    _root, raw_root = make_user_key("root", is_admin=True)
-    uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
+    raw_root, uid_a, raw_a, conn = _root_and_alice(make_user_key)
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
     uid_c, _ = make_user_key("carla", pages={"captures": "own"})
-    conn = captures_store._require_conn()
     _row(conn, "a1a1a1a1a1a1", user_id=uid_a)
     _row(conn, "b1b1b1b1b1b1", user_id=uid_b)
     _row(conn, "c1c1c1c1c1c1", user_id=uid_c, status="ready")
@@ -142,11 +136,9 @@ def test_list_user_id_rejects_an_oversized_speaker_list(client, make_user_key):
 def test_samples_user_id_accepts_several_speakers(client, make_user_key):
     """/captures/api/samples scopes like the list: each comma-separated
     speaker is its own id, not one `user_id = ?` string that matches nothing."""
-    _root, raw_root = make_user_key("root", is_admin=True)
-    uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
+    raw_root, uid_a, raw_a, conn = _root_and_alice(make_user_key)
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
     uid_c, _ = make_user_key("carla", pages={"captures": "own"})
-    conn = captures_store._require_conn()
     _insert_sample(conn, gs, "sampleaaaaa1", locked=False, user_id=uid_a)
     _insert_sample(conn, gs, "samplebbbbb1", locked=False, user_id=uid_b)
     _insert_sample(conn, gs, "sampleccccc1", locked=False, user_id=uid_c)
@@ -287,10 +279,8 @@ def test_bulk_status_skips_locked_member_for_nonadmin_only(client, make_user_key
 
 
 def test_bulk_status_foreign_and_missing_are_both_not_found(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
+    _, _, raw_a, conn = _root_and_alice(make_user_key)
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
-    conn = captures_store._require_conn()
     _row(conn, "b1b1b1b1b1b1", user_id=uid_b)
 
     body = _bulk(client, raw_a, ["b1b1b1b1b1b1", "nope00000000"], "ready").json()
