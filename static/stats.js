@@ -1560,6 +1560,13 @@ function tallyDays(n, from, to, slot) {
   for (let d = from; d <= to; d++) out[slot(d)]++;
   return out;
 }
+// The first group (label first) whose val() holds 60 %+ of total, as title
+// text; null when none does.
+const MOSTLY_SHARE = 0.6;
+function mostlyOf(groups, total, val) {
+  const g = groups.find(x => val(x) / total >= MOSTLY_SHARE);
+  return g ? 'mostly ' + g[0] : null;
+}
 // The phrase in the title: one slot holding 50 %+ of the measure, else the
 // most specific day / hour-range group holding 60 %+, prefixed "mostly" so
 // it reads as a share, not as the peak; '–' when none does, 'quiet' when empty.
@@ -1577,8 +1584,7 @@ function hoursPhrase(cells) {
   DAY_PARTS.forEach(([p, a, b]) => { groups.push(['Mon–Fri ' + p, wk, a, b]); groups.push(['Sat–Sun ' + p, we, a, b]); });
   DAY_PARTS.forEach(([p, a, b]) => groups.push([p, [0, 1, 2, 3, 4, 5, 6], a, b]));
   groups.push(['Mon–Fri', wk, 0, 24]); groups.push(['Sat–Sun', we, 0, 24]);
-  for (const [label, days, a, b] of groups) if (sum(days, a, b) / total >= 0.6) return 'mostly ' + label;
-  return '–';
+  return mostlyOf(groups, total, ([, days, a, b]) => sum(days, a, b)) || '–';
 }
 // Three rhythms share one renderer: a grid of rows × columns with a
 // measure per cell, marginal bars on top (per column) and right (per
@@ -1862,9 +1868,8 @@ function domPhrase(colTot, rowTot) {
   const total = colTot.reduce((a, v) => a + v, 0);
   const third = n => colTot.slice(n * 10, n === 2 ? 31 : n * 10 + 10).reduce((a, v) => a + v, 0);
   const thirds = [['1st–10th', third(0)], ['11th–20th', third(1)], ['21st–31st', third(2)]];
-  for (const [label, v] of thirds) if (v / total >= 0.6) return 'mostly ' + label;
-  for (const [label, a, b] of DAY_PARTS) if (rowTot.slice(a, b).reduce((x, v) => x + v, 0) / total >= 0.6) return 'mostly ' + label;
-  return '–';
+  return mostlyOf(thirds, total, g => g[1])
+    || mostlyOf(DAY_PARTS, total, ([, a, b]) => rowTot.slice(a, b).reduce((x, v) => x + v, 0)) || '–';
 }
 // Months: the top month when it carries 40 %+, else the top two when they carry 50 %+.
 function monthPhrase(colTot) {
