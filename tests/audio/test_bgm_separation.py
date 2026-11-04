@@ -8,7 +8,6 @@ import tempfile
 import pytest
 
 from faster_whisper_backend.audio import bgm_separation
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile
 from tests._transcription_helpers import post_verbose as _post
 
@@ -192,11 +191,7 @@ def test_locked_separate_ignores_client_param(client, make_user_key,
     _stub_separate(monkeypatch, calls)
     _, raw_alice = bind_profile(client, make_user_key, "nosep",
                                 {"locks": ["SEPARATE_BGM"]})
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "separate_bgm": "true"},
-    )
+    r = _post(client, bearer(raw_alice), separate_bgm="true")
     assert r.status_code == 200, r.text
     assert calls == []                     # pinned off (global default)
     assert "separate_bgm" in r.json()["overrides_ignored"]

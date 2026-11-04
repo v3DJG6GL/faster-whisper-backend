@@ -180,10 +180,7 @@ def test_locked_translate_to_ignores_client_param(client, app_module,
         client, make_user_key, "de-only",
         {"TRANSLATE_TO": "de", "locks": ["TRANSLATE_TO"]})
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "translate_to": "en"})
+    r = _post(client, bearer(raw_alice), translate_to="en")
     assert r.status_code == 200, r.text
     body = r.json()
     assert calls[0]["targets"] == ["de"]           # locked value wins
@@ -345,9 +342,7 @@ def test_locked_context_segments_ignores_client_value(
         client, make_user_key, "ctx",
         {"TRANSLATION_CONTEXT_SEGMENTS": 1,
          "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]})
-    r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-                    data={"model": "whisper-1", "response_format": "verbose_json",
-                          "translate_to": "en", "context_segments": "6"})
+    r = _post(client, bearer(raw_alice), translate_to="en", context_segments="6")
     assert r.status_code == 200, r.text
     assert calls[-1]["context_segments"] == 1
     assert "context_segments" in r.json()["overrides_ignored"]
