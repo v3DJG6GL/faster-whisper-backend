@@ -1012,5 +1012,5 @@ def test_final_decode_starts_from_a_clean_session_wait():
     body = src[src.index("async def decode_final("):]
     body = body[:body.index("\n        async def ", 1)]
     take = body.index("metrics.take_wait()")
-    assert body.index('raise _CredentialRevoked') < take
+    assert body.index('_require_live_credential()') < take
     assert take < body.index("await _transcribe(")

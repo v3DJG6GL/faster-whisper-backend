@@ -1037,10 +1037,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         if req_language is None else "")
                     or "")
 
-        async def decode_partial(audio, prompt):
+        def _require_live_credential():
+            """Re-resolve the identity; abort this decode / row if the credential was revoked."""
             _refresh_ident()
             if _auth_revoked:
                 raise _CredentialRevoked("credential revoked mid-session")
+
+        async def decode_partial(audio, prompt):
+            _require_live_credential()
             kwargs = _build_transcribe_kwargs(
                 partial_model_name, final=False, prompt=prompt,
                 want_words=gate_partial_words, language=req_language,
@@ -1116,12 +1120,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             return alp < floor and temp >= ceil
 
         async def decode_final(audio, prompt):
-            _refresh_ident()
-            if _auth_revoked:
-                # Raised BEFORE the model call, so on_final never runs: no
-                # captures row, no quick_config trace, no usage row, no GPU work
-                # attributed to an identity that no longer exists.
-                raise _CredentialRevoked("credential revoked mid-session")
+            # Raised BEFORE the model call, so on_final never runs: no
+            # captures row, no quick_config trace, no usage row, no GPU work
+            # attributed to an identity that no longer exists.
+            _require_live_credential()
             # Each final starts from a clean accumulator: when a final's on_final
             # (the only take that records it) never runs — postprocess or emit
             # raised first — the wait its gate charged would otherwise land on the
@@ -1417,12 +1419,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # Same guard as decode_final, repeated here because on_final also
             # runs WITHOUT a decode (the near-silence gate reports the committed
             # text): a revoked identity gets no captures row, trace or usage row.
-            _refresh_ident()
-            if _auth_revoked:
-                # Raise (not return) so the gate path — where no decode ran and
-                # this is the only latch site — still reaches the pump's
-                # _CredentialRevoked branch that closes the socket.
-                raise _CredentialRevoked("credential revoked mid-session")
+            # Raise (not return) so the gate path — where no decode ran and
+            # this is the only latch site — still reaches the pump's
+            # _CredentialRevoked branch that closes the socket.
+            _require_live_credential()
             rid = uuid.uuid4().hex
             raw_text = info["raw_text"] or ""
             words = info.get("words") or []
