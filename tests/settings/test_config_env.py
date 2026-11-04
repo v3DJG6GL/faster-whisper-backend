@@ -69,7 +69,7 @@ def test_env_bool(monkeypatch):
     monkeypatch.setenv("X_B", "maybe")
     assert config._env_bool("X_B", True) is True
     assert config._env_bool("X_B", False) is False
-    assert any("X_B='maybe'" in w for w in config._ENV_WARNINGS)
+    _assert_warned("X_B='maybe'")
     assert "X_B" in config._ENV_UNPARSED
 
 
@@ -268,6 +268,11 @@ def _assert_nothing_dropped():
     assert not any("was dropped" in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
+def _assert_warned(*needles):
+    """One startup warning holds every needle."""
+    assert any(all(n in m for n in needles) for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+
+
 def _stub_stored(monkeypatch, raw):
     """config.local.json holds `raw` (a fresh copy per read). config.py
     re-imports load_overrides from config_store on reload and the path
@@ -370,19 +375,19 @@ def test_json_pipeline_rules_env_upgrades_an_old_factory_entry(monkeypatch, rest
     _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=_json.dumps(rules))
     e = config.PIPELINE_RULES[0]["entries"][0]
     assert (e["pattern"], e["replacement"]) == new
-    assert any("upgraded factory rule entries" in m for m in config._ENV_WARNINGS)
+    _assert_warned("upgraded factory rule entries")
 
 
 def test_invalid_json_keeps_default_and_warns(monkeypatch, restore_config):
     _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES="not json")
     assert len(config.PIPELINE_RULES) >= 2
-    assert any("WHISPER_PIPELINE_RULES" in m for m in config._ENV_WARNINGS)
+    _assert_warned("WHISPER_PIPELINE_RULES")
 
 
 def test_bad_scalar_records_warning(monkeypatch, restore_config):
     _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="ten")
     assert config.BEAM_SIZE == 10   # default kept
-    assert any("WHISPER_BEAM_SIZE" in m for m in config._ENV_WARNINGS)
+    _assert_warned("WHISPER_BEAM_SIZE")
 
 
 def test_secret_file_indirection(monkeypatch, tmp_path):
@@ -506,8 +511,7 @@ def test_per_model_env_override_unparseable_bool_is_skipped(monkeypatch, restore
     entry = config.MODEL_OVERRIDES.get("tiny", {})
     assert "DIARIZE" not in entry
     assert entry.get("BEAM_SIZE") == 3
-    assert any("DIARIZE" in w and "not a valid boolean" in w
-               for w in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("DIARIZE", "not a valid boolean")
 
 
 def test_per_model_env_override_accepts_verbose_bool_spellings(monkeypatch, restore_config):
@@ -755,7 +759,7 @@ def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
         monkeypatch.setenv("WHISPER_" + new, "")
         _reload_with_env(monkeypatch, WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS="7")
         assert config.RECENT_TRANSCRIPTIONS_RETENTION_DAYS == 7
-        assert any(old in w and new in w for w in config._ENV_WARNINGS)
+        _assert_warned(old, new)
     finally:
         monkeypatch.undo()
         importlib.reload(config)
@@ -855,8 +859,7 @@ def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch, restore_
     assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
     # The pre-env snapshot must not share the mutated nested entry dict.
     assert config._ENV_PRE["MODEL_OVERRIDES"]["TINY"]["BEAM_SIZE"] == 3
-    assert any("TINY" in m and "keeping the stored entry" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("TINY", "keeping the stored entry")
     _assert_nothing_dropped()
 
 
@@ -866,8 +869,7 @@ def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(
     _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BOGUS="1")
     assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
     assert "BOGUS" not in config.MODEL_OVERRIDES["TINY"]
-    assert any("TINY" in m and "keeping the stored entry" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("TINY", "keeping the stored entry")
     _assert_nothing_dropped()
 
 
@@ -883,8 +885,7 @@ def test_per_model_env_override_invalid_reverts_to_the_json_env_value(monkeypatc
     )
     assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 3, "BEST_OF": 2}
     assert "tiny" not in config._ENV_OVERRIDE_VALUES
-    assert any("'tiny'" in m and "keeping the WHISPER_MODEL_OVERRIDES entry" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("'tiny'", "keeping the WHISPER_MODEL_OVERRIDES entry")
 
 
 def test_per_model_env_override_invalid_without_stored_entry_is_dropped(
@@ -908,8 +909,7 @@ def test_per_model_env_bad_field_keeps_the_valid_env_siblings(monkeypatch, resto
         "BEAM_SIZE": 2, "BEST_OF": 4, "VAD_FILTER": True}
     assert config._ENV_OVERRIDE_VALUES["tiny"] == {
         "BEST_OF": 4, "VAD_FILTER": True}
-    assert any("for 'tiny' (BEAM_SIZE) are invalid" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("for 'tiny' (BEAM_SIZE) are invalid")
 
 
 def test_per_model_env_unknown_slug_keeps_the_valid_env_siblings(monkeypatch, restore_config):
@@ -921,8 +921,7 @@ def test_per_model_env_unknown_slug_keeps_the_valid_env_siblings(monkeypatch, re
                      WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="4")
     assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 4}
     assert config._ENV_OVERRIDE_VALUES["tiny"] == {"BEAM_SIZE": 4}
-    assert any("for 'tiny' (PIPELINE_RULES_EXCLUDE) are invalid" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("for 'tiny' (PIPELINE_RULES_EXCLUDE) are invalid")
 
 
 def _store_local(monkeypatch, tmp_path, raw):
@@ -1031,8 +1030,8 @@ def test_env_supplied_override_with_unknown_rule_slug_is_rejected(monkeypatch, r
         "strip-stray-symbols"]
     assert "no-such-rule" not in config.CAPTURES_PIPELINE_RULES_EXCLUDE
     assert "CAPTURES_PIPELINE_RULES_EXCLUDE" in config._ENV_REJECTED
-    assert any("dictashion-map" in m for m in config._ENV_WARNINGS)
-    assert any("no-such-rule" in m for m in config._ENV_WARNINGS)
+    _assert_warned("dictashion-map")
+    _assert_warned("no-such-rule")
 
 
 def _stray_symbols_only():
@@ -1134,8 +1133,7 @@ def test_env_json_bundles_migrate_renamed_keys_and_locks(monkeypatch, restore_co
     assert config.OVERRIDE_PROFILES["x"]["STREAMING_IDLE_TIMEOUT_S"] == 30
     assert config.OVERRIDE_PROFILES["x"]["locks"] == ["STREAMING_IDLE_TIMEOUT_S"]
     assert config.MODEL_OVERRIDES["TINY"]["SEGMENT_MAX_WORDS_PER_S"] == 4
-    assert any("renamed field" in m and "STREAMING_IDLE_TIMEOUT_SEC" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("renamed field", "STREAMING_IDLE_TIMEOUT_SEC")
 
 
 def test_env_model_override_naming_a_split_card_is_kept(monkeypatch, restore_config):
@@ -1252,8 +1250,7 @@ def test_env_bundle_schema_error_is_not_called_bad_json(monkeypatch, restore_con
     assert any("is not a valid OVERRIDE_PROFILES" in m for m in msgs), msgs
     assert all("errors.pydantic.dev" not in m for m in msgs), msgs
     _reload_with_env(monkeypatch, WHISPER_OVERRIDE_PROFILES="{not json")
-    assert any("is not valid JSON for OVERRIDE_PROFILES" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("is not valid JSON for OVERRIDE_PROFILES")
 
 
 def test_env_wildcard_origin_drops_only_that_entry(monkeypatch, restore_config):
@@ -1265,8 +1262,7 @@ def test_env_wildcard_origin_drops_only_that_entry(monkeypatch, restore_config):
         WHISPER_CORS_ALLOW_ORIGINS="*,https://*.example.com")
     assert config.TRUSTED_ORIGINS == ["https://a.example.com"]
     assert config.CORS_ALLOW_ORIGINS == ["*"]          # bare '*' is kept
-    assert any("WHISPER_TRUSTED_ORIGINS" in m and "*.example.com" in m
-               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("WHISPER_TRUSTED_ORIGINS", "*.example.com")
     assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
 
 
@@ -1336,9 +1332,7 @@ def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
                      WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
     assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 2}
-    assert any("WHISPER_MODEL_OVERRIDE__" in m and "BEST_OF" in m
-               and "ignored" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_warned("WHISPER_MODEL_OVERRIDE__", "BEST_OF", "ignored")
     _assert_nothing_dropped()
 
 
@@ -1399,8 +1393,7 @@ def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch, restore
     assert "another-missing-rule" not in (
         config.MODEL_OVERRIDES.get("large-v3", {}).get(
             "PIPELINE_RULES_EXCLUDE") or [])
-    assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_warned("another-missing-rule")
 
 
 def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch, restore_config):
@@ -1425,8 +1418,7 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch, rest
     assert "another-missing-rule" not in (
         entry.get("PIPELINE_RULES_EXCLUDE") or [])
     assert entry.get("BEAM_SIZE") == 3
-    assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_warned("another-missing-rule")
 
 
 def test_env_guard_at_one_means_off_not_the_factory_threshold(monkeypatch, restore_config):
@@ -1439,8 +1431,7 @@ def test_env_guard_at_one_means_off_not_the_factory_threshold(monkeypatch, resto
     assert config.SEGMENT_HEAD_ECHO_MIN_WORDS == 0
     assert config.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS == 0
     assert "SEGMENT_HEAD_ECHO_MIN_WORDS" not in config._ENV_REJECTED
-    assert any("WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS=1 is no longer accepted"
-               in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_warned("WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS=1 is no longer accepted")
 
 
 def test_per_model_env_guard_at_one_means_off(monkeypatch, restore_config):

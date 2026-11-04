@@ -12,7 +12,7 @@ import json
 
 from faster_whisper_backend.settings import config
 from faster_whisper_backend.settings import config_store as cs
-from tests.settings.test_config_env import _reload_with_env
+from tests.settings.test_config_env import _assert_warned, _reload_with_env
 from tests.settings.test_factory_rule_resync import (
     _QUOTE_LABELS, _factory_rules, _older_tidy, _rev,
 )
@@ -32,8 +32,7 @@ def test_an_untouched_older_factory_copy_in_the_env_becomes_the_current_rule(
     got = _env_tidy(monkeypatch, rules)
     want = next(r for r in cs.load_factory_rules() if r["name"] == _TIDY)
     assert got == {**want, "config_rev": _rev(want)}
-    assert any("WHISPER_PIPELINE_RULES: updated rules" in m and _TIDY in m
-               for m in config._ENV_WARNINGS)
+    _assert_warned("WHISPER_PIPELINE_RULES: updated rules", _TIDY)
 
 
 def test_edited_and_unrecorded_env_copies_stay_as_written(monkeypatch, restore_config):
