@@ -71,6 +71,12 @@ def _probe_raises(monkeypatch, exc):
     monkeypatch.setattr(url_download, "probe", _probe)
 
 
+def _download_raises(monkeypatch, exc):
+    async def _download(url, **kw):
+        raise exc
+    monkeypatch.setattr(url_download, "download", _download)
+
+
 @pytest.fixture
 def url_enabled(app_module, tmp_path, monkeypatch):
     """Feature on + retention rooted in a temp dir + happy-path stubs."""
@@ -250,9 +256,7 @@ def test_policy_reject_is_client_safe_400(client, url_enabled, monkeypatch):
 
 
 def test_download_error_is_400_not_500(client, url_enabled, monkeypatch):
-    async def _boom(url, **kw):
-        raise UrlDownloadError("this video is private")
-    monkeypatch.setattr(url_download, "download", _boom)
+    _download_raises(monkeypatch, UrlDownloadError("this video is private"))
     r = _post_url(client)
     assert r.status_code == 400
     assert r.json()["detail"] == "this video is private"
@@ -750,15 +754,12 @@ def test_on_demand_in_flight_progress_id_is_treated_as_absent(client, url_enable
 
 
 def test_on_demand_audio_errors(client, url_enabled, monkeypatch):
-    async def _fail(url, **kw):
-        raise UrlDownloadError("this media is unavailable or has been removed")
-    monkeypatch.setattr(url_download, "download", _fail)
+    _download_raises(monkeypatch,
+                     UrlDownloadError("this media is unavailable or has been removed"))
     r = client.post("/v1/audio/url-media/audio", json={"url": _URL})
     assert r.status_code == 400 and "unavailable" in r.json()["detail"]
 
-    async def _cancelled(url, **kw):
-        raise url_download.UrlCancelled()
-    monkeypatch.setattr(url_download, "download", _cancelled)
+    _download_raises(monkeypatch, url_download.UrlCancelled())
     assert client.post("/v1/audio/url-media/audio",
                        json={"url": _URL}).status_code == 499
 
@@ -767,9 +768,8 @@ def test_on_demand_audio_leaves_no_staging_job(client, url_enabled, monkeypatch)
     assert client.post("/v1/audio/url-media/audio",
                        json={"url": _URL}).status_code == 200
 
-    async def _fail(url, **kw):
-        raise UrlDownloadError("this media is unavailable or has been removed")
-    monkeypatch.setattr(url_download, "download", _fail)
+    _download_raises(monkeypatch,
+                     UrlDownloadError("this media is unavailable or has been removed"))
     assert client.post("/v1/audio/url-media/audio",
                        json={"url": _URL}).status_code == 400
     assert os.listdir(url_media_store.staging_dir()) == []
