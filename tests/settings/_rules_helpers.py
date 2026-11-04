@@ -30,11 +30,17 @@ def factory_rules_with_entry(label, pair):
     return rules
 
 
+def regex_rule(name, pattern="x", replacement="y", **kw):
+    """A one-entry regex-list rule `name` (labelled `name`), the former single
+    `regex` rule; `kw` adds or overrides keys."""
+    return {"name": name, "label": name, "type": "regex-list",
+            "entries": [{"pattern": pattern, "replacement": replacement}], **kw}
+
+
 def regex_list_rules(name, pattern, replacement="x"):
     """A one-entry regex-list rule `name` (labelled `name`), then the
     trim-edges terminal: the smallest valid PIPELINE_RULES list."""
-    return [{"name": name, "label": name, "type": "regex-list",
-             "entries": [{"pattern": pattern, "replacement": replacement}]},
+    return [regex_rule(name, pattern, replacement),
             {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
 
 

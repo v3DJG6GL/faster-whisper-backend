@@ -14,20 +14,12 @@ from pydantic import ValidationError
 
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests.settings._rules_helpers import entry_by_label
+from tests.settings._rules_helpers import entry_by_label, regex_rule as _regex_rule
 
 
 @pytest.fixture
 def path(tmp_path):
     return str(tmp_path / "config.json")
-
-
-def _regex_rule(name, pattern="x", replacement="y", **kw):
-    # A one-entry regex-list == a former single `regex` rule.
-    r = {"name": name, "label": name, "type": "regex-list",
-         "entries": [{"pattern": pattern, "replacement": replacement}]}
-    r.update(kw)
-    return r
 
 
 def _terminal():

@@ -20,6 +20,7 @@ from tests.settings._rules_helpers import (
     load_saved,
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
     regex_list_rules,
+    regex_rule as _regex,
     validate_rules,
 )
 
@@ -479,12 +480,6 @@ def test_normalize_tags_rejects_bad():
         settings_schema.normalize_tags(["-leadinghyphen"])
     with pytest.raises(ValueError):
         settings_schema.normalize_tags(["x" * 33])
-
-
-def _regex(name, pattern="x", replacement="y"):
-    # A one-entry regex-list == a former single `regex` rule.
-    return {"name": name, "label": name, "type": "regex-list",
-            "entries": [{"pattern": pattern, "replacement": replacement}]}
 
 
 def _rl(*entries, **extra):
