@@ -720,20 +720,17 @@
     var table = _el('table', 'perm-matrix');
     var thead = document.createElement('thead');
     var headRow = document.createElement('tr');
-    var thUser = document.createElement('th');
-    thUser.textContent = 'User';
+    var thUser = _el('th', null, 'User');
     thUser.style.minWidth = '10rem';
     headRow.appendChild(thUser);
     pages.forEach(function(p) {
-      var th = document.createElement('th');
-      th.textContent = '/' + p.replace(/_/g, '-');
+      var th = _el('th', null, '/' + p.replace(/_/g, '-'));
       var tip = _el('span', 'tip', '?');
       tip.title = PAGE_TIPS[p] || '';
       th.appendChild(tip);
       headRow.appendChild(th);
     });
-    var thTags = document.createElement('th');
-    thTags.textContent = 'quick-config tags';
+    var thTags = _el('th', null, 'quick-config tags');
     var tagsTip = _el('span', 'tip', '?');
     tagsTip.title = 'Per-user filter for /quick-config rules. A user '
       + 'sees a rule when their tags intersect the rule’s tags '
@@ -741,8 +738,7 @@
       + 'A user with no tags sees only untagged rules. Admins see all.';
     thTags.appendChild(tagsTip);
     headRow.appendChild(thTags);
-    var thSave = document.createElement('th');
-    thSave.textContent = '';
+    var thSave = _el('th');
     headRow.appendChild(thSave);
     thead.appendChild(headRow);
     table.appendChild(thead);
@@ -753,8 +749,7 @@
       tr.dataset.uid = u.id;
       if (u.is_admin) tr.classList.add('admin-row');
 
-      var tdUser = document.createElement('td');
-      tdUser.textContent = u.username + (u.is_admin ? ' (admin)' : '');
+      var tdUser = _el('td', null, u.username + (u.is_admin ? ' (admin)' : ''));
       tr.appendChild(tdUser);
 
       var currentPages = (u.permissions && u.permissions.pages) || {};
@@ -946,8 +941,7 @@
     udot.title = udotCls === 'live'
       ? 'a key was used in the last 15 min' : 'no recent key use';
     head.appendChild(udot);
-    var nameEl = document.createElement('span');
-    nameEl.textContent = u.username;
+    var nameEl = _el('span', null, u.username);
     head.appendChild(nameEl);
     var pill = _el('span', 'pill ' + (u.is_admin ? 'admin' : ''), u.is_admin ? 'admin' : 'user');
     head.appendChild(pill);
@@ -1559,9 +1553,8 @@
         npCb.id = npId;
         npCb.checked = noProf;
         npCb.onchange = function () { b.apply_no_profiles = npCb.checked ? true : null; rerender(); };
-        var npLbl = document.createElement('label');
+        var npLbl = _el('label', null, 'Apply no profiles');
         npLbl.setAttribute('for', npId);
-        npLbl.textContent = 'Apply no profiles';
         npRow.appendChild(npCb); npRow.appendChild(npLbl);
         pcard.appendChild(npRow);
         var npHint = _el('div', 'ohint', noProf
@@ -1573,11 +1566,11 @@
       b.profiles.forEach(function (name, i) {
         var c = _el('span', 'cfg-chip');
         c.innerHTML = '<span class="num">' + (i + 1) + '</span>' + escapeHtml(name);
-        var up = document.createElement('button'); up.textContent = '↑'; up.title = 'earlier';
+        var up = _el('button', null, '↑'); up.title = 'earlier';
         up.onclick = function () { if (i > 0) { var t = b.profiles[i - 1]; b.profiles[i - 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } };
-        var dn = document.createElement('button'); dn.textContent = '↓'; dn.title = 'later';
+        var dn = _el('button', null, '↓'); dn.title = 'later';
         dn.onclick = function () { if (i < b.profiles.length - 1) { var t = b.profiles[i + 1]; b.profiles[i + 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } };
-        var x = document.createElement('button'); x.textContent = '×';
+        var x = _el('button', null, '×');
         x.onclick = function () { b.profiles.splice(i, 1); rerender(); };
         c.appendChild(up); c.appendChild(dn); c.appendChild(x); chips.appendChild(c);
       });
@@ -1866,9 +1859,8 @@
 
     // Export — two-press guard: the file is exactly what the desktop stored,
     // which can include the account's saved API keys.
-    var ex = _el('button', 'ghost');
     var EX_LABEL = '⤓ Export';
-    ex.textContent = EX_LABEL;
+    var ex = _el('button', 'ghost', EX_LABEL);
     ex.disabled = !meta;
     var exArmed = false, exTimer = null;
     function disarmExport() {

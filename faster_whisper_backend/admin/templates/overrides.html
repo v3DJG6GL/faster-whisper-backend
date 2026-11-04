@@ -669,9 +669,8 @@ window._renderWaterfall = (function () {
       if (cb.checked) delete p.requestable; else p.requestable = false;
       refreshButtons(); renderSide();
     };
-    var lbl = document.createElement('label');
+    var lbl = _el('label', null, 'Requestable by clients');
     lbl.setAttribute('for', 'ov-requestable');
-    lbl.textContent = 'Requestable by clients';
     row.appendChild(cb); row.appendChild(lbl);
     s.body.appendChild(row);
     var help = _el('div', 'ov-help');
@@ -751,7 +750,7 @@ window._renderWaterfall = (function () {
       inhVal.title = 'Inherited global default — ' + fmtVal(dv);
       inh.appendChild(inhLbl); inh.appendChild(inhVal);
       valCell.appendChild(inh);
-      var ab = document.createElement('button'); ab.textContent = '+ override';
+      var ab = _el('button', null, '+ override');
       // Seed from the inherited value so starting an override doesn't silently
       // change behaviour; with nothing inherited, fall back to the type default
       // (true / min / first option) — matches the per-model page.
