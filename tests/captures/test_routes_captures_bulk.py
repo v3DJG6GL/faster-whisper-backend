@@ -9,12 +9,9 @@ from tests.conftest import bearer, write_bytes
 
 def _row(conn, cid, *, user_id, status="new", audio_s=2.0, created_ts=1.0,
          reviewed_ts=None):
-    _insert_member(conn, cid, None, user_id=user_id)
-    conn.execute(
-        "UPDATE captures SET status = ?, audio_s = ?, created_ts = ?,"
-        " reviewed_ts = ? WHERE id = ?",
-        (status, audio_s, created_ts, reviewed_ts, cid),
-    )
+    _insert_member(conn, cid, None, user_id=user_id, status=status,
+                   audio_s=audio_s, created_ts=created_ts,
+                   reviewed_ts=reviewed_ts)
 
 
 def test_stats_empty_queue(client):

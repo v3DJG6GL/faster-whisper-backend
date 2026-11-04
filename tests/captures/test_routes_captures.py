@@ -165,19 +165,22 @@ def _insert_sample(conn, gs, sid, *, locked, user_id="alice", ts=1.0):
     )
 
 
-def _insert_member(conn, cid, sid, user_id="alice", request_id=None):
-    """Insert a captures row (optionally a member of sample `sid`) directly."""
+def _insert_member(conn, cid, sid, user_id="alice", request_id=None, **cols):
+    """Insert a captures row (optionally a member of sample `sid`) directly;
+    `cols` override column values."""
     from faster_whisper_backend.captures import store as captures_store
 
-    rel = captures_store._relpath_for(cid, "wav")
+    row = {"id": cid, "created_ts": 1.0, "request_id": request_id,
+           "model": "m", "language": "de", "audio_s": 2.0,
+           "audio_relpath": captures_store._relpath_for(cid, "wav"),
+           "audio_format": "wav", "raw_text": "r", "final_text": "f",
+           "words": "[]", "segments": "[]", "corrections": "[]",
+           "status": "new", "user_id": user_id, "sample_id": sid,
+           "sample_order": 0, **cols}
     conn.execute(
-        "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " words, segments, corrections, status, user_id,"
-        " sample_id, sample_order)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (cid, 1.0, request_id, "m", "de", 2.0, rel, "wav", "r", "f", "[]",
-         "[]", "[]", "new", user_id, sid, 0),
+        f"INSERT INTO captures ({', '.join(row)})"
+        f" VALUES ({', '.join('?' * len(row))})",
+        tuple(row.values()),
     )
 
 
@@ -1333,17 +1336,13 @@ def test_list_samples_projects_chip_offsets_without_hydrating_words(
     conn = captures_store._require_conn()
     sid = "chipsid000000001"
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
-    _insert_member(conn, "chipmember00", sid, user_id=uid)
-    _insert_member(conn, "chipmember01", sid, user_id=uid)
-    conn.execute(
-        "UPDATE captures SET words = ?, sample_order = 0 WHERE id = ?",
-        (json.dumps([{"w": "a"}, {"w": "b"}]), "chipmember00"))
-    conn.execute(
-        "UPDATE captures SET words = ?, corrections = ?, sample_order = 1"
-        " WHERE id = ?",
-        (json.dumps([{"w": "c"}, {"w": "d"}, {"w": "e"}]),
-         json.dumps([{"idx": 1, "wrong": "a", "correct": "b"}]),
-         "chipmember01"))
+    _insert_member(conn, "chipmember00", sid, user_id=uid,
+                   words=json.dumps([{"w": "a"}, {"w": "b"}]))
+    _insert_member(conn, "chipmember01", sid, user_id=uid,
+                   words=json.dumps([{"w": "c"}, {"w": "d"}, {"w": "e"}]),
+                   corrections=json.dumps(
+                       [{"idx": 1, "wrong": "a", "correct": "b"}]),
+                   sample_order=1)
 
     monkeypatch.setattr(
         captures_store, "get_capture",
@@ -1367,12 +1366,10 @@ def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
     conn = captures_store._require_conn()
     sid = "filtersid0000001"
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
-    _insert_member(conn, "filtmember00", sid, user_id=uid)
-    _insert_member(conn, "filtmember01", sid, user_id=uid)
-    conn.execute("UPDATE captures SET model = 'org/model-a', request_id = 'req-a',"
-                 " sample_order = 0 WHERE id = 'filtmember00'")
-    conn.execute("UPDATE captures SET model = 'org/model-b', request_id = NULL,"
-                 " sample_order = 1 WHERE id = 'filtmember01'")
+    _insert_member(conn, "filtmember00", sid, user_id=uid,
+                   request_id="req-a", model="org/model-a")
+    _insert_member(conn, "filtmember01", sid, user_id=uid,
+                   model="org/model-b", sample_order=1)
 
     body = client.get("/captures/api/samples", headers=bearer(raw)).json()
     g = next(g for g in body["samples"] if g["id"] == sid)
@@ -1406,12 +1403,11 @@ def test_audio_original_switch_serves_the_untrimmed_file(client):
 
     conn = captures_store._require_conn()
     cid = "origaudio001"
-    _insert_member(conn, cid, None)
     rel = captures_store._relpath_for(cid, "wav")
     trel = os.path.join(cid[0:2], cid[2:4], f"{cid}.trim.wav")
+    _insert_member(conn, cid, None, audio_trimmed_relpath=trel)
     for r, payload in ((rel, b"RIFF....WAVEoriginal"), (trel, b"RIFF....WAVEtrimmed")):
         write_bytes(captures_store.abs_audio_path(r), payload)
-    conn.execute("UPDATE captures SET audio_trimmed_relpath = ? WHERE id = ?", (trel, cid))
 
     r = client.get(f"/captures/api/{cid}/audio")
     assert r.status_code == 200 and r.content.endswith(b"trimmed")
@@ -1703,11 +1699,9 @@ def _de_scoped_pipeline(monkeypatch):
 
 
 def _translate_capture(conn, cid, user_id, *, task):
-    _insert_member(conn, cid, None, user_id=user_id)
     raw = "It is over. Was it good?"
-    conn.execute(
-        "UPDATE captures SET raw_text = ?, final_text = ?, text_for_training = ?,"
-        " task = ? WHERE id = ?", (raw, raw, raw, task, cid))
+    _insert_member(conn, cid, None, user_id=user_id, raw_text=raw,
+                   final_text=raw, text_for_training=raw, task=task)
     return raw
 
 
@@ -1910,10 +1904,8 @@ def test_a_group_holding_more_chips_than_one_member_may_saves(
     chips = json.dumps([{"wrong": "", "correct": "x", "idx": i}
                         for i in range(half)])
     for order, cid in enumerate(("grpcapmem001", "grpcapmem002")):
-        _insert_member(conn, cid, sid, user_id=uid)
-        conn.execute("UPDATE captures SET words = ?, corrections = ?,"
-                     " sample_order = ? WHERE id = ?",
-                     (words, chips, order, cid))
+        _insert_member(conn, cid, sid, user_id=uid, words=words,
+                       corrections=chips, sample_order=order)
     projected = ([{"wrong": "", "correct": "x", "idx": i}
                   for i in range(half)]
                  + [{"wrong": "", "correct": "x", "idx": n_words + i}
@@ -1970,11 +1962,9 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
 def _two_word_member(conn, cid, sid, uid, order, chips):
     from faster_whisper_backend.captures import store as captures_store
 
-    _insert_member(conn, cid, sid, user_id=uid)
     words = json.dumps([{"word": w, "start": i * 0.1, "end": i * 0.1 + 0.05}
                         for i, w in enumerate(("x", "y"))])
-    conn.execute("UPDATE captures SET words = ?, sample_order = ? WHERE id = ?",
-                 (words, order, cid))
+    _insert_member(conn, cid, sid, user_id=uid, words=words, sample_order=order)
     captures_store.update_capture(cid, {"corrections": chips})
 
 
@@ -2119,8 +2109,7 @@ def _two_member_sample(gs, sid):
     conn = captures_store._require_conn()
     _insert_sample(conn, gs, sid, locked=False)
     for i, cid in enumerate((sid[:-1] + "1", sid[:-1] + "2")):
-        _insert_member(conn, cid, sid)
-        conn.execute("UPDATE captures SET sample_order = ? WHERE id = ?", (i, cid))
+        _insert_member(conn, cid, sid, sample_order=i)
 
 
 def test_regenerate_adopts_the_global_join_strategy(client, make_user_key,

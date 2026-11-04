@@ -14,7 +14,7 @@ import json
 import pytest
 
 from faster_whisper_backend.captures import routes as captures_routes
-from tests.captures.test_routes_captures import _insert_sample
+from tests.captures.test_routes_captures import _insert_member, _insert_sample
 from tests.conftest import bearer
 
 _SID = "chipplacesid0001"
@@ -41,15 +41,11 @@ def sample(client, make_user_key, aligned):
     _uid, raw = make_user_key("root", is_admin=True)
     conn = captures_store._require_conn()
     _insert_sample(conn, gs, _SID, locked=False)
-    conn.execute(
-        "INSERT INTO captures (id, created_ts, model, language, audio_s,"
-        " audio_relpath, audio_format, raw_text, final_text,"
-        " text_for_training, words, segments, corrections, status, user_id,"
-        " sample_id, sample_order)"
-        " VALUES (?,1.0,'m','de',2.0,'x.wav','wav',?,?,?,?,'[]',?,'new',"
-        "'alice',?,0)",
-        (_CID, "die Katze die", "die Katze die", "die Katze die",
-         json.dumps(_RAW_WORDS), json.dumps([_CHIP]), _SID))
+    _insert_member(conn, _CID, _SID, audio_relpath="x.wav",
+                   raw_text="die Katze die", final_text="die Katze die",
+                   text_for_training="die Katze die",
+                   words=json.dumps(_RAW_WORDS),
+                   corrections=json.dumps([_CHIP]))
     return raw
 
 
