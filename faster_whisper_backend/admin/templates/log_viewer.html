@@ -557,8 +557,7 @@
     // The server sends __LIVE_TAIL__ after the replayed backlog: only then is
     // the freshest page in the DOM, so "Load older" can start paging.
     if (line === '__LIVE_TAIL__') {
-      const lo = document.getElementById('loadOlderBtn');
-      if (lo) lo.style.display = '';
+      if (loadOlderBtn) loadOlderBtn.style.display = '';
       return;
     }
     appendLine(log, line, _liveDim);
@@ -712,8 +711,7 @@
     _logsSkip = 0;
     _logsGen++;
     _olderInDom = 0;
-    const lo = document.getElementById('loadOlderBtn');
-    if (lo) lo.style.display = 'none';
+    if (loadOlderBtn) loadOlderBtn.style.display = 'none';
     es = new EventSource('/logs/stream');
     es.onmessage = (e) => append(e.data);
     es.onerror = () => {
