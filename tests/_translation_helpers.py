@@ -6,20 +6,23 @@ from faster_whisper_backend.translation import engine as translation
 
 
 def stub_translate(monkeypatch, calls=None):
-    """Per-index-verifiable stub: segment i translates to '<text>-<target>'."""
+    """Per-index-verifiable stub: segment i translates to '<text>-<target>'.
+    Returns the list each call's kwargs are recorded into (``calls`` if given)."""
+    calls = [] if calls is None else calls
+
     async def _fake(segments, targets, *, source_lang=None, model_ref=None,
                     mode="fluent", glossary="", context_segments=None,
                     progress_cb=None, cancel_check=None, download_cb=None):
-        if calls is not None:
-            calls.append({"segments": segments, "targets": list(targets),
-                          "source_lang": source_lang, "model_ref": model_ref,
-                          "mode": mode, "glossary": glossary,
-                          "context_segments": context_segments})
+        calls.append({"segments": segments, "targets": list(targets),
+                      "source_lang": source_lang, "model_ref": model_ref,
+                      "mode": mode, "glossary": glossary,
+                      "context_segments": context_segments})
         per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
                    for seg in segments]
         return per_seg, [], {"model": (model_ref or "").strip() or "org/d:Q4",
                              "source": source_lang or "", "mode": mode}
     monkeypatch.setattr(translation, "translate_segments", _fake)
+    return calls
 
 
 def enable_translation(app_module, monkeypatch, **cfg_fields):

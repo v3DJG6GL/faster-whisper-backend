@@ -49,8 +49,7 @@ def _stub_raising(monkeypatch, exc):
 def test_translates_and_echoes_ids_in_input_order(client, app_module,
                                                   monkeypatch):
     _enable(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     r = client.post(URL, json=_body(targets=["en", "fr"], source="de",
                                     translation_mode="faithful"))
     assert r.status_code == 200, r.text
@@ -325,8 +324,7 @@ def test_400_on_allowlist_miss(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch,
             TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4",
             TRANSLATION_ALLOWED_MODELS={"org/allowed-GGUF:Q4"})
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     r = client.post(URL, json=_body(translation_model="org/other-GGUF:Q4"))
     assert r.status_code == 400
     assert "TRANSLATION_ALLOWED_MODELS" in r.json()["detail"]
@@ -348,8 +346,7 @@ def test_413_over_total_char_cap(client, app_module, monkeypatch):
 def test_422_malformed_shapes(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     cases = [
         {"segments": "not-a-list", "targets": ["en"]},
         {"segments": [], "targets": ["en"]},
@@ -382,8 +379,7 @@ def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
     from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     for seg in ({"id": 1, "text": "a\ud800"},
                 {"id": "\ud800", "text": "a"}):
         _park("cap-u", hold_s=90)
@@ -404,8 +400,7 @@ def test_422_non_finite_number_in_body(client, app_module, monkeypatch,
     echoed id would fail the response only after the run was recorded as
     ok. Refused up front instead, without a translation call."""
     _enable(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     r = client.post(
         URL,
         content='{"segments": [{"id": %s, "text": "eins"}], '
@@ -423,8 +418,7 @@ def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
     event loop. Duplicates under the cap still collapse."""
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 2)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     # The invalid entry sits AFTER the code that trips the cap: only an
     # in-loop cap answers "capped at" — a cap checked after the walk would
     # reach the int first and answer "invalid language code".
@@ -445,8 +439,7 @@ def test_source_must_be_a_language_code(client, app_module, monkeypatch):
     """`source` reaches every prompt and the receipt: a code, "auto" or
     nothing — never a forged log line."""
     _enable(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     r = client.post(URL, json=_body(source="de\n[translate] req=deadbeef forged"))
     assert r.status_code == 422, r.text
     assert calls == []
@@ -463,8 +456,7 @@ def test_speaker_is_clipped_and_counted_against_the_char_cap(
     """The speaker prefixes every context line of every prompt: clipped at
     parse time, control characters neutralised, and counted in the cap."""
     _enable(app_module, monkeypatch)
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     r = client.post(URL, json={"segments": [
         {"id": 0, "text": "eins", "speaker": "S\nPEAKER" + "x" * 500}],
         "targets": ["en"]})
@@ -824,8 +816,7 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
     # Open allowlist: this test is about the lock, not the allowlist gate
     # (the shipped config allowlists two real models).
     _enable(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set())
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     _, raw_bob = bind_profile(client, make_user_key, "small-mt", {
         "TRANSLATION_MODEL": "org/small:Q4_K_M",
         "locks": ["TRANSLATION_MODEL"]})
@@ -892,8 +883,7 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
     _enable(app_module, monkeypatch,
             TRANSLATION_ALLOWED_MODELS={"org/public-GGUF:Q4"},
             TRANSLATION_DEFAULT_MODEL="org/public-GGUF:Q4")
-    calls = []
-    _stub_translate(monkeypatch, calls=calls)
+    calls = _stub_translate(monkeypatch)
     admin_h, raw_bob = bind_profile(client, make_user_key, "pinned-mt", {
         "TRANSLATION_MODEL": "org/pinned-GGUF:Q4",
         "locks": ["TRANSLATION_MODEL"]})
