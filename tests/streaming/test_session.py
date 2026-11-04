@@ -94,8 +94,7 @@ def test_close_commits_unterminated_tail():
     s, msgs = _make_session()
 
     async def run():
-        s.raw_confirmed = "hallo welt"                # no terminator
-        await s._emit_update()
+        await grow_document(s, "hallo welt")          # no terminator
         pre = [m for m in msgs if m["type"] == "final"]
         # Shown at once as a provisional tail, not held back until the next utterance.
         assert pre and pre[-1]["committed"] == "" and pre[-1]["tail"] == "hallo welt"
@@ -119,8 +118,7 @@ def test_close_falls_back_on_a_failed_final_decode_and_still_commits(caplog):
                             cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
     async def run():
-        s.raw_confirmed = "erster satz."
-        await s._emit_update()
+        await grow_document(s, "erster satz.")
         await s.feed_pcm(const_pcm(8000, 1000))
         assert s._in_utterance
         with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
@@ -146,8 +144,7 @@ def test_close_survives_failing_on_final_and_still_commits(caplog):
     s.on_final = _boom
 
     async def run():
-        s.raw_confirmed = "erster satz."
-        await s._emit_update()
+        await grow_document(s, "erster satz.")
         await s.feed_pcm(const_pcm(8000, 1000))
         assert s._in_utterance
         with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
@@ -525,11 +522,9 @@ def test_language_change_reanchors_without_rewriting_sent_text(caplog):
     s, msgs = _make_session(postprocess=pp, format_key=lambda: lang[0])
 
     async def run():
-        s.raw_confirmed = "hallo"
-        await s._emit_update()
+        await grow_document(s, "hallo")
         lang[0] = "en"
-        s.raw_confirmed += " welt"
-        await s._emit_update()
+        await grow_document(s, " welt")
 
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.session"):
         asyncio.run(run())
