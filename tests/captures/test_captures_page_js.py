@@ -687,8 +687,7 @@ def test_heal_on_a_locked_group_marks_it_unsaved_only_for_an_admin(
     """The server 409s a non-admin's Save on a locked sample, so a heal
     left such a group card "unsaved" for good, and every filter change
     asked to drop edits nobody made. An admin can save the heal."""
-    fns = _js_functions(page, "applyServerSample", "_trainingBase", "_applyChipsToText", "_chipFields")
-    out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + _heal_fns(page) + r"""
+    out = _run_node(tmp_path, _sample_card_js(page) + _heal_fns(page) + r"""
 global.document = { createElement: function() { return fake(); } };
 function clearDirty(state) { state.dirty = false; }
 var _isAdmin = """ + json.dumps(admin) + r""";
@@ -1543,18 +1542,21 @@ function escapeHtml(s) { return String(s); }   // the page's /"/ regex trips _js
 """
 
 
+def _sample_card_js(page):
+    return _SAMPLE_CARD_STUBS + _js_functions(page, "applyServerSample", "_trainingBase", "_applyChipsToText",
+                                              "_chipFields", "_el")
+
+
 @needs_node
 def test_group_members_list_places_chips_by_aligned_words(page, tmp_path):
     """The open group card's members list applied each member's chips
     without its aligned words (only raw words come with the members), so a
     chip after removed fillers moved to another copy of its word."""
-    fns = _js_functions(page, "applyServerSample", "_trainingBase", "_applyChipsToText", "_chipFields",
-                        "_el")
     member = {"id": "m1", "text_for_training": _KATZE_TEXT, "corrections": [_KATZE_CHIP],
               "words": _KATZE_RAW, "sample_order": 0, "audio_s": 1.0}
     merged = [dict(w, start=i * 0.1, end=i * 0.1 + 0.05, member_idx=0)
               for i, w in enumerate(_KATZE_ALIGNED)]
-    out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + r"""
+    out = _run_node(tmp_path, _sample_card_js(page) + r"""
 var g = { id: 'g1' }, _allSamples = [], sampleState = {};
 var d = { id: 'g1', members: [""" + json.dumps(member) + r"""],
   merged_words: """ + json.dumps(merged) + r""" };
@@ -1745,8 +1747,7 @@ def test_group_status_click_during_save_survives_the_save_reply(page, tmp_path):
     anchor = "async function(v) {\n            var prev = sampleState.newStatus;"
     on_status = _js_block(page, page.index(anchor))
     on_save = _js_after(page, "saveTBtn.onclick = ")
-    fns = _js_functions(page, "applyServerSample", "_trainingBase", "_applyChipsToText", "_chipFields")
-    out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + r"""
+    out = _run_node(tmp_path, _sample_card_js(page) + r"""
 var g = { id: 'g1' }, _allSamples = [{ id: 'g1', status: 'new' }];
 var sampleState = { newStatus: 'new', corrections: [], adminNotes: '' };
 var saves = [];
