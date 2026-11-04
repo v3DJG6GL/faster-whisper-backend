@@ -11,7 +11,6 @@ import asyncio
 import inspect
 import json
 import logging
-import shutil
 import subprocess
 import time
 
@@ -19,6 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from tests._page_helpers import needs_node
 from tests._streaming_helpers import (
     const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake,
     locked_down_user, ready_ws, speak_and_stop, stop_and_drain, stream_ws)
@@ -274,7 +274,7 @@ def test_dictate_page_carries_no_credential_field(body):
     assert "wsAuth" not in body
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
+@needs_node
 def test_dictate_page_sends_a_cleared_language_as_auto_detect(body):
     """The server reads `language` tri-state: absent / null inherits
     DEFAULT_LANGUAGE, "" auto-detects. The page sent a cleared box as null

@@ -4,7 +4,6 @@ via the conftest TestClient; no faster-whisper needed."""
 
 import importlib
 import json
-import shutil
 import sys
 
 import pytest
@@ -13,7 +12,7 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store, effective_config
-from tests._page_helpers import js_body, js_fn, js_upto, node_json
+from tests._page_helpers import js_body, js_fn, js_upto, needs_node, node_json
 from tests.conftest import bearer
 
 PERMS = "/settings/api-keys/api/users"
@@ -668,7 +667,7 @@ def test_page_explorer_drops_stale_answers(client):
     assert dr.count("if (seq !== _resolveSeq) return;") == dr.count("await ")
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
+@needs_node
 def test_page_commit_rename_rechecks_dirty(client):
     """startRename refuses a dirty working copy, but the main pane stays
     editable while the rename input is open, so commitRename re-checks: the
@@ -699,7 +698,7 @@ console.log(JSON.stringify(out));
                    "clean_renamed": 1}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
+@needs_node
 def test_page_textarea_field_keeps_its_newlines(client):
     """makeWidget's 'textarea' kind builds a <textarea> (a text <input> strips
     the newlines of a multi-line glossary) and hands its value back as is."""

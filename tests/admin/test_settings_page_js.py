@@ -7,14 +7,10 @@ tests/quick_config/test_pipeline_popover_color.py); the rest pins the served
 source like test_routes_settings.py does."""
 
 import json
-import shutil
 
 import pytest
 
-from tests._page_helpers import node_stdout
-
-_NODE = shutil.which("node")
-needs_node = pytest.mark.skipif(_NODE is None, reason="node unavailable")
+from tests._page_helpers import needs_node, node_stdout
 
 
 def _html(client, url="/settings"):
