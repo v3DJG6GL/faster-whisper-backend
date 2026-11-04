@@ -8,6 +8,7 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import post_verbose as _post, record_runs
 from tests._translation_helpers import enable_translation
+from tests.main._stage_helpers import must_not_run
 
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 
@@ -168,10 +169,8 @@ def test_cancel_inside_separation_stage_is_not_a_soft_fail(
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
     _flag_on(app_module, monkeypatch, _PID,
              lambda f: f.get("stage") == "separating")
-
-    async def _never(path, **kw):
-        raise AssertionError("separate() must not run after a cancel")
-    monkeypatch.setattr(bgm_separation, "separate", _never)
+    must_not_run(monkeypatch, bgm_separation, "separate",
+                 "separate() must not run after a cancel")
     r = _post(client, separate_bgm="1", progress_id=_PID)
     assert r.status_code == 499, r.text
     assert "[bgm] unexpected failure" not in caplog.text
@@ -182,10 +181,8 @@ def test_cancel_inside_diarization_stage_is_not_a_soft_fail(
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
     _flag_on(app_module, monkeypatch, _PID,
              lambda f: f.get("stage") == "diarizing")
-
-    async def _never(path, **kw):
-        raise AssertionError("diarize() must not run after a cancel")
-    monkeypatch.setattr(diarization, "diarize", _never)
+    must_not_run(monkeypatch, diarization, "diarize",
+                 "diarize() must not run after a cancel")
     r = _post(client, diarize="1", progress_id=_PID)
     assert r.status_code == 499, r.text
     assert "diarization failed" not in r.text
@@ -200,10 +197,8 @@ def test_cancel_inside_translation_stage_is_not_a_soft_fail(
     # translation stage's in-try check.
     _flag_on(app_module, monkeypatch, _PID,
              lambda f: f.get("last_text") is not None)
-
-    async def _never(*args, **kw):
-        raise AssertionError("translate_segments() must not run after a cancel")
-    monkeypatch.setattr(translation, "translate_segments", _never)
+    must_not_run(monkeypatch, translation, "translate_segments",
+                 "translate_segments() must not run after a cancel")
     r = _post(client, translate_to="en", progress_id=_PID)
     assert r.status_code == 499, r.text
     assert "translation failed" not in r.text

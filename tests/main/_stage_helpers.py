@@ -16,3 +16,11 @@ def capture_receipt(monkeypatch, seen=None):
         return seen["rendered"]
     monkeypatch.setattr(tx_receipt, "_format_request_block", _capture)
     return seen
+
+
+def must_not_run(monkeypatch, module, name, msg):
+    """Replace the async stage function `module.name` with one that raises
+    AssertionError(msg) when awaited."""
+    async def _never(*a, **k):
+        raise AssertionError(msg)
+    monkeypatch.setattr(module, name, _never)

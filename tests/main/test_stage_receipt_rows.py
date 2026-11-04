@@ -14,7 +14,7 @@ from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
 from tests._transcription_helpers import WAV_UPLOAD as _FILE, serve_model, wav_bytes as _wav_bytes
-from tests.main._stage_helpers import capture_receipt
+from tests.main._stage_helpers import capture_receipt, must_not_run
 
 
 def _post(client, files=_FILE, **data):
@@ -177,11 +177,8 @@ def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
 def test_translation_skipped_warning_without_speech_segments(
         client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch)
-
-    async def _never(*args, **kw):
-        raise AssertionError("translate_segments() must not run")
-    monkeypatch.setattr(translation, "translate_segments", _never)
-
+    must_not_run(monkeypatch, translation, "translate_segments",
+                 "translate_segments() must not run")
     serve_model(monkeypatch, FakeModel(segments=[]))
     r = _post(client, translate_to="en")
     assert r.status_code == 200, r.text
