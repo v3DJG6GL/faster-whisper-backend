@@ -26,6 +26,7 @@ from collections.abc import Callable
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core import device_memory
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count
 
@@ -462,14 +463,7 @@ def _free_locked(model: str) -> None:
     global _session_device
     if _separator is None and _loading_key is None:
         _session_device = None
-    import gc
-    gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:  # noqa: BLE001 — teardown is best-effort (empty_cache
-        pass           # raises RuntimeError after a prior CUDA fault)
+    device_memory.reclaim_after_unload()
     logger.info("[bgm] separation model %s unloaded", model)
 
 

@@ -42,7 +42,6 @@ import importlib
 import logging
 import os
 import re
-import sys
 import threading
 import time
 import unicodedata
@@ -54,6 +53,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core import device_memory
 from faster_whisper_backend.core.languages import (
     _NAMES, ZH_HANT_REGIONS, _normalise_code, canonical_code, language_codes,
     language_label, language_name, lookup, same_language)
@@ -812,19 +812,8 @@ def _drop_locked(ref: str) -> bool:
     except Exception:  # noqa: BLE001 — best-effort teardown
         pass
     model_registry.unregister_loaded_model(_STATS_PREFIX + ref)
-    import gc
-    gc.collect()
-    # llama.cpp never touches torch: only a torch some other subsystem already
-    # imported can hold pool-cached blocks. A cold import here would stall the
-    # loop for seconds (libtorch + CUDA), and a broken install (OSError from a
-    # missing CUDA lib) must not escape after the model was already dropped.
-    torch = sys.modules.get("torch")
-    if torch is not None:
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001 — best-effort cache release
-            pass
+    # llama.cpp never touches torch: the reclaim skips a never-imported one.
+    device_memory.reclaim_after_unload()
     logger.info("[translate] model %s unloaded", ref)
     return True
 

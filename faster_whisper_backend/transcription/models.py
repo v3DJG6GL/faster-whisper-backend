@@ -19,7 +19,6 @@ import math
 import os
 import re
 import shutil
-import sys
 import time
 from collections import OrderedDict
 from types import MappingProxyType
@@ -28,6 +27,7 @@ from collections.abc import Callable
 from fastapi import HTTPException
 
 from faster_whisper_backend.transcription import decode_trace as _decode_trace
+from faster_whisper_backend.core import device_memory
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.core import languages
 from faster_whisper_backend.core.loop_lock import CancelLatch, release_count
@@ -1647,7 +1647,6 @@ async def _idle_evictor() -> None:
     destructor runs, and torch.cuda.empty_cache() releases pool-cached
     blocks.
     """
-    import gc
     while True:
         try:
             await asyncio.sleep(30)
@@ -1691,17 +1690,7 @@ async def _idle_evictor() -> None:
                 # prescan): nothing to reclaim, and a full gc on the loop
                 # would be pure stall.
                 continue
-            gc.collect()
-            # Only a torch some other subsystem already imported can hold
-            # pool-cached blocks; a cold import here would stall the loop for
-            # seconds (libtorch + CUDA) and grow the RSS this pass frees.
-            torch = sys.modules.get("torch")
-            if torch is not None:
-                try:
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception:
-                    pass
+            device_memory.reclaim_after_unload()
         except asyncio.CancelledError:
             return
         except Exception:
