@@ -186,8 +186,12 @@ def _refuse_over_cap(chip_lists: Iterable[list[Any] | None], holder: str) -> Non
         )
 
 
-class CorrectionIn(BaseModel):
+class _StrictIn(BaseModel):
+    """Request body that 422s an unknown field."""
     model_config = {"extra": "forbid"}
+
+
+class CorrectionIn(_StrictIn):
     # Reject past the store's CAP_CORRECTION_FIELD truncation: a silently cut
     # `wrong` would make the export rewrite only part of the span (or apply a
     # cut `correct`). The page never sends more.
@@ -197,8 +201,7 @@ class CorrectionIn(BaseModel):
     idx_end: int | None = None
 
 
-class PatchCaptureIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class PatchCaptureIn(_StrictIn):
     status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
     # Bounds mirror what captures_store.update_capture truncates to
     # (_CAP_CORRECTED / _CAP_ADMIN_NOTES), so nothing a client may
@@ -217,22 +220,19 @@ class PatchCaptureIn(BaseModel):
     admin_notes: str | None = Field(default=None, max_length=8000)
 
 
-class BulkStatusIn(BaseModel):
+class BulkStatusIn(_StrictIn):
     """PATCH /captures/api/bulk — one status for many ids. The cap equals
     the list endpoint's page cap, so a "select all loaded" is always one
     request. `audio_missing` is system-set and never a target."""
-    model_config = {"extra": "forbid"}
     ids: list[str] = Field(min_length=1, max_length=1000)
     status: Literal["new", "reviewed", "ready", "dismissed"]
 
 
-class BulkIdsIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class BulkIdsIn(_StrictIn):
     ids: list[str] = Field(min_length=1, max_length=1000)
 
 
-class ClearIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class ClearIn(_StrictIn):
     # Typed confirmation — the literal string "CAPTURES" must be sent.
     # Training data is irrecoverable; the modal asks the admin to type it.
     confirm: str = Field(default="", max_length=32)
@@ -1106,29 +1106,25 @@ _MAX_GROUP_MEMBERS = 30
 _CAP_GROUP_CORRECTIONS = text_corrections.CAP_CORRECTIONS * _MAX_GROUP_MEMBERS
 
 
-class CreateSampleIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class CreateSampleIn(_StrictIn):
     member_ids: list[str] = Field(min_length=1, max_length=_MAX_GROUP_MEMBERS)
 
 
-class PreviewMergeIn(BaseModel):
+class PreviewMergeIn(_StrictIn):
     """Preview the merged audio without creating a sample."""
-    model_config = {"extra": "forbid"}
     member_ids: list[str] = Field(min_length=1, max_length=_MAX_GROUP_MEMBERS)
 
 
-class PreviewSaveChipsIn(BaseModel):
+class PreviewSaveChipsIn(_StrictIn):
     """Save chip corrections from a not-yet-merged proposal. Chips carry
     GLOBAL word indices into the merged karaoke strip; server fans them
     out to per-member captures via _split_corrections_to_members."""
-    model_config = {"extra": "forbid"}
     member_ids: list[str] = Field(min_length=1, max_length=_MAX_GROUP_MEMBERS)
     corrections: list[CorrectionIn] = Field(
         default_factory=list, max_length=_CAP_GROUP_CORRECTIONS)
 
 
-class PatchSampleIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class PatchSampleIn(_StrictIn):
     is_locked: bool | None = None
     corrections: list[CorrectionIn] | None = Field(
         default=None, max_length=_CAP_GROUP_CORRECTIONS)
