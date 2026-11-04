@@ -12,6 +12,7 @@ from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto
+from tests._translation_helpers import enable_translation
 from tests.admin._pipeline_helpers import list_step
 from tests.conftest import _repoint_path_default, bearer
 
@@ -1023,7 +1024,7 @@ def _fake_translate(monkeypatch, output, model, warnings=()):
 
 def test_translation_test_endpoint_threads_template_override(
         client, app_module, monkeypatch):
-    app_module.cfg.TRANSLATION_ENABLED = True
+    enable_translation(app_module, monkeypatch)
     seen = _fake_translate(monkeypatch, "We repeated the measurement yesterday.",
                            "org/model-GGUF:Q4", [_GUARD_WARNING])
     r = client.post("/settings/translation-test", json={
@@ -1052,9 +1053,8 @@ def test_translation_test_family_auto_drops_template_for_builtin_family(
     the textarea value. translate_segments treats any non-None template as the
     custom family, so a hunyuan model would have been tested — and its chip
     reported — as "custom". The effective family must decide."""
-    app_module.cfg.TRANSLATION_ENABLED = True
-    app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
-    app_module.cfg.TRANSLATION_PROMPT_FAMILY = "auto"
+    enable_translation(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set(),
+                       TRANSLATION_PROMPT_FAMILY="auto")
     seen = _fake_translate(monkeypatch, "Hello", "tencent/HY-MT1.5-7B-GGUF:Q4_K_M")
     body = {"text": "Hallo", "target": "en", "source": "de",
             "model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
@@ -1076,10 +1076,8 @@ def test_translation_test_explicit_auto_detects_instead_of_the_saved_pin(
     gemma-translate: null fell back to resolve_family (the saved pin), so the
     lab previewed a family no request uses once "auto" is saved. An explicit
     "auto" detects from the model name, and the page sends it as-is."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set())
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_PROMPT_FAMILY",
-                        "gemma-translate")
+    enable_translation(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set(),
+                       TRANSLATION_PROMPT_FAMILY="gemma-translate")
     ref = "org/qwen2.5-7b-instruct-GGUF:Q4_K_M"
     assert translation.detect_family(ref) == "chatml"
     r = client.post("/settings/translation-test", json={
@@ -1097,9 +1095,8 @@ def test_translation_test_cleared_custom_template_is_not_the_saved_one(
     """A cleared custom textarea is sent as '' and rendered as-is. A null
     fallback would bring back the SAVED template, so the preview/test would
     show text the editor no longer holds."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_PROMPT_TEMPLATE",
-                        "SAVED-SENTINEL {text} -> {target_language}")
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_PROMPT_TEMPLATE="SAVED-SENTINEL {text} -> {target_language}")
     r = client.post("/settings/translation-test", json={
         "text": "Hallo", "target": "en", "source": "de",
         "family": "custom", "template": "", "preview": True})
@@ -1119,8 +1116,8 @@ def test_translation_test_403_when_disabled(client, app_module):
     assert r.status_code == 403
 
 
-def test_translation_test_admin_gated(client, app_module, make_user_key):
-    app_module.cfg.TRANSLATION_ENABLED = True
+def test_translation_test_admin_gated(client, app_module, make_user_key, monkeypatch):
+    enable_translation(app_module, monkeypatch)
     make_user_key("root", is_admin=True)
     r = client.post("/settings/translation-test",
                     json={"text": "hi", "target": "en"})
@@ -1132,8 +1129,8 @@ def test_translation_test_admin_gated(client, app_module, make_user_key):
     assert r.status_code == 403                       # valid key, not admin
 
 
-def test_translation_test_422_bad_shape(client, app_module):
-    app_module.cfg.TRANSLATION_ENABLED = True
+def test_translation_test_422_bad_shape(client, app_module, monkeypatch):
+    enable_translation(app_module, monkeypatch)
     assert client.post("/settings/translation-test",
                        json={"target": "en"}).status_code == 422  # no text
     assert client.post("/settings/translation-test",
@@ -1146,7 +1143,7 @@ def test_translation_test_422_bad_shape(client, app_module):
 
 def test_translation_test_translation_error_is_400(
         client, app_module, monkeypatch):
-    app_module.cfg.TRANSLATION_ENABLED = True
+    enable_translation(app_module, monkeypatch)
     pid = "deadbeef"
     seen = {}
 
@@ -1172,7 +1169,7 @@ def test_translation_test_translation_error_is_400(
 def test_translation_test_preview_renders_without_model(
         client, app_module, monkeypatch):
     """preview=True returns the rendered prompt and NEVER calls the model."""
-    app_module.cfg.TRANSLATION_ENABLED = True
+    enable_translation(app_module, monkeypatch)
 
     async def boom(*a, **k):  # pragma: no cover - must not run
         raise AssertionError("translate_segments called on a preview")
@@ -1192,9 +1189,8 @@ def test_translation_test_preview_renders_without_model(
 
 
 def test_translation_test_preview_family_auto_follows_model(
-        client, app_module):
-    app_module.cfg.TRANSLATION_ENABLED = True
-    app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
+        client, app_module, monkeypatch):
+    enable_translation(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set())
     r = client.post("/settings/translation-test", json={
         "text": "Hallo", "target": "en",
         "model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M", "preview": True})
@@ -1208,7 +1204,7 @@ def test_translation_test_progress_id_seeds_registry(
     'starting' before the run, 'downloading'/'translating' as the hooks
     fire) and the endpoint's finally pops it. Malformed ids are ignored,
     not 422."""
-    app_module.cfg.TRANSLATION_ENABLED = True
+    enable_translation(app_module, monkeypatch)
     pid = "beef" * 8
     seen = {}
 
@@ -1251,7 +1247,7 @@ def test_translation_test_progress_entry_is_owner_stamped(
     """The lab's seed joins _BATCH_PROGRESS with an owner, like the
     transcription and batch-translation seeds — an owner-less entry would be
     readable (and cancellable) by ANY authenticated caller holding the id."""
-    app_module.cfg.TRANSLATION_ENABLED = True
+    enable_translation(app_module, monkeypatch)
     uid, raw = make_user_key("root", is_admin=True)
     pid = "feed" * 8
     seen = {}
@@ -1269,10 +1265,10 @@ def test_translation_test_progress_entry_is_owner_stamped(
     assert seen["owner"] == uid
 
 
-def test_translation_test_model_allowlist_gate(client, app_module):
-    app_module.cfg.TRANSLATION_ENABLED = True
-    app_module.cfg.TRANSLATION_ALLOWED_MODELS = {"org/allowed-GGUF:Q4"}
-    app_module.cfg.TRANSLATION_DEFAULT_MODEL = "org/default-GGUF:Q4"
+def test_translation_test_model_allowlist_gate(client, app_module, monkeypatch):
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_ALLOWED_MODELS={"org/allowed-GGUF:Q4"},
+                       TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4")
     r = client.post("/settings/translation-test", json={
         "text": "hi", "target": "en", "model": "org/other-GGUF:Q4",
         "preview": True})
@@ -1285,8 +1281,8 @@ def test_translation_test_model_allowlist_gate(client, app_module):
     assert r.status_code == 200, r.text
 
 
-def test_translation_test_unknown_family_400(client, app_module):
-    app_module.cfg.TRANSLATION_ENABLED = True
+def test_translation_test_unknown_family_400(client, app_module, monkeypatch):
+    enable_translation(app_module, monkeypatch)
     r = client.post("/settings/translation-test", json={
         "text": "hi", "target": "en", "family": "nope", "preview": True})
     assert r.status_code == 400
@@ -1295,8 +1291,7 @@ def test_translation_test_unknown_family_400(client, app_module):
 
 def test_translation_test_threads_model_family_glossary(
         client, app_module, monkeypatch):
-    app_module.cfg.TRANSLATION_ENABLED = True
-    app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
+    enable_translation(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set())
     seen = _fake_translate(monkeypatch, "ok", "org/m-GGUF:Q4")
     r = client.post("/settings/translation-test", json={
         "text": "Hallo", "target": "en", "source": "de",

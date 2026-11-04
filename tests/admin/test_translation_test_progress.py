@@ -1,6 +1,7 @@
 """Progress registry handling of the /settings translation prompt lab."""
 
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests._translation_helpers import enable_translation
 
 
 def test_translation_test_straggler_tick_cannot_resurrect_the_entry(
@@ -11,7 +12,7 @@ def test_translation_test_straggler_tick_cannot_resurrect_the_entry(
     readable and cancellable by any authenticated caller holding the id."""
     from faster_whisper_backend.translation import engine as translation
 
-    app_module.cfg.TRANSLATION_ENABLED = True
+    enable_translation(app_module, monkeypatch)
     pid = "cafe" * 8
     held = {}
 
@@ -36,7 +37,7 @@ def test_translation_test_forwards_target_progress(
     the end; target_progress is the only intra-target signal."""
     from faster_whisper_backend.translation import engine as translation
 
-    app_module.cfg.TRANSLATION_ENABLED = True
+    enable_translation(app_module, monkeypatch)
     pid = "f00d" * 8
     seen = {}
 
