@@ -10,7 +10,7 @@ the request profile, the gate disables it, and the names endpoint behaves.
 
 
 from faster_whisper_backend.settings import config as cfg
-from tests._transcription_helpers import bind_profile, post_verbose
+from tests._transcription_helpers import bind_profile, post_verbose_ok
 from tests.conftest import bearer
 
 OV = "/settings/overrides"
@@ -18,7 +18,7 @@ PERMS = "/settings/api-keys/api/users"
 
 
 def _transcribe(client, profile, headers=None):
-    return post_verbose(client, headers, override_profile=profile)
+    return post_verbose_ok(client, headers, override_profile=profile)
 
 
 def _gate_profiles(monkeypatch, allow, profiles=None):
@@ -30,25 +30,22 @@ def _gate_profiles(monkeypatch, allow, profiles=None):
 def test_request_profile_applies_to_decode_kwargs(client, fake_model, monkeypatch):
     # Open mode (no keys) → synthetic admin; the request profile is the only layer.
     _gate_profiles(monkeypatch, True)
-    r = _transcribe(client, "fast")
-    assert r.status_code == 200, r.text
+    body = _transcribe(client, "fast")
     assert fake_model.last_kwargs["beam_size"] == 3
-    assert r.json()["profile_applied"] == "fast"
+    assert body["profile_applied"] == "fast"
 
 
 def test_request_profile_gated_off_is_ignored(client, fake_model, monkeypatch):
     _gate_profiles(monkeypatch, False)
-    r = _transcribe(client, "fast")
-    assert r.status_code == 200, r.text
+    body = _transcribe(client, "fast")
     assert fake_model.last_kwargs["beam_size"] != 3
-    assert r.json()["profile_applied"] is None
+    assert body["profile_applied"] is None
 
 
 def test_unknown_request_profile_not_applied(client, fake_model, monkeypatch):
     _gate_profiles(monkeypatch, True)
-    r = _transcribe(client, "nope")
-    assert r.status_code == 200, r.text
-    assert r.json()["profile_applied"] is None
+    body = _transcribe(client, "nope")
+    assert body["profile_applied"] is None
 
 
 def test_binding_lock_beats_request_profile(client, make_user_key, fake_model):
@@ -66,10 +63,9 @@ def test_binding_lock_beats_request_profile(client, make_user_key, fake_model):
                      json={"pages": {}, "config": {"overrides": {}, "profiles": ["locked"], "locks": []}})
     assert r.status_code == 200, r.text
 
-    r = _transcribe(client, "fast", bearer(raw_alice))
-    assert r.status_code == 200, r.text
+    body = _transcribe(client, "fast", bearer(raw_alice))
     assert fake_model.last_kwargs["beam_size"] == 8      # binding wins; request profile shadowed
-    assert r.json()["profile_applied"] == "fast"         # it was applied (just shadowed on beam_size)
+    assert body["profile_applied"] == "fast"             # it was applied (just shadowed on beam_size)
 
 
 def test_override_profiles_endpoint_lists_names(client, monkeypatch):
@@ -105,21 +101,18 @@ def test_none_sentinel_suppresses_bound_profile(client, make_user_key, fake_mode
     admin_h, raw_alice = bind_profile(client, make_user_key, "clinic", {"BEAM_SIZE": 7})
 
     # Baseline: admin has no bound profile → the plain default beam_size.
-    r = post_verbose(client, admin_h)
-    assert r.status_code == 200, r.text
+    post_verbose_ok(client, admin_h)
     default_beam = fake_model.last_kwargs["beam_size"]
     assert default_beam != 7
 
     # Alice with the bound profile, no override → the profile applies.
-    r = post_verbose(client, bearer(raw_alice))
-    assert r.status_code == 200, r.text
+    post_verbose_ok(client, bearer(raw_alice))
     assert fake_model.last_kwargs["beam_size"] == 7
 
     # Alice sends "__none__" → bound profile suppressed → back to the plain default.
-    r = post_verbose(client, bearer(raw_alice), override_profile=NO_PROFILE_SENTINEL)
-    assert r.status_code == 200, r.text
+    body = post_verbose_ok(client, bearer(raw_alice), override_profile=NO_PROFILE_SENTINEL)
     assert fake_model.last_kwargs["beam_size"] == default_beam
-    assert r.json()["profile_applied"] is None
+    assert body["profile_applied"] is None
 
 
 def test_none_sentinel_never_listed(client, monkeypatch):
