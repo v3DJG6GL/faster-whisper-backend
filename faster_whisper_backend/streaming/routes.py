@@ -1286,8 +1286,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 _final_exc[0] = exc
                 raise
 
-        def postprocess(raw_text):
-            return pl_engine._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_fmt_lang())
+        def postprocess(raw_text, **kw):
+            return pl_engine._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_fmt_lang(), **kw)
 
         # Output wrappers: the prefix sits at the very start of the document, the
         # suffix at its end. committed/tail are full authoritative strings (the
@@ -1374,10 +1374,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     return None
                 if captures_store.ready_fills_cap():
                     return None
-                training_text = pl_engine._postprocess_text(
-                    raw_text, model_name=final_model, trace=None,
-                    extra_excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None),
-                    ident=ident, language=_fmt_lang())
+                training_text = postprocess(
+                    raw_text, trace=None,
+                    extra_excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None))
                 wav_path = _write_pcm16_wav(audio)
                 try:
                     return captures_store.create_capture(
@@ -1421,7 +1420,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             kwargs = dec.get("kwargs", {})
 
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
-            final_text = pl_engine._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident, language=_fmt_lang())
+            final_text = postprocess(raw_text, trace=steps)
             if info.get("decode_failed"):
                 # The session already logged the failure (type only). Say here
                 # what the text IS, so the row below isn't read as a decode.
