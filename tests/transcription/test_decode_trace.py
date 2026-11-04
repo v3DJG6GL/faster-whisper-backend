@@ -357,8 +357,7 @@ def test_unfinished_last_segment_is_re_decoded_not_refused():
     m = _Model(plan, [{"frames": 319, "seek": 0, "yield": 1},
                       {"frames": 119, "seek": 200, "yield": 1},
                       {"frames": 20, "seek": 300, "yield": 0}], duration=3.2)
-    dt.install(m)
-    segs, t = _run_stop(m, skip_residual=True)
+    segs, t = _run_stop(dt.install(m), skip_residual=True)
     assert len(segs) == 2
     assert len(m.model.calls) == 2, "the re-decode reached the decoder"
     assert [w.get("skipped") for w in t["windows"]] == [None, None, "residual"]
@@ -374,8 +373,7 @@ def test_finished_output_still_arms_the_residual_stop(tokens):
     leftover the stop exists for (the 43 s incident), still refused."""
     m = _Model([[(tokens, -0.5, 0.01)]], [{"frames": 219, "seek": 0, "yield": 1},
                                           {"frames": 47, "seek": 172, "yield": 0}])
-    dt.install(m)
-    segs, t = _run_stop(m, skip_residual=True)
+    segs, t = _run_stop(dt.install(m), skip_residual=True)
     assert len(segs) == 1 and len(m.model.calls) == 1
     assert t["skipped_windows"] == 1
 
@@ -402,8 +400,7 @@ def test_language_detection_pad_does_not_arm_the_stop():
     or the real first window would be refused."""
     m = _incident_model()
     m.lang_detect = True
-    dt.install(m)
-    segs, t = _run_stop(m, skip_residual=True)
+    segs, t = _run_stop(dt.install(m), skip_residual=True)
     assert len(segs) == 1
     assert t["n_windows"] == 2 and t["skipped_windows"] == 1
     assert t["extra_encodes"] == 1
@@ -418,8 +415,7 @@ def test_full_windows_of_a_long_file_are_never_refused():
                       {"frames": 3000, "seek": 2900, "yield": 1},
                       {"frames": 500, "seek": 6000, "yield": 1},   # 65 s − 5 s
                       {"frames": 60, "seek": 6440, "yield": 0}], duration=65.0)
-    dt.install(m)
-    segs, t = _run_stop(m, skip_residual=True)
+    segs, t = _run_stop(dt.install(m), skip_residual=True)
     assert len(segs) == 3
     assert len(m.model.calls) == 3
     assert [w.get("skipped") for w in t["windows"]] == [None, None, None, "residual"]
@@ -467,8 +463,7 @@ def test_full_window_length_follows_the_feature_extractor():
                       {"frames": 1000, "seek": 1000, "yield": 1},
                       {"frames": 500, "seek": 2000, "yield": 1}],
                feature_extractor=FE(), duration=25.0)
-    dt.install(m)
-    segs, t = _run_stop(m, skip_residual=True)
+    segs, t = _run_stop(dt.install(m), skip_residual=True)
     assert len(segs) == 3 and t["skipped_windows"] == 0
     assert t["windows"][1]["start_s"] == pytest.approx(10.0)
     assert t["windows"][2]["start_s"] == pytest.approx(20.0)
@@ -574,8 +569,7 @@ def test_full_window_is_not_capped():
     m = _looping_model()
     m.windows = [{"frames": 3000, "seek": 0, "yield": 1}]
     m.duration = 30.0
-    dt.install(m)
-    _, t = _run_stop(m, token_cap_per_s=10)
+    _, t = _run_stop(dt.install(m), token_cap_per_s=10)
     assert m.model.calls[0]["max_length"] == 448
     assert "token_cap" not in t["windows"][0]
 
