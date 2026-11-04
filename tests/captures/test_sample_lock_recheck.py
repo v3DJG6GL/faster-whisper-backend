@@ -26,7 +26,8 @@ def _lock_while_waiting(monkeypatch, conn, sid):
     monkeypatch.setattr(capture_samples, "_rebuild_lock", _locks_meanwhile)
 
 
-def _setup(client, make_user_key, monkeypatch, sid):
+def _alice_sample(make_user_key, sid):
+    """Admin root + own-scope alice owning unlocked sample `sid`; returns (conn, uid, raw)."""
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store
 
@@ -34,6 +35,13 @@ def _setup(client, make_user_key, monkeypatch, sid):
     uid, raw = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    return conn, uid, raw
+
+
+def _setup(client, make_user_key, monkeypatch, sid):
+    from faster_whisper_backend.captures import samples_store as gs
+
+    conn, _, raw = _alice_sample(make_user_key, sid)
     _lock_while_waiting(monkeypatch, conn, sid)
     return gs, bearer(raw)
 
@@ -91,13 +99,9 @@ def test_group_chip_save_refuses_a_sample_locked_while_waiting(
         client, make_user_key, monkeypatch):
     from faster_whisper_backend.captures import routes
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as captures_store
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
     sid = "relock04sid"
-    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    conn, _, raw = _alice_sample(make_user_key, sid)
     monkeypatch.setattr(routes, "_corrections_write_lock", _LocksOnEnter(conn, sid))
     r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw),
                      json={"corrections": [], "status": "reviewed"})
@@ -113,10 +117,7 @@ def _member_locked_after_guard(client, make_user_key, monkeypatch, sid, cid):
     from faster_whisper_backend.captures import store as captures_store
     from tests.captures.test_routes_captures import _insert_member
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
-    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    conn, uid, raw = _alice_sample(make_user_key, sid)
     _insert_member(conn, cid, sid, user_id=uid)
     real = routes._assert_member_sample_not_locked
 
@@ -157,12 +158,9 @@ def test_lock_toggle_waits_out_an_in_flight_rebuild(
     locked between a VAD rebuild's check and its update_sample."""
     from faster_whisper_backend.captures import samples as capture_samples
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as captures_store
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
     sid = "relock07sid"
-    _insert_sample(captures_store._require_conn(), gs, sid, locked=False, user_id=uid)
+    _, _, raw = _alice_sample(make_user_key, sid)
     held = []
     real_lock, real_update = capture_samples._rebuild_lock, gs.update_sample
 
