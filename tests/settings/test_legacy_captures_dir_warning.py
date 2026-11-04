@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from faster_whisper_backend.settings import config
+from tests.settings.test_config_env import _legacy_warnings
 
 
 def _layout(tmp_path):
@@ -25,7 +25,7 @@ def test_legacy_audio_tree_warns_after_the_configured_dir_exists(tmp_path):
     (repo / "captures" / "ab12").mkdir(parents=True)
     (repo / "captures" / "ab12" / "ab12cd.wav").write_bytes(b"RIFF")
 
-    warns = config._legacy_state_warnings(str(repo), str(data), mapping)
+    warns = _legacy_warnings(repo, data, mapping)
     assert len(warns) == 1
     legacy = str(repo / "captures")
     assert legacy in warns[0] and str(data / "captures") in warns[0]
@@ -36,11 +36,11 @@ def test_legacy_audio_tree_warns_after_the_configured_dir_exists(tmp_path):
 def test_empty_legacy_audio_tree_is_silent(tmp_path):
     repo, data, mapping = _layout(tmp_path)
     (repo / "captures" / "groups").mkdir(parents=True)
-    assert config._legacy_state_warnings(str(repo), str(data), mapping) == []
+    assert _legacy_warnings(repo, data, mapping) == []
     # Even before the first start: nothing there to lose.
     os.rmdir(data / "captures" / "groups")
     os.rmdir(data / "captures")
-    assert config._legacy_state_warnings(str(repo), str(data), mapping) == []
+    assert _legacy_warnings(repo, data, mapping) == []
 
 
 def test_data_dir_audio_tree_warns_when_captures_dir_is_pinned_elsewhere(tmp_path):
@@ -48,8 +48,7 @@ def test_data_dir_audio_tree_warns_when_captures_dir_is_pinned_elsewhere(tmp_pat
     (data / "captures" / "x.wav").write_bytes(b"RIFF")
     pinned = tmp_path / "audio"
     pinned.mkdir()
-    warns = config._legacy_state_warnings(
-        str(repo), str(data), {"captures": str(pinned)})
+    warns = _legacy_warnings(repo, data, {"captures": str(pinned)})
     assert len(warns) == 1 and str(data / "captures") in warns[0]
 
 
@@ -61,4 +60,4 @@ def test_legacy_audio_tree_symlinked_to_the_live_dir_is_silent(tmp_path):
                    target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("no symlink support")
-    assert config._legacy_state_warnings(str(repo), str(data), mapping) == []
+    assert _legacy_warnings(repo, data, mapping) == []

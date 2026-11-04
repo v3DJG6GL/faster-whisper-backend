@@ -609,6 +609,10 @@ def test_env_cross_field_backstop_keeps_unrelated_env_values(monkeypatch, restor
     _assert_not_warned("WHISPER_BEAM_SIZE", "WHISPER_SESSION_COOKIE_SECURE")
 
 
+def _legacy_warnings(repo, data, mapping):
+    return config._legacy_state_warnings(str(repo), str(data), mapping)
+
+
 def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
     """An in-place upgrade that still has runtime state under the checkout,
     with nothing at the configured (data-dir) location, must say so instead of
@@ -627,7 +631,7 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
         "usage.local.sqlite3": usage_db,
     }
 
-    warns = config._legacy_state_warnings(str(repo), str(data), configured)
+    warns = _legacy_warnings(repo, data, configured)
     assert len(warns) == 1                      # config.local.json only
     assert str(repo / "config.local.json") in warns[0]
     assert str(data / "config.local.json") in warns[0]
@@ -636,11 +640,11 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
 
     # Once the configured file exists the warning goes away.
     (data / "config.local.json").write_text("{}", encoding="utf-8")
-    assert config._legacy_state_warnings(str(repo), str(data), configured) == []
+    assert _legacy_warnings(repo, data, configured) == []
 
     # And the legacy api-keys DB warns the same way.
     (repo / "api_keys.local.sqlite3").write_text("", encoding="utf-8")
-    warns = config._legacy_state_warnings(str(repo), str(data), configured)
+    warns = _legacy_warnings(repo, data, configured)
     assert len(warns) == 1
     assert "api_keys.local.sqlite3" in warns[0]
 
@@ -649,7 +653,7 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
     (data / "db").mkdir()
     (data / "db" / "api_keys.local.sqlite3").write_text("", encoding="utf-8")
     (repo / "usage.local.sqlite3").write_text("", encoding="utf-8")
-    warns = config._legacy_state_warnings(str(repo), str(data), configured)
+    warns = _legacy_warnings(repo, data, configured)
     assert len(warns) == 1
     assert "usage.local.sqlite3" in warns[0]
 
@@ -669,8 +673,8 @@ def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     ROOT; the upgrade note relies on this probe catching them too."""
     legacy = tmp_path / "api_keys.local.sqlite3"
     legacy.write_bytes(b"")
-    warns = config._legacy_state_warnings(
-        str(tmp_path / "repo"), str(tmp_path),
+    warns = _legacy_warnings(
+        tmp_path / "repo", tmp_path,
         {"api_keys.local.sqlite3": str(tmp_path / "db" / "api_keys.local.sqlite3")},
     )
     assert len(warns) == 1 and str(legacy) in warns[0]
@@ -683,8 +687,7 @@ def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     fresh = tmp_path / "db" / "api_keys.local.sqlite3"
     fresh.write_bytes(b"")
     mapping = {"api_keys.local.sqlite3": str(fresh)}
-    assert config._legacy_state_warnings(
-        str(tmp_path / "repo"), str(tmp_path), mapping) == []
+    assert _legacy_warnings(tmp_path / "repo", tmp_path, mapping) == []
 
     # ...unless it is the empty store a start without the old file created:
     # newer AND smaller than the legacy one. The first start creates it, so
@@ -692,15 +695,13 @@ def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     legacy.write_bytes(b"k" * 4096)
     os.utime(legacy, (1_000_000, 1_000_000))
     os.utime(fresh, (2_000_000, 2_000_000))
-    warns = config._legacy_state_warnings(
-        str(tmp_path / "repo"), str(tmp_path), mapping)
+    warns = _legacy_warnings(tmp_path / "repo", tmp_path, mapping)
     assert len(warns) == 1 and str(legacy) in warns[0]
     assert "freshly created" in warns[0] and "IGNORED" in warns[0]
     # A configured store bigger than the legacy one is in use: silent.
     fresh.write_bytes(b"k" * 8192)
     os.utime(fresh, (2_000_000, 2_000_000))
-    assert config._legacy_state_warnings(
-        str(tmp_path / "repo"), str(tmp_path), mapping) == []
+    assert _legacy_warnings(tmp_path / "repo", tmp_path, mapping) == []
 
 
 def test_legacy_store_warning_needs_an_empty_configured_store(tmp_path):
@@ -721,8 +722,7 @@ def test_legacy_store_warning_needs_an_empty_configured_store(tmp_path):
     os.utime(store, (2_000_000, 2_000_000))
     mapping = {"api_keys.local.sqlite3": str(store)}
     # Same schema, zero rows: the fresh store a start without the file made.
-    warns = config._legacy_state_warnings(
-        str(tmp_path / "repo"), str(tmp_path), mapping)
+    warns = _legacy_warnings(tmp_path / "repo", tmp_path, mapping)
     assert len(warns) == 1 and "freshly created" in warns[0]
     assert "back up" in warns[0] and "delete or rename" in warns[0]
     # One row: a store in use, even though newer and smaller — silent.
@@ -732,8 +732,7 @@ def test_legacy_store_warning_needs_an_empty_configured_store(tmp_path):
     conn.close()
     os.utime(store, (2_000_000, 2_000_000))
     assert store.stat().st_size < legacy.stat().st_size
-    assert config._legacy_state_warnings(
-        str(tmp_path / "repo"), str(tmp_path), mapping) == []
+    assert _legacy_warnings(tmp_path / "repo", tmp_path, mapping) == []
 
 
 def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
