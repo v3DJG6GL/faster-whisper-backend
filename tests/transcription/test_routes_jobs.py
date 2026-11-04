@@ -6,18 +6,11 @@ import pytest
 
 from faster_whisper_backend.transcription import jobs_store as js
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._transcription_helpers import post_translation
+from tests._transcription_helpers import post_transcription as _post, post_translation
 from tests.conftest import bearer
 from faster_whisper_backend.media import video as media_video
 
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "cafe" * 8
-
-
-def _post(client, headers=None, **data):
-    data.setdefault("model", "whisper-1")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data,
-                       headers=headers or {})
 
 
 def _start_row(job_id=_PID, ttl_s=3600, **kw):
