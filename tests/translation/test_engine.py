@@ -955,10 +955,7 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
     _install_complete(monkeypatch, fake)
 
     live = [f"Satz nummer {n}." for n in range(32)]
-    res, warns, _ = _run(translation.translate_segments(
-        _segs(*live), ["en"], source_lang="de", mode="faithful"))
-    assert warns == []
-    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    _assert_faithful_roundtrip(live)
     assert _batch_sizes(calls) == [8, 4, 8, 8, 8, 4]
 
 
@@ -983,6 +980,14 @@ def _batch_sizes(calls):
             for c in calls]
 
 
+def _assert_faithful_roundtrip(live):
+    """Translate ``live`` faithfully de→en: no warnings, every cue back as _xlate."""
+    res, warns, _ = _run(translation.translate_segments(
+        _segs(*live), ["en"], source_lang="de", mode="faithful"))
+    assert warns == []
+    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+
+
 def test_faithful_batch_size_stops_growing_to_a_size_that_keeps_failing(
         base_cfg, monkeypatch):
     """A model that mis-numbers every batch above 4 lines: once a grown 8
@@ -994,10 +999,7 @@ def test_faithful_batch_size_stops_growing_to_a_size_that_keeps_failing(
         calls, lambda lines: len(lines) > 4))
 
     live = [f"Satz nummer {n}." for n in range(32)]
-    res, warns, _ = _run(translation.translate_segments(
-        _segs(*live), ["en"], source_lang="de", mode="faithful"))
-    assert warns == []
-    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    _assert_faithful_roundtrip(live)
     assert _batch_sizes(calls) == [8, 4, 8, 4, 8] + [4] * 6
 
 
@@ -1011,10 +1013,7 @@ def test_faithful_one_bad_cue_still_grows_back_to_the_full_batch(
     _install_complete(monkeypatch, _numbered_fake(
         calls, lambda lines: any(live[5] in ln for ln in lines)))
 
-    res, warns, _ = _run(translation.translate_segments(
-        _segs(*live), ["en"], source_lang="de", mode="faithful"))
-    assert warns == []
-    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    _assert_faithful_roundtrip(live)
     assert _batch_sizes(calls) == [8, 4, 8, 4, 2, 1, 2, 1, 2, 4, 8, 8, 4]
 
 
@@ -1030,10 +1029,7 @@ def test_faithful_two_bad_cues_apart_still_grow_back_to_the_full_batch(
     _install_complete(monkeypatch, _numbered_fake(
         calls, lambda lines: any(b in ln for ln in lines for b in bad)))
 
-    res, warns, _ = _run(translation.translate_segments(
-        _segs(*live), ["en"], source_lang="de", mode="faithful"))
-    assert warns == []
-    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    _assert_faithful_roundtrip(live)
     ladder = [8, 4, 2, 1, 2, 1, 2, 4]           # around one bad cue
     assert _batch_sizes(calls) == ([8, 4] + ladder + [8, 8]
                                    + ladder + [8, 4])
