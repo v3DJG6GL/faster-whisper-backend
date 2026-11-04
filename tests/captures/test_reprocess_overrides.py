@@ -3,18 +3,16 @@
 the event loop."""
 
 from faster_whisper_backend.settings import effective_config
+from tests.captures._store_helpers import create_stub_capture
 from tests.conftest import bearer, install_fake_wav_transcode
 
 
 
 def _make_capture(tmp_path, user_id):
     from faster_whisper_backend.captures import store as captures_store
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"junk")
-    return captures_store.create_capture(
-        audio_src_path=str(src), request_id="r1", model="whisper-1",
-        language="de", audio_s=1.0, raw="hallo welt",
-        final="hallo welt", words=[], segments=[], user_id=user_id)
+    return create_stub_capture(
+        captures_store, tmp_path, model="whisper-1", raw="hallo welt",
+        final="hallo welt", user_id=user_id)
 
 
 def test_reprocess_resolves_owner_not_caller(client, make_user_key, app_module,

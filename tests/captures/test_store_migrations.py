@@ -8,6 +8,7 @@ tests/reports/test_reports_store_migrations.py."""
 import contextlib
 import sqlite3
 
+from tests.captures._store_helpers import create_stub_capture
 from tests.conftest import install_fake_wav_transcode
 
 
@@ -113,13 +114,9 @@ def test_captures_translations_round_trip_as_a_keyed_map(
     blob would be unusable."""
     captures_store = captures_store_db
     install_fake_wav_transcode(monkeypatch)
-    src = tmp_path / "in.bin"
-    src.write_bytes(b"junk")
 
-    cid = captures_store.create_capture(
-        audio_src_path=str(src), request_id="r1", model="large-v2",
-        language="de", audio_s=1.0, raw="hallo", final="hallo",
-        words=[], segments=[], task="transcribe",
+    cid = create_stub_capture(
+        captures_store, tmp_path, raw="hallo", final="hallo", task="transcribe",
         translations={"en": "hello", "fr": "salut"},
         translation_model="HY-MT", translation_source="cascade-mt")
 
@@ -145,12 +142,8 @@ def test_captures_list_projection_carries_the_new_columns(
 
     # And end-to-end: a listed row actually carries the public keys.
     install_fake_wav_transcode(monkeypatch)
-    src = tmp_path / "in.bin"
-    src.write_bytes(b"junk")
-    captures_store.create_capture(
-        audio_src_path=str(src), request_id="r1", model="m", language="de",
-        audio_s=1.0, raw="r", final="f", words=[], segments=[],
-        task="transcribe", translations={"en": "hello"},
+    create_stub_capture(
+        captures_store, tmp_path, task="transcribe", translations={"en": "hello"},
         translation_model="HY-MT", translation_source="cascade-mt")
     listed = captures_store.list_captures()[0]
     assert listed["translations"] == {"en": "hello"}

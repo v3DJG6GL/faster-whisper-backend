@@ -7,19 +7,15 @@ import sqlite3
 
 import pytest
 
+from tests.captures._store_helpers import create_stub_capture
 from tests.conftest import install_fake_wav_transcode, waits_on, write_bytes
 
 
 def _make(cs, monkeypatch, tmp_path, **over):
     """Create a capture row through the real create_capture (transcode faked)."""
     install_fake_wav_transcode(monkeypatch)
-    src = tmp_path / "src_in.bin"
-    src.write_bytes(b"junk")
     kw = dict(
-        audio_src_path=str(src),
         request_id="req-1",
-        model="small",
-        language="de",
         audio_s=3.0,
         raw="raw text",
         final="final text",
@@ -28,7 +24,7 @@ def _make(cs, monkeypatch, tmp_path, **over):
         user_id="u1",
     )
     kw.update(over)
-    return cs.create_capture(**kw)
+    return create_stub_capture(cs, tmp_path, **kw)
 
 
 @contextlib.contextmanager
@@ -193,14 +189,8 @@ def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypa
         raise RuntimeError("ffmpeg exploded")
 
     monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", _boom)
-    src = tmp_path / "in.bin"
-    src.write_bytes(b"x")
     with pytest.raises(RuntimeError):
-        cs.create_capture(
-            audio_src_path=str(src), request_id=None, model="m",
-            language="de", audio_s=1.0, raw="r", final="f",
-            words=[], segments=[],
-        )
+        create_stub_capture(cs, tmp_path)
     assert cs.count() == 0
     assert _audio_files(cs, ".tmp") == []
 
@@ -218,14 +208,8 @@ def test_create_capture_insert_failure_unlinks_audio(captures_store_db, monkeypa
             return real_conn.execute(sql, *a, **k)
 
     monkeypatch.setattr(cs, "_require_conn", lambda: FailingConn())
-    src = tmp_path / "in.bin"
-    src.write_bytes(b"x")
     with pytest.raises(RuntimeError):
-        cs.create_capture(
-            audio_src_path=str(src), request_id=None, model="m",
-            language="de", audio_s=1.0, raw="r", final="f",
-            words=[], segments=[],
-        )
+        create_stub_capture(cs, tmp_path)
     monkeypatch.setattr(cs, "_require_conn", lambda: real_conn)
     assert _audio_files(cs, ".wav") == []
 
@@ -712,15 +696,11 @@ def test_a_store_full_of_ready_rows_records_nothing(
     _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(10)], "ready")
     assert cs.ready_fills_cap() is True
     install_fake_wav_transcode(monkeypatch)
-    src = tmp_path / "src_in.bin"
-    src.write_bytes(b"junk")
     calls = []
     real = audio_transcode.transcode_to_wav_16k_mono
     monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono",
                         lambda a, b: calls.append(a) or real(a, b))
-    assert cs.create_capture(
-        audio_src_path=str(src), request_id="r", model="m", language="de",
-        audio_s=1.0, raw="r", final="f", words=[], segments=[]) is None
+    assert create_stub_capture(cs, tmp_path) is None
     assert calls == []
     assert cs.count() == 10
 
