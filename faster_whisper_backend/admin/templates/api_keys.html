@@ -1273,6 +1273,7 @@
 
   function bindingFromConfig(cfg) {
     cfg = cfg || {};
+    function gate(k) { return typeof cfg[k] === 'boolean' ? cfg[k] : null; }
     var direct = Object.assign({}, cfg.direct || {});
     var locks = (direct.locks || []).slice();
     delete direct.locks;
@@ -1280,18 +1281,12 @@
       overrides: direct,
       profiles: (cfg.profiles || []).slice(),
       locks: locks,
-      allow_request_override_profile:
-        typeof cfg.allow_request_override_profile === 'boolean'
-          ? cfg.allow_request_override_profile : null,
-      allow_request_decode_overrides:
-        typeof cfg.allow_request_decode_overrides === 'boolean'
-          ? cfg.allow_request_decode_overrides : null,
+      allow_request_override_profile: gate('allow_request_override_profile'),
+      allow_request_decode_overrides: gate('allow_request_decode_overrides'),
       allowed_override_profiles:
         Array.isArray(cfg.allowed_override_profiles)
           ? cfg.allowed_override_profiles.slice() : null,
-      apply_no_profiles:
-        typeof cfg.apply_no_profiles === 'boolean'
-          ? cfg.apply_no_profiles : null,
+      apply_no_profiles: gate('apply_no_profiles'),
     };
   }
 
