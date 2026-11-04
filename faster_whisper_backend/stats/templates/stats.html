@@ -1467,6 +1467,10 @@ function setBar(barEl, pct) {
   barEl.classList.toggle('crit', pct >= 90);
 }
 function setVal(id, val, sub) { $(id).innerHTML = val + '<span class="sub">' + sub + '</span>'; }
+function setRows(body, rows, cols, empty) {
+  body.innerHTML = rows.length
+    ? rows.join('') : '<tr><td colspan="' + cols + '" class="empty">— ' + empty + ' —</td></tr>';
+}
 
 // The payload's `scope` ("own"|"all") and `machine` (bool) are decided
 // server-side (StatsScope). scope=own hides the per-user controls — the only
@@ -1587,8 +1591,7 @@ function renderModels(snap) {
       <td class="num" data-label="cold-load">${coldStr}</td>
     </tr>`;
   });
-  $('models-rows').innerHTML = mrows.length
-    ? mrows.join('') : '<tr><td colspan="12" class="empty">— no models loaded —</td></tr>';
+  setRows($('models-rows'), mrows, 12, 'no models loaded');
 }
 window._fwRerenderModels = () => { if (lastModelsSnap) renderModels(lastModelsSnap); };
 
@@ -1738,8 +1741,7 @@ function render(snap) {
     rows.push(`<tr><td data-label="path">${esc(p)}</td><td class="num" data-label="requests">${n}</td>` +
       `<td class="num" data-label="5xx" style="${errs ? 'color:var(--red)' : ''}">${errs}</td></tr>`);
   }
-  $('endpoints-rows').innerHTML = rows.length
-    ? rows.join('') : '<tr><td colspan="3" class="empty">— none yet —</td></tr>';
+  setRows($('endpoints-rows'), rows, 3, 'none yet');
 
   renderModels(snap);
   // Preload diagnostics: the most likely failure of preloading is silence,
@@ -2099,9 +2101,7 @@ function renderJobs(snap) {
       if (vals[i] !== _rtVals[i]) el.innerHTML = vals[i];
     });
   } else {
-    body.innerHTML = all.length
-      ? all.join('')
-      : '<tr><td colspan="11" class="empty">— no jobs yet —</td></tr>';
+    setRows(body, all, 11, 'no jobs yet');
   }
   _rtSig = sig; _rtVals = vals;
   const more = $('rj-more');
