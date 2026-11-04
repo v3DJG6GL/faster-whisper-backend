@@ -111,7 +111,7 @@ def test_logs_page_reconnect_while_paused_shows_paused(client):
     html = client.get("/logs").text
     onopen = html[html.index("es.onopen = () => {"):]
     onopen = onopen[:onopen.index("\n    };")]
-    assert "statusEl.textContent = paused ? 'paused' : 'live';" in onopen
+    assert "_setPill(paused ? 'paused' : 'live');" in onopen
     assert "if (!paused) {" not in onopen
 
 

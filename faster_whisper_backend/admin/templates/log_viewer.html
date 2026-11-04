@@ -167,6 +167,7 @@
   const pauseBtn = document.getElementById('pauseBtn');
   const clearBtn = document.getElementById('clearBtn');
   let paused = false;
+  function _setPill(text, kind = text) { statusEl.textContent = text; statusEl.className = 'pill ' + kind; }
   let filterText = '';
   // Search modes: by default every hit is highlighted and the view jumps
   // to the newest one (↑/↓ step through them, folded hits get unfolded);
@@ -629,8 +630,7 @@
   pauseBtn.addEventListener('click', () => {
     paused = !paused;
     pauseBtn.textContent = paused ? 'resume' : 'pause';
-    statusEl.textContent = paused ? 'paused' : 'live';
-    statusEl.className = 'pill ' + (paused ? 'paused' : 'live');
+    _setPill(paused ? 'paused' : 'live');
     if (!paused) window.scrollTo(0, document.body.scrollHeight);
   });
   clearBtn.addEventListener('click', () => {
@@ -727,8 +727,7 @@
       // and replay the backlog into an un-cleared DOM; openLogStream() is
       // the single reconnect entry point.
       if (es) { try { es.close(); } catch (_) {} es = null; }
-      statusEl.textContent = 'reconnecting…';
-      statusEl.className = 'pill paused';
+      _setPill('reconnecting…', 'paused');
       if (_logRecoveryTimer) return;
       // The probe carries the stream's own gate (host + logs page), so an
       // expired sign-in or removed logs access stops the loop on 401/403
@@ -741,8 +740,7 @@
           if (r.status === 401 || r.status === 403) {
             clearTimeout(_logRecoveryTimer);
             _logRecoveryTimer = null;
-            statusEl.textContent = r.status === 401 ? 'signed out' : 'no access';
-            statusEl.className = 'pill paused';
+            _setPill(r.status === 401 ? 'signed out' : 'no access', 'paused');
             if (r.status === 401 && window._showLoginGate) window._showLoginGate();
             return;
           }
@@ -764,8 +762,7 @@
       _logReconnectDelay = 3000;
       // onerror set "reconnecting…" whatever the pause state; a reconnect
       // while paused must land on "paused", not stay stuck on that.
-      statusEl.textContent = paused ? 'paused' : 'live';
-      statusEl.className = 'pill ' + (paused ? 'paused' : 'live');
+      _setPill(paused ? 'paused' : 'live');
     };
   }
   openLogStream();
