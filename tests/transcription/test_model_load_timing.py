@@ -13,7 +13,7 @@ import types
 import pytest
 
 from faster_whisper_backend.runtime import model_registry
-from tests._transcription_helpers import blocked_register
+from tests._transcription_helpers import blocked_register, cancel_while_register_held
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_stale_model as _register_stale
@@ -75,29 +75,11 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
     the lease the cancelled caller will never release is given back."""
     _stub_load(monkeypatch, max_loaded=4)
     entered, go = blocked_register(monkeypatch)
-
-    async def run():
-        task = asyncio.create_task(
-            tx_models._get_or_load_model("x", lease=True))
-        while not entered.is_set():
-            await asyncio.sleep(0.01)
-        task.cancel()
-        await asyncio.sleep(0.05)
-        go.set()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        while "x" not in model_registry._loaded_models:
-            await asyncio.sleep(0.01)
-
-    try:
-        asyncio.run(run())
-        assert "x" in tx_models._loaded_models
-        assert "x" in model_registry._loaded_models
-        assert tx_models._model_leases.get("x", 0) == 0
-    finally:
-        go.set()
+    cancel_while_register_held(
+        lambda: tx_models._get_or_load_model("x", lease=True), entered, go)
+    assert "x" in tx_models._loaded_models
+    assert "x" in model_registry._loaded_models
+    assert tx_models._model_leases.get("x", 0) == 0
 
 
 def test_cancel_while_register_is_queued_still_registers(monkeypatch):
