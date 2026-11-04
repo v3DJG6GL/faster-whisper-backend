@@ -1147,7 +1147,7 @@ function seriesSpec() {
 }
 function updateTip(u) {
   const idx = u.cursor.idx;
-  if (idx == null || !curLines.length) { tipEl.style.display = 'none'; announce(''); return; }
+  if (idx == null || !curLines.length) { hideTip(); announce(''); return; }
   const vis = visibleLines();
   let html = '<div class="tip-date">' + fmtDate(xs[idx])
     + (lastDoc.bucket !== 'day' ? ' · ' + lastDoc.bucket : '') + '</div>';
@@ -1216,7 +1216,7 @@ function announce(text) { const a = $('usage-live'); if (a) a.textContent = text
 function renderChart() {
   prepareLines();
   if (chart) { chart.destroy(); chart = null; }
-  tipEl.style.display = 'none';
+  hideTip();
   const empty = $('usage-empty');
   if (!curLines.length || !xs.length) {
     if (empty) {
@@ -1290,7 +1290,7 @@ function renderChart() {
     ],
     series: seriesSpec(),
   }, chartData(), chartEl);
-  chart.over.addEventListener('mouseleave', () => { tipEl.style.display = 'none'; announce(''); });
+  chart.over.addEventListener('mouseleave', () => { hideTip(); announce(''); });
 }
 function refreshChart() {
   if (!chart) { renderChart(); return; }
@@ -1312,7 +1312,7 @@ const wrap = $('usage-chart-wrap');
 if (wrap) wrap.addEventListener('keydown', (e) => {
   if (!chart || !xs.length) return;
   const n = xs.length;
-  if (e.key === 'Escape') { kbIdx = null; chart.setCursor({ left: -10, top: -10 }); tipEl.style.display = 'none'; return; }
+  if (e.key === 'Escape') { kbIdx = null; chart.setCursor({ left: -10, top: -10 }); hideTip(); return; }
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
   e.preventDefault();
   if (e.key === 'Home') kbIdx = 0;
