@@ -1359,14 +1359,17 @@ _KATZE_ALIGNED = ([{"word": "äh", "removed": True}] * 4
                   + [{"word": w} for w in (" die", " Katze", " die", " Maus")])
 
 
+# _buildDefaultTranscript and the helpers it calls, sliced together.
+_TRANSCRIPT_FNS = ("_endsSentence", "_applyChipsToText", "_cjkEdge", "_buildDefaultTranscript")
+
+
 @needs_node
 def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     """The merge modal's transcript and member lines, and the collapsed
     capture card's preview, applied chips without the aligned words, so a
     chip on a repeated word after removed fillers landed on the wrong copy:
     the reviewer approved a text the export would not emit."""
-    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
-                        "_buildDefaultTranscript", "_renderMergePreview", "_capturePreviewText")
+    fns = _js_functions(page, *_TRANSCRIPT_FNS, "_renderMergePreview", "_capturePreviewText")
     out = _run_node(tmp_path, fns + r"""
 function escapeHtml(s) { return String(s); }
 var lines = [];
@@ -1396,8 +1399,7 @@ def test_merge_preview_skips_a_member_the_pipeline_blanked(page, tmp_path):
     text_for_training "" (not NULL): the merge preview used to fall back to
     the raw hallucination, as the server's transcript builder did. A legacy
     row (NULL column) still falls back to `final`."""
-    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
-                        "_buildDefaultTranscript")
+    fns = _js_functions(page, *_TRANSCRIPT_FNS)
     out = _run_node(tmp_path, fns + r"""
 console.log(JSON.stringify(_buildDefaultTranscript([
   { text_for_training: '', final: '', raw: 'Untertitel im Auftrag des ZDF' },
@@ -1447,8 +1449,7 @@ def test_merge_preview_period_space_join_matches_the_server(
     """The JS twin of samples._build_default_transcript still put a literal
     ". " between members after the server stopped doubling a member's own
     sentence punctuation, so the preview showed "Hallo Welt.. Wie …"."""
-    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
-                        "_buildDefaultTranscript")
+    fns = _js_functions(page, *_TRANSCRIPT_FNS)
     rows = [{"final": f} for f in finals]
     out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
                     "_buildDefaultTranscript(" + json.dumps(rows)
@@ -1496,8 +1497,7 @@ def test_merge_preview_join_of_unspaced_members_matches_the_server(
     the server joins Han / kana with no space and closes them with "。"."""
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
-    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
-                        "_buildDefaultTranscript")
+    fns = _js_functions(page, *_TRANSCRIPT_FNS)
     rows = [{"final": f} for f in finals]
     out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
                     "_buildDefaultTranscript(" + json.dumps(rows)
