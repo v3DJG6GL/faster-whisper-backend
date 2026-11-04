@@ -19,6 +19,7 @@ from faster_whisper_backend import paths
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
+from tests._page_helpers import js_fn
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
@@ -101,16 +102,11 @@ def test_the_help_text_names_the_engine_pass_cap(client):
     assert "renderTypeEditor(rule, commitData, { showNote: true, showRepeat: true })" in html
 
 
-def _js_fn(src, name):
-    i = src.index(f"  function {name}(")
-    return src[i:src.index("\n  }\n", i) + 5]
-
-
 @needs_node
 def test_a_false_repeat_fingerprints_like_none_and_reads_unedited():
     with open(_SETTINGS_HTML, encoding="utf-8") as fh:
         src = fh.read()
-    js = "".join(_js_fn(src, n) for n in (
+    js = "".join(js_fn(src, f"  function {n}(") + "\n" for n in (
         "_sortDeep", "_withDefaults", "_ruleStrip", "_ruleContentEqual", "_ruleHash",
         "_factoryRule", "_ruleStatus"))
     base = {"name": "h", "label": "H", "type": "callback:upper", "pattern": "x"}

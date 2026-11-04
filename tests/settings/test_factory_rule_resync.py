@@ -19,6 +19,7 @@ import pytest
 
 from faster_whisper_backend import paths
 from faster_whisper_backend.settings import config_store as cs
+from tests._page_helpers import js_fn
 from tests.settings._rules_helpers import factory_rules as _factory_rules
 from tests.settings._rules_helpers import load_saved
 
@@ -97,18 +98,14 @@ def test_the_rule_hash_matches_a_known_editor_value():
 _JS_KNOWN_HASH = "1cb72f88d12faf"
 
 
-def _js_fn(src, name):
-    i = src.index(f"  function {name}(")
-    return src[i:src.index("\n  }\n", i) + 5]
-
-
 @pytest.mark.skipif(_NODE is None, reason="node unavailable")
 def test_the_rule_hash_is_the_editors():
     """Every factory rule, plus key orders JSON.stringify writes its own way
     (array-index keys first, UTF-16 order) and characters it escapes."""
     with open(_SETTINGS_HTML, encoding="utf-8") as fh:
         src = fh.read()
-    js = "".join(_js_fn(src, n) for n in ("_sortDeep", "_withDefaults", "_ruleStrip", "_ruleHash"))
+    js = "".join(js_fn(src, f"  function {n}(") + "\n"
+                 for n in ("_sortDeep", "_withDefaults", "_ruleStrip", "_ruleHash"))
     rules = cs.load_factory_rules() + [
         {"name": "m", "label": "M", "type": "callback:map", "seeded": False,
          "map": {"10": "x", "2": "y", "b": "\t\"\\", "Ａ": "z", "\U0001d504": "q",
