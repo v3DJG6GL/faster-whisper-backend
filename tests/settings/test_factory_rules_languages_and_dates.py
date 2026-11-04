@@ -7,7 +7,6 @@ worst kind of error in a medical dictation.
 """
 import os
 import re
-import time
 
 import pytest
 
@@ -20,6 +19,7 @@ from tests.settings._rules_helpers import (
     entry_by_label as _entry,
     factory_rules as _factory_rules,
     factory_rules_with_entry as _factory_rules_with_entry,
+    fast_postprocess as _fast_postprocess,
     load_saved as _load_saved,
 )
 
@@ -87,10 +87,7 @@ def test_capitalize_after_terminator_is_fast_on_a_run_of_paragraph_breaks(app_mo
     rule = _by_name()["capitalize-after-terminator"]
     _install(app_module, [rule, dict(_TRIM)])
     for text in ("Befund" + "\n" * 40000 + "Ende", "Befund" + "\n \n" * 20000 + "Ende"):
-        t0 = time.perf_counter()
-        out = _pp(text)
-        assert time.perf_counter() - t0 < 1.0
-        assert out == text
+        assert _fast_postprocess(text) == text
     for old in (r"([.?!]\s+|\n+\s*)([a-zäöüß])", r"([.?!]\s+|\n\s*)([a-zäöüß])"):
         for s in ("Gut. danke\n\n  ja", "a\n \n\tb\n\n\n.c", "x.y! über\n1\nß",
                   "a\r\n\x0b\nb\n\x85\u2028c\n\x0c\x1cä"):
@@ -402,10 +399,7 @@ def test_digit_range_keeps_a_line_break_between_two_numbers():
 
 def _assert_silence_loop_is_fast(app_module, unit, n):
     _install_factory(app_module)
-    t0 = time.perf_counter()
-    out = _pp(" Das war es " + unit * n + "Danke.")
-    assert time.perf_counter() - t0 < 1.0
-    assert out == "Das war es Danke"
+    assert _fast_postprocess(" Das war es " + unit * n + "Danke.") == "Das war es Danke"
 
 
 @pytest.mark.parametrize("unit", ["... ", " .", " ,"])
@@ -485,9 +479,7 @@ def test_tidy_newlines_is_fast_on_a_symbol_loop_with_the_whitespace_card_off(app
     rules = _factory_rules()
     next(r for r in rules if r.get("name") == "digit-and-whitespace-tidy")["enabled"] = False
     _install(app_module, rules)
-    t0 = time.perf_counter()
-    out = _pp(" Das war es " + "* " * 2000 + "Danke.")
-    assert time.perf_counter() - t0 < 1.0
+    out = _fast_postprocess(" Das war es " + "* " * 2000 + "Danke.")
     assert out.split() == ["Das", "war", "es", "Danke"]
 
 

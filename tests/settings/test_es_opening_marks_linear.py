@@ -8,8 +8,6 @@ with language='es' (8000 spaces: 5 s), and every newline of a run of
 paragraph breaks started a scan to its end.
 """
 
-import time
-
 import pytest
 
 from faster_whisper_backend.pipeline import engine as pl_engine
@@ -18,6 +16,7 @@ from tests.settings._rules_helpers import (
     assert_same_output_as_old as _assert_same_output_as_old,
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     factory_rules as _factory_rules,
+    fast_postprocess as _fast_postprocess,
 )
 
 _LABELS = ("es-opening-question-mark", "es-opening-exclamation-mark")
@@ -31,10 +30,7 @@ _LABELS = ("es-opening-question-mark", "es-opening-exclamation-mark")
 def test_a_long_whitespace_run_is_fast(app_module, text, want):
     app_module.cfg.PIPELINE_RULES = _factory_rules()
     pl_engine.rebuild_caches()
-    t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(text, model_name="", language="es")
-    assert time.perf_counter() - t0 < 1.0
-    assert out == want
+    assert _fast_postprocess(text, "es") == want
 
 
 _SPANISH = (

@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import time
 
 from faster_whisper_backend import paths
 from faster_whisper_backend.settings import schema as settings_schema
@@ -51,6 +52,15 @@ def load_saved(tmp_path, raw):
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps(raw), encoding="utf-8")
     return cs.load_overrides(str(p))
+
+
+def fast_postprocess(text, language="de"):
+    """`text` through the installed rules, which must take under 1 s."""
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    t0 = time.perf_counter()
+    out = pl_engine._postprocess_text(text, model_name="", language=language)
+    assert time.perf_counter() - t0 < 1.0
+    return out
 
 
 def assert_upgrades_to_factory_once(rules, paths):

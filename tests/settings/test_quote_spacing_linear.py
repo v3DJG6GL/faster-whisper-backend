@@ -19,6 +19,7 @@ from tests.settings._rules_helpers import (
     entry_by_label as _entry,
     factory_rules as _factory_rules,
     factory_rules_with_entry as _factory_rules_with_entry,
+    fast_postprocess as _fast_postprocess,
 )
 
 _LABEL = "tighten-quote-spacing"
@@ -28,10 +29,7 @@ def test_a_space_run_inside_a_dictated_quote_is_fast(app_module):
     app_module.cfg.PIPELINE_RULES = _factory_rules()
     pl_engine.rebuild_caches()
     text = " Er sagte Gänsefüßchen Hallo" + " *" * 20000 + " Welt."
-    t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(text, model_name="", language="de")
-    assert time.perf_counter() - t0 < 1.0
-    assert out == 'Er sagte "Hallo Welt'
+    assert _fast_postprocess(text) == 'Er sagte "Hallo Welt'
 
 
 def test_a_space_run_inside_a_quote_is_fast():
