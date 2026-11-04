@@ -7,7 +7,6 @@ space run once strip-stray-symbols deleted the symbols) took quadratic time
 on /transcribe (20000 items: 4 s).
 """
 
-import copy
 import random
 import re
 import time
@@ -26,7 +25,7 @@ _LABEL = "tighten-quote-spacing"
 
 
 def test_a_space_run_inside_a_dictated_quote_is_fast(app_module):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    app_module.cfg.PIPELINE_RULES = _factory_rules()
     pl_engine.rebuild_caches()
     text = " Er sagte Gänsefüßchen Hallo" + " *" * 20000 + " Welt."
     t0 = time.perf_counter()

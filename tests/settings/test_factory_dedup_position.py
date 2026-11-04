@@ -6,7 +6,6 @@ own marks by then) it only ever collapsed DICTATED runs: "Fragezeichen
 Ausrufezeichen" came out "!", "Punkt Punkt Punkt" ".".
 """
 
-import copy
 import json
 
 import pytest
@@ -40,7 +39,7 @@ def _old_order(rules, es_after_hyphen=False):
     (" Hallo Komma Punkt", "Hallo,."),
 ])
 def test_dictated_punctuation_comes_out_as_spoken(app_module, text, want):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    app_module.cfg.PIPELINE_RULES = _factory_rules()
     pl_engine.rebuild_caches()
     assert pl_engine._postprocess_text(text, model_name="", language="de") == want
 
@@ -53,7 +52,7 @@ def test_dedup_runs_right_before_the_dictation_map():
 
 @pytest.mark.parametrize("es_after_hyphen", [False, True])
 def test_a_saved_list_in_the_old_factory_order_is_moved_once(es_after_hyphen):
-    rules = _old_order(copy.deepcopy(_factory_rules()), es_after_hyphen)
+    rules = _old_order(_factory_rules(), es_after_hyphen)
     want = [n for n in _names(rules) if n != "dedup-punct"]
     want.insert(want.index("de-dictation-map"), "dedup-punct")
     raw = {"PIPELINE_RULES": rules}
@@ -71,10 +70,10 @@ def test_load_overrides_moves_it_in_a_stored_file(tmp_path):
 
 
 def test_a_reordered_list_keeps_its_order():
-    rules = _old_order(copy.deepcopy(_factory_rules()))
+    rules = _old_order(_factory_rules())
     own = {"name": "mine", "label": "Mine", "type": "regex-list", "entries": []}
     rules.insert(_names(rules).index("dedup-punct"), own)
-    moved = copy.deepcopy(_factory_rules())
+    moved = _factory_rules()
     moved.insert(0, moved.pop(_names(moved).index("dedup-punct")))
     for stored in (rules, moved):
         before = _names(stored)

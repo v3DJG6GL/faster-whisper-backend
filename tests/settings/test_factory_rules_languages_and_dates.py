@@ -5,7 +5,6 @@ upgrades / renames in config_renames.
 deleted ".-" between two numbers). A silently changed date or dose is the
 worst kind of error in a medical dictation.
 """
-import copy
 import os
 import re
 import time
@@ -38,11 +37,11 @@ def _install(app_module, rules):
 
 
 def _install_factory(app_module):
-    _install(app_module, copy.deepcopy(_factory_rules()))
+    _install(app_module, _factory_rules())
 
 
 def _install_one(app_module, name):
-    _install(app_module, [copy.deepcopy(_by_name()[name]), dict(_TRIM)])
+    _install(app_module, [_by_name()[name], dict(_TRIM)])
 
 
 def _pp(text, language="de"):
@@ -86,7 +85,7 @@ def test_capitalize_after_terminator_is_fast_on_a_run_of_paragraph_breaks(app_mo
     started at every newline of the run and scanned to its end. A match now
     starts only at the last newline of a run."""
     rule = _by_name()["capitalize-after-terminator"]
-    _install(app_module, [copy.deepcopy(rule), dict(_TRIM)])
+    _install(app_module, [rule, dict(_TRIM)])
     for text in ("Befund" + "\n" * 40000 + "Ende", "Befund" + "\n \n" * 20000 + "Ende"):
         t0 = time.perf_counter()
         out = _pp(text)
@@ -172,7 +171,7 @@ def test_spanish_marks_survive_the_whole_factory_pipeline(app_module):
     assert run("Hola. Tienes 3?") == "Hola ¿Tienes 3?"
     assert run("Cuántos son? 25!") == "Cuántos son ¡25!"
     assert run("¿Qué hora es?") == "Qué hora es"
-    off = copy.deepcopy(_factory_rules())
+    off = _factory_rules()
     next(r for r in off if r["name"] == "strip-auto-punctuation")["enabled"] = False
     _install(app_module, off)
     assert run("Qué hora es? Qué bien!") == "¿Qué hora es? ¡Qué bien!"
@@ -361,7 +360,7 @@ def test_every_hyphen_of_a_digit_chain_becomes_a_slash(app_module, text, want):
 def test_stored_old_digit_range_entry_is_upgraded(tmp_path, single_regex):
     """A copy saved before 8cde7fd holds the rule as a single `regex` card,
     which becomes a one-entry list labelled with its slug first."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     (old_pat, old_rep), new = renames.UPGRADED_RULE_ENTRIES["normalize-digit-range"]
     i = next(i for i, r in enumerate(rules) if r["name"] == "normalize-digit-range")
     if single_regex:
@@ -436,7 +435,7 @@ def test_closing_punct_rule_saved_before_june_is_upgraded(tmp_path):
     pattern from before `%` joined the class, which UPGRADED_RULE_ENTRIES
     does not know: it kept the quadratic scan on a "... ... ..." loop."""
     old_pat, old_rep = renames.EARLIER_RULE_ENTRIES["space-before-closing-punct"][0]
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     rules.insert(0, {"name": "space-before-closing-punct",
                      "label": "Remove space before closing punctuation",
                      "type": "regex", "pattern": old_pat, "replacement": old_rep})
@@ -483,7 +482,7 @@ def test_tidy_newlines_is_fast_on_a_symbol_loop_with_the_whitespace_card_off(app
     card off (or exclude it). tidy-newlines then got the run whole, and its
     two adjacent space runs tried every split of it at every space: 1000
     items took 2 s, 4000 took minutes."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     next(r for r in rules if r.get("name") == "digit-and-whitespace-tidy")["enabled"] = False
     _install(app_module, rules)
     t0 = time.perf_counter()

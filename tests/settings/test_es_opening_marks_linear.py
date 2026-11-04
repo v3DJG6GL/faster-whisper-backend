@@ -8,7 +8,6 @@ with language='es' (8000 spaces: 5 s), and every newline of a run of
 paragraph breaks started a scan to its end.
 """
 
-import copy
 import time
 
 import pytest
@@ -30,7 +29,7 @@ _LABELS = ("es-opening-question-mark", "es-opening-exclamation-mark")
     ("Hola." + "\n " * 10000 + "Vamos!", "Hola" + "\n" * 10000 + "Vamos"),
 ], ids=["symbol-loop", "paragraph-breaks", "spaced-paragraph-breaks"])
 def test_a_long_whitespace_run_is_fast(app_module, text, want):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    app_module.cfg.PIPELINE_RULES = _factory_rules()
     pl_engine.rebuild_caches()
     t0 = time.perf_counter()
     out = pl_engine._postprocess_text(text, model_name="", language="es")
@@ -58,7 +57,7 @@ def test_the_output_is_unchanged(label):
 
 
 def test_a_stored_copy_of_the_previous_entries_is_upgraded_once():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     es = next(r for r in rules if r["name"] == "es-punctuation")
     for e in es["entries"]:
         e["pattern"], e["replacement"] = renames.UPGRADED_RULE_ENTRIES[e["label"]][0]

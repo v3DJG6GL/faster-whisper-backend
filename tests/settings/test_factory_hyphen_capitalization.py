@@ -48,7 +48,7 @@ def _rule(rules):
     (" Ein schwarz-weiß-rotes Band.", "Ein schwarz-weiss-rotes Band"),
 ])
 def test_only_a_compound_after_a_capitalised_word_is_capitalised(app_module, text, want):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    app_module.cfg.PIPELINE_RULES = _factory_rules()
     pl_engine.rebuild_caches()
     assert pl_engine._postprocess_text(text, model_name="", language="de") == want
 
@@ -58,7 +58,7 @@ def test_the_factory_rule_repeats():
 
 
 def test_the_dry_run_of_the_factory_list_is_the_engine(client, app_module):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     sample = " Beim Hals-nasen-ohren-arzt, im Herz-kreislauf-system."
     r = client.post("/settings/test-pipeline",
                     json={"sample": sample, "rules": rules, "language": "de"})
@@ -78,7 +78,7 @@ def test_the_pattern_passes_the_regex_guard():
 
 @pytest.mark.parametrize("old", _OLD_PATTERNS)
 def test_a_saved_old_factory_copy_becomes_the_factory_rule_once(old):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     r = _rule(rules)
     r["pattern"], r["note"] = old, _OLD_NOTE
     del r["repeat"]  # saved before the rule repeated
@@ -86,7 +86,7 @@ def test_a_saved_old_factory_copy_becomes_the_factory_rule_once(old):
 
 
 def test_an_edited_note_stays_while_the_old_pattern_is_upgraded():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     r = _rule(rules)
     r["pattern"], r["note"] = _OLD_PATTERNS[0], "mine"
     del r["repeat"]
@@ -96,7 +96,7 @@ def test_an_edited_note_stays_while_the_old_pattern_is_upgraded():
 
 
 def test_an_edited_pattern_stays_and_gets_no_repeat():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     r = _rule(rules)
     r["pattern"], r["note"] = "(\\w-)([a-zäöüß])", _OLD_NOTE
     del r["repeat"]
