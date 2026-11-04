@@ -16,6 +16,8 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import model_registry
+from faster_whisper_backend.runtime import preload_routes
+from faster_whisper_backend.translation import engine as translation
 
 from tests.conftest import bearer
 from tests.runtime.test_preload_registry import _enable as _registry_enable
@@ -326,7 +328,6 @@ def test_translation_full_cache_with_only_a_warm_peer_is_family_busy(
     so the same refusal applies."""
     _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
     model_registry.set_warm_predicate(lambda k: k == "gguf:o/peer:Q4")
@@ -348,7 +349,6 @@ def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
         monkeypatch):
     _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
     model_registry.set_warm_predicate(None)
@@ -424,7 +424,6 @@ def test_route_judges_the_resolved_whisper_id(client, app_module, monkeypatch):
     """`whisper-1` is admitted exactly when DEFAULT_MODEL is, and a non-empty
     ALLOWED_MODELS that omits the default rejects both — as the transcribe
     gate does, instead of queueing a load that 400s there."""
-    from faster_whisper_backend.runtime import preload_routes
     cfg = _enable(monkeypatch, DEFAULT_MODEL="large-v3",
                   ALLOWED_MODELS={"small"})
     assert preload_routes._allowed("whisper", "whisper-1") is False
@@ -451,14 +450,12 @@ def test_route_judges_the_resolved_whisper_id(client, app_module, monkeypatch):
 def test_unknown_short_whisper_name_is_not_admitted(monkeypatch):
     """A typo'd size is deferred up front, as the loader would 400 it,
     instead of taking a queue slot for a load that cannot succeed."""
-    from faster_whisper_backend.runtime import preload_routes
     _enable(monkeypatch, DEFAULT_MODEL="large-v3", ALLOWED_MODELS=set())
     assert preload_routes._allowed("whisper", "largev3") is False
     assert preload_routes._allowed("whisper", "large-v3") is True
 
 
 def test_translation_allowlist_is_mains_rule(monkeypatch):
-    from faster_whisper_backend.runtime import preload_routes
     cfg = _enable(monkeypatch, TRANSLATION_ALLOWED_MODELS=set(),
                   TRANSLATION_DEFAULT_MODEL="")
     assert preload_routes._allowed("translation", "any/ref:Q4") is True
