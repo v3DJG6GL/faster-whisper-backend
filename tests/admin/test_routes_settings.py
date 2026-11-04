@@ -1069,23 +1069,26 @@ def test_settings_page_ships_template_editor_and_preview(client):
 _GUARD_WARNING = "segment 1: guard rejected the model output; kept the source text"
 
 
-def test_translation_test_endpoint_threads_template_override(
-        client, app_module, monkeypatch):
+def _fake_translate(monkeypatch, output, model, warnings=()):
+    """Stub translate_segments with one canned segment; return the dict it records its call into."""
     from faster_whisper_backend.translation import engine as translation
 
-    app_module.cfg.TRANSLATION_ENABLED = True
     seen = {}
 
-    async def fake_translate(segments, targets, **kwargs):
-        seen["segments"] = segments
-        seen["targets"] = targets
-        seen["kwargs"] = kwargs
-        return ([{"en": "We repeated the measurement yesterday."}],
-                [_GUARD_WARNING],
-                {"model": "org/model-GGUF:Q4", "source": "de",
-                 "mode": "faithful"})
+    async def fake(segments, targets, **kwargs):
+        seen.update(segments=segments, targets=targets, kwargs=kwargs)
+        return ([{"en": output}], list(warnings),
+                {"model": model, "source": "de", "mode": "faithful"})
 
-    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    monkeypatch.setattr(translation, "translate_segments", fake)
+    return seen
+
+
+def test_translation_test_endpoint_threads_template_override(
+        client, app_module, monkeypatch):
+    app_module.cfg.TRANSLATION_ENABLED = True
+    seen = _fake_translate(monkeypatch, "We repeated the measurement yesterday.",
+                           "org/model-GGUF:Q4", [_GUARD_WARNING])
     r = client.post("/settings/translation-test", json={
         "text": "Wir haben die Messung gestern wiederholt.",
         "target": "en", "source": "de", "family": "custom",
@@ -1112,20 +1115,10 @@ def test_translation_test_family_auto_drops_template_for_builtin_family(
     the textarea value. translate_segments treats any non-None template as the
     custom family, so a hunyuan model would have been tested — and its chip
     reported — as "custom". The effective family must decide."""
-    from faster_whisper_backend.translation import engine as translation
-
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
     app_module.cfg.TRANSLATION_PROMPT_FAMILY = "auto"
-    seen = {}
-
-    async def fake_translate(segments, targets, **kwargs):
-        seen["kwargs"] = kwargs
-        return ([{"en": "Hello"}], [],
-                {"model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M", "source": "de",
-                 "mode": "faithful"})
-
-    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    seen = _fake_translate(monkeypatch, "Hello", "tencent/HY-MT1.5-7B-GGUF:Q4_K_M")
     body = {"text": "Hallo", "target": "en", "source": "de",
             "model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
             "template": "X {text} -> {target_language}"}
@@ -1378,18 +1371,9 @@ def test_translation_test_unknown_family_400(client, app_module):
 
 def test_translation_test_threads_model_family_glossary(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.translation import engine as translation
-
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
-    seen = {}
-
-    async def fake_translate(segments, targets, **kwargs):
-        seen["kwargs"] = kwargs
-        return ([{"en": "ok"}], [], {"model": "org/m-GGUF:Q4",
-                                     "source": "de", "mode": "faithful"})
-
-    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    seen = _fake_translate(monkeypatch, "ok", "org/m-GGUF:Q4")
     r = client.post("/settings/translation-test", json={
         "text": "Hallo", "target": "en", "source": "de",
         "model": "org/m-GGUF:Q4", "family": "hunyuan",
