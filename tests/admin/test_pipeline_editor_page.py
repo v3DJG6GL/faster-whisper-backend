@@ -380,6 +380,19 @@ def _run_postfactory(html, drive, extra_fns=""):
     return node_json(fns + drive)
 
 
+def _promote_out(html, editor_rule, served, extra_out="", extra_fns=""):
+    """_postFactory under node with `editor_rule` + served's terminal in the
+    editor and `served` as the server's reply; return {clean, + extra_out's keys}."""
+    drive = ("const name = 'PIPELINE_RULES';\nconst term = %s;\n" % json.dumps(served[1])
+             + _POSTFACTORY_STUBS + "let rules = [%s, term];\n" % json.dumps(editor_rule)
+             + "const api = async () => ({ ok: true, status: 200,"
+               " json: async () => ({ rules: %s }) });\n" % json.dumps(served)
+             + "(async () => {\n  await _postFactory(rules);\n"
+               "  console.log(JSON.stringify({ clean: dirty[name] === fields[name].value,"
+               " %s }));\n})();\n" % extra_out)
+    return _run_postfactory(html, drive, extra_fns)
+
+
 @needs_node
 def test_unshadowed_promote_of_a_new_rule_leaves_save_unlit(client):
     """A new custom rule is seeded:false in the editor; the server writes it
@@ -388,21 +401,11 @@ def test_unshadowed_promote_of_a_new_rule_leaves_save_unlit(client):
     that Save pinned a full local copy shadowing later config.json updates.
     The real _sansRevs / _setRulesDirty / _postFactory run under node."""
     html = _html(client)
-    drive = r"""
-const name = 'PIPELINE_RULES';
-const term = { name: 'terminal', type: 'terminal', seeded: true };
-""" + _POSTFACTORY_STUBS + r"""let rules = [{ name: 'my-rule', type: 'regex', pattern: 'a', replacement: 'b',
-               seeded: false }, term];
-const served = [{ name: 'my-rule', type: 'regex', pattern: 'a', replacement: 'b',
-                  seeded: true }, term];
-const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: served }) });
-(async () => {
-  await _postFactory(rules);
-  const d = dirty[name];
-  console.log(JSON.stringify({ clean: d === fields[name].value, seeded: rules[0].seeded }));
-})();
-"""
-    assert _run_postfactory(html, drive) == {"clean": True, "seeded": True}
+    rule = {"name": "my-rule", "type": "regex", "pattern": "a", "replacement": "b",
+            "seeded": False}
+    term = {"name": "terminal", "type": "terminal", "seeded": True}
+    assert _promote_out(html, rule, [dict(rule, seeded=True), term],
+                        "seeded: rules[0].seeded") == {"clean": True, "seeded": True}
 
 
 @needs_node
@@ -420,21 +423,9 @@ def test_unshadowed_promote_of_a_new_map_rule_leaves_save_unlit(client):
     served = canon_rules([dict(new_rule, seeded=True),
                           {"name": "terminal", "type": "terminal", "seeded": True}])
     assert served[0]["map_meta"] == {}
-    drive = r"""
-const name = 'PIPELINE_RULES';
-const term = SERVED[1];
-""" + _POSTFACTORY_STUBS + r"""let rules = [NEW_RULE, term];
-const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SERVED }) });
-(async () => {
-  await _postFactory(rules);
-  console.log(JSON.stringify({ clean: dirty[name] === fields[name].value,
-                               hash_free: !('map_meta' in _ruleStrip(rules[0])) }));
-})();
-"""
-    drive = (drive.replace("SERVED", json.dumps(served))
-             .replace("NEW_RULE", json.dumps(new_rule)))
     strip = _slice(html, "function _ruleStrip(r) {", "function _ruleContentEqual(a, b) {")
-    assert _run_postfactory(html, drive, strip) == {"clean": True, "hash_free": True}
+    assert _promote_out(html, new_rule, served, "hash_free: !('map_meta' in _ruleStrip(rules[0]))",
+                        strip) == {"clean": True, "hash_free": True}
 
 
 @needs_node
@@ -453,16 +444,4 @@ def test_unshadowed_promote_after_a_map_key_delete_leaves_save_unlit(client):
               "map_meta": {"foo": 1700000000, "komma": 1700000001}}
     served = canon_rules([edited, {"name": "terminal", "type": "terminal", "seeded": True}])
     assert served[0]["map_meta"] == {"foo": 1700000000}
-    drive = r"""
-const name = 'PIPELINE_RULES';
-const term = SERVED[1];
-""" + _POSTFACTORY_STUBS + r"""let rules = [EDITED, term];
-const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SERVED }) });
-(async () => {
-  await _postFactory(rules);
-  console.log(JSON.stringify({ clean: dirty[name] === fields[name].value }));
-})();
-"""
-    drive = (drive.replace("SERVED", json.dumps(served))
-             .replace("EDITED", json.dumps(edited)))
-    assert _run_postfactory(html, drive) == {"clean": True}
+    assert _promote_out(html, edited, served) == {"clean": True}
