@@ -2125,15 +2125,7 @@
     var strip = _el('div', 'word-strip');
     state.words.forEach(function(w, i) {
       var sp = _el('span', 'word');
-      var dw = _dispWord(w);
-      sp.textContent = (dw || '').replace(/^\s+/, ' ');
-      if (_dispRemoved(w)) {
-        sp.classList.add('rule-removed');
-        sp.title = 'removed by pipeline rule';
-      } else if (w.raw_word && (w.raw_word || '').trim() !== (dw || '').trim()) {
-        sp.title = 'raw: ' + w.raw_word;
-        sp.classList.add('post-edited');
-      }
+      _paintWordSpan(sp, w, ' ');
       sp.addEventListener('click', function(e) {
         onWordClick(state, i, !!e.shiftKey);
       });
@@ -3603,6 +3595,20 @@
     }
   }
 
+  // A word-strip span's text and rule-removed / post-edited marks. `lead`
+  // replaces the word's leading whitespace.
+  function _paintWordSpan(sp, w, lead) {
+    var dw = _dispWord(w);
+    sp.textContent = (dw || '').replace(/^\s+/, lead);
+    if (_dispRemoved(w)) {
+      sp.classList.add('rule-removed');
+      sp.title = 'removed by pipeline rule';
+    } else if (w.raw_word && (w.raw_word || '').trim() !== (dw || '').trim()) {
+      sp.classList.add('post-edited');
+      sp.title = 'raw: ' + w.raw_word;
+    }
+  }
+
   // onClick (optional): function(idx, shiftKey), called on a click on a
   // word span.
   function _renderWordStrip(stripEl, words, onClick) {
@@ -3610,15 +3616,7 @@
     var els = [];
     words.forEach(function(w, i) {
       var sp = _el('span', 'word');
-      var dw = _dispWord(w);
-      sp.textContent = (dw || '').replace(/^\s+/, ' ');
-      if (_dispRemoved(w)) {
-        sp.classList.add('rule-removed');
-        sp.title = 'removed by pipeline rule';
-      } else if (w.raw_word && (w.raw_word || '').trim() !== (dw || '').trim()) {
-        sp.classList.add('post-edited');
-        sp.title = 'raw: ' + w.raw_word;
-      }
+      _paintWordSpan(sp, w, ' ');
       if (onClick) {
         sp.addEventListener('click', function(e) {
           onClick(i, !!e.shiftKey);
@@ -5281,15 +5279,7 @@
               sp.style.marginLeft = '0.4rem';
             }
             prevMember = w.member_idx;
-            var dw = _dispWord(w);
-            sp.textContent = (dw || '').replace(/^\s+/, ' ');
-            if (_dispRemoved(w)) {
-              sp.classList.add('rule-removed');
-              sp.title = 'removed by pipeline rule';
-            } else if (w.raw_word && (w.raw_word || '').trim() !== (dw || '').trim()) {
-              sp.title = 'raw: ' + w.raw_word;
-              sp.classList.add('post-edited');
-            }
+            _paintWordSpan(sp, w, ' ');
             sp.addEventListener('click', function(e) {
               onWordClick(sampleState, i, !!e.shiftKey);
             });

@@ -1543,8 +1543,8 @@ function escapeHtml(s) { return String(s); }   // the page's /"/ regex trips _js
 
 
 def _sample_card_js(page):
-    return _SAMPLE_CARD_STUBS + _js_functions(page, "applyServerSample", "_trainingBase", "_applyChipsToText",
-                                              "_chipFields", "_el")
+    return _SAMPLE_CARD_STUBS + _js_functions(page, "applyServerSample", "_paintWordSpan", "_trainingBase",
+                                              "_applyChipsToText", "_chipFields", "_el")
 
 
 @needs_node
