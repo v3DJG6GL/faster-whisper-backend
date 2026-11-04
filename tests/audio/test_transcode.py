@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from faster_whisper_backend.audio import transcode as audio_transcode
+from tests.conftest import write_wav
 
 RATE = 16000
 
@@ -24,12 +25,7 @@ def _write_src_wav(path, *, rate, nchannels, freq=440.0, dur_s=0.5):
         frames = np.repeat(tone, 2).tobytes()
     else:
         frames = tone.tobytes()
-    with wave.open(path, "wb") as w:
-        w.setnchannels(nchannels)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(frames)
-    return path
+    return write_wav(path, frames, nchannels=nchannels, rate=rate)
 
 
 @pytest.mark.parametrize("in_rate,in_ch", [
@@ -222,12 +218,7 @@ def _two_tone(path, *, rate=44100, pts_offset_s=0):
     tone = np.where(t < 30, np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 880 * t))
     pcm = np.repeat((tone * 8000).astype(np.int16), 2)
     if path.endswith(".wav"):
-        with wave.open(path, "wb") as w:
-            w.setnchannels(2)
-            w.setsampwidth(2)
-            w.setframerate(rate)
-            w.writeframes(pcm.tobytes())
-        return path
+        return write_wav(path, pcm.tobytes(), nchannels=2, rate=rate)
     import av
     with av.open(path, "w") as out:
         st = out.add_stream("aac", rate=rate, layout="stereo")
