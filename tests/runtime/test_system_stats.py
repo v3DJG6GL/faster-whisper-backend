@@ -16,16 +16,9 @@ from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.settings import config as cfg
 
 
-@pytest.fixture(autouse=True)
-def _reset_registry(model_sizes_ledger):
-    """The snapshot's models row reads this process-global registry, so cases
-    must not see each other's writes. A registration with a positive VRAM
-    delta records into the measured-size ledger, hence model_sizes_ledger."""
-    with model_registry._loaded_models_lock:
-        model_registry._loaded_models.clear()
-    yield
-    with model_registry._loaded_models_lock:
-        model_registry._loaded_models.clear()
+# A registration with a positive VRAM delta records into the measured-size
+# ledger, so repoint it; conftest's reset hook empties the registry itself.
+pytestmark = pytest.mark.usefixtures("model_sizes_ledger")
 
 
 def test_snapshot_shape():

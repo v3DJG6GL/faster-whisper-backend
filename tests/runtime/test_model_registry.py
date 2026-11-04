@@ -1,8 +1,8 @@
 """Tests for model_registry: the loaded-model registry round-trip, the role
 split by family prefix, and the negative-delta guard.
 
-The module keeps a process-global registry (_loaded_models); a local autouse
-fixture clears it between tests so cases don't observe each other's writes.
+The module keeps a process-global registry (_loaded_models); conftest's reset
+hook clears it between tests so cases don't observe each other's writes.
 """
 
 import time
@@ -12,16 +12,9 @@ import pytest
 from faster_whisper_backend.runtime import model_registry
 
 
-@pytest.fixture(autouse=True)
-def _reset_registry(model_sizes_ledger):
-    """Reset the module-global loaded-model registry. A registration with a
-    positive VRAM delta records into the measured-size ledger, so that is
-    repointed at tmp_path too."""
-    with model_registry._loaded_models_lock:
-        model_registry._loaded_models.clear()
-    yield
-    with model_registry._loaded_models_lock:
-        model_registry._loaded_models.clear()
+# A registration with a positive VRAM delta records into the measured-size
+# ledger, so repoint it; conftest's reset hook empties the registry itself.
+pytestmark = pytest.mark.usefixtures("model_sizes_ledger")
 
 
 def test_register_and_snapshot():
