@@ -1160,11 +1160,9 @@
     root.setAttribute('role', 'radiogroup');
     var buttons = new Map();
     options.forEach(function(opt) {
-      var b = document.createElement('button');
+      var b = _el('button', 'status-btn', opt.label);
       b.type = 'button';
-      b.className = 'status-btn';
       b.dataset.value = opt.value;
-      b.textContent = opt.label;
       var cnt = _el('span', 'cnt');
       b.appendChild(cnt);
       b.setAttribute('role', 'radio');
@@ -1749,16 +1747,14 @@
   }
   // A .cc-section card: h3 title plus an optional help line (a page literal).
   function _ccSection(cls, title, helpHtml) {
-    var s = document.createElement('div');
-    s.className = cls;
+    var s = _el('div', cls);
     s.innerHTML = '<h3>' + title + '</h3>'
       + (helpHtml ? '<div class="help">' + helpHtml + '</div>' : '');
     return s;
   }
   // Read-only text box (Final result / translation): the a11y role lives here.
   function _readonlyBox(cls) {
-    var e = document.createElement('div');
-    e.className = cls;
+    var e = _el('div', cls);
     e.setAttribute('role', 'textbox');
     e.setAttribute('aria-readonly', 'true');
     return e;
@@ -1879,9 +1875,8 @@
     if (_selection.has(r.id)) card.classList.add('selected');
 
     var head = _el('div', 'cc-head');
-    var cb = document.createElement('input');
+    var cb = _el('input', 'sel-checkbox');
     cb.type = 'checkbox';
-    cb.className = 'sel-checkbox';
     cb.checked = _selection.has(r.id);
     cb.title = 'Select for merge';
     cb.addEventListener('click', function(ev) {
@@ -2288,9 +2283,8 @@
     actions.appendChild(spc);
 
     // Picks up rule edits without waiting for the bulk reapply job.
-    var reBtn = document.createElement('button');
+    var reBtn = _el('button', '', 'Reprocess');
     reBtn.type = 'button';
-    reBtn.textContent = 'Reprocess';
     reBtn.title = 'Re-run PIPELINE_RULES on raw → refresh training text';
     reBtn.addEventListener('click', function() {
       onReprocess(state, r, reBtn);
@@ -2560,9 +2554,8 @@
       var arrow = _el('span', 'arrow', '→');
       chip.appendChild(arrow);
 
-      var inp = document.createElement('input');
+      var inp = _el('input', 'correct-input');
       inp.type = 'text';
-      inp.className = 'correct-input';
       inp.maxLength = CHIP_TEXT_MAX;
       inp.value = c.correct || '';
       inp.placeholder = 'correction';
@@ -3893,16 +3886,14 @@
 
     var wrap = _el('div', 'compact-player');
 
-    var btn = document.createElement('button');
+    var btn = _el('button', 'compact-player-btn');
     btn.type = 'button';
-    btn.className = 'compact-player-btn';
     _setBtnIcon(btn, 'play');
     btn.title = 'Play / pause (Space)';
     btn.setAttribute('aria-label', 'Play / pause');
 
-    var scrub = document.createElement('input');
+    var scrub = _el('input', 'compact-player-scrub');
     scrub.type = 'range'; scrub.min = '0'; scrub.max = '1000'; scrub.value = '0';
-    scrub.className = 'compact-player-scrub';
     scrub.disabled = true;
 
     var timeEl = _el('span', 'compact-player-time', '0:00');
@@ -4011,9 +4002,8 @@
   function _makeMergePreviewBtn(memberIdsFn, durationFn, opts) {
     opts = opts || {};
     var externalGround = opts.groundEl || null;
-    var toggleBtn = document.createElement('button');
+    var toggleBtn = _el('button', 'merge-preview-btn');
     toggleBtn.type = 'button';
-    toggleBtn.className = 'merge-preview-btn';
     toggleBtn.title = 'Preview the merged audio with word-level karaoke';
     var iconEl = document.createElement('span');
     iconEl.style.display = 'inline-flex';
@@ -4056,9 +4046,8 @@
     // the words. Other callers keep the whole panel hidden until ▶ is clicked.
     panel.hidden = !opts.inlinePlayer;
     var controls = _el('div', 'compact-player');
-    var scrub = document.createElement('input');
+    var scrub = _el('input', 'compact-player-scrub');
     scrub.type = 'range'; scrub.min = '0'; scrub.max = '1000'; scrub.value = '0';
-    scrub.className = 'compact-player-scrub';
     scrub.disabled = true;
     var timeEl = _el('span', 'compact-player-time', '0:00');
     var sep = _el('span', 'compact-player-time-sep', '/');
@@ -4436,10 +4425,8 @@
       if (_batchLoadHold) { _batchLoadHold = false; _batchBusy = false; }
       if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
         listEl.innerHTML = '';
-        var err = document.createElement('div');
-        err.className = 'empty';
+        var err = _el('div', 'empty', 'Failed to load proposals: ' + (e.message || e));
         err.style.color = 'var(--red, #f78585)';
-        err.textContent = 'Failed to load proposals: ' + (e.message || e);
         listEl.appendChild(err);
       }
       return false;
@@ -4637,9 +4624,8 @@
       _batchAccepted = 0; _batchDismissed = 0;
       _loadProposals();
     });
-    var closeBtn = document.createElement('button');
+    var closeBtn = _el('button', '', 'Close');
     closeBtn.type = 'button';
-    closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', _closePropose);
     acts.appendChild(refreshBtn);
     acts.appendChild(closeBtn);
