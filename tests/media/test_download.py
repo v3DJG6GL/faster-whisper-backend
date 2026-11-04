@@ -1081,14 +1081,11 @@ for n in (100, 500, 1500, 5000):
 time.sleep(30)
 """)
 
-    async def go():
-        t0 = asyncio.get_event_loop().time()
-        with pytest.raises(udl.UrlDownloadError, match="size limit"):
-            await udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                               max_bytes=1000, timeout=60)
-        assert asyncio.get_event_loop().time() - t0 < 10
-        assert os.listdir(str(tmp_path)) == []
-    _run(go())
+    t0 = time.monotonic()
+    with pytest.raises(udl.UrlDownloadError, match="size limit"):
+        _fetch(udl.download, tmp_path, max_bytes=1000, timeout=60)
+    assert time.monotonic() - t0 < 10
+    assert os.listdir(str(tmp_path)) == []
 
 
 def test_download_survives_stderr_drain_failure(tmp_path, monkeypatch):
@@ -1134,14 +1131,11 @@ time.sleep(60)
         calls["n"] += 1
         return calls["n"] > 2
 
-    async def go():
-        t0 = asyncio.get_event_loop().time()
-        with pytest.raises(udl.UrlCancelled):
-            await udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                               max_bytes=10_000, timeout=60,
-                               cancel_check=cancel_after_first_poll)
-        assert asyncio.get_event_loop().time() - t0 < 30
-    _run(go())
+    t0 = time.monotonic()
+    with pytest.raises(udl.UrlCancelled):
+        _fetch(udl.download, tmp_path, timeout=60,
+               cancel_check=cancel_after_first_poll)
+    assert time.monotonic() - t0 < 30
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")

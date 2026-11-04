@@ -43,6 +43,7 @@ import pytest
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.media import download as udl
 from tests.media._server_helpers import _QuietHandler, _stopping
+from tests.media.test_download import _fetch
 
 SECRET = b"INTERNAL-SECRET-" * 64
 PUBLIC_BODY = b"\xff\xfb\x90\x44" + b"\x00" * 4092  # plausible MPEG audio head
@@ -364,8 +365,7 @@ def test_download_refuses_redirect_into_loopback(tmp_path, servers,
     dest = tmp_path / "dest"
     dest.mkdir()
     with pytest.raises(udl.UrlDownloadError) as ei:
-        _run(udl.download(f"{public}/x.mp3", dest_dir=str(dest),
-                          max_bytes=10_000_000, timeout=60))
+        _fetch(udl.download, dest, url=f"{public}/x.mp3", max_bytes=10_000_000, timeout=60)
     assert "could not be reached" in str(ei.value)
     assert "127.0.0.1" not in str(ei.value)
     assert _Internal.hits == []
@@ -377,8 +377,7 @@ def test_download_allows_a_public_looking_target(tmp_path, servers,
     public, _ = servers
     dest = tmp_path / "dest"
     dest.mkdir()
-    out = _run(udl.download(f"{public}/direct.mp3", dest_dir=str(dest),
-                            max_bytes=10_000_000, timeout=60))
+    out = _fetch(udl.download, dest, url=f"{public}/direct.mp3", max_bytes=10_000_000, timeout=60)
     assert os.path.getsize(out) == len(PUBLIC_BODY)
     assert _Internal.hits == []
 
@@ -489,8 +488,7 @@ def test_download_refuses_when_the_guard_cannot_install(tmp_path, broken_guard,
                                                         caplog):
     with caplog.at_level("ERROR"):
         with pytest.raises(udl.UrlDownloadError, match="unavailable"):
-            _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
-                              max_bytes=1000, timeout=5))
+            _fetch(udl.download, tmp_path, max_bytes=1000, timeout=5)
     assert any("REFUSING link downloads" in r.message for r in caplog.records)
     assert os.listdir(tmp_path) == []
 
