@@ -145,6 +145,9 @@ OptionalModelId = Annotated[
 ProfileName = Annotated[str, Field(min_length=1, max_length=32,
                                    pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
 
+# A per-identity / per-host request budget; 0 = unlimited.
+RateBudget = Annotated[int, Field(ge=0, le=100_000)]
+
 LogLevel = Literal["debug", "info", "warning", "error", "critical"]
 DeviceLit = Literal["cuda", "cpu"]
 # Whisper task. "translate" targets English only — Whisper has no other target.
@@ -1360,9 +1363,7 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "TRANSLATE_MAX_INFLIGHT_PER_USER", scope="server",
         group="Concurrency & Request Limits", order=1)
-    TRANSLATE_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    TRANSLATE_RATE_PER_MIN: RateBudget | None = _F(
         "TRANSLATE_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=2)
     STREAMING_MAX_SESSIONS_PER_USER: Annotated[
@@ -1370,34 +1371,22 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "STREAMING_MAX_SESSIONS_PER_USER", scope="server",
         group="Concurrency & Request Limits", order=3)
-    URL_PREVIEW_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    URL_PREVIEW_RATE_PER_MIN: RateBudget | None = _F(
         "URL_PREVIEW_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=4)
-    URL_VIDEO_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    URL_VIDEO_RATE_PER_MIN: RateBudget | None = _F(
         "URL_VIDEO_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
-    URL_SUBTITLES_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    URL_SUBTITLES_RATE_PER_MIN: RateBudget | None = _F(
         "URL_SUBTITLES_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
-    URL_LANGUAGE_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    URL_LANGUAGE_RATE_PER_MIN: RateBudget | None = _F(
         "URL_LANGUAGE_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
-    MEDIA_UPLOAD_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    MEDIA_UPLOAD_RATE_PER_MIN: RateBudget | None = _F(
         "MEDIA_UPLOAD_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
-    MEDIA_PACKAGE_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    MEDIA_PACKAGE_RATE_PER_MIN: RateBudget | None = _F(
         "MEDIA_PACKAGE_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
     MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER: Annotated[
@@ -1405,24 +1394,16 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER", scope="server",
         group="Concurrency & Request Limits", order=5)
-    JOBS_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    JOBS_RATE_PER_MIN: RateBudget | None = _F(
         "JOBS_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
-    CAPTURES_AUDIO_RATE_PER_MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    CAPTURES_AUDIO_RATE_PER_MIN: RateBudget | None = _F(
         "CAPTURES_AUDIO_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=6)
-    REPORTS_SUBMIT_RATE_PER_10MIN: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    REPORTS_SUBMIT_RATE_PER_10MIN: RateBudget | None = _F(
         "REPORTS_SUBMIT_RATE_PER_10MIN", scope="server",
         group="Concurrency & Request Limits", order=7)
-    LOGIN_FAILURE_RATE: Annotated[
-        int, Field(ge=0, le=100_000)
-    ] | None = _F(
+    LOGIN_FAILURE_RATE: RateBudget | None = _F(
         "LOGIN_FAILURE_RATE", scope="server",
         group="Concurrency & Request Limits", order=8)
 
