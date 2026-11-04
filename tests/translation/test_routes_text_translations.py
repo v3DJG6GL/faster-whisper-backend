@@ -35,6 +35,15 @@ def _park(key, *, hold_s, **extra):
     receipt_hold.park(key, payload, hold_s=hold_s)
 
 
+def _assert_parked_receipt_released(client, key, status, **body):
+    """A request naming parked receipt ``key`` is refused with ``status``; the
+    receipt is handed back, not left for the sweeper."""
+    _park(key, hold_s=90)
+    r = client.post(URL, json=_body(captured_id=key, **body))
+    assert r.status_code == status, r.text
+    assert receipt_hold.pending() == 0
+
+
 def _echo_result(segments, targets):
     """The '<text>-<target>' success tuple a hand-written fake returns."""
     per_seg = [{t: f"{seg['text']}-{t}" for t in targets} for seg in segments]
@@ -174,10 +183,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     assert body["error"]["param"] == "TRANSLATE_RATE_PER_MIN"
     assert r.headers["Retry-After"] == str(body["error"]["retry_after"])
 
-    _park("cap2", hold_s=90)
-    r = client.post(URL, json=_body(captured_id="cap2"))
-    assert r.status_code == 429
-    assert receipt_hold.pending() == 0
+    _assert_parked_receipt_released(client, "cap2", 429)
 
 
 def _open_key():
@@ -824,10 +830,7 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     gauge = tr_routes._translate_inflight
     for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
         gauge.acquire(_open_key())
-    _park("cap1", hold_s=90)
-    r = client.post(URL, json=_body(captured_id="cap1"))
-    assert r.status_code == 429
-    assert receipt_hold.pending() == 0
+    _assert_parked_receipt_released(client, "cap1", 429)
     assert len(logged) == 1               # handed back, not dropped
     assert any("too many in flight" in n for n in logged[0]["skipped"])
 
@@ -839,17 +842,9 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
     handed back on a malformed request, not left for the 90 s sweeper."""
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
-    _park("cap-v", hold_s=90)
-    r = client.post(URL, json={"segments": [], "targets": ["en"],
-                               "captured_id": "cap-v"})
-    assert r.status_code == 422, r.text
-    assert receipt_hold.pending() == 0
-
-    _park("cap-s", hold_s=90)
-    r = client.post(URL, json=_body(
-        segments=[{"id": 0, "text": "x" * 200_001}], captured_id="cap-s"))
-    assert r.status_code == 413, r.text
-    assert receipt_hold.pending() == 0
+    _assert_parked_receipt_released(client, "cap-v", 422, segments=[])
+    _assert_parked_receipt_released(
+        client, "cap-s", 413, segments=[{"id": 0, "text": "x" * 200_001}])
 
 
 def test_admin_pinned_model_passes_the_allowlist_gate(
