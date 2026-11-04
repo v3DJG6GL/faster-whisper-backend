@@ -190,23 +190,17 @@ def test_invalid_translation_mode_is_422(client):
     assert "translation_mode" in r.json()["detail"]
 
 
-def test_captures_never_store_translated_text(client, app_module, monkeypatch):
-    from faster_whisper_backend.captures import store as captures_store
+def test_captures_never_store_translated_text(client, app_module, monkeypatch, created_captures):
     enable_translation(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
                         raising=False)
     _stub_translate(monkeypatch)
-    stored = {}
-
-    def _spy_create(**kw):
-        stored.update(kw)
-        return "cap-test-id"
-    monkeypatch.setattr(captures_store, "create_capture", _spy_create)
 
     r = _post(client, translate_to="en")
     assert r.status_code == 200, r.text
     assert r.json()["translations"]["en"] == "XLATED-en"  # the stage ran
-    assert stored, "capture was not persisted"
+    assert created_captures, "capture was not persisted"
+    stored = created_captures[-1]
 
     # The TRANSCRIPT fields carry the source language only: Whisper learns to
     # emit `final` / `text_for_training` for this audio, so a translation

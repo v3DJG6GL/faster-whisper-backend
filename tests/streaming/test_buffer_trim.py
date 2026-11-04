@@ -383,12 +383,12 @@ def test_buffer_counter_matches_the_array_after_every_frame():
     assert trimmed, "trim never fired — the trim writer went untested"
 
 
-def test_capture_segments_share_the_utterance_timeline(client, app_module, monkeypatch):
+def test_capture_segments_share_the_utterance_timeline(client, app_module, monkeypatch,
+                                                       created_captures):
     """Route level: after a mid-utterance trim the capture's audio and words
     span the whole utterance, so its segments must too. The final decode's
     segments are relative to the TRIMMED buffer, so they are shifted by
     trimmed_sec onto the stored audio."""
-    from faster_whisper_backend.captures import store as captures_store
     from faster_whisper_backend.streaming import routes as streaming_routes
 
     for name, val in (("STREAMING_VAD_BACKEND", "energy"),
@@ -398,9 +398,6 @@ def test_capture_segments_share_the_utterance_timeline(client, app_module, monke
                       ("WORD_TIMESTAMPS_ENABLED", True),
                       ("CAPTURES_RECORDING_ENABLED", True)):
         monkeypatch.setattr(app_module.cfg, name, val, raising=False)
-    caps: list[dict] = []
-    monkeypatch.setattr(captures_store, "create_capture",
-                        lambda **kw: caps.append(kw) or "cap-test-id")
     # trimmed_sec rides on the session's on_final info, not the capture call.
     finals: list[dict] = []
     real_session = streaming_routes.StreamSession
@@ -423,13 +420,13 @@ def test_capture_segments_share_the_utterance_timeline(client, app_module, monke
         ws.send_json({"type": "stop"})
         ws_drain(ws, 200)
 
-    assert finals and caps, (finals, caps)
+    assert finals and created_captures, (finals, created_captures)
     off = finals[-1]["trimmed_sec"]
     assert off > 0.0, "setup failed: the buffer was never trimmed"
-    segs = caps[-1]["segments"]
+    segs = created_captures[-1]["segments"]
     # The fake decode's one segment sits at 0.0-1.0 in the trimmed buffer.
     assert [(sd["start"], sd["end"]) for sd in segs] == [(off, off + 1.0)]
     # ...which is where the capture's re-based decode words now sit too.
-    words = caps[-1]["words"]
+    words = created_captures[-1]["words"]
     assert words[-2]["start"] == segs[0]["start"]
     assert words[-1]["end"] == segs[0]["end"]

@@ -308,7 +308,7 @@ def test_translate_expect_parks_when_translation_is_enabled(
 
 
 def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
-        client, app_module, monkeypatch, energy_vad):
+        client, app_module, monkeypatch, energy_vad, created_captures):
     """At CAPTURES_MAX the gate still hands the utterance to create_capture:
     its _evict_to_cap does the documented oldest-first rotation, and refusing
     first would silently record nothing from then on."""
@@ -319,47 +319,36 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
     # Not a store full of "ready" rows (the real DB state must not decide).
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
-    created = []
-    monkeypatch.setattr(captures_store, "create_capture",
-                        lambda **kw: created.append(kw) or "cap-test-id")
 
     with client.websocket_connect(_STREAM_URL) as ws:
         assert _config(ws)["type"] == "ready"
         msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
-    assert len(created) == 1
+    assert len(created_captures) == 1
 
 
 def test_a_store_full_of_ready_captures_skips_the_stream_capture(
-        client, app_module, monkeypatch, energy_vad):
+        client, app_module, monkeypatch, energy_vad, created_captures):
     """Ready rows alone fill CAPTURES_MAX: the new row would be evicted by its
     own insert, so the utterance is not handed to create_capture (no WAV)."""
     from faster_whisper_backend.captures import store as captures_store
 
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
-    created = []
-    monkeypatch.setattr(captures_store, "create_capture",
-                        lambda **kw: created.append(kw) or "cap-test-id")
 
     with client.websocket_connect(_STREAM_URL) as ws:
         assert _config(ws)["type"] == "ready"
         msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
-    assert created == []
+    assert created_captures == []
 
 
 def test_turning_capture_recording_off_mid_session_stops_recording(
-        client, app_module, monkeypatch, energy_vad):
+        client, app_module, monkeypatch, energy_vad, created_captures):
     """CAPTURES_RECORDING_ENABLED is a privacy switch: switched off while a
     dictation socket is open, the next utterance on that socket is not
     written to the captures store."""
-    from faster_whisper_backend.captures import store as captures_store
-
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
-    created = []
-    monkeypatch.setattr(captures_store, "create_capture",
-                        lambda **kw: created.append(kw) or "cap-test-id")
 
     with client.websocket_connect(_STREAM_URL) as ws:
         assert _config(ws)["type"] == "ready"
@@ -367,7 +356,7 @@ def test_turning_capture_recording_off_mid_session_stops_recording(
                             raising=False)
         msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
-    assert created == []
+    assert created_captures == []
 
 
 @pytest.fixture

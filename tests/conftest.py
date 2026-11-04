@@ -370,6 +370,17 @@ def energy_vad(app_module, monkeypatch):
 
 
 @pytest.fixture
+def created_captures(app_module, monkeypatch):
+    """Patch create_capture to record instead of store; the list of each call's kwargs."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    created: list[dict] = []
+    monkeypatch.setattr(captures_store, "create_capture",
+                        lambda **kw: created.append(kw) or "cap-test-id")
+    return created
+
+
+@pytest.fixture
 def wav_factory(tmp_path):
     """Return write(name_or_spec) -> path; writes a 1ch/16k/s16 WAV."""
     counter = {"n": 0}

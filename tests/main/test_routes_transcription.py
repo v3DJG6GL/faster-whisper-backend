@@ -847,7 +847,7 @@ def _record_captures_on(app_module, monkeypatch):
 
 
 def test_a_full_capture_store_still_records_a_batch_request(
-        client, app_module, fake_model, monkeypatch):
+        client, app_module, fake_model, monkeypatch, created_captures):
     """At CAPTURES_MAX the batch gate must still reach create_capture so its
     _evict_to_cap rotates oldest-first; refusing up front means no later
     request records anything (streaming twin: tests/streaming/test_finalize_paths.py)."""
@@ -858,31 +858,25 @@ def test_a_full_capture_store_still_records_a_batch_request(
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
     # Not a store full of "ready" rows (the real DB state must not decide).
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
-    created = []
-    monkeypatch.setattr(captures_store, "create_capture",
-                        lambda **kw: created.append(kw) or "cap-test-id")
 
     r = _post(client)
     assert r.status_code == 200, r.text
-    assert len(created) == 1
+    assert len(created_captures) == 1
     assert fake_model.last_kwargs["word_timestamps"] is True   # forced DTW
 
 
 def test_a_store_full_of_ready_captures_skips_the_batch_capture(
-        client, app_module, fake_model, monkeypatch):
+        client, app_module, fake_model, monkeypatch, created_captures):
     """Ready rows alone fill CAPTURES_MAX: _evict_to_cap would evict the new
     row itself, so the gate records nothing and does not force DTW."""
     from faster_whisper_backend.captures import store as captures_store
 
     _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
-    created = []
-    monkeypatch.setattr(captures_store, "create_capture",
-                        lambda **kw: created.append(kw) or "cap-test-id")
 
     r = _post(client)
     assert r.status_code == 200, r.text
-    assert created == []
+    assert created_captures == []
     # The costly half: a json response with no timestamp_granularities runs
     # without DTW once the gate declines.
     assert not fake_model.last_kwargs.get("word_timestamps")
