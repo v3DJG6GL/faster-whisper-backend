@@ -439,12 +439,8 @@ def test_delete_member_auto_dissolves_group(captures_store_db, groups_store_db, 
     cs = captures_store_db
     gs = groups_store_db
     cid = _make(cs, monkeypatch, tmp_path)
-    conn = cs._require_conn()
     sid = "g0123456789abcdef"
-    _seed_sample(conn, gs, sid)
-    conn.execute(
-        "UPDATE captures SET sample_id=?, sample_order=0 WHERE id=?", (sid, cid),
-    )
+    _group_one(cs, gs, sid, cid)
     assert gs.get_sample(sid) is not None
     assert cs.delete_capture(cid) is True
     assert gs.get_sample(sid) is None
@@ -515,11 +511,7 @@ def test_clear_all_drops_a_sample_merged_after_the_samples_wipe(
 
     def clear_then_merge():
         n = real_clear()
-        conn = cs._require_conn()
-        _seed_sample(conn, gs, sid)
-        conn.execute(
-            "UPDATE captures SET sample_id=?, sample_order=0 WHERE id=?", (sid, cid),
-        )
+        _group_one(cs, gs, sid, cid)
         return n
 
     monkeypatch.setattr(gs, "clear_all_samples", clear_then_merge)
@@ -587,9 +579,8 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     other = _make(cs, monkeypatch, tmp_path)
     sid = "gmemberexcl00000"
     conn = cs._require_conn()
-    _seed_sample(conn, gs, sid)
     # member is the oldest, but it's in a group → must be protected.
-    conn.execute("UPDATE captures SET sample_id=?, sample_order=0, created_ts=1 WHERE id=?", (sid, member))
+    _group_one(cs, gs, sid, member, member_ts=1)
     conn.execute("UPDATE captures SET created_ts=2 WHERE id=?", (other,))
     # The cap governs the EVICTABLE population only: grouped rows are neither
     # counted nor dropped, because eviction could never reduce them anyway.
@@ -963,11 +954,14 @@ def _seed_sample(conn, gs, sid, created_ts=1.0):
     )
 
 
-def _group_one(cs, gs, sid, member, sample_ts, member_ts):
+def _group_one(cs, gs, sid, member, sample_ts=1.0, member_ts=None):
+    """Seed sample `sid` with `member` as its first member (its created_ts
+    kept when `member_ts` is None)."""
     conn = cs._require_conn()
     _seed_sample(conn, gs, sid, sample_ts)
     conn.execute(
-        "UPDATE captures SET sample_id=?, sample_order=0, created_ts=? WHERE id=?",
+        "UPDATE captures SET sample_id=?, sample_order=0,"
+        " created_ts=COALESCE(?, created_ts) WHERE id=?",
         (sid, member_ts, member),
     )
 
