@@ -8,15 +8,14 @@ with node so the /captures preview is pinned to the same output.
 """
 
 import json
-import pathlib
 import time
 
 import pytest
 
 from faster_whisper_backend.captures import samples as capture_samples
-from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.pipeline import engine as pl_engine
 from tests._page_helpers import js_fn, needs_node, node_json
+from tests.conftest import read_repo_text
 
 _CASES = [
     # A chip on the second "the" leaves the first alone.
@@ -311,8 +310,7 @@ def test_default_transcript_skips_a_member_the_pipeline_blanked():
 
 
 def _twin_fn():
-    src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
-           / "templates" / "captures.html").read_text(encoding="utf-8")
+    src = read_repo_text("faster_whisper_backend", "captures", "templates", "captures.html")
     return js_fn(src, "function _applyChipsToText(")
 
 

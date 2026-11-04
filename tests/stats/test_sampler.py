@@ -8,8 +8,7 @@ import pytest
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.stats import sampler as stats_sampler
 from faster_whisper_backend.runtime import system_stats
-from faster_whisper_backend.paths import REPO_ROOT
-import os
+from tests.conftest import read_repo_text
 
 
 @pytest.fixture
@@ -159,7 +158,7 @@ def test_loop_runs_sampling_off_the_event_loop():
 
 
 def test_lifespan_starts_and_stops_the_sampler():
-    src = open(os.path.join(REPO_ROOT, "faster_whisper_backend", "main.py"), encoding="utf-8").read()
+    src = read_repo_text("faster_whisper_backend", "main.py")
     assert "stats_sampler_task = asyncio.create_task(_stats_sampler.loop())" in src
     assert "await _cancel(stats_sampler_task)" in src
     assert "asyncio.to_thread(_stats_sampler.flush)" in src

@@ -14,11 +14,7 @@ import sys
 import pytest
 
 from faster_whisper_backend.paths import REPO_ROOT as REPO
-
-
-def _read(*rel):
-    with open(os.path.join(REPO, *rel), encoding="utf-8") as fh:
-        return fh.read()
+from tests.conftest import read_repo_text as _read
 
 
 def _bash(script, env):

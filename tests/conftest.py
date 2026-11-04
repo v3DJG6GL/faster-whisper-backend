@@ -809,6 +809,13 @@ def schema_map_cap():
     return caps[0]
 
 
+def read_repo_text(*rel):
+    """A repo-relative file's text, read as UTF-8."""
+    from faster_whisper_backend.paths import REPO_ROOT
+    with open(os.path.join(REPO_ROOT, *rel), encoding="utf-8") as fh:
+        return fh.read()
+
+
 def bearer(raw_key):
     """Authorization header dict for a raw API key."""
     return {"Authorization": f"Bearer {raw_key}"}

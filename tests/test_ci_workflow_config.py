@@ -7,17 +7,11 @@ regression that drops one of them silently brings back a guard that never
 runs, an unbounded registry scan, or a release that can never be repaired.
 """
 import json
-import os
 import re
 
-from faster_whisper_backend.paths import REPO_ROOT as REPO
+from tests.conftest import read_repo_text as _read
 
 INSTANCE_HOST = "forgejo.informethic.ch"
-
-
-def _read(*rel):
-    with open(os.path.join(REPO, *rel), encoding="utf-8") as fh:
-        return fh.read()
 
 
 def _code_lines(text):

@@ -8,13 +8,12 @@ whose whoami status changes between the page-load pass and a later
 whisper:auth-changed refresh, no browser needed."""
 
 import json
-import pathlib
 import re
 
 import pytest
 
-from faster_whisper_backend.paths import REPO_ROOT
 from tests._page_helpers import needs_node, node_json
+from tests.conftest import read_repo_text
 
 
 _STUB = r"""
@@ -66,8 +65,7 @@ setTimeout(() => {
 
 
 def _hub_script() -> str:
-    src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "core"
-           / "templates" / "hub.html").read_text(encoding="utf-8")
+    src = read_repo_text("faster_whisper_backend", "core", "templates", "hub.html")
     scripts = re.findall(r"<script>(.*?)</script>", src, re.S)
     return next(s for s in scripts if "'/auth/whoami'" in s)
 

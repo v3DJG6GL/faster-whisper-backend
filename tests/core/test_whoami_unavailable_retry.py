@@ -9,14 +9,13 @@ answers whoami from a status sequence. setTimeout is wrapped so the backoff
 delays are recorded but fire at once, no browser needed."""
 
 import json
-import pathlib
 import re
 
 import pytest
 
 from faster_whisper_backend.core import web_common
-from faster_whisper_backend.paths import REPO_ROOT
 from tests._page_helpers import needs_node, node_json, script_src
+from tests.conftest import read_repo_text
 
 
 _CLOCK = r"""
@@ -147,8 +146,7 @@ realSetTimeout(() => {
 
 
 def _hub_script() -> str:
-    src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "core"
-           / "templates" / "hub.html").read_text(encoding="utf-8")
+    src = read_repo_text("faster_whisper_backend", "core", "templates", "hub.html")
     scripts = re.findall(r"<script>(.*?)</script>", src, re.S)
     return next(s for s in scripts if "'/auth/whoami'" in s)
 

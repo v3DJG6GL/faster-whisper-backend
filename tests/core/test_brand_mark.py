@@ -3,13 +3,12 @@ page header, the login gate and the hub hero (rendered by
 web_common.brand_mark_svg), and the brand sources in docs/brand/. They differ
 on purpose in gradient id and bar class, but the geometry and colours must stay
 identical — a hand edit to one copy would otherwise drift unnoticed."""
-import os
 import re
 
 from faster_whisper_backend.core import home_routes
 from faster_whisper_backend.core import web_common
-from faster_whisper_backend.paths import REPO_ROOT
 from tests._page_helpers import js_upto
+from tests.conftest import read_repo_text as _read
 
 _RECT = re.compile(r'<rect\b([^>]*)/?>')
 _ATTR = re.compile(r'\b(x|y|width|height|rx|fill|stroke|stroke-width)="([^"]*)"')
@@ -26,11 +25,6 @@ def _geometry(svg: str):
         rects.append(tuple(sorted(attrs.items())))
     skew = re.findall(r'transform="(translate\(13 2\) skewX\(-9\))"', svg)
     return rects, _STOPS.findall(svg), skew
-
-
-def _read(*rel):
-    with open(os.path.join(REPO_ROOT, *rel), encoding="utf-8") as fh:
-        return fh.read()
 
 
 def test_every_inline_brand_mark_copy_has_the_canonical_geometry():

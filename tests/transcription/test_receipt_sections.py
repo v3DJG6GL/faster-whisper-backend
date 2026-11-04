@@ -8,11 +8,9 @@ These tests pin two properties of _format_request_block:
     receipt assertions depend on (`✗`, "unchanged", "N step").
 """
 
-import os
 import re
 
-from faster_whisper_backend import paths
-from tests.conftest import FakeInfo
+from tests.conftest import FakeInfo, read_repo_text
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
 
@@ -268,10 +266,7 @@ def _viewer_re(name):
     """The viewer's own JS regex literal `const <name> = /…/;`, compiled as
     Python (the patterns use no JS-only syntax) — a copy here would keep
     passing after the template changed."""
-    with open(os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
-                           "templates", "log_viewer.html"),
-              encoding="utf-8") as f:
-        html = f.read()
+    html = read_repo_text("faster_whisper_backend", "admin", "templates", "log_viewer.html")
     m = re.search(rf"const {name} = /(.+)/;", html)
     assert m, f"{name} is gone from log_viewer.html"
     return re.compile(m.group(1))

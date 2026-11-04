@@ -1,7 +1,6 @@
 """Integration tests for the /stats router (host-gated dashboard)."""
 
 import inspect
-import pathlib
 import re
 import time
 
@@ -11,7 +10,6 @@ from starlette.testclient import TestClient
 from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.core import jobs, web_common
-from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.stats import recent_transcriptions_store as rts
@@ -19,11 +17,11 @@ from faster_whisper_backend.stats import routes as stats_routes
 from faster_whisper_backend.stats import usage_store as us
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_upto
-from tests.conftest import bearer, fake_request
+from tests.conftest import bearer, fake_request, read_repo_text
 
 
 def _stats_js() -> str:
-    return pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    return read_repo_text("static", "stats.js")
 
 
 def test_stats_page_loopback_ok(client):
