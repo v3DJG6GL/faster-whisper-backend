@@ -300,6 +300,11 @@ async def translate_text(request: Request,
         request_id[:8], len(seg_in), len(targets), ",".join(targets),
         _tr_model or "?", mode, _uid[:8] or "-")
     _t0 = time.perf_counter()
+
+    def _release_after(what: str, tail: str = "") -> None:
+        tx_receipt._release_held_receipt(
+            _held_key, f"{what} after {time.perf_counter() - _t0:.1f}s{tail}")
+
     # Heartbeat bookkeeping shared with the progress wrapper, plus t_ready:
     # stamped once the GPU slot is held (_mark_ready), the origin the model
     # load is measured from — the queue before it is wait
@@ -553,9 +558,7 @@ async def translate_text(request: Request,
     except tx_progress._ClientCancelled:
         logger.info("[translate] req=%s ✗ cancelled after %.1fs",
                     request_id[:8], time.perf_counter() - _t0)
-        tx_receipt._release_held_receipt(
-            _held_key,
-            f"cancelled by client after {time.perf_counter() - _t0:.1f}s")
+        _release_after("cancelled by client")
         await _record_run("cancelled")
         raise HTTPException(status_code=499, detail="cancelled by the client")
     except _tr.TranslationError as e:
@@ -563,9 +566,7 @@ async def translate_text(request: Request,
         logger.info("[translate] req=%s ✗ failed after %.1fs (%s)",
                     request_id[:8], time.perf_counter() - _t0,
                     _log_safe(str(e)))
-        tx_receipt._release_held_receipt(
-            _held_key,
-            f"failed after {time.perf_counter() - _t0:.1f}s — {_log_safe(str(e))}")
+        _release_after("failed", f" — {_log_safe(str(e))}")
         await _record_run("error", e)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -587,9 +588,7 @@ async def translate_text(request: Request,
         logger.error("[translate] req=%s ✗ failed after %.1fs: %s",
                      request_id[:8], time.perf_counter() - _t0,
                      _log_safe(str(e)))
-        tx_receipt._release_held_receipt(
-            _held_key,
-            f"failed after {time.perf_counter() - _t0:.1f}s")
+        _release_after("failed")
         await _record_run("error", e)
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
@@ -610,9 +609,7 @@ async def translate_text(request: Request,
         # release keep their more specific notes. The success path claims the
         # receipt AFTER this finally runs, which is what the flag guards.
         if _held_key and not _receipt_claimed_below:
-            tx_receipt._release_held_receipt(
-                _held_key,
-                f"connection closed after {time.perf_counter() - _t0:.1f}s")
+            _release_after("connection closed")
         jobs.job_end(request_id)
         if _pid:
             tx_progress._progress_close(_pid)
