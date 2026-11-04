@@ -347,12 +347,7 @@ def test_prompt_words_zero_carries_no_confirmed_words():
         base_prompt="Glossar",
     )
 
-    async def run():
-        for _ in range(2):
-            await s.feed_pcm(_pcm(8000, 500))
-            await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500), (0, 400), (8000, 500), (0, 400))
     assert final_prompts == ["Glossar", "Glossar"]
 
 
@@ -588,12 +583,7 @@ def test_dropped_final_keeps_the_hold():
         cfg=fast_config(hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 
-    async def run():
-        for _ in range(3):
-            await s.feed_pcm(_pcm(8000, 300))
-            await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 300), (0, 400), (8000, 300), (0, 400), (8000, 300), (0, 400))
     docs = [m["committed"] + m["tail"] for m in _finals(msgs)]
     assert all("neue" not in d for d in docs)
     assert docs[-1] == "bla\n text."

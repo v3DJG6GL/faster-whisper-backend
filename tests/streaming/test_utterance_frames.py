@@ -103,12 +103,7 @@ def test_open_then_decoding_then_final_share_one_ordinal():
 def test_second_utterance_gets_the_next_ordinal():
     s, msgs = _session()
 
-    async def run():
-        for _ in range(2):
-            await s.feed_pcm(_pcm(8000, 500))
-            await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500), (0, 400), (8000, 500), (0, 400))
     assert _lifecycle(msgs) == [
         ("open", 0), ("decoding", 0), ("final", 0),
         ("open", 1), ("decoding", 1), ("final", 1),
