@@ -10,6 +10,7 @@ import asyncio
 import pytest
 
 from tests._streaming_helpers import const_pcm, fast_config, inert_session
+from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 
 
@@ -205,11 +206,8 @@ def test_pcm_loop_emits_partials_then_a_final_after_silence():
         decode_final=decode_final, cfg=cfg,
     )
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))   # ~0.5 s speech (loud)
-        await s.feed_pcm(_pcm(0, 400))      # ~0.4 s silence → finalize
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500),   # ~0.5 s speech (loud)
+                (0, 400))     # ~0.4 s silence → finalize
     partials = [m for m in msgs if m["type"] == "partial"]
     finals = [m for m in msgs if m["type"] == "final"]
     assert len(partials) >= 1
@@ -234,11 +232,8 @@ def test_hard_break_resets_document_after_long_silence():
         postprocess=lambda raw: raw, decode_final=decode_final, cfg=cfg,
     )
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 300))   # speech → one utterance
-        await s.feed_pcm(_pcm(0, 700))      # silence: finalize (192 ms) then hard break (500 ms)
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 300),   # speech → one utterance
+                (0, 700))     # silence: finalize (192 ms) then hard break (500 ms)
     finals = [m for m in msgs if m["type"] == "final"]
     boundaries = [m for m in msgs if m["type"] == "boundary"]
     assert len(finals) == 1
@@ -272,11 +267,8 @@ def test_no_partial_decode_storm_during_trailing_silence():
         decode_final=decode_final, cfg=cfg,
     )
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 300))   # 0.3 s speech
-        await s.feed_pcm(_pcm(0, 1000))     # 1.0 s silence (≈31 frames) → no finalize yet
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 300),   # 0.3 s speech
+                (0, 1000))    # 1.0 s silence (≈31 frames) → no finalize yet
     # A handful of speech-phase partials only; the silence must add ~none.
     assert calls["partial"] <= 6, f"partial decode storm: {calls['partial']} decodes"
     assert [m for m in msgs if m["type"] == "final"] == []  # held (silence < commit)
@@ -415,11 +407,8 @@ def test_empty_final_still_falls_back_to_localagreement():
         decode_final=decode_final, cfg=cfg,
     )
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))
-        await s.feed_pcm(_pcm(0, 400))      # silence → finalize (empty → fall back)
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500),
+                (0, 400))     # silence → finalize (empty → fall back)
     assert "welt" in s.raw_confirmed        # recovered from the partials' transcript
 
 
@@ -452,11 +441,8 @@ def test_held_words_are_released_before_the_boundary():
         cfg=fast_config(hard_break_silence_ms=500),
         holdback=_hold_trailing("neue"))
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 300))
-        await s.feed_pcm(_pcm(0, 700))      # finalize, then the hard break
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 300),
+                (0, 700))     # finalize, then the hard break
     # Lifecycle ``utterance`` frames (open/decoding) are not what this test is about.
     kinds = [(m["type"], m.get("flush", False)) for m in msgs
              if m["type"] not in ("partial", "utterance")]
@@ -478,13 +464,10 @@ def test_no_boundary_for_a_document_that_was_never_sent():
         decode_final=_queued_final(["Hallo.", "äh"]),
         cfg=fast_config(hard_break_silence_ms=500))
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 300))
-        await s.feed_pcm(_pcm(0, 700))      # final, then the first hard break
-        await s.feed_pcm(_pcm(8000, 300))
-        await s.feed_pcm(_pcm(0, 700))      # filler only: no final, no boundary
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 300),
+                (0, 700),     # final, then the first hard break
+                (8000, 300),
+                (0, 700))     # filler only: no final, no boundary
     assert [f["committed"] + f["tail"] for f in _finals(msgs)] == ["Hallo."]
     # Premise: the filler utterance really was decoded (and dropped as empty).
     assert [m.get("reason") for m in msgs

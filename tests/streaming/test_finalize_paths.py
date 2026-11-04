@@ -24,6 +24,7 @@ from starlette.websockets import WebSocketDisconnect
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config, handshake as _config,
     speak_and_stop, ws_drain as _drain)
+from tests.streaming._feed_helpers import feed_levels
 from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
@@ -138,11 +139,7 @@ def test_decoded_path_flags_decode_and_rebases_words():
 
     s = _grid_session(box, cfg, decode_final, on_final=on_final)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 3500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 3500), (0, 400))
     info = finals_meta[-1]
     assert info["decoded"] is True
     assert info["trimmed_sec"] > 0.0
@@ -170,11 +167,7 @@ def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
 
     s = _grid_session([], cfg, decode_final, on_final=on_final)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 3500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 3500), (0, 400))
     info = finals_meta[-1]
     assert (info["trimmed_sec"] > 0.0) is trim
     assert info["raw_text"].strip(), "setup failed: the partials agreed nothing"

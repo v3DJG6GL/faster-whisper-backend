@@ -17,6 +17,7 @@ import pytest
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config as _cfg, inert_session)
+from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import CloseAbort
 
 
@@ -76,10 +77,7 @@ def test_open_is_emitted_even_while_partials_are_skipped():
     s, msgs = _session()
     s._skip_partials = True
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 320))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 320))
     assert _utt(msgs) == [("open", 0)]
     assert [m for m in msgs if m["type"] == "partial"] == []
 
@@ -87,11 +85,8 @@ def test_open_is_emitted_even_while_partials_are_skipped():
 def test_a_blip_below_min_speech_is_never_announced():
     s, msgs = _session(cfg=_cfg(min_speech_ms=640))
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 96))
-        await s.feed_pcm(_pcm(0, 400))       # commit silence → finalize → near-silence gate
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 96),
+                (0, 400))     # commit silence → finalize → near-silence gate
     assert msgs == []
     assert s._utterance_index == 0           # nothing reached the wire → the ordinal is not spent
 
@@ -99,11 +94,7 @@ def test_a_blip_below_min_speech_is_never_announced():
 def test_open_then_decoding_then_final_share_one_ordinal():
     s, msgs = _session()
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500), (0, 400))
     assert _lifecycle(msgs) == [("open", 0), ("decoding", 0), ("final", 0)]
     assert s._utt_state is None and not s._in_utterance
     assert s._utterance_index == 1
@@ -129,10 +120,7 @@ def test_forced_commit_closes_the_utterance_and_the_next_one_reopens():
     and the continuing speech is announced as the next utterance."""
     s, msgs = _session(endpointer=_AlwaysSpeech(), cfg=_cfg(forced_commit_sec=0.512))
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 800))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 800))
     assert _lifecycle(msgs) == [("open", 0), ("decoding", 0), ("final", 0), ("open", 1)]
     assert [m for m in msgs if m["type"] == "final"][0].get("forced") is True
 
@@ -143,12 +131,8 @@ def test_gate_with_no_text_emits_dropped_no_speech_and_spends_the_ordinal():
     still gets its terminal frame."""
     s, msgs = _session(cfg=_cfg(rms_gate_dbfs=-1.0))
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))
-        await s.feed_pcm(_pcm(0, 400))
-        await s.feed_pcm(_pcm(8000, 500))    # the next utterance
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500), (0, 400),
+                (8000, 500))  # the next utterance
     assert _utt(msgs) == [("open", 0), ("dropped", 0), ("open", 1)]
     dropped = [m for m in msgs if m["type"] == "utterance" and m["state"] == "dropped"]
     assert dropped[0]["reason"] == "no_speech"
@@ -163,11 +147,7 @@ def test_empty_document_emits_dropped_empty():
 
     s, msgs = _session(decode_final=_df)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500), (0, 400))
     assert _utt(msgs) == [("open", 0), ("decoding", 0), ("dropped", 0)]
     assert [m for m in msgs if m["type"] == "utterance"][-1]["reason"] == "empty"
 
@@ -196,11 +176,7 @@ def test_failed_final_decode_falls_back_to_the_partial_transcript():
 
     s, msgs = _session(decode_partial=_dp, decode_final=_df, on_final=_on_final)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())                        # does not raise
+    feed_levels(s, (8000, 500), (0, 400))     # does not raise
     finals = [m for m in msgs if m["type"] == "final"]
     assert len(finals) == 1
     assert "welt" in finals[0]["committed"] + finals[0]["tail"]
@@ -221,12 +197,8 @@ def test_failed_final_decode_without_text_drops_and_is_not_retried():
 
     s, msgs = _session(decode_final=_df)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))
-        await s.feed_pcm(_pcm(0, 400))
-        await s.feed_pcm(_pcm(0, 400))        # more silence: must not decode again
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500), (0, 400),
+                (0, 400))     # more silence: must not decode again
     assert len(calls) == 1
     assert not s._in_utterance and s._utt_state is None
     assert _utt(msgs) == [("open", 0), ("decoding", 0), ("dropped", 0)]
@@ -246,11 +218,7 @@ def test_failed_final_decode_without_text_still_reaches_on_final():
 
     s, msgs = _session(decode_final=_df, on_final=_on_final)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 500), (0, 400))
     assert _utt(msgs) == [("open", 0), ("decoding", 0), ("dropped", 0)]
     assert not any(m["type"] == "final" for m in msgs)
     assert len(infos) == 1

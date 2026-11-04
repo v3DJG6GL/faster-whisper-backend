@@ -17,6 +17,7 @@ import numpy as np
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, const_pcm, fast_config, handshake, inert_session, ws_drain)
+from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
@@ -149,11 +150,7 @@ def test_trim_folds_cut_words_into_rolling_prompt():
 
     s = _grid_session([], cfg, decode_final)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 3500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 3500), (0, 400))
     assert final_prompts, "final decode never ran"
     assert "w0" in final_prompts[-1], (
         f"trimmed words missing from decode prompt: {final_prompts[-1]!r}")
@@ -175,11 +172,7 @@ def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
 
     s = _grid_session(session_box, cfg, decode_final, base_prompt="Ibuprofen Metoprolol")
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 3500))
-        await s.feed_pcm(_pcm(0, 400))
-
-    asyncio.run(run())
+    feed_levels(s, (8000, 3500), (0, 400))
     assert len(banked) > 3, "setup failed: the cap never bit"
     assert final_prompts[-1] == "Ibuprofen Metoprolol " + " ".join(banked[-3:])
 
