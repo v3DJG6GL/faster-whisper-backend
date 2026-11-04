@@ -156,8 +156,7 @@ def test_header_activity_cluster_js_contract():
     from faster_whisper_backend.core import web_common
 
     js = web_common.ACTIVITY_CLUSTER_JS
-    cancel = js[js.index("transcriptions/cancel/"):]
-    cancel = cancel[:cancel.index(".then(")]
+    cancel = js_upto(js, "transcriptions/cancel/", ".then(")
     assert "X-CSRF-Token" in cancel and "_csrfToken()" in cancel
     assert "c.disabled = false" in js
     assert "vram_mb" in js and "vram_bytes" not in js
@@ -1232,13 +1231,13 @@ def test_stats_page_ring_resume_range_chips_and_background_tab(client):
     max reads "—", not 0; a page opened in a background tab does not open
     its stream until shown."""
     html = client.get("/stats").text
-    park = html[html.index("function parkSparkCursors()"):html.index("function backToLive()")]
+    park = js_upto(html, "function parkSparkCursors()", "function backToLive()")
     assert "Object.values(sparks).forEach(u =>" in park
     assert "u.setCursor({ left: -10, top: -10 })" in park
-    back = html[html.index("function backToLive()"):html.index("function refreshStatusPill()")]
+    back = js_upto(html, "function backToLive()", "function refreshStatusPill()")
     assert "parkSparkCursors();" in back
     assert ".find(Boolean)" not in back
-    mode = html[html.index("function setLiveMode(v)"):html.index("function ringsInert()")]
+    mode = js_upto(html, "function setLiveMode(v)", "function ringsInert()")
     rng = mode[mode.index("frozenTs = null; applyFreeze();"):]
     assert rng.index("parkSparkCursors();") < rng.index("loadRangeSparks();")
     assert 'data-win="ring" data-ring="live"></span></h3>' in html
@@ -1259,11 +1258,11 @@ def test_stats_page_range_mode_freeze_owns_only_the_range_readouts(client):
     the minute range refresh never overwrites a frozen readout with the
     window summary."""
     html = client.get("/stats").text
-    rf = html[html.index("function applyRangeFreeze() {"):html.index("function makeSpark(")]
+    rf = js_upto(html, "function applyRangeFreeze() {", "function makeSpark(")
     assert "const owned = Object.values(SPARK_HEAD);" in rf
     assert rf.index("el.classList.remove('frozen');") < rf.index(
         "for (const [key, id] of Object.entries(SPARK_HEAD))")
-    load = html[html.index("function loadRangeSparks() {"):html.index("function setLiveMode(v)")]
+    load = js_upto(html, "function loadRangeSparks() {", "function setLiveMode(v)")
     assert "const head = frozenTs == null ? $(SPARK_HEAD[key]) : null;" in load
 
 
@@ -1403,7 +1402,7 @@ def test_stats_js_chart_never_all_hidden_after_reload(client):
     js = _stats_js()
     assert "if (hidden.size === curLines.length) hidden.clear();" in js
     assert "if (hidden.size && hidden.size === curLines.length) hidden.clear();" in js
-    prep = js[js.index("function prepareLines() {"):js.index("function chartData()")]
+    prep = js_upto(js, "function prepareLines() {", "function chartData()")
     assert prep.index("hidden.clear();") < prep.index(
         "const keep = new Set(visibleLines()")
     chart = js_upto(js, "function renderChart() {", TOP_CLOSE)
@@ -1416,11 +1415,11 @@ def test_stats_js_tail_never_shows_the_previous_window(client):
     under the new chips. A 403 from a superseded load must not overwrite a
     newer leaderboard either."""
     js = _stats_js()
-    load = js[js.index("function load() {"):js.index("function showError()")]
+    load = js_upto(js, "function load() {", "function showError()")
     assert load.index("lastTail = null;") < load.index("loadTail(mine);")
     assert load.index("if (mine !== _seq) return;") < load.index(
         "not available for your scope")
-    tail = js[js.index("function loadTail(seq) {"):js.index("function setKind()")]
+    tail = js_upto(js, "function loadTail(seq) {", "function setKind()")
     assert "tailNote = '— unavailable —';" in tail
     # The tail only re-renders over THIS load's usage document; an older
     # one (usage still pending or failed) would mix two windows.
@@ -1442,7 +1441,7 @@ def test_stats_js_usage_chart_formats_the_drawn_documents_metric(client):
                        ("function renderChart() {", "function refreshChart() {"),
                        ("function renderLegend() {", "let tableMode = false;"),
                        ("function renderTable() {", "let boardSort = ")):
-        body = js[js.index(start):js.index(end)]
+        body = js_upto(js, start, end)
         assert "docMetric()" in body, start
         assert "Q.metric" not in body, start
 
@@ -1451,7 +1450,7 @@ def test_stats_js_chart_month_ticks_on_long_ranges():
     """Past 400 days the x labels read only YY.MM: the ticks sit on UTC month
     starts every k months, not on a fixed day step that drifts off them."""
     js = _stats_js()
-    splits = js[js.index("splits: (u) => {"):js.index("values: (u, splits) =>")]
+    splits = js_upto(js, "splits: (u) => {", "values: (u, splits) =>")
     month = splits[splits.index("if (days > 400) {"):]
     assert "Date.UTC(y, m, 1) / 1000" in month
     assert month.index("return out;") < month.index("t += step * 86400")
@@ -1620,8 +1619,7 @@ def test_stats_stream_onopen_cancels_recovery(client):
     the recovery probe still fired, wiped the ring history and reopened a
     healthy stream."""
     html = client.get("/stats").text
-    stream = html[html.index("function openStream() {"):
-                  html.index("document.addEventListener('visibilitychange'")]
+    stream = js_upto(html, "function openStream() {", "document.addEventListener('visibilitychange'")
     opened = stream.index("es.onopen = () => {")
     assert stream.index(
         "if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }",
@@ -1640,7 +1638,7 @@ def test_stats_toolbar_reflows_without_hard_breaks(client):
     assert html.count('<span class="sb-group">') >= 8
     # the layout tools are the last item of the scope toolbar, pinned to its
     # top-right corner (absolute; the bar reserves their width on the right)
-    first = html[html.index('<div class="subbar subbar-scope">'):html.index('<div class="subbar subbar-usage">')]
+    first = js_upto(html, '<div class="subbar subbar-scope">', '<div class="subbar subbar-usage">')
     tools = first.index('id="layout-tools"')
     assert tools > first.index('id="live-range"')
     assert 'sb-group' not in first[tools:]
@@ -1669,8 +1667,7 @@ def test_stats_js_turnaround_overlays_and_rhythm_compare_total(client):
     total counts every compare record, also one the window's days grid has
     no column for (Oct 31 vs a Nov window)."""
     js = _stats_js()
-    ta = js[js.index("function renderTurnaround() {"):]
-    ta = ta[:ta.index("el.innerHTML = '<svg")]
+    ta = js_upto(js, "function renderTurnaround() {", "el.innerHTML = '<svg")
     for s in ("s += '<rect' + NP + ' x=\"' + x.toFixed(1)",
               "s += '<text' + NP + ' x=\"'",
               "s += '<text' + NP + ' class=\"' + (inside",
@@ -1678,8 +1675,7 @@ def test_stats_js_turnaround_overlays_and_rhythm_compare_total(client):
               "+ '<text' + NP + ' class=\"q\""):
         assert s in ta, s
     assert "const NP = ' pointer-events=\"none\"';" in ta
-    fill = js[js.index("const fill = (target, doc, shiftDay) => {"):]
-    fill = fill[:fill.index("const cmpDelta = ")]
+    fill = js_upto(js, "const fill = (target, doc, shiftDay) => {", "const cmpDelta = ")
     days = fill[fill.index("L.slotCell(h);"):]
     assert days.index("target.tot += slotMeasure(h, M);") < days.index("if (i < 0) return;")
     assert "cmpSum = cmpFill.tot;" in fill
@@ -1695,7 +1691,7 @@ def test_stats_page_stream_recovery_jobs_gap_and_hidden_range_refresh(client):
     snapshot drops its pages instead of hiding the gap; a hidden tab skips
     the range-mode minute refresh."""
     html = client.get("/stats").text
-    sse = html[html.index("function openStream() {"):html.index("const HIDE_CLEAR_MS")]
+    sse = js_upto(html, "function openStream() {", "const HIDE_CLEAR_MS")
     assert "fetch('/stats/snapshot?lite=1'" in sse
     assert "fetch('/v1/models'" not in sse
     assert "if (r.status === 401 || r.status === 403) {" in sse
@@ -1727,7 +1723,7 @@ def test_stats_page_status_pill_keeps_the_stream_state(client):
     assert pill.index("if (connState) {") < pill.index("statusEl.className = 'pill live';")
     status = js_upto(html, "function setStatus(text, cls) {", TOP_CLOSE)
     assert "connState = cls === 'live' ? null : text;" in status
-    sse = html[html.index("function openStream() {"):html.index("es.onerror")]
+    sse = js_upto(html, "function openStream() {", "es.onerror")
     assert sse.count("connState = null;") == 2   # a message and a (re)open
     push = html[html.index("function pushHistory(snap) {"):]
     assert push.index("histX[histX.length - 1] === now") < push.index("histX.push(now);")
@@ -1739,7 +1735,7 @@ def test_stats_turnaround_tooltip_and_resize_use_the_drawn_tail():
     holds the next window while its usage document is in flight."""
     js = _stats_js()
     ta = js_upto(js, "function renderTurnaround() {", TOP_CLOSE)
-    tips = ta[ta.index("wireTips(el, '[data-tip]'"):ta.index("el._ro = onResizeFrame(el")]
+    tips = js_upto(ta, "wireTips(el, '[data-tip]'", "el._ro = onResizeFrame(el")
     assert "const tt = t;" in tips and "lastTail" not in tips
     ro = ta[ta.index("el._ro = onResizeFrame(el"):]
     assert ro.index("if (!(lastDoc && _docSeq === _seq)) return;") < ro.index("renderTurnaround();")
