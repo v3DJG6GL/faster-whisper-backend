@@ -753,7 +753,7 @@ var audio = { paused: true, play: async function() { played++; }, pause: functio
   removeAttribute: function() {}, load: function() {} };
 function _getPreviewAudio() { return (_previewAudio = audio); }
 global.fetch = function() { return new Promise(function(r) { pending.push(r); }); };
-global.window = {};
+global.window = { _csrfStamp: function() {} };
 global.URL = { createObjectURL: function() { blobs++; return 'blob:x'; },
   revokeObjectURL: function() {} };
 function _bindPanelToAudio() { bound++; return function() {}; }
@@ -798,7 +798,7 @@ global.fetch = async function(u) {
   return { ok: true, blob: async function() { return {}; },
            json: async function() { return { words: [] }; } };
 };
-global.window = {};
+global.window = { _csrfStamp: function() {} };
 global.URL = { createObjectURL: function() { return 'blob:x'; }, revokeObjectURL: function() {} };
 function _saveProposalChips() {
   log.push('save');
@@ -2323,7 +2323,7 @@ def test_proposal_chip_save_updates_the_list_rows(page, tmp_path):
     chip = {"wrong": "die", "correct": "Die", "idx": 4}
     out = _run_node(tmp_path, fns + r"""
 var previews = {};
-global.window = {};
+global.window = { _csrfStamp: function() {} };
 global.document = { querySelector: function(s) {
   var id = /data-id="([^"]+)"/.exec(s)[1];
   return previews[id] || (previews[id] = { textContent: '' });

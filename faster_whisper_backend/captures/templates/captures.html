@@ -4088,10 +4088,8 @@
       try {
         if (_proposalSaveFlush) _proposalSaveFlush();
         await _proposalSaveChain;
-        var headers = {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': window._csrfToken ? window._csrfToken() : '',
-        };
+        var headers = { 'Content-Type': 'application/json' };
+        window._csrfStamp('POST', headers);
         var body = JSON.stringify({ member_ids: ids });
         var [audioResp, wordsResp] = await Promise.all([
           fetch('/captures/api/samples/preview-audio', { method:'POST', headers:headers, body:body }),
@@ -4185,10 +4183,8 @@
   // Chip idx values index the merged word list; /preview-save-chips fans
   // them out to the member captures. The baseline then tracks server state.
   async function _saveProposalChips(state, memberIds) {
-    var headers = {
-      'Content-Type': 'application/json',
-      'X-CSRF-Token': window._csrfToken ? window._csrfToken() : '',
-    };
+    var headers = { 'Content-Type': 'application/json' };
+    window._csrfStamp('POST', headers);
     var chips = state.corrections
       .filter(function(c) { return (c.correct || '').trim(); })
       .map(function(c) {
