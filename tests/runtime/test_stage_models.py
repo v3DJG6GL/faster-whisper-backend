@@ -17,7 +17,7 @@ from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import bearer
 from tests._transcription_helpers import bind_profile as _bind_profile
-from tests._transcription_helpers import post_verbose as _post
+from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import watch_progress as _watch_progress
 from tests.runtime.test_preload_registry import _FakeQueue
 from tests.runtime.test_routes_preload import _enable as _routes_enable
@@ -61,14 +61,12 @@ def test_per_request_diarization_model_honored(client, app_module, monkeypatch):
     calls = _stub_diarize(app_module, monkeypatch)
     # In the default DIARIZATION_ALLOWED_MODELS, differs from the config
     # default (community-1).
-    r = _post(client, diarize="true",
-              diarization_model="pyannote/speaker-diarization-3.1")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, diarize="true",
+                    diarization_model="pyannote/speaker-diarization-3.1")
     assert calls[0]["model_id"] == "pyannote/speaker-diarization-3.1"
-    assert "warnings" not in r.json()
+    assert "warnings" not in body
     # Absent field inherits the config default.
-    r = _post(client, diarize="true")
-    assert r.status_code == 200
+    _post_ok(client, diarize="true")
     assert calls[1]["model_id"] == "pyannote/speaker-diarization-community-1"
 
 
@@ -80,11 +78,10 @@ def test_locked_diarization_model_ignores_client_param(client, app_module,
         "DIARIZATION_MODEL": "pyannote/speaker-diarization-community-1",
         "locks": ["DIARIZATION_MODEL"]})
 
-    r = _post(client, bearer(raw_alice), diarize="true",
-              diarization_model="pyannote/speaker-diarization-3.1")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, bearer(raw_alice), diarize="true",
+                    diarization_model="pyannote/speaker-diarization-3.1")
     assert calls[0]["model_id"] == "pyannote/speaker-diarization-community-1"
-    assert "diarization_model" in r.json()["overrides_ignored"]
+    assert "diarization_model" in body["overrides_ignored"]
 
 
 def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
@@ -93,10 +90,8 @@ def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
         "pyannote/speaker-diarization-community-1"])
     pid = "abcd" * 8
     seen = _watch_progress(monkeypatch, pid)
-    r = _post(client, diarize="true", progress_id=pid,
-              diarization_model="pyannote/speaker-diarization-3.1")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, diarize="true", progress_id=pid,
+                    diarization_model="pyannote/speaker-diarization-3.1")
     assert calls == []
     assert "speakers" not in body
     assert any("DIARIZATION_ALLOWED_MODELS" in w for w in body["warnings"])
@@ -105,25 +100,21 @@ def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
 
 def test_per_request_separation_model_honored(client, app_module, monkeypatch):
     calls = _stub_separate(app_module, monkeypatch)
-    r = _post(client, separate_bgm="true",
-              separation_model="UVR-MDX-NET-Inst_HQ_5")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, separate_bgm="true",
+                    separation_model="UVR-MDX-NET-Inst_HQ_5")
     assert calls[0]["model_filename"] == "UVR-MDX-NET-Inst_HQ_5"
-    assert "warnings" not in r.json()
+    assert "warnings" not in body
     # Absent field inherits the config default (the handler resolves it
     # through _resolve_request_knob before the call, so the module sees the
     # config string, not None).
-    r = _post(client, separate_bgm="true")
-    assert r.status_code == 200
+    _post_ok(client, separate_bgm="true")
     assert calls[1]["model_filename"] == "UVR-MDX-NET-Inst_HQ_4"
 
 
 def test_separation_model_allowlist_miss_skips_stage(client, app_module,
                                                      monkeypatch):
     calls = _stub_separate(app_module, monkeypatch)
-    r = _post(client, separate_bgm="true", separation_model="Evil-Model")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, separate_bgm="true", separation_model="Evil-Model")
     assert calls == []
     assert body["text"]                       # original audio transcribed
     assert any("BGM_SEPARATION_ALLOWED_MODELS" in w for w in body["warnings"])
@@ -252,15 +243,12 @@ def test_empty_bgm_allowlist_admits_only_the_configured_model(
     lockdown, never an open gate."""
     calls = _stub_separate(app_module, monkeypatch,
                            BGM_SEPARATION_ALLOWED_MODELS=[])
-    r = _post(client, separate_bgm="true",
-              separation_model="Kim_Vocal_2.onnx")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, separate_bgm="true",
+                    separation_model="Kim_Vocal_2.onnx")
     assert any("not allowed" in w for w in body.get("warnings", []))
     assert not calls
     # The configured default still runs untouched.
-    r = _post(client, separate_bgm="true")
-    assert r.status_code == 200
+    _post_ok(client, separate_bgm="true")
     assert len(calls) == 1
 
 
@@ -271,11 +259,10 @@ def test_allowlist_never_blocks_the_config_inherited_default(
     # Config default stays community-1 — NOT in the allowlist.
     calls = _stub_diarize(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[
         "pyannote/speaker-diarization-3.1"])
-    r = _post(client, diarize="true")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, diarize="true")
     assert len(calls) == 1
     assert calls[0]["model_id"] == "pyannote/speaker-diarization-community-1"
-    assert "warnings" not in r.json()
+    assert "warnings" not in body
 
 
 def test_allowlist_admits_the_identity_effective_model_when_echoed(
@@ -289,10 +276,10 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
     admin_h, raw_alice = _bind_profile(
         client, make_user_key, "pin-diar",
         {"DIARIZATION_MODEL": pinned, "locks": []})
-    r = _post(client, bearer(raw_alice), diarize="true", diarization_model=pinned)
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, bearer(raw_alice), diarize="true",
+                    diarization_model=pinned)
     assert calls[0]["model_id"] == pinned
-    assert "warnings" not in r.json()
+    assert "warnings" not in body
     # Locked knob, same echoed value: the stage still runs and nothing is
     # reported as ignored (the request agrees with the lock).
     r = client.post("/settings/overrides/state", headers=admin_h,
@@ -300,12 +287,12 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
                         "DIARIZATION_MODEL": pinned,
                         "locks": ["DIARIZATION_MODEL"]}}})
     assert r.status_code == 200, r.text
-    r = _post(client, bearer(raw_alice), diarize="true", diarization_model=pinned)
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, bearer(raw_alice), diarize="true",
+                    diarization_model=pinned)
     assert len(calls) == 2
     assert calls[1]["model_id"] == pinned
-    assert "warnings" not in r.json()
-    assert "diarization_model" not in r.json().get("overrides_ignored", [])
+    assert "warnings" not in body
+    assert "diarization_model" not in body.get("overrides_ignored", [])
 
 
 def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
@@ -316,17 +303,15 @@ def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
         client, make_user_key, "pin-sep",
         {"BGM_SEPARATION_UVR_MODEL": "UVR-Pinned", "locks": []})
     # Absent field: the identity-pinned model runs.
-    r = _post(client, bearer(raw_alice), separate_bgm="true")
-    assert r.status_code == 200, r.text
+    _post_ok(client, bearer(raw_alice), separate_bgm="true")
     assert len(calls) == 1
     assert calls[0]["model_filename"] == "UVR-Pinned"
     # Echoing that exact effective value must yield the same call.
-    r = _post(client, bearer(raw_alice), separate_bgm="true",
-              separation_model="UVR-Pinned")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, bearer(raw_alice), separate_bgm="true",
+                    separation_model="UVR-Pinned")
     assert len(calls) == 2
     assert calls[1]["model_filename"] == "UVR-Pinned"
-    assert not any("not allowed" in w for w in r.json().get("warnings", []))
+    assert not any("not allowed" in w for w in body.get("warnings", []))
 
 
 def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
