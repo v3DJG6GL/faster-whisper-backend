@@ -16,6 +16,7 @@ import pytest
 
 from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import subtitle_mux as pk
+from tests.conftest import write_bytes
 from tests.media.test_routes_url import _video_ids
 from tests.media.test_subtitle_mux import run_ffmpeg
 
@@ -580,9 +581,7 @@ def test_me_reports_media_package_caps(client, package_enabled):
 
 
 def test_sweep_reaps_stale_upload_parts(package_enabled):
-    part = os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part")
-    with open(part, "wb") as f:
-        f.write(b"x")
+    part = write_bytes(os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part"))
     stale = time.time() - (ums._UPLOAD_IDLE_MAX_SEC + 100)
     os.utime(part, (stale, stale))
     ums.sweep()

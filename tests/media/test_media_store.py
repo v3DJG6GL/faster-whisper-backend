@@ -8,6 +8,7 @@ import time
 import pytest
 
 from faster_whisper_backend.media import media_store as ums
+from tests.conftest import write_bytes
 
 
 @pytest.fixture(autouse=True)
@@ -303,9 +304,7 @@ def test_staging_job_is_inside_the_retention_dir_and_stale_jobs_are_reaped(
     assert job.startswith(os.path.join(str(tmp_path / "url_media"), "staging"))
     assert os.path.isdir(job)
     # register() from a staging job is a same-filesystem move.
-    src = os.path.join(job, "media.mkv")
-    with open(src, "wb") as f:
-        f.write(b"v" * 10)
+    src = write_bytes(os.path.join(job, "media.mkv"), b"v" * 10)
     mid = ums.register(src, user_id=None, kind="video")
     assert mid and not os.path.exists(src)
     # A fresh job survives the sweep; one older than the download wall
@@ -342,9 +341,7 @@ def test_startup_reset_wipes_staging(tmp_path):
 def test_stalled_upload_part_survives_the_sweep_until_the_idle_bound():
     # The .part file is the LIVE spool of an in-flight upload; its mtime only
     # moves when a chunk lands, so a client stalled for minutes must keep it.
-    part = os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part")
-    with open(part, "wb") as f:
-        f.write(b"x")
+    part = write_bytes(os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part"))
     _age(part, 600)
     ums.sweep()
     assert os.path.exists(part)
@@ -359,8 +356,7 @@ def test_sweep_reaps_a_renamed_but_unregistered_upload():
     fresh = os.path.join(ums.staging_dir(), "upload-cafebabe.mp4")
     old = os.path.join(ums.staging_dir(), "upload-deadbeef.mp4")
     for p in (fresh, old):
-        with open(p, "wb") as f:
-            f.write(b"x")
+        write_bytes(p)
     _age(old, ums._UPLOAD_IDLE_MAX_SEC + 100)
     ums.sweep()
     assert os.path.exists(fresh) and not os.path.exists(old)
