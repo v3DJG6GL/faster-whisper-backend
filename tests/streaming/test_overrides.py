@@ -963,7 +963,7 @@ def test_stream_client_output_wrappers_master_gate_off(
         client, fake_model, app_module, monkeypatch, energy_vad):
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
     monkeypatch.setattr(app_module.cfg, "ALLOW_REQUEST_DECODE_OVERRIDES", False)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         ready = handshake(ws, decode_overrides={"output_prefix": ">> "})
         assert ready["overrides_ignored"] == ["output_prefix"]
         msgs = speak_and_stop(ws)[0]

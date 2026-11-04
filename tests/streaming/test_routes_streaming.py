@@ -20,14 +20,13 @@ from tests._streaming_helpers import (
     const_pcm, drain_frames as _drain, handshake as _handshake, speak_and_stop, stop_and_drain,
     stream_ws)
 from tests._transcription_helpers import guard_line
-from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
 _pcm = const_pcm
 
 
 def test_stream_happy_path_partials_then_final(client, energy_vad):
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         ready = _handshake(ws, response_format="json")
         assert ready["type"] == "ready"
         assert ready["sample_rate"] == 16000
@@ -51,7 +50,7 @@ def test_stream_announces_the_utterance_lifecycle(client, energy_vad):
     utterance is announced, marked as decoding, and closed by its final — in
     that order, all on one ordinal. A client paints "the server is working"
     between ``open`` and the terminal frame, so the order IS the contract."""
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         ready = _handshake(ws, response_format="json")
         assert ready["type"] == "ready"
         assert ready["utterance_frames"] is True
@@ -82,7 +81,7 @@ def test_dictate_page_shows_the_decode_as_transcribing(client):
 
 
 def test_stream_rejects_unsupported_audio_format(client):
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         ws.send_json({
             "type": "config", "model": "whisper-1",
             "audio": {"format": "g729-telephony"},  # not raw, not an ffmpeg format we allow
@@ -103,7 +102,7 @@ def test_stream_rejects_a_non_string_audio_format(client, monkeypatch, caplog, f
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
     caplog.set_level(logging.ERROR, logger="faster_whisper_backend.streaming.routes")
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         ws.send_json({"type": "config", "model": ["whisper-1"],
                       "audio": {"format": fmt}})
         msg = ws.receive_json()
@@ -116,7 +115,7 @@ def test_stream_rejects_a_non_string_audio_format(client, monkeypatch, caplog, f
 def test_stream_treats_a_non_string_model_as_absent(client):
     """A non-string handshake `model` falls back to whisper-1 instead of riding
     into the job row and the model load."""
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         ws.send_json({"type": "config", "model": ["x"],
                       "audio": {"format": "pcm_s16le"}})
         ready = ws.receive_json()
@@ -310,8 +309,7 @@ def test_dictate_page_sends_a_cleared_language_as_auto_detect(client):
 def test_ws_authorization_header_admits(client, make_user_key):
     make_user_key("root", is_admin=True)   # locks the server down
     _uid, raw = make_user_key("alice")
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw)) as ws:
+    with stream_ws(client, raw) as ws:
         assert _handshake(ws)["type"] == "ready"
 
 
@@ -368,7 +366,7 @@ def test_stream_disabled_closes_connection(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_ENABLED", False, raising=False)
     # _refuse always accepts first, so the refusal is a post-accept close
     # carrying the application code — not a 4401 or a crash.
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         with pytest.raises(WebSocketDisconnect) as ei:
             ws.receive_json()
     assert ei.value.code == _WS_DISABLED
@@ -379,7 +377,7 @@ def test_stream_records_trace_text_per_utterance(client, energy_vad):
     raw/final text (drives /quick-config + /reports), not just numeric metrics."""
     from faster_whisper_backend.stats import recent_transcriptions_store
     before = recent_transcriptions_store.count()
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws)["type"] == "ready"
         speak_and_stop(ws)
     rows = recent_transcriptions_store.list_recent(limit=10)
@@ -429,7 +427,7 @@ def test_flush_after_new_audio_is_not_coalesced(client, monkeypatch, energy_vad)
         await orig_flush(self)
 
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 1000))   # utterance A
         ws.send_json({"type": "flush"})   # flush A (pump held for 0.4 s)
@@ -473,7 +471,7 @@ def test_stream_handshake_idle_timeout_frees_slot(client, app_module, monkeypatc
     from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming.routes import _WS_IDLE_TIMEOUT
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         with pytest.raises(WebSocketDisconnect) as ei:
             ws.receive_json()   # send nothing → idle close
     assert ei.value.code == _WS_IDLE_TIMEOUT
@@ -488,7 +486,7 @@ def test_stream_session_idle_timeout_closes_and_notifies(
     # After a successful handshake, a connection that goes silent mid-session is
     # closed once the idle timeout elapses, with an idle_timeout notice first.
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws, response_format="json")["type"] == "ready"
         msgs = _drain(ws)   # send nothing further → idle close
     assert any(m.get("code") == "idle_timeout" for m in msgs)
@@ -498,7 +496,7 @@ def test_stream_idle_timeout_zero_disables(client, app_module, monkeypatch, ener
     # 0 disables the idle timeout: the normal stop/close flow still works and no
     # idle_timeout notice is emitted (the receive falls through to a plain await).
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.0, raising=False)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws, response_format="json")["type"] == "ready"
         msgs = stop_and_drain(ws)[0]
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
@@ -518,7 +516,7 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(
     Here the socket must already be closed by the time we stop sending.
     """
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.5, raising=False)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws, response_format="json")["type"] == "ready"
         for _ in range(3):            # 0.9 s of keepalive-ish traffic, no audio
             time.sleep(0.3)
@@ -543,16 +541,13 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(
     # stalled sleep on a loaded CI runner cannot turn into a spurious idle
     # close (a 0.5 s timeout with 0.25 s frames flaked in CI).
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 2.0, raising=False)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws, response_format="json")["type"] == "ready"
         for _ in range(12):           # 3 s of streaming: 1.5x the idle timeout
             time.sleep(0.25)
             ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
         msgs = stop_and_drain(ws)[0]
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
-
-
-_STREAM_URL = "/v1/audio/transcriptions/stream"
 
 
 def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
@@ -567,11 +562,11 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
     with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-        with client.websocket_connect(_STREAM_URL) as ws:
+        with stream_ws(client) as ws:
             assert _handshake(ws)["type"] == "ready"
             assert len(streaming_routes._active_sessions) == 1
             with pytest.raises(WebSocketDisconnect) as ei:
-                with client.websocket_connect(_STREAM_URL) as ws2:
+                with stream_ws(client) as ws2:
                     ws2.receive_json()
             assert ei.value.code == streaming_routes._WS_TOO_MANY
     assert any("STREAMING_MAX_SESSIONS_PER_USER" in r.getMessage()
@@ -583,9 +578,7 @@ def test_per_user_cap_zero_is_unlimited(client, app_module, monkeypatch):
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
                         raising=False)
-    with client.websocket_connect(_STREAM_URL) as a, \
-            client.websocket_connect(_STREAM_URL) as b, \
-            client.websocket_connect(_STREAM_URL) as c:
+    with stream_ws(client) as a, stream_ws(client) as b, stream_ws(client) as c:
         for ws in (a, b, c):
             assert _handshake(ws)["type"] == "ready"
         assert len(streaming_routes._active_sessions) == 3
@@ -606,12 +599,12 @@ def test_session_admitted_with_the_cap_off_releases_no_slot(client, app_module,
     counts = streaming_routes._stream_sessions._counts
     b_cm = None
     try:
-        with client.websocket_connect(_STREAM_URL) as a:
+        with stream_ws(client) as a:
             assert _handshake(a)["type"] == "ready"
             assert counts == {}
             monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER",
                                 1, raising=False)
-            b_cm = client.websocket_connect(_STREAM_URL)
+            b_cm = stream_ws(client)
             b = b_cm.__enter__()
             assert _handshake(b)["type"] == "ready"
             assert list(counts.values()) == [1]
@@ -634,13 +627,13 @@ def test_global_cap_refusal_with_the_cap_off_releases_no_slot(client, app_module
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
     counts = streaming_routes._stream_sessions._counts
-    with client.websocket_connect(_STREAM_URL) as a:
+    with stream_ws(client) as a:
         assert _handshake(a)["type"] == "ready"
         assert list(counts.values()) == [1]
         monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
                             raising=False)
         with pytest.raises(WebSocketDisconnect) as ei:
-            with client.websocket_connect(_STREAM_URL) as ws2:
+            with stream_ws(client) as ws2:
                 ws2.receive_json()
         assert ei.value.code == streaming_routes._WS_TOO_MANY
         assert list(counts.values()) == [1]
@@ -656,7 +649,7 @@ def test_serial_sessions_never_leak_a_slot(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 2,
                         raising=False)
     for _ in range(4):
-        with client.websocket_connect(_STREAM_URL) as ws:
+        with stream_ws(client) as ws:
             assert _handshake(ws)["type"] == "ready"
     assert streaming_routes._stream_sessions._counts == {}
 
@@ -673,15 +666,14 @@ def test_per_user_cap_is_per_user(client, make_user_key, app_module,
     _uid_a, key_a = make_user_key("alice")
     _uid_b, key_b = make_user_key("bob")
 
-    with client.websocket_connect(_STREAM_URL, headers=bearer(key_a)) as a:
+    with stream_ws(client, key_a) as a:
         assert _handshake(a)["type"] == "ready"
         with pytest.raises(WebSocketDisconnect) as ei:
-            with client.websocket_connect(_STREAM_URL,
-                                          headers=bearer(key_a)) as dup:
+            with stream_ws(client, key_a) as dup:
                 dup.receive_json()
         assert ei.value.code == streaming_routes._WS_TOO_MANY
         # bob's own slot is untouched by alice holding hers.
-        with client.websocket_connect(_STREAM_URL, headers=bearer(key_b)) as b:
+        with stream_ws(client, key_b) as b:
             assert _handshake(b)["type"] == "ready"
 
 
@@ -705,7 +697,7 @@ def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
     # Exactly the injected error: a handshake idle-timeout close (4408) would
     # also empty _counts, without ever taking the aborted-accept path.
     with pytest.raises(RuntimeError, match="client went away during the handshake"):
-        with client.websocket_connect(_STREAM_URL) as ws:
+        with stream_ws(client) as ws:
             ws.receive_json()
     assert streaming_routes._stream_sessions._counts == {}
     assert streaming_routes._active_sessions == set()
@@ -713,7 +705,7 @@ def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
     # The slot is free again: the very next handshake from the same identity
     # goes through instead of being refused with 4429.
     monkeypatch.setattr(starlette.websockets.WebSocket, "accept", real_accept)
-    with client.websocket_connect(_STREAM_URL) as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws)["type"] == "ready"
 
 
@@ -747,7 +739,7 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
     monkeypatch.setattr(streaming_routes.asyncio, "wait", _wait_then_cancel)
 
     with pytest.raises(BaseException):
-        with client.websocket_connect(_STREAM_URL) as ws:
+        with stream_ws(client) as ws:
             _handshake(ws)
             ws.receive_json()
     assert tx_models._model_leases == {}
@@ -755,7 +747,7 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
 
 
 def _dictate_one_utterance(client, conf_extra):
-    with client.websocket_connect(_STREAM_URL) as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws, **conf_extra)["type"] == "ready"
         speak_and_stop(ws)
 
@@ -920,7 +912,7 @@ def _loop_segment():
 
 def _stream_once(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert _handshake(ws)["type"] == "ready"
         return speak_and_stop(ws)[0]
 

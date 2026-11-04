@@ -56,10 +56,11 @@ def stop_and_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     return ws_drain(ws, limit)
 
 
-def stream_ws(client, raw_key):
-    """Open the streaming socket with ``raw_key``'s bearer header (use as ``with``)."""
+def stream_ws(client, raw_key=None):
+    """Open the streaming socket (use as ``with``), with ``raw_key``'s bearer
+    header when given; without one, open mode (or the client's cookies)."""
     return client.websocket_connect(
-        "/v1/audio/transcriptions/stream", headers=bearer(raw_key))
+        "/v1/audio/transcriptions/stream", headers=bearer(raw_key) if raw_key else {})
 
 
 def config_drain(client, raw_key, limit: int = 200) -> list[dict]:

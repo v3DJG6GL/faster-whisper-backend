@@ -17,7 +17,7 @@ from faster_whisper_backend.streaming.transport import (
     RawPcmTransport,
     make_transport,
 )
-from tests._streaming_helpers import drain_frames, handshake, stop_and_drain
+from tests._streaming_helpers import drain_frames, handshake, stop_and_drain, stream_ws
 
 
 def test_ffmpeg_exe_resolves_to_runnable_binary():
@@ -191,7 +191,7 @@ def test_ffmpeg_transport_reader_join_timeout_still_returns(monkeypatch):
 
 def test_stream_route_accepts_webm_via_ffmpeg(client, energy_vad):
     webm = _gen_webm(2.0)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         ready = handshake(ws, audio={"format": "webm"})
         assert ready["type"] == "ready"
         assert ready["audio_format"] == "webm"
@@ -227,7 +227,7 @@ def test_stream_route_ends_the_session_when_the_decoder_dies(client, monkeypatch
 
     monkeypatch.setattr(stream_routes, "make_transport",
                         lambda fmt, sink, **kw: _DyingTransport(sink, **kw))
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+    with stream_ws(client) as ws:
         assert handshake(ws, audio={"format": "webm"})["type"] == "ready"
         ws.send_bytes(b"\x1a\x45\xdf\xa3 corrupt")
         msgs = drain_frames(ws, 50)
