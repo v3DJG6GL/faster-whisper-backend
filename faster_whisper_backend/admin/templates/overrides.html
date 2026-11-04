@@ -509,8 +509,7 @@ window._renderWaterfall = (function () {
       var db = _el('button', 'ghost', '⧉ Duplicate');
       db.onclick = duplicateProfile; acts.appendChild(db);
       if (uiConfirmDel) {
-        var cf = _el('span', 'ov-confirm');
-        cf.appendChild(document.createTextNode('Delete?'));
+        var cf = _el('span', 'ov-confirm', 'Delete?');
         var yes = _el('button', 'danger', '✓ Yes');
         yes.onclick = confirmDelete; cf.appendChild(yes);
         var dno = _el('button', 'ghost', '✕');

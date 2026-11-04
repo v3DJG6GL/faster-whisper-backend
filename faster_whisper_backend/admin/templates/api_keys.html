@@ -1448,8 +1448,8 @@
 
     function _triRow(label, slug, hint, val, set) {
       var row = _el('div', 'gaterow');
-      var gl = _el('span', 'gl');
-      gl.title = hint; gl.appendChild(document.createTextNode(label));
+      var gl = _el('span', 'gl', label);
+      gl.title = hint;
       var sub = _el('span', 'sub', slug);
       gl.appendChild(sub); row.appendChild(gl);
       var cur = val === true ? 'allow' : (val === false ? 'deny' : 'inherit');
@@ -1482,8 +1482,7 @@
       else if (dataMode === 'restrict') restrictOpen = true;
       var mode = (restrictOpen && dataMode === 'none') ? 'restrict' : dataMode;
       var arow = _el('div', 'gaterow');
-      var agl = _el('span', 'gl');
-      agl.appendChild(document.createTextNode('Requestable profiles'));
+      var agl = _el('span', 'gl', 'Requestable profiles');
       var asub = _el('span', 'sub', 'allowed_override_profiles'); agl.appendChild(asub);
       arow.appendChild(agl);
       arow.appendChild(_ovSeg(
@@ -1997,8 +1996,7 @@
   // listed user (open mode, revoked accounts).
   function appendCsOnlyCard(ct, opts) {
     var card = _el('div', 'card');
-    var h = document.createElement('h3');
-    h.appendChild(document.createTextNode(opts.heading + ' '));
+    var h = _el('h3', null, opts.heading + ' ');
     var pill = _el('span', 'pill sync', '⇅ v' + opts.version);
     h.appendChild(pill);
     card.appendChild(h);
