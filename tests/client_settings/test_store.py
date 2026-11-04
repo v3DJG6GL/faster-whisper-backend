@@ -6,13 +6,16 @@ import logging
 import pytest
 
 
-def test_get_empty_returns_none(client_settings_store_db):
-    store = client_settings_store_db
+@pytest.fixture
+def store(client_settings_store_db):
+    return client_settings_store_db
+
+
+def test_get_empty_returns_none(store):
     assert store.get("u1") is None
 
 
-def test_create_then_get(client_settings_store_db):
-    store = client_settings_store_db
+def test_create_then_get(store):
     ok, state = store.put("u1", {"theme": "dark"}, 0, device="laptop")
     assert ok is True
     assert state["version"] == 1
@@ -23,8 +26,7 @@ def test_create_then_get(client_settings_store_db):
     assert got["blob"] == {"theme": "dark"}
 
 
-def test_double_create_conflicts(client_settings_store_db):
-    store = client_settings_store_db
+def test_double_create_conflicts(store):
     ok, _ = store.put("u1", {"a": 1}, 0)
     assert ok
     ok, current = store.put("u1", {"b": 2}, 0)
@@ -34,8 +36,7 @@ def test_double_create_conflicts(client_settings_store_db):
     assert current["blob"] == {"a": 1}
 
 
-def test_update_bumps_version_chain(client_settings_store_db):
-    store = client_settings_store_db
+def test_update_bumps_version_chain(store):
     store.put("u1", {"n": 1}, 0)
     ok, state = store.put("u1", {"n": 2}, 1)
     assert ok and state["version"] == 2
@@ -44,8 +45,7 @@ def test_update_bumps_version_chain(client_settings_store_db):
     assert store.get("u1")["blob"] == {"n": 3}
 
 
-def test_stale_version_conflicts_with_current(client_settings_store_db):
-    store = client_settings_store_db
+def test_stale_version_conflicts_with_current(store):
     store.put("u1", {"n": 1}, 0)
     store.put("u1", {"n": 2}, 1)  # now at version 2
     ok, current = store.put("u1", {"n": 99}, 1)  # stale base
@@ -54,19 +54,17 @@ def test_stale_version_conflicts_with_current(client_settings_store_db):
     assert current["blob"] == {"n": 2}
 
 
-def test_oversize_blob_rejected(client_settings_store_db):
-    store = client_settings_store_db
+def test_oversize_blob_rejected(store):
     big = {"x": "a" * (store._CAP_BLOB + 100)}
     with pytest.raises(ValueError):
         store.put("u1", big, 0)
     assert store.get("u1") is None  # nothing landed
 
 
-def test_worst_case_legit_blob_is_accepted(client_settings_store_db):
+def test_worst_case_legit_blob_is_accepted(store):
     """The desktop client sizes its sync ceiling (4 MiB) at ~2.5x a ~1.5 MB
     worst-case legitimate blob (500 backends + 500 profiles + rules +
     secrets); the server cap must accept such a blob, not 413 it."""
-    store = client_settings_store_db
     blob = {"backends": [{"name": f"b{i}", "prompt": "p" * 1500}
                          for i in range(1000)]}
     assert len(json.dumps(blob, separators=(",", ":"))) > 1_500_000
@@ -75,11 +73,10 @@ def test_worst_case_legit_blob_is_accepted(client_settings_store_db):
     assert store.get("u1")["blob"] == blob
 
 
-def test_non_finite_blob_raises(client_settings_store_db):
+def test_non_finite_blob_raises(store):
     """A non-finite float is rejected BEFORE any write: json.dumps with the
     default allow_nan=True would store a bare NaN literal that the response
     render 500s on and the next GET quietly rewrites to null."""
-    store = client_settings_store_db
     with pytest.raises(store.InvalidBlob):
         store.put("u1", {"x": float("nan")}, 0)
     assert store.get("u1") is None                    # nothing landed
@@ -89,11 +86,10 @@ def test_non_finite_blob_raises(client_settings_store_db):
     assert store.get("u1")["blob"] == {"n": 1}        # nothing clobbered
 
 
-def test_lone_surrogate_raises_invalid_blob(client_settings_store_db):
+def test_lone_surrogate_raises_invalid_blob(store):
     """A lone surrogate cannot be encoded as UTF-8: it is malformed input
     (InvalidBlob, 422), not the bare ValueError the 413 "too large" path
     catches — for the blob and the device label, in put and force_put."""
-    store = client_settings_store_db
     with pytest.raises(store.InvalidBlob):
         store.put("u1", {"x": "\ud800"}, 0)
     with pytest.raises(store.InvalidBlob):
@@ -104,10 +100,9 @@ def test_lone_surrogate_raises_invalid_blob(client_settings_store_db):
     assert store.get("u1") is None
 
 
-def test_log_bytes_is_utf8_size(client_settings_store_db, caplog):
+def test_log_bytes_is_utf8_size(store, caplog):
     """The `bytes=` INFO field must be the stored UTF-8 size (what the cap
     and list_meta measure), not a character count."""
-    store = client_settings_store_db
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         store.put("u1", {"s": "äöü"}, 0)
     expected = len(json.dumps(
@@ -118,11 +113,10 @@ def test_log_bytes_is_utf8_size(client_settings_store_db, caplog):
     assert expected == store.list_meta()[0]["bytes"]
 
 
-def test_corrupt_blob_logs_warning(client_settings_store_db, caplog):
+def test_corrupt_blob_logs_warning(store, caplog):
     """A corrupt stored row still serves {} (endpoint stays up) but must
     WARN — silently answering "empty settings" lets a syncing client
     overwrite the last good copy with no trace anywhere."""
-    store = client_settings_store_db
     store.put("u1", {"n": 1}, 0)
     store._conn.execute(
         "UPDATE client_settings SET blob = '{not json' WHERE user_id = 'u1'")
@@ -136,10 +130,9 @@ def test_corrupt_blob_logs_warning(client_settings_store_db, caplog):
     assert "{not json" not in recs[0].getMessage()    # never the blob itself
 
 
-def test_corrupt_blob_warning_reports_utf8_bytes(client_settings_store_db, caplog):
+def test_corrupt_blob_warning_reports_utf8_bytes(store, caplog):
     """The corrupt-row WARNING says "bytes": the stored UTF-8 size, like the
     put lines and list_meta — not a character count."""
-    store = client_settings_store_db
     store.put("u1", {"n": 1}, 0)
     raw = '{"s": "äöü"'
     store._conn.execute(
@@ -153,8 +146,7 @@ def test_corrupt_blob_warning_reports_utf8_bytes(client_settings_store_db, caplo
 
 
 def test_non_finite_legacy_row_served_as_null_with_warning(
-        client_settings_store_db, caplog):
-    store = client_settings_store_db
+        store, caplog):
     store.put("u1", {"n": 1}, 0)
     store._conn.execute(
         "UPDATE client_settings SET blob = '{\"n\":Infinity,\"k\":2}'"
@@ -164,15 +156,13 @@ def test_non_finite_legacy_row_served_as_null_with_warning(
     assert any("non-finite" in r.getMessage() for r in caplog.records)
 
 
-def test_device_truncated(client_settings_store_db):
-    store = client_settings_store_db
+def test_device_truncated(store):
     ok, state = store.put("u1", {}, 0, device="d" * 1000)
     assert ok
     assert len(state["device"]) == store._CAP_DEVICE
 
 
-def test_updated_at_moves_forward(client_settings_store_db, monkeypatch):
-    store = client_settings_store_db
+def test_updated_at_moves_forward(store, monkeypatch):
     store.put("u1", {"n": 1}, 0)
     t1 = store.get("u1")["updated_ts"]
     # Freeze the clock ahead: a `>=` on two wall-clock reads passes even if
@@ -184,8 +174,7 @@ def test_updated_at_moves_forward(client_settings_store_db, monkeypatch):
     assert t2 == pytest.approx(t1 + 10.0)
 
 
-def test_delete(client_settings_store_db):
-    store = client_settings_store_db
+def test_delete(store):
     store.put("u1", {"n": 1}, 0)
     assert store.delete("u1") is True
     assert store.get("u1") is None
@@ -199,8 +188,7 @@ def test_delete(client_settings_store_db):
     assert ok and state["version"] == 1
 
 
-def test_users_isolated(client_settings_store_db):
-    store = client_settings_store_db
+def test_users_isolated(store):
     store.put("u1", {"who": "one"}, 0)
     store.put("u2", {"who": "two"}, 0)
     assert store.get("u1")["blob"] == {"who": "one"}
@@ -210,10 +198,9 @@ def test_users_isolated(client_settings_store_db):
     assert store.get("u2")["blob"] == {"who": "two"}
 
 
-def test_profile_column_ready(client_settings_store_db):
+def test_profile_column_ready(store):
     """v1 clients always use profile='' — prove the schema already keys
     (user_id, profile) independently so named sets can land additively."""
-    store = client_settings_store_db
     store.put("u1", {"set": "default"}, 0)
     ok, state = store.put("u1", {"set": "alt"}, 0, profile="work")
     assert ok and state["version"] == 1
@@ -228,10 +215,9 @@ def test_list_meta_empty(client_settings_store_db):
     assert client_settings_store_db.list_meta() == []
 
 
-def test_list_meta_rows_without_blob(client_settings_store_db):
+def test_list_meta_rows_without_blob(store):
     """The admin listing must carry metadata only — never blob contents —
     and `bytes` must be the stored UTF-8 size, not a character count."""
-    store = client_settings_store_db
     store.put("u1", {"a": "ä"}, 0, device="laptop")   # 'ä' = 2 UTF-8 bytes
     store.put("u2", {"b": 2}, 0, profile="work")
     rows = store.list_meta()
@@ -246,10 +232,9 @@ def test_list_meta_rows_without_blob(client_settings_store_db):
     assert by_key[("u2", "work")]["profile"] == "work"
 
 
-def test_force_put_creates_then_bumps(client_settings_store_db):
+def test_force_put_creates_then_bumps(store):
     """The WebUI import path: no base_version, always lands, always bumps —
     so a device holding the old version conflicts on its next CAS push."""
-    store = client_settings_store_db
     state = store.force_put("u1", {"n": 1}, device="WebUI import")
     assert state["version"] == 1
     assert state["blob"] == {"n": 1}
@@ -266,8 +251,7 @@ def test_force_put_creates_then_bumps(client_settings_store_db):
     assert current["blob"] == {"n": 99}
 
 
-def test_force_put_oversize_rejected(client_settings_store_db):
-    store = client_settings_store_db
+def test_force_put_oversize_rejected(store):
     store.put("u1", {"n": 1}, 0)
     big = {"x": "a" * (store._CAP_BLOB + 100)}
     with pytest.raises(ValueError):
@@ -275,17 +259,15 @@ def test_force_put_oversize_rejected(client_settings_store_db):
     assert store.get("u1")["blob"] == {"n": 1}        # nothing clobbered
 
 
-def test_force_put_truncates_device(client_settings_store_db):
-    store = client_settings_store_db
+def test_force_put_truncates_device(store):
     state = store.force_put("u1", {}, device="d" * 500)
     assert state["device"] == "d" * store._CAP_DEVICE
 
 
-def test_partial_init_fails_closed(client_settings_store_db, monkeypatch):
+def test_partial_init_fails_closed(store, monkeypatch):
     """A half-open store — init_db assigned _conn but raised before finishing
     (corrupt/read-only DB file) — must raise StoreUnavailable, not hand out
     the partial connection. Mirrors sessions_store/api_keys_store._DB_READY."""
-    store = client_settings_store_db
     monkeypatch.setattr(store, "_DB_READY", False)
     with pytest.raises(store.StoreUnavailable):
         store.get("u1")
@@ -300,12 +282,11 @@ def _second_connection(store):
     return store_common.open_wal_db(path)
 
 
-def test_put_returns_own_write_despite_concurrent_writer(client_settings_store_db, monkeypatch):
+def test_put_returns_own_write_despite_concurrent_writer(store, monkeypatch):
     """SERVER_WORKERS>1: another worker's write landing between our UPDATE
     and a separate read-back must not be echoed as OUR 200 body (the device
     would adopt a foreign base_version). RETURNING hands back the row this
     statement produced; the success path must not read the row back at all."""
-    store = client_settings_store_db
     store.put("u1", {"a": 1}, 0)
     other = _second_connection(store)
     real_get = store._get_locked
@@ -330,8 +311,7 @@ def test_put_returns_own_write_despite_concurrent_writer(client_settings_store_d
         other.close()
 
 
-def test_force_put_returns_own_write_despite_concurrent_writer(client_settings_store_db, monkeypatch):
-    store = client_settings_store_db
+def test_force_put_returns_own_write_despite_concurrent_writer(store, monkeypatch):
     store.put("u1", {"a": 1}, 0)
     other = _second_connection(store)
     real_get = store._get_locked
@@ -355,12 +335,11 @@ def test_force_put_returns_own_write_despite_concurrent_writer(client_settings_s
         other.close()
 
 
-def test_init_db_renames_the_legacy_updated_at_column(client_settings_store_db, tmp_path):
+def test_init_db_renames_the_legacy_updated_at_column(store, tmp_path):
     """An install with the legacy `updated_at` column: init_db renames it in
     place, keeping the row, and writes go on working."""
     import sqlite3
 
-    store = client_settings_store_db
     path = tmp_path / "legacy_client_settings.sqlite3"
     conn = sqlite3.connect(str(path))
     conn.executescript("""
