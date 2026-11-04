@@ -447,6 +447,11 @@ def test_handshake_language_reaches_the_model_as_a_whisper_code(
 _drain_with_code = ws_drain   # the frames and the server's close code
 
 
+def _assert_revoked_close(msgs, code):
+    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
+    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+
+
 def test_stream_closes_when_key_is_revoked_mid_session(
         client, make_user_key, app_module, monkeypatch, energy_vad):
     """Revoking the user mid-stream cuts the session: no further transcripts,
@@ -471,8 +476,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
             pass
         msgs, code = _drain_with_code(ws)
 
-    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
-    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+    _assert_revoked_close(msgs, code)
     # The in-flight utterance is deliberately dropped: revocation takes effect
     # immediately, so no closing document is handed to the revoked identity.
     assert not any(m.get("type") == "final" and m.get("last") for m in msgs), msgs
@@ -496,9 +500,7 @@ def test_revoked_session_closes_without_a_further_client_frame(
         # its own, or the drain below blocks forever.
         msgs, code = _drain_with_code(ws)
 
-    assert code == _WS_UNAUTH, (
-        f"expected a 4401 close without further client frames, got {code!r} ({msgs!r})")
-    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+    _assert_revoked_close(msgs, code)
 
 
 def test_revocation_during_the_handshake_still_closes_with_4401(
@@ -533,8 +535,7 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
             pass
         msgs, code = _drain_with_code(ws)
 
-    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
-    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+    _assert_revoked_close(msgs, code)
 
 
 def test_stream_survives_an_unrelated_config_bump(
@@ -605,8 +606,7 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
             pass
         msgs, code = _drain_with_code(ws)
 
-    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
-    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+    _assert_revoked_close(msgs, code)
 
 
 def test_revocation_during_the_closing_drain_still_closes_with_4401(
