@@ -12,7 +12,7 @@ import pytest
 
 from tests._streaming_helpers import (
     const_final, const_partial, const_pcm, fast_config, inert_session, raising_decoder)
-from tests.streaming._feed_helpers import feed_levels
+from tests.streaming._feed_helpers import feed_levels, grow_document
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 
 
@@ -53,12 +53,9 @@ def test_committed_is_append_only_and_document_equals_postprocess():
     s, msgs = _make_session()
 
     async def run():
-        s.raw_confirmed = "der patient hat fieber."
-        await s._emit_update()
-        s.raw_confirmed += " blutdruck normal"          # no terminator yet → tail
-        await s._emit_update()
-        s.raw_confirmed += "."                            # terminator (commits on close)
-        await s._emit_update()
+        await grow_document(s, "der patient hat fieber.",
+                            " blutdruck normal",  # no terminator yet → tail
+                            ".")                  # terminator (commits on close)
         await s.close()
 
     asyncio.run(run())
@@ -87,10 +84,8 @@ def test_committed_never_holds_half_resolved_dictation_phrase():
     s, msgs = _make_session(postprocess=pp, holdback=_hold_trailing("neue"))
 
     async def run():
-        s.raw_confirmed = "bla bla neue"              # incomplete phrase, no terminator
-        await s._emit_update()
-        s.raw_confirmed = "bla bla neue zeile text."  # phrase completes + terminator
-        await s._emit_update()
+        await grow_document(s, "bla bla neue",    # incomplete phrase, no terminator
+                            " zeile text.")   # phrase completes + terminator
         await s.close()
 
     asyncio.run(run())
@@ -521,16 +516,8 @@ def test_seam_divergence_reanchors_logs_and_sticks(caplog):
 
     s, msgs = _make_session(postprocess=pp, diagnose=lambda a, b: "#9 toy")
 
-    async def run():
-        s.raw_confirmed = "a"
-        await s._emit_update()
-        s.raw_confirmed += " b c"
-        await s._emit_update()
-        s.raw_confirmed += " a b"
-        await s._emit_update()
-
     with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
-        asyncio.run(run())
+        asyncio.run(grow_document(s, "a", " b c", " a b"))
     docs = [m["committed"] + m["tail"] for m in _finals(msgs)]
     assert docs == ["a", "a b c", "a b c X"]
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
@@ -567,15 +554,7 @@ def test_committed_region_only_grows():
     grow — so committed never shrinks or changes either."""
     s, msgs = _make_session(postprocess=lambda raw: raw.strip())
 
-    async def run():
-        s.raw_confirmed = "eins."
-        await s._emit_update()
-        s.raw_confirmed += " zwei."
-        await s._emit_update()
-        s.raw_confirmed += " drei"
-        await s._emit_update()
-
-    asyncio.run(run())
+    asyncio.run(grow_document(s, "eins.", " zwei.", " drei"))
     committeds = [m["committed"] for m in _finals(msgs)]
     assert committeds == ["", "eins.", "eins. zwei."]
 

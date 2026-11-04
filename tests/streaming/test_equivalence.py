@@ -20,6 +20,7 @@ import asyncio
 import pytest
 
 from tests._streaming_helpers import inert_session
+from tests.streaming._feed_helpers import grow_document
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 
@@ -38,9 +39,7 @@ def _run_stream(utterances, language):
     )
 
     async def run():
-        for u in utterances:
-            s.raw_confirmed += u
-            await s._emit_update()
+        await grow_document(s, *utterances)
         await s.close()  # commit the whole document
 
     asyncio.run(run())

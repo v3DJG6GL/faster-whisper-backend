@@ -21,6 +21,7 @@ import re
 
 
 from tests._streaming_helpers import inert_session
+from tests.streaming._feed_helpers import grow_document
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 DE = [
@@ -86,9 +87,7 @@ def _run(utts, language):
     )
 
     async def go():
-        for u in utts:
-            s.raw_confirmed += u
-            await s._emit_update()
+        await grow_document(s, *utts)
         await s.close()
 
     asyncio.run(go())

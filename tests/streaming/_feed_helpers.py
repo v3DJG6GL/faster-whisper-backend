@@ -1,5 +1,6 @@
 """Helpers shared by the StreamSession test modules (test_buffer_trim,
-test_finalize_paths, test_session, test_utterance_frames).
+test_equivalence, test_finalize_paths, test_seams, test_session,
+test_utterance_frames).
 
 Import as ``from tests.streaming._feed_helpers import ...``.
 """
@@ -17,3 +18,11 @@ def feed_levels(session, *chunks: tuple[int, int]) -> None:
             await session.feed_pcm(const_pcm(level, ms))
 
     asyncio.run(run())
+
+
+async def grow_document(session, *pieces: str) -> None:
+    """Append each raw piece to ``session.raw_confirmed`` and emit its document,
+    in order (no audio, no VAD)."""
+    for piece in pieces:
+        session.raw_confirmed += piece
+        await session._emit_update()
