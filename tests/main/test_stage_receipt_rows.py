@@ -13,8 +13,8 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
-from faster_whisper_backend.transcription import receipt as tx_receipt
 from tests._transcription_helpers import WAV_UPLOAD as _FILE, serve_model, wav_bytes as _wav_bytes
+from tests.main._stage_helpers import capture_receipt
 
 
 def _post(client, files=_FILE, **data):
@@ -23,14 +23,11 @@ def _post(client, files=_FILE, **data):
     return client.post("/v1/audio/transcriptions", files=files, data=data)
 
 
-def _capture_receipt(app_module, monkeypatch, seen):
-    real_block = tx_receipt._format_request_block
-
-    def _capture(**kw):
-        seen.update(kw)
-        seen["rendered"] = real_block(**kw)
-        return seen["rendered"]
-    monkeypatch.setattr(tx_receipt, "_format_request_block", _capture)
+def _separating_row(client, monkeypatch, upload):
+    seen = capture_receipt(monkeypatch)
+    r = _post(client, files={"file": upload}, separate_bgm="true")
+    assert r.status_code == 200, r.text
+    return next(s for s in seen["stages"] if s["name"] == "separating")
 
 
 _STUB_CREATED: list[str] = []
@@ -71,8 +68,7 @@ def test_vad_row_bills_the_lead_pad_pre_decode(client, app_module,
         return real_decode(*a, **kw)
     monkeypatch.setattr(_fwa, "decode_audio", _slow_decode)
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
-    seen = {}
-    _capture_receipt(app_module, monkeypatch, seen)
+    seen = capture_receipt(monkeypatch)
     r = _post(client, files={"file": ("a.wav", _wav_bytes(), "audio/wav")},
               vad_filter="true")
     assert r.status_code == 200, r.text
@@ -88,8 +84,7 @@ def test_diarization_block_present_when_stage_labels_nobody(
     async def _no_turns(path, **kw):
         return []
     monkeypatch.setattr(diarization, "diarize", _no_turns)
-    seen = {}
-    _capture_receipt(app_module, monkeypatch, seen)
+    seen = capture_receipt(monkeypatch)
     r = _post(client, diarize="true")
     assert r.status_code == 200, r.text
     assert any(s["name"] == "diarizing" for s in seen["stages"])
@@ -111,13 +106,7 @@ def test_separation_row_has_no_transcode_detail_for_wav_input(
     monkeypatch.setattr(audio_transcode, "transcode_to_wav",
                         lambda *a, **k: calls.append(a))
     for name in ("a.wav", "a.flac"):
-        seen = {}
-        _capture_receipt(app_module, monkeypatch, seen)
-        r = _post(client, files={"file": (name, b"RIFFxxxxWAVE",
-                                          "audio/wav")},
-                  separate_bgm="true")
-        assert r.status_code == 200, r.text
-        row = next(s for s in seen["stages"] if s["name"] == "separating")
+        row = _separating_row(client, monkeypatch, (name, b"RIFFxxxxWAVE", "audio/wav"))
         assert not row.get("detail")
     assert calls == []
 
@@ -132,12 +121,7 @@ def test_separation_row_keeps_transcode_detail_when_transcode_ran(
         with open(dst, "wb") as f:
             f.write(b"RIFFtcWAVE")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _fake_transcode)
-    seen = {}
-    _capture_receipt(app_module, monkeypatch, seen)
-    r = _post(client, files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
-              separate_bgm="true")
-    assert r.status_code == 200, r.text
-    row = next(s for s in seen["stages"] if s["name"] == "separating")
+    row = _separating_row(client, monkeypatch, ("a.mp3", b"ID3xxxx", "audio/mpeg"))
     assert row.get("detail") == "incl. transcode"
 
 
@@ -150,12 +134,7 @@ def test_separation_row_drops_transcode_detail_when_transcode_failed(
     def _boom(src, dst, *, rate=44100, layout="stereo"):
         raise RuntimeError("no decoder")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
-    seen = {}
-    _capture_receipt(app_module, monkeypatch, seen)
-    r = _post(client, files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
-              separate_bgm="true")
-    assert r.status_code == 200, r.text
-    row = next(s for s in seen["stages"] if s["name"] == "separating")
+    row = _separating_row(client, monkeypatch, ("a.mp3", b"ID3xxxx", "audio/mpeg"))
     assert not row.get("detail")
 
 

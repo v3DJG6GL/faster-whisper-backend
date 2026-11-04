@@ -8,9 +8,9 @@ import pytest
 
 from tests.conftest import FakeModel, FakeSegment, bearer, write_wav
 from tests._translation_helpers import enable_translation
+from tests.main._stage_helpers import capture_receipt
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
-from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import (
     WAV_UPLOAD as _FILE, fail_model_load, post_transcription as _post, post_verbose,
@@ -498,12 +498,7 @@ def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
         return 3.0 if since_ts <= seen["loaded_wall"] else 0.0
     monkeypatch.setattr(model_registry, "load_secs_since", _load_secs_since)
 
-    real_block = tx_receipt._format_request_block
-
-    def _capture(**kw):
-        seen["stages"] = kw.get("stages")
-        return real_block(**kw)
-    monkeypatch.setattr(tx_receipt, "_format_request_block", _capture)
+    capture_receipt(monkeypatch, seen)
 
     assert _post(client).status_code == 200
     row = next(s for s in seen["stages"] if s["name"] == "transcribing")
