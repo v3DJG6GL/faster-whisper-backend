@@ -615,11 +615,11 @@ def _seed_usage(alice, bob, alice_key, bob_key):
                     status="ok", hour=h)
 
 
-def _usage_now(key_id, user_id, audio_s, words, job_id, kind, processing_s=1.0):
+def _usage_now(key_id, user_id, audio_s, words, job_id, kind, processing_s=1.0, **kw):
     """One "ok" usage row in the current hour (the list-filter / picker tests)."""
     us.record_usage(key_id=key_id, user_id=user_id, audio_s=audio_s, words=words,
                     status="ok", hour=us.now_hour(), processing_s=processing_s,
-                    job_id=job_id, kind=kind)
+                    job_id=job_id, kind=kind, **kw)
 
 
 def _two_users(make_user_key):
@@ -721,13 +721,10 @@ def test_stats_page_removes_machine_tiles_for_own(client):
 
 
 def test_stats_usage_v2_params(client, app_module):
-    h = us.now_hour()
-    us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
-                    status="ok", hour=h, processing_s=2.0, job_id="j1", kind="file",
-                    stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}],
-                    model="large-v3")
-    us.record_usage(key_id="k2", user_id="bob", audio_s=4.0, words=5,
-                    status="ok", hour=h, processing_s=1.0, job_id="j2", kind="dictation")
+    _usage_now("k1", "alice", 10.0, 5, "j1", "file", processing_s=2.0,
+               stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}],
+               model="large-v3")
+    _usage_now("k2", "bob", 4.0, 5, "j2", "dictation")
     kinds = client.get("/stats/usage?by=kind&metric=processing_s&compare=prev").json()
     assert kinds["by"] == "kind" and kinds["metric"] == "processing_s"
     # Only kinds with data are materialised as lines.
@@ -952,8 +949,7 @@ def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
     us.record_usage(key_id=keys[alice], user_id=alice, audio_s=10.0, words=5, status="error",
                     hour=h, processing_s=2.0, job_id="a1", kind="file", wait_s=3.0,
                     error_class="cuda_oom", error_stage="transcribing")
-    us.record_usage(key_id="kb", user_id=bob, audio_s=4.0, words=5, status="ok",
-                    hour=h, processing_s=1.0, job_id="b1", kind="dictation", wait_s=0.5)
+    _usage_now("kb", bob, 4.0, 5, "b1", "dictation", wait_s=0.5)
     body = client.get("/stats/tail", headers=bearer(raw_admin)).json()
     assert set(body) >= {"range", "wait", "turnaround", "failures", "models", "compare", "scope"}
     assert body["scope"] == "all" and body["wait"]["n"] == 2
