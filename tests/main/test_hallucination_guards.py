@@ -15,12 +15,13 @@ from faster_whisper_backend.transcription import receipt as tx_receipt
 from tests._transcription_helpers import post_transcription, post_verbose
 
 
-def _words(text: str, start: float, end: float) -> list:
-    """Evenly spread FakeWords for `text` across [start, end]."""
+def _worded(text: str, start: float, end: float) -> FakeSegment:
+    """FakeSegment with FakeWords evenly spread across [start, end]."""
     toks = text.split()
     step = (end - start) / max(len(toks), 1)
-    return [FakeWord(t, start + i * step, start + (i + 1) * step)
-            for i, t in enumerate(toks)]
+    return FakeSegment(text, start, end,
+                       words=[FakeWord(t, start + i * step, start + (i + 1) * step)
+                              for i, t in enumerate(toks)])
 
 
 def _echo_segment() -> FakeSegment:
@@ -28,12 +29,11 @@ def _echo_segment() -> FakeSegment:
     text = ("Punkt Neue Zeile Die Unterschenkel seien stark wenn er auf dem "
             "Fuss steht Punkt Neue Zeile Die Unterschenkel seien stark wenn "
             "er auf dem Fuss steht")
-    return FakeSegment(text, 13.42, 13.96, words=_words(text, 13.42, 13.96))
+    return _worded(text, 13.42, 13.96)
 
 
 def test_word_rate_normal_speech_passes(app_module):
-    seg = FakeSegment("hallo schöne welt", 0.0, 1.0,
-                      words=_words("hallo schöne welt", 0.0, 1.0))
+    seg = _worded("hallo schöne welt", 0.0, 1.0)
     assert tx_guards.segment_exceeds_word_rate(seg, 10.0) is False
 
 
@@ -43,13 +43,12 @@ def test_word_rate_echo_segment_dropped(app_module):
 
 def test_word_rate_needs_min_words(app_module):
     # 2 words in 0.1 s is 20 w/s but below the 3-word floor -> never dropped.
-    seg = FakeSegment("ja gut", 0.0, 0.1, words=_words("ja gut", 0.0, 0.1))
+    seg = _worded("ja gut", 0.0, 0.1)
     assert tx_guards.segment_exceeds_word_rate(seg, 10.0) is False
 
 
 def test_word_rate_zero_duration_with_words_dropped(app_module):
-    seg = FakeSegment("eins zwei drei", 1.0, 1.0,
-                      words=_words("eins zwei drei", 1.0, 1.0))
+    seg = _worded("eins zwei drei", 1.0, 1.0)
     assert tx_guards.segment_exceeds_word_rate(seg, 10.0) is True
 
 
@@ -65,8 +64,7 @@ def test_word_rate_falls_back_to_text_when_no_words(app_module):
 
 
 def test_batch_drops_echo_segment(client, fake_model):
-    real = FakeSegment("hallo welt", 0.0, 1.0,
-                       words=_words("hallo welt", 0.0, 1.0))
+    real = _worded("hallo welt", 0.0, 1.0)
     fake_model._segments = [real, _echo_segment()]
     r = post_verbose(client)
     assert r.status_code == 200
@@ -88,8 +86,7 @@ def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
     app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S = 0
     app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS = 0
     app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
-    real = FakeSegment("hallo welt", 0.0, 1.0,
-                       words=_words("hallo welt", 0.0, 1.0))
+    real = _worded("hallo welt", 0.0, 1.0)
     fake_model._segments = [real, _echo_segment()]
     r = post_verbose(client)
     assert r.status_code == 200
@@ -144,7 +141,7 @@ def test_batch_whole_segment_verdict_runs_before_the_cut(client, fake_model):
     """The echo segment is dropped WHOLE by the rate guard — not trimmed down to
     its first few words by the burst rule."""
     from faster_whisper_backend.stats import metrics
-    real = FakeSegment("hallo welt", 0.0, 1.0, words=_words("hallo welt", 0.0, 1.0))
+    real = _worded("hallo welt", 0.0, 1.0)
     fake_model._segments = [real, _echo_segment()]
     r = post_transcription(client)
     assert r.json()["text"] == "hallo welt"
@@ -154,7 +151,7 @@ def test_batch_whole_segment_verdict_runs_before_the_cut(client, fake_model):
 def test_batch_emptied_segment_counts_as_dropped(client, app_module, fake_model):
     from faster_whisper_backend.stats import metrics
     app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0          # let it reach the cuts
-    real = FakeSegment("hallo welt", 0.0, 1.0, words=_words("hallo welt", 0.0, 1.0))
+    real = _worded("hallo welt", 0.0, 1.0)
     pile = [FakeWord(f" x{i}", 2.0, 2.0) for i in range(12)]
     fake_model._segments = [real, FakeSegment("".join(w.word for w in pile), 2.0, 2.0, words=pile)]
     r = post_verbose(client)
@@ -169,7 +166,7 @@ def test_batch_repeated_commands_survive(client, fake_model):
     # only the short-phrase protection (period 2 < 3) keeps them. Each "Neue
     # Zeile" is post-processed into one newline — a cut would leave fewer.
     text = " ".join(["Neue Zeile"] * 6)
-    fake_model._segments = [FakeSegment(text, 0.0, 12.0, words=_words(text, 0.0, 12.0))]
+    fake_model._segments = [_worded(text, 0.0, 12.0)]
     r = post_transcription(client)
     assert r.json()["text"] == "\n" * 6
 
