@@ -40,6 +40,18 @@ def _h264_clip(path, duration=1):
                "-c:v", "libx264", "-pix_fmt", "yuv420p", path)
 
 
+def _assert_mp4_export_keeps(tmp_path, *srts):
+    """A real-ffmpeg MP4 export of a 1 s clip carries each SRT as one subtitle stream."""
+    av = pytest.importorskip("av")
+    src = str(tmp_path / "src.mp4")
+    _h264_clip(src)
+    for srt in srts:
+        tracks = [pk.SubtitleTrack("en", "English", srt)]
+        with packaged(src, tracks, container="mp4", default_track=0, timeout=60) as out:
+            with av.open(out) as c:
+                assert [s.type for s in c.streams].count("subtitle") == 1, srt
+
+
 def test_mp4_compatibility_allowlist():
     assert pk.mp4_compatibility("h264", "aac") == (True, None)
     assert pk.mp4_compatibility("hevc", None) == (True, None)
@@ -575,28 +587,16 @@ def test_write_srts_clamps_an_inverted_cue_followed_only_by_cues_ffmpeg_drops(tm
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
 def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_before_an_empty_last_cue(tmp_path):
-    av = pytest.importorskip("av")
-    src = str(tmp_path / "src.mp4")
-    _h264_clip(src)
-    tracks = [pk.SubtitleTrack("en", "English",
-                               "1\n00:00:00,500 --> 00:00:00,200\nHello\n\n"
-                               "2\n00:00:00,900 --> 00:00:01,000\n\n")]
-    with packaged(src, tracks, container="mp4", default_track=0, timeout=60) as out:
-        with av.open(out) as c:
-            assert [s.type for s in c.streams].count("subtitle") == 1
+    _assert_mp4_export_keeps(tmp_path,
+                             "1\n00:00:00,500 --> 00:00:00,200\nHello\n\n"
+                             "2\n00:00:00,900 --> 00:00:01,000\n\n")
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
 def test_package_real_ffmpeg_mp4_accepts_a_cue_that_ends_before_it_starts(tmp_path):
-    av = pytest.importorskip("av")
-    src = str(tmp_path / "src.mp4")
-    _h264_clip(src)
-    tracks = [pk.SubtitleTrack("en", "English",
-                               "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n"
-                               "2\n00:00:00,900 --> 00:00:00,600\nThere\n")]
-    with packaged(src, tracks, container="mp4", default_track=0, timeout=60) as out:
-        with av.open(out) as c:
-            assert [s.type for s in c.streams].count("subtitle") == 1
+    _assert_mp4_export_keeps(tmp_path,
+                             "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n"
+                             "2\n00:00:00,900 --> 00:00:00,600\nThere\n")
 
 
 @pytest.mark.skipif(shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None,
@@ -625,12 +625,7 @@ def test_package_real_ffmpeg_keeps_a_mid_file_inverted_cue_on_screen(tmp_path):
 def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_with_a_stray_space_or_sign(tmp_path):
     """A hand-edit typo like a space after the comma, or a sign, is still a
     timing line to ffmpeg — the MP4 export must not fail on it."""
-    av = pytest.importorskip("av")
-    src = str(tmp_path / "src.mp4")
-    _h264_clip(src)
-    for timing in ("00:00:00,800 --> 00:00:00, 200", "+00:00:00,800 --> -00:00:00,200",
-                   "\v00:00:00,800 --> 00: 00:00,200"):
-        tracks = [pk.SubtitleTrack("en", "English", f"1\n{timing}\nHello\n")]
-        with packaged(src, tracks, container="mp4", default_track=0, timeout=60) as out:
-            with av.open(out) as c:
-                assert [s.type for s in c.streams].count("subtitle") == 1, timing
+    _assert_mp4_export_keeps(tmp_path, *(
+        f"1\n{timing}\nHello\n"
+        for timing in ("00:00:00,800 --> 00:00:00, 200", "+00:00:00,800 --> -00:00:00,200",
+                       "\v00:00:00,800 --> 00: 00:00,200")))
