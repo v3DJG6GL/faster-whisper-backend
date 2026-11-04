@@ -564,8 +564,7 @@ function _applyLockState(card) {
   });
 }
 function _buildPerCardSaveBtn(slug) {
-  const btn = _el('button', 'primary', 'save');
-  btn.type = 'button';
+  const btn = _reBtn('primary', 'save');
   btn.disabled = !dirty.has(slug);
   btn.addEventListener('click', doSave);
   _perCardSaveBtns.set(slug, btn);
@@ -747,8 +746,7 @@ function traceTextBlock(tagLabel, text, extraClass) {
     div.classList.add('has-clip');
     span.classList.add('trace-clip');
     const label = 'Show all \u00b7 ' + fmtCount(text.length) + ' chars \u25be';
-    const btn = _el('button', 'trace-more', label);
-    btn.type = 'button';
+    const btn = _reBtn('trace-more', label);
     btn.addEventListener('click', () => {
       const clipped = span.classList.toggle('trace-clip');
       btn.textContent = clipped ? label : 'Show less \u25b4';
@@ -1130,8 +1128,7 @@ function renderTrace(entry) {
   }
 
   const actions = _el('div', 'trace-actions');
-  const reportBtn = _el('button', 'trace-report-btn', 'Report a problem');
-  reportBtn.type = 'button';
+  const reportBtn = _reBtn('trace-report-btn', 'Report a problem');
   reportBtn.title = 'For single-word fixes, edit the pipeline rules above. '
                   + 'Use this form for issues larger than a single word.';
   reportBtn.addEventListener('click', () => toggleReportForm(item, entry));
@@ -1503,8 +1500,7 @@ function _renderCorrections(form) {
         }
       }
     });
-    const x = _el('button', 'rep-correction-remove', '×');
-    x.type = 'button';
+    const x = _reBtn('rep-correction-remove', '×');
     x.setAttribute('aria-label', 'remove correction');
     x.addEventListener('click', () => {
       // Find the chip's current index — _renderCorrections rebuilds
