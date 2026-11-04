@@ -449,6 +449,12 @@ def _worker(name, db_path):
     return mod
 
 
+def _worker_pair(tmp_path, stem):
+    """Workers A and B (`stem`_a, `stem`_b) on one sessions DB file."""
+    db = str(tmp_path / "sessions.db")
+    return _worker(f"{stem}_a", db), _worker(f"{stem}_b", db)
+
+
 _WORKER_MODULES: list = []
 
 
@@ -473,9 +479,7 @@ def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
     after their own commit: a connection's own commit does not move its own
     PRAGMA data_version, so that re-stamp would absorb B's commit as seen and
     leave the revoked cookie authenticating in A until it expired."""
-    db = str(tmp_path / "sessions.db")
-    a = _worker("sessions_store_a", db)
-    b = _worker("sessions_store_b", db)
+    a, b = _worker_pair(tmp_path, "sessions_store")
 
     raw, _csrf = a.create_session("victim", 3600.0)
     assert a.lookup_session(raw) is not None
@@ -521,9 +525,7 @@ def test_sibling_revoke_seen_on_read_path_after_interval(tmp_path):
     a sibling worker is still picked up by a plain lookup — the throttle delays
     cross-worker visibility by at most _REFRESH_MIN_INTERVAL_S, it never
     strands a revocation."""
-    db = str(tmp_path / "sessions.db")
-    a = _worker("sessions_store_rp_a", db)
-    b = _worker("sessions_store_rp_b", db)
+    a, b = _worker_pair(tmp_path, "sessions_store_rp")
 
     raw, _csrf = a.create_session("victim", 3600.0)
     assert b.lookup_session(raw) is not None
@@ -541,9 +543,7 @@ def test_sibling_revoke_seen_after_a_backwards_wall_clock_step(tmp_path):
     step instead of ~1 s."""
     import time as _time
     import types
-    db = str(tmp_path / "sessions.db")
-    a = _worker("sessions_store_step_a", db)
-    b = _worker("sessions_store_step_b", db)
+    a, b = _worker_pair(tmp_path, "sessions_store_step")
     wall = [_time.time()]
     mono = [1000.0]
     a.time = types.SimpleNamespace(time=lambda: wall[0],
@@ -562,9 +562,7 @@ def test_fresh_sibling_login_seen_inside_throttle_window(tmp_path):
     """SERVER_WORKERS>1: /auth/login runs on worker A, the browser's next
     request lands on worker B. B's read-path sibling check is throttled,
     but a MISS must force it — otherwise the brand-new cookie 401s."""
-    db = str(tmp_path / "sessions.db")
-    a = _worker("sessions_store_fresh_a", db)
-    b = _worker("sessions_store_fresh_b", db)
+    a, b = _worker_pair(tmp_path, "sessions_store_fresh")
     assert b.lookup_session("no-such-token") is None   # B checked just now
     raw, _csrf = a.create_session("u", 3600.0)          # login on A
     assert b.lookup_session(raw) is not None            # inside the 1 s window
@@ -574,9 +572,7 @@ def test_index_miss_after_sibling_commit_does_not_rebuild(tmp_path):
     """A miss forced a FULL rebuild whenever a sibling had committed, so junk
     cookies on worker B plus a login loop on worker A cost B one O(N)
     rebuild per login. The miss now fetches just that one token."""
-    db = str(tmp_path / "sessions.db")
-    a = _worker("sessions_store_miss_a", db)
-    b = _worker("sessions_store_miss_b", db)
+    a, b = _worker_pair(tmp_path, "sessions_store_miss")
     b._REFRESH_MIN_INTERVAL_S = 3600.0   # every later HIT stays throttled
     assert b.lookup_session("junk-0") is None          # stamps the throttle
     calls = count_rebuilds(b)
@@ -750,9 +746,7 @@ def test_sibling_logout_bumps_config_version(tmp_path, monkeypatch):
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.settings import version as settings_version
-    db = str(tmp_path / "sessions.db")
-    a = _worker("sessions_store_gen_a", db)
-    b = _worker("sessions_store_gen_b", db)
+    a, b = _worker_pair(tmp_path, "sessions_store_gen")
     # Worker A's probe reads its own sessions module; the keys half is held still.
     monkeypatch.setattr(sessions_store, "revocation_generation",
                         a.revocation_generation)
