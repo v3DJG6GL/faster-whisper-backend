@@ -57,7 +57,7 @@ from faster_whisper_backend.core import device_memory
 from faster_whisper_backend.core.languages import (
     _NAMES, ZH_HANT_REGIONS, _normalise_code, canonical_code, language_codes,
     language_label, language_name, lookup, same_language)
-from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count, run_every
 from faster_whisper_backend.translation import gating as tr_gating
 
 logger = logging.getLogger("whisper-server")
@@ -1060,34 +1060,31 @@ async def idle_evictor_loop() -> None:
     """Unload models idle for TRANSLATION_IDLE_TIMEOUT_S seconds. Reads the
     timeout live (an admin edit applies without restart), like
     diarization.idle_evictor_loop. Started/cancelled by lifespan."""
-    while True:
-        await asyncio.sleep(_EVICTOR_WAKE_S)
-        try:
-            timeout = int(getattr(cfg, "TRANSLATION_IDLE_TIMEOUT_S", 0) or 0)
-            if timeout <= 0 or not _models:
-                continue
-            now = time.monotonic()
-            async with _lock:
-                for ref, last in list(_last_used.items()):
-                    # A warm lease (a live preload plan still expects this
-                    # model) suspends the idle clock — never a job lease,
-                    # which _drop_locked already honours. Inverted through
-                    # model_registry so preload can reach us without either
-                    # module importing the other.
-                    if model_registry.is_warm(_STATS_PREFIX + ref):
-                        continue
-                    # A leased model mid-job reads as stale every tick; skip
-                    # it here so the tick does not log a deferred eviction
-                    # for it (_release_model restarts its clock), as
-                    # transcription.models._idle_evictor does.
-                    if _active.get(ref, 0) > 0:
-                        continue
-                    if ref in _models and now - last >= timeout:
-                        _drop_locked(ref)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 — the loop must survive
-            logger.error("[translate] idle evictor error: %s", e)
+    async def _tick() -> None:
+        timeout = int(getattr(cfg, "TRANSLATION_IDLE_TIMEOUT_S", 0) or 0)
+        if timeout <= 0 or not _models:
+            return
+        now = time.monotonic()
+        async with _lock:
+            for ref, last in list(_last_used.items()):
+                # A warm lease (a live preload plan still expects this
+                # model) suspends the idle clock — never a job lease,
+                # which _drop_locked already honours. Inverted through
+                # model_registry so preload can reach us without either
+                # module importing the other.
+                if model_registry.is_warm(_STATS_PREFIX + ref):
+                    continue
+                # A leased model mid-job reads as stale every tick; skip
+                # it here so the tick does not log a deferred eviction
+                # for it (_release_model restarts its clock), as
+                # transcription.models._idle_evictor does.
+                if _active.get(ref, 0) > 0:
+                    continue
+                if ref in _models and now - last >= timeout:
+                    _drop_locked(ref)
+
+    await run_every(lambda: _EVICTOR_WAKE_S, _tick, logger,
+                    "[translate] idle evictor error: %s")
 
 
 # =============================================================================

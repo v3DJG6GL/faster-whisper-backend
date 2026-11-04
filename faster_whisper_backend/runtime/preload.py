@@ -1030,22 +1030,19 @@ async def stop() -> None:
 async def sweeper_loop() -> None:
     """Drop expired plans and recompute the warm set. Started/cancelled by
     lifespan beside the four idle evictors, on the same shape of loop."""
-    while True:
-        await asyncio.sleep(_SWEEP_S)
-        try:
-            now = time.monotonic()
-            with _lock:
-                for pid in [p for p, pl in _plans.items()
-                            if pl.expires_mono <= now]:
-                    _drop_plan_locked(pid, "expired")
-                # Unconditional: the recompute inside _drop_plan_locked only
-                # runs when something expired, and _warm must also converge
-                # after a plan's own entries changed.
-                _recompute_warm_locked()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 — the loop must survive
-            logger.error("[preload] sweeper error: %s", e)
+    async def _tick() -> None:
+        now = time.monotonic()
+        with _lock:
+            for pid in [p for p, pl in _plans.items()
+                        if pl.expires_mono <= now]:
+                _drop_plan_locked(pid, "expired")
+            # Unconditional: the recompute inside _drop_plan_locked only
+            # runs when something expired, and _warm must also converge
+            # after a plan's own entries changed.
+            _recompute_warm_locked()
+
+    await loop_lock.run_every(lambda: _SWEEP_S, _tick, logger,
+                              "[preload] sweeper error: %s")
 
 
 def diagnostics() -> dict:

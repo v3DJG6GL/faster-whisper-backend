@@ -21,7 +21,7 @@ primitives: the latch finishes an un-stoppable load / registry write under
 such a lock and defers the caller's cancellation until it has landed;
 ``release_count`` drops a lease / in-flight count. ``cancel_and_wait`` is the
 teardown of a background task (lifespan loops, the preload worker, a stream's
-consumer).
+consumer); ``run_every`` is the body of those lifespan loops.
 """
 
 from __future__ import annotations
@@ -109,6 +109,20 @@ async def cancel_and_wait(task: asyncio.Task | None) -> None:
         await task
     except (asyncio.CancelledError, Exception):
         pass
+
+
+async def run_every(interval, tick, log, error_fmt: str) -> None:
+    """Lifespan loop: sleep ``interval()`` seconds (re-read every round), await
+    ``tick()``, repeat. A failed tick is logged via ``log`` with ``error_fmt``
+    and the next still runs; cancellation is the only exit."""
+    while True:
+        await asyncio.sleep(interval())
+        try:
+            await tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — the loop must survive
+            log.error(error_fmt, e)
 
 
 def release_count(counts: dict, key) -> int:

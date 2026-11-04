@@ -28,7 +28,7 @@ from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core import device_memory
 from faster_whisper_backend.core import store_common
-from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count, run_every
 
 logger = logging.getLogger("whisper-server")
 
@@ -884,29 +884,26 @@ async def load_unleased(model: str) -> bool:
 
 async def idle_evictor_loop() -> None:
     """Unload after BGM_SEPARATION_IDLE_TIMEOUT_S idle seconds (read live)."""
-    while True:
-        await asyncio.sleep(_EVICTOR_WAKE_S)
-        try:
-            timeout = int(getattr(cfg, "BGM_SEPARATION_IDLE_TIMEOUT_S", 0) or 0)
-            if timeout <= 0 or _separator is None:
-                continue
-            # A warm lease (a live preload plan still expects this separator)
-            # suspends the idle clock — never a job lease, which _drop_locked
-            # already honours. Inverted through model_registry so preload can
-            # reach us without either module importing the other.
-            if _separator_key and model_registry.is_warm(
-                    _STATS_PREFIX + _separator_key[0]):
-                continue
-            # A job lease would only make _drop_locked decline (and log so)
-            # every tick of a separation longer than the timeout.
-            if _separator_key and _leases.get(_separator_key[0], 0):
-                continue
-            if time.monotonic() - _last_used_monotonic >= timeout:
-                await drop_separator(force=False)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 — the loop must survive
-            logger.error("[bgm] idle evictor error: %s", e)
+    async def _tick() -> None:
+        timeout = int(getattr(cfg, "BGM_SEPARATION_IDLE_TIMEOUT_S", 0) or 0)
+        if timeout <= 0 or _separator is None:
+            return
+        # A warm lease (a live preload plan still expects this separator)
+        # suspends the idle clock — never a job lease, which _drop_locked
+        # already honours. Inverted through model_registry so preload can
+        # reach us without either module importing the other.
+        if _separator_key and model_registry.is_warm(
+                _STATS_PREFIX + _separator_key[0]):
+            return
+        # A job lease would only make _drop_locked decline (and log so)
+        # every tick of a separation longer than the timeout.
+        if _separator_key and _leases.get(_separator_key[0], 0):
+            return
+        if time.monotonic() - _last_used_monotonic >= timeout:
+            await drop_separator(force=False)
+
+    await run_every(lambda: _EVICTOR_WAKE_S, _tick, logger,
+                    "[bgm] idle evictor error: %s")
 
 
 def _reset_for_tests() -> None:

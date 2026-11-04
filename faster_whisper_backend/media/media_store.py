@@ -30,6 +30,7 @@ import time
 import uuid
 
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.core.loop_lock import run_every
 from faster_whisper_backend.core.store_common import secure_dir, secure_file, unlink_quietly
 
 logger = logging.getLogger("whisper-api")
@@ -392,12 +393,8 @@ async def janitor_loop(interval_s: float = 60.0) -> None:
     """Lifespan task: periodic sweep, same shape as the model idle evictors."""
     import asyncio
 
-    while True:
-        await asyncio.sleep(interval_s)
-        try:
-            # Off the loop: unlinking multi-GB retained files and rmtree'ing
-            # dead fragment dirs can take seconds. sweep() iterates snapshots
-            # of _REG, so it is safe beside register() on other worker threads.
-            await asyncio.to_thread(sweep)
-        except Exception as e:  # noqa: BLE001 — the janitor must never die
-            logger.error("[url-dl] retention sweep failed: %s", e)
+    # Off the loop: unlinking multi-GB retained files and rmtree'ing
+    # dead fragment dirs can take seconds. sweep() iterates snapshots
+    # of _REG, so it is safe beside register() on other worker threads.
+    await run_every(lambda: interval_s, lambda: asyncio.to_thread(sweep), logger,
+                    "[url-dl] retention sweep failed: %s")
