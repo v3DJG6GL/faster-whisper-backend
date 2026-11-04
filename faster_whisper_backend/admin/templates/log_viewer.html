@@ -347,9 +347,8 @@
   // textContent — never innerHTML — which is what keeps a transcript
   // containing markup inert.
   function makeLine(line, st) {
-    const el = document.createElement('span');
     const cls = decorate(line, st);
-    el.className = 'line ' + cls;
+    const el = _el('span', 'line ' + cls);
     const txt = localizeLogTs(line);
     _lineText.set(el, txt);
     const stage = /\bst-\w+\b/.test(cls);

@@ -435,13 +435,13 @@ window._renderWaterfall = (function () {
   // Inline editor (input + ✓ / ✕) shared by create and rename.
   function inlineInput(value, onCommit, onCancel) {
     var wrap = _el('span', 'ov-inline-edit');
-    var inp = document.createElement('input'); inp.type = 'text';
-    inp.className = 'ov-edit-input'; inp.value = value || ''; inp.maxLength = 32;
+    var inp = _el('input', 'ov-edit-input'); inp.type = 'text';
+    inp.value = value || ''; inp.maxLength = 32;
     inp.setAttribute('aria-label', 'profile name');
-    var ok = document.createElement('button'); ok.type = 'button';
-    ok.className = 'icon-btn ok'; ok.innerHTML = '✓'; ok.title = 'confirm (Enter)';
-    var no = document.createElement('button'); no.type = 'button';
-    no.className = 'icon-btn'; no.innerHTML = '✕'; no.title = 'cancel (Esc)';
+    var ok = _el('button', 'icon-btn ok'); ok.type = 'button';
+    ok.innerHTML = '✓'; ok.title = 'confirm (Enter)';
+    var no = _el('button', 'icon-btn'); no.type = 'button';
+    no.innerHTML = '✕'; no.title = 'cancel (Esc)';
     function commit() { onCommit((inp.value || '').trim().toLowerCase()); }
     ok.onclick = commit;
     no.onclick = function () { onCancel(); };

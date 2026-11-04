@@ -1645,7 +1645,7 @@
       };
       foot.appendChild(prev); foot.appendChild(spacer); foot.appendChild(save);
       root.appendChild(foot);
-      var eff = document.createElement('div'); eff.className = 'cfg-eff'; eff.style.display = 'none'; root.appendChild(eff);
+      var eff = _el('div', 'cfg-eff'); eff.style.display = 'none'; root.appendChild(eff);
       prev.onclick = function () {
         eff.style.display = '';
         eff.innerHTML = '<span class="lbl">resolving…</span>';
