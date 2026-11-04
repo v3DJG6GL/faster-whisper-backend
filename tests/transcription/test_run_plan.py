@@ -40,6 +40,14 @@ def _plan(clock, kind="file", stages=("transcribing",)):
     return p
 
 
+def _translating_plan(clock, targets, *, model="m", mode="fluent", source_lang="en"):
+    p = _plan(clock, stages=["translating"], kind="text")
+    p.set_segments(80)
+    p.set_translation(targets, model=model, device="cuda", mode=mode,
+                      source_lang=source_lang)
+    return p
+
+
 def _stage(snap, name):
     return next(s for s in snap["plan"] if s["stage"] == name)
 
@@ -285,10 +293,7 @@ def test_eta_holds_through_a_wait_in_progress(ledger, clock):
 
 
 def test_eta_holds_the_unit_sum_through_a_cold_model_fetch(ledger, clock):
-    p = _plan(clock, stages=["translating"], kind="text")
-    p.set_segments(80)
-    p.set_translation(["fr", "de"], model="org/m:Q4", device="cuda",
-                      mode="faithful", source_lang="en")
+    p = _translating_plan(clock, ["fr", "de"], model="org/m:Q4", mode="faithful")
     p.tick(stage="translating", progress=0.0)
     units = _stage(p.snapshot(), "translating")["units"]
     total = sum(u["est_s"] for u in units)
@@ -338,10 +343,8 @@ def test_separation_queue_is_wait_not_work(ledger, clock):
 
 
 def test_translating_units_run_in_order_and_learn_per_unit(ledger, clock):
-    p = _plan(clock, stages=["translating"], kind="text")
-    p.set_segments(80)
-    p.set_translation(["en", "fr", "fi"], model="org/m:Q4", device="cuda",
-                      mode="faithful", source_lang="en")
+    p = _translating_plan(clock, ["en", "fr", "fi"], model="org/m:Q4",
+                          mode="faithful")
     p.tick(stage="translating", progress=0.0, target="en", target_progress=1.0)
     by = {u["target"]: u for u in _stage(p.snapshot(), "translating")["units"]}
     assert by["en"]["state"] == "instant"
@@ -369,10 +372,7 @@ def test_translating_units_run_in_order_and_learn_per_unit(ledger, clock):
 def test_an_unticked_instant_unit_closes_as_instant(ledger, clock):
     # The verbatim copy is last, so no later target tick skips past it: the
     # stage close has to give it the same verdict the unit walk would.
-    p = _plan(clock, stages=["translating"], kind="text")
-    p.set_segments(80)
-    p.set_translation(["fr", "de"], model="m", device="cuda", mode="fluent",
-                      source_lang="de")
+    p = _translating_plan(clock, ["fr", "de"], source_lang="de")
     p.tick(stage="translating", target="fr", target_progress=0.0)
     clock.advance(10)
     p.stage_done("translating")
@@ -385,10 +385,7 @@ def test_an_unticked_instant_unit_closes_as_instant(ledger, clock):
 def test_a_failed_translation_finishes_no_open_unit(ledger, clock):
     """A stage that fails mid-target never claims its open units translated:
     the one in flight failed with it, the untouched ones stay queued."""
-    p = _plan(clock, stages=["translating"], kind="text")
-    p.set_segments(80)
-    p.set_translation(["de", "fr", "it"], model="m", device="cuda",
-                      mode="fluent", source_lang="en")
+    p = _translating_plan(clock, ["de", "fr", "it"])
     p.tick(stage="translating", target="de", target_progress=0.0)
     clock.advance(10)
     p.stage_failed("translating")
@@ -551,10 +548,7 @@ def test_translation_units_win_over_a_stage_fraction_that_counts_free_copies(
         ledger, clock):
     """translation's stage fraction counts the verbatim same-language copy;
     once a real target reports, the unit sum (which skips it) is the bar."""
-    p = _plan(clock, stages=["translating"], kind="text")
-    p.set_segments(80)
-    p.set_translation(["de", "fr"], model="m", device="cuda", mode="fluent",
-                      source_lang="de")
+    p = _translating_plan(clock, ["de", "fr"], source_lang="de")
     p.tick(stage="translating", progress=0.75, target="fr",
            target_progress=0.5)
     assert p.snapshot()["overall"] == pytest.approx(0.5)
