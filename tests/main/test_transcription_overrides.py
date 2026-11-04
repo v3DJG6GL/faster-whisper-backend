@@ -205,22 +205,22 @@ def _info(language="de", prob=0.99):
                            duration=1.0, duration_after_vad=1.0)
 
 
+def _block(raw="hi", final="hi", *, info=None, model_name="whisper-1", kwargs=None, **kw):
+    return tx_receipt._format_request_block(
+        file_label="x", model_name=model_name, info=info or _info(), kwargs=kwargs or {},
+        seg_diag=_SEG_DIAG, raw=raw, final=final, **kw)
+
+
 def test_request_block_identity_section():
     ident = SimpleNamespace(layers=["user.profile:clinic-de"], locked={"BEAM_SIZE"},
                             profiles_applied=["clinic-de"])
-    info = _info()
-    block = tx_receipt._format_request_block(
-        file_label="x", model_name="whisper-1", info=info,
-        kwargs={"beam_size": 8}, seg_diag=_SEG_DIAG, raw="hi", final="hi",
-        ident=ident, overrides_ignored=["beam_size"])
+    block = _block(kwargs={"beam_size": 8}, ident=ident, overrides_ignored=["beam_size"])
     assert "Identity" in block
     assert "clinic-de" in block and "BEAM_SIZE" in block
     assert "overrides_ignored" in block and "beam_size" in block
     # no identity + nothing ignored → no Identity section (logs stay terse)
     empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
-    block2 = tx_receipt._format_request_block(
-        file_label="x", model_name="whisper-1", info=info, kwargs={},
-        seg_diag=_SEG_DIAG, raw="hi", final="hi", ident=empty)
+    block2 = _block(ident=empty)
     assert "Identity" not in block2
 
 
@@ -233,25 +233,19 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
     # 7 no-op (EXCLUDED) rows + 1 that actually trimmed → 1 changed, 7 unchanged.
     steps = [(f"#{i} excluded [EXCLUDED for m]", " hi", " hi") for i in range(7)]
     steps.append(("#18 Trim edges", " hi", "hi"))
-    block = tx_receipt._format_request_block(
-        file_label="x", model_name="m", info=info, kwargs={},
-        seg_diag=_SEG_DIAG, raw=" hi", final="hi", steps=steps)
+    block = _block(" hi", info=info, model_name="m", steps=steps)
     assert "PIPELINE  (1 step changed text, 7 unchanged)" in block
     assert "8 step" not in block
 
     # All-changed → no "unchanged" tail, plural "steps".
-    block2 = tx_receipt._format_request_block(
-        file_label="x", model_name="m", info=info, kwargs={},
-        seg_diag=_SEG_DIAG, raw="a", final="c",
-        steps=[("#1 x", "a", "b"), ("#2 y", "b", "c")])
+    block2 = _block("a", "c", info=info, model_name="m",
+                    steps=[("#1 x", "a", "b"), ("#2 y", "b", "c")])
     assert "PIPELINE  (2 steps changed text)" in block2
     assert "unchanged" not in block2
 
     # Nothing changed (every rule excluded) → "0 steps changed text, N unchanged".
-    block3 = tx_receipt._format_request_block(
-        file_label="x", model_name="m", info=info, kwargs={},
-        seg_diag=_SEG_DIAG, raw="hi", final="hi",
-        steps=[("#1 x", "hi", "hi"), ("#2 y", "hi", "hi")])
+    block3 = _block(info=info, model_name="m",
+                    steps=[("#1 x", "hi", "hi"), ("#2 y", "hi", "hi")])
     assert "PIPELINE  (0 steps changed text, 2 unchanged)" in block3
 
 
@@ -260,11 +254,7 @@ def test_request_block_identity_always_shows_user_even_without_layers():
     Identity block naming them + an explicit 'inherits' note — so a missing
     binding (the classic 'my override didn't apply') is visible in the log."""
     empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
-    info = _info()
-    block = tx_receipt._format_request_block(
-        file_label="x", model_name="whisper-1", info=info, kwargs={},
-        seg_diag=_SEG_DIAG, raw="hi", final="hi", ident=empty,
-        user_id="abcd1234ef", key_id="ffee0011bb", username="Admin")
+    block = _block(ident=empty, user_id="abcd1234ef", key_id="ffee0011bb", username="Admin")
     assert "Identity" in block
     assert "Admin" in block and "abcd1234" in block      # username + short user id
     assert "ffee0011" in block                            # short key id
