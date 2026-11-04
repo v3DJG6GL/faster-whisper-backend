@@ -14,13 +14,10 @@ import json
 import pytest
 
 from faster_whisper_backend.settings import config_store as cs
+from tests.settings._rules_helpers import regex_list_rules
 
 
-_LEGACY_RULES = [
-    {"name": "legacy", "label": "legacy", "type": "regex-list",
-     "entries": [{"pattern": r"(\w+ ?)+", "replacement": "x"}]},
-    {"name": "trim-edges", "label": "Trim", "type": "terminal"},
-]
+_LEGACY_RULES = regex_list_rules("legacy", r"(\w+ ?)+")
 
 
 def _write_legacy(path):

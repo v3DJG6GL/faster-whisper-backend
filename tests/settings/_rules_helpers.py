@@ -19,6 +19,14 @@ def entry_by_label(rules, label):
                 if e.get("label") == label)
 
 
+def regex_list_rules(name, pattern, replacement="x"):
+    """A one-entry regex-list rule `name` (labelled `name`), then the
+    trim-edges terminal: the smallest valid PIPELINE_RULES list."""
+    return [{"name": name, "label": name, "type": "regex-list",
+             "entries": [{"pattern": pattern, "replacement": replacement}]},
+            {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
+
+
 def load_saved(tmp_path, raw):
     """`raw` written as tmp_path/config.local.json, read back through
     config_store.load_overrides."""
