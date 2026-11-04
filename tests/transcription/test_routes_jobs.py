@@ -122,11 +122,9 @@ def test_validation_4xx_after_the_seed_stores_the_curated_detail(
 
 
 def test_cancelled_run_lands_as_cancelled(client, app_module):
+    # No cleanup: conftest's progress reset hook empties the registries.
     tx_progress._BATCH_CANCELLED.add(_PID)
-    try:
-        assert _post(client, progress_id=_PID).status_code == 499
-    finally:
-        tx_progress._BATCH_CANCELLED.discard(_PID)
+    assert _post(client, progress_id=_PID).status_code == 499
     row = client.get(f"/v1/jobs/{_PID}").json()
     assert row["state"] == "cancelled" and row["error"] is None
     assert client.get(f"/v1/jobs/{_PID}/result").status_code == 404
@@ -175,17 +173,14 @@ def _seed_running(app_module, pid=_PID, owner=None):
 
 def test_running_row_merges_live_progress_and_result_is_409(client, app_module):
     _seed_running(app_module)
-    try:
-        row = client.get(f"/v1/jobs/{_PID}").json()
-        assert row["state"] == "running" and row["result_available"] is False
-        assert row["progress"]["stage"] == "transcribing"
-        assert row["progress"]["progress"] == 0.4
-        assert "plan" in row["progress"]
-        r = client.get(f"/v1/jobs/{_PID}/result")
-        assert r.status_code == 409
-        assert r.json()["detail"] == "job still running"
-    finally:
-        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+    row = client.get(f"/v1/jobs/{_PID}").json()
+    assert row["state"] == "running" and row["result_available"] is False
+    assert row["progress"]["stage"] == "transcribing"
+    assert row["progress"]["progress"] == 0.4
+    assert "plan" in row["progress"]
+    r = client.get(f"/v1/jobs/{_PID}/result")
+    assert r.status_code == 409
+    assert r.json()["detail"] == "job still running"
 
 
 def test_delete_running_flags_cancel_then_the_post_lands_cancelled(client,
@@ -195,17 +190,13 @@ def test_delete_running_flags_cancel_then_the_post_lands_cancelled(client,
     from faster_whisper_backend.auth import api_keys_store
     _seed_running(app_module,
                   owner=api_keys_store.OPEN_MODE_USER["user_id"])
-    try:
-        r = client.delete(f"/v1/jobs/{_PID}")
-        assert r.json() == {"cancelled": True}
-        assert _PID in tx_progress._BATCH_CANCELLED
-        # The cooperative flag is what the handler polls: with it set, the
-        # (re)posted run aborts and the row lands `cancelled`.
-        tx_progress._BATCH_PROGRESS.pop(_PID, None)
-        assert _post(client, progress_id=_PID).status_code == 499
-    finally:
-        tx_progress._BATCH_PROGRESS.pop(_PID, None)
-        tx_progress._BATCH_CANCELLED.discard(_PID)
+    r = client.delete(f"/v1/jobs/{_PID}")
+    assert r.json() == {"cancelled": True}
+    assert _PID in tx_progress._BATCH_CANCELLED
+    # The cooperative flag is what the handler polls: with it set, the
+    # (re)posted run aborts and the row lands `cancelled`.
+    tx_progress._BATCH_PROGRESS.pop(_PID, None)
+    assert _post(client, progress_id=_PID).status_code == 499
     assert client.get(f"/v1/jobs/{_PID}").json()["state"] == "cancelled"
 
 
@@ -355,10 +346,7 @@ def test_result_keeps_the_pending_video_flag_while_the_run_is_open(client):
     row): a client re-attaching via /result must keep polling."""
     _finished_with(client, {"text": "hallo", "source_video_pending": True})
     tx_progress._BATCH_PROGRESS[_PID] = {"stage": "downloading", "updated": 0}
-    try:
-        body = client.get(f"/v1/jobs/{_PID}/result").json()
-    finally:
-        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+    body = client.get(f"/v1/jobs/{_PID}/result").json()
     assert body == {"text": "hallo", "source_video_pending": True}
 
 
@@ -376,10 +364,7 @@ def test_result_keeps_the_pending_flag_when_the_video_lands_during_the_read(
         tx_progress._BATCH_PROGRESS.pop(_PID, None)
         return payload
     monkeypatch.setattr(js, "get_result", _read_then_patch_and_close)
-    try:
-        body = client.get(f"/v1/jobs/{_PID}/result").json()
-    finally:
-        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+    body = client.get(f"/v1/jobs/{_PID}/result").json()
     assert body == {"text": "hallo", "source_video_pending": True}
 
 
@@ -407,20 +392,15 @@ def test_closed_progress_id_is_not_resurrected_by_a_late_tick(app_module):
     tx_progress._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "updated": 0,
                                         "owner": "alice"}
     tx_progress._PROGRESS_OWNER[_PID] = "alice"
-    try:
-        tx_progress._progress_close(_PID)
-        assert _PID not in tx_progress._BATCH_PROGRESS
-        # A straggling stage-thread tick after the handler's finally.
-        tx_progress._progress_set(_PID, stage="diarizing", progress=0.5)
-        assert _PID not in tx_progress._BATCH_PROGRESS
-        # A fresh owner-stamped seed re-opens the id.
-        tx_progress._progress_set(_PID, stage="waiting", owner="bob")
-        assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "bob"
-        assert _PID not in tx_progress._PROGRESS_CLOSED
-    finally:
-        tx_progress._BATCH_PROGRESS.pop(_PID, None)
-        tx_progress._PROGRESS_OWNER.pop(_PID, None)
-        tx_progress._PROGRESS_CLOSED.pop(_PID, None)
+    tx_progress._progress_close(_PID)
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    # A straggling stage-thread tick after the handler's finally.
+    tx_progress._progress_set(_PID, stage="diarizing", progress=0.5)
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    # A fresh owner-stamped seed re-opens the id.
+    tx_progress._progress_set(_PID, stage="waiting", owner="bob")
+    assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "bob"
+    assert _PID not in tx_progress._PROGRESS_CLOSED
 
 
 def test_jobs_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
