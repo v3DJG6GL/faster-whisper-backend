@@ -33,7 +33,7 @@ from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.core.loop_lock import LoopLock
 from faster_whisper_backend.pipeline import apply as pl_apply
-from faster_whisper_backend.auth.dependencies import require_admin
+from faster_whisper_backend.auth.dependencies import ADMIN_API_DEPS
 from faster_whisper_backend.core import templates
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -178,8 +178,7 @@ def _models() -> list[str]:
     return [default] if default else []
 
 
-@router.get("/state",
-            dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.get("/state", dependencies=ADMIN_API_DEPS)
 async def get_state() -> dict[str, Any]:
     """Profiles + the metadata the editors need. Off the loop: _build_usage
     walks users/keys in SQLite — the same work post_state already moved to
@@ -217,8 +216,7 @@ async def overrides_page() -> HTMLResponse:
     )
 
 
-@router.post("/state",
-             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/state", dependencies=ADMIN_API_DEPS)
 async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     """Persist the OVERRIDE_PROFILES dirty diff (the client sends the full
     profiles dict under that key). Same validate → save → hot-apply contract as
@@ -301,8 +299,7 @@ class _RenameProfileIn(BaseModel):
     new: str = Field(min_length=1)
 
 
-@router.post("/profiles/rename",
-             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/profiles/rename", dependencies=ADMIN_API_DEPS)
 async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONResponse:
     """Rename an override profile (its dict key in OVERRIDE_PROFILES) and cascade
     the new name through every per-user / per-key binding that references it —
@@ -466,8 +463,7 @@ def _resolve_model(model: str | None) -> str | None:
     return model
 
 
-@router.get("/resolve",
-            dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.get("/resolve", dependencies=ADMIN_API_DEPS)
 def resolve(user_id: str = "", key_id: str = "", model: str = "",
             sim: str = "") -> dict[str, Any]:
     """Effective-config waterfall for (user_id [, key_id], model), optionally

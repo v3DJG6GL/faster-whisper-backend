@@ -355,6 +355,10 @@ def require_admin(
     return user
 
 
+# Admin JSON routes: host allowlist first, then the admin key.
+ADMIN_API_DEPS = [Depends(auth_hosts.require_admin_webui_host), Depends(require_admin)]
+
+
 def require_page(name: str):
     """Dependency factory: 403 if the user has no access to the named
     page. Admins bypass via Permissions.can(). Mount on the APIRouter

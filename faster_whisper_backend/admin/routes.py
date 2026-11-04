@@ -55,7 +55,7 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.pipeline import regex_guard
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import gating as tr_gating
-from faster_whisper_backend.auth.dependencies import require_admin
+from faster_whisper_backend.auth.dependencies import ADMIN_API_DEPS, require_admin
 from faster_whisper_backend.core import templates
 
 logger = logging.getLogger("whisper-api")
@@ -348,7 +348,7 @@ async def pipeline_page() -> HTMLResponse:
     )
 
 
-@router.get("/state", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.get("/state", dependencies=ADMIN_API_DEPS)
 async def get_state(response: Response) -> dict[str, Any]:
     """Return the resolved config (current effective values) plus provenance
     flags so the WebUI can render badges. Does NOT include the saved-only
@@ -411,7 +411,7 @@ async def get_state(response: Response) -> dict[str, Any]:
     }
 
 
-@router.post("/state", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/state", dependencies=ADMIN_API_DEPS)
 async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     """Validate and persist overrides. Returns the diff (which fields were
     saved) plus a `requires_restart` flag for the WebUI to act on. Hot fields
@@ -468,8 +468,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     return await pl_apply.run_to_end(_locked())
 
 
-@router.get("/factory-rules",
-            dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.get("/factory-rules", dependencies=ADMIN_API_DEPS)
 async def get_factory_rules() -> dict[str, Any]:
     """Return the committed factory pipeline rules (config.json).
 
@@ -484,8 +483,7 @@ async def get_factory_rules() -> dict[str, Any]:
     return {"PIPELINE_RULES": pl_apply.canon_rules(rules)}
 
 
-@router.post("/factory-rules",
-             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/factory-rules", dependencies=ADMIN_API_DEPS)
 async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONResponse:
     """Validate and persist the factory pipeline rules to the committed
     config.json. Whole-list replace — the WebUI's promote actions send the full
@@ -560,8 +558,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
     return await pl_apply.run_to_end(_locked())
 
 
-@router.post("/factory-rules/clear-local-override",
-             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/factory-rules/clear-local-override", dependencies=ADMIN_API_DEPS)
 async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     """Remove the PIPELINE_RULES override from config.local.json so the committed
     config.json becomes the live pipeline on this deployment.
@@ -927,8 +924,7 @@ def _probe_chain(text: str, units: list[list[Any]],
     return _done(*last)
 
 
-@router.post("/test-pipeline",
-             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/test-pipeline", dependencies=ADMIN_API_DEPS)
 async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     """Dry-run the full pipeline-rules list against a sample. Used by the
     WebUI's per-row live-validation badge AND the inline test panel.
@@ -1494,8 +1490,7 @@ class _TranslationTestBody(BaseModel):
     progress_id: Annotated[str, Field(max_length=64)] | None = None
 
 
-@router.post("/translation-test",
-             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/translation-test", dependencies=ADMIN_API_DEPS)
 async def translation_test(
         body: _TranslationTestBody,
         user: dict[str, Any] = Depends(require_admin),
@@ -1593,7 +1588,7 @@ async def translation_test(
     })
 
 
-@router.post("/restart", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+@router.post("/restart", dependencies=ADMIN_API_DEPS)
 async def post_restart(request: Request) -> JSONResponse:
     """Trigger a self-restart of the backend (cross-platform).
 
