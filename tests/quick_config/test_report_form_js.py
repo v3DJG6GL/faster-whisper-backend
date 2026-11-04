@@ -562,6 +562,12 @@ def _olist_consts(page):
 _OLIST_PRELUDE = r"""
   globalThis.dirty = new Set();
   globalThis.e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+  // [clash keys, "pattern>replacement" list] of mine's edits merged onto theirs.
+  globalThis._mergeEntries = (base, mine, theirs) => {
+    const clashes = [];
+    const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+    return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
+  };
 """
 
 
@@ -571,14 +577,7 @@ def _run_olist_js(client, tmp_path, body):
     return _run_js(client, tmp_path, _olist_consts(page) + _OLIST_PRELUDE + body, funcs=_OLIST_FUNCS)
 
 
-_ENTRIES_MERGE_JS = r"""
-      // [clash keys, "pattern>replacement" list] of mine's edits merged onto theirs.
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
-      };
-"""
+_ENTRIES_MERGE_JS = "const merge = _mergeEntries;\n"
 
 
 def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_path):
@@ -612,10 +611,8 @@ def test_conflict_merge_keeps_an_entry_edited_in_place_as_one_entry(client, tmp_
     # twice, the other writer's copy first, shadowing the user's.
     res = _run_olist_js(client, tmp_path, r"""
       const e = (p, r, extra) => ({ pattern: p, replacement: r || p.toUpperCase(), ...(extra || {}) });
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        const v = m.map(x => x.pattern + '>' + x.replacement);
+      const merge = (...a) => {
+        const [clashes, v] = _mergeEntries(...a);
         return clashes.length ? ['CONFLICT', clashes, v] : v;
       };
       out({
@@ -654,10 +651,8 @@ def test_conflict_merge_pairs_a_pattern_edited_in_place_with_its_entry(client, t
     # new entry was spliced in front of it, or the other writer's edit to the
     # same entry was dropped, all under an "Auto-merged" toast.
     res = _run_olist_js(client, tmp_path, r"""
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        const v = m.map(x => x.pattern + '>' + x.replacement);
+      const merge = (...a) => {
+        const [clashes, v] = _mergeEntries(...a);
         return clashes.length ? ['CONFLICT', v] : v;
       };
       out({
@@ -696,10 +691,8 @@ def test_conflict_merge_keeps_the_other_writers_entry_added_where_they_deleted_o
     # the user had deleted that entry as well it vanished with no clash, and
     # when the user had edited it only the user's version came back.
     res = _run_olist_js(client, tmp_path, r"""
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        const v = m.map(x => x.pattern + '>' + x.replacement);
+      const merge = (...a) => {
+        const [clashes, v] = _mergeEntries(...a);
         return clashes.length ? ['CONFLICT', v] : v;
       };
       out({
@@ -729,11 +722,9 @@ def test_conflict_merge_keeps_both_new_entries_around_a_moved_one(client, tmp_pa
       // The other writer added X on top, deleted b, moved a after c and added
       // Y after a; the user only changed d.
       const theirs = [e('X'), e('c'), e('a'), e('Y'), e('d')];
-      const clashes = [];
-      const m = _applyFieldDiff(theirs, _fieldDiff(base, [e('a'), e('b'), e('c'), e('d', 'D9')],
-                                                   _diffKindFor('entries')), clashes);
+      const [clashes, m] = _mergeEntries(base, [e('a'), e('b'), e('c'), e('d', 'D9')], theirs);
       const keys = _olistAlign(_olistKeyed(base), _olistKeyed(theirs)).map(([k]) => k);
-      out({ merged: m.map(x => x.pattern + '>' + x.replacement).sort(), clashes,
+      out({ merged: m.sort(), clashes,
             uniqueKeys: new Set(keys).size === keys.length });
     """)
     assert res["merged"] == ["X>X", "Y>Y", "a>A", "c>C", "d>D9"]
