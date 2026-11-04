@@ -219,12 +219,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     `created_ts` (the actual column) so existing JS keeps working."""
     d = dict(row)
     for key in ("steps", "tokens", "bigrams", "stages"):
-        try:
-            d[key] = json.loads(d.get(key) or "[]")
-        except (TypeError, ValueError):
-            d[key] = []
-        if not isinstance(d[key], list):
-            d[key] = []
+        v = store_common.json_column(d.get(key), "[]")
+        d[key] = v if isinstance(v, list) else []
     audio = d.get("audio_s")
     proc = d.get("processing_s")
     d["rtf"] = round(audio / proc, 2) if (audio and proc and proc > 0) else None
@@ -419,11 +415,8 @@ def append_stage(request_id: str, stage: dict, *, add_processing_s: float = 0.0)
             (request_id,)).fetchone()
         if row is None:
             return False
-        try:
-            stages = json.loads(row[0]) if row[0] else []
-            if not isinstance(stages, list):
-                stages = []
-        except (TypeError, ValueError):
+        stages = store_common.json_column(row[0], "[]")
+        if not isinstance(stages, list):
             stages = []
         stages.append(dict(stage))
         try:
