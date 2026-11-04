@@ -20,23 +20,26 @@ from tests.main._stage_helpers import must_not_run
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 
 
+def _assert_cancel(client, expected, headers=None):
+    """POST the cancel for _PID: it answers {"cancelled": expected} and _PID
+    is flagged exactly then."""
+    r = post_cancel(client, _PID, headers)
+    assert r.status_code == 200
+    assert r.json() == {"cancelled": expected}
+    assert (_PID in tx_progress._BATCH_CANCELLED) is expected
+
+
 def test_cancel_malformed_id_is_422(client):
     assert client.post("/v1/audio/transcriptions/cancel/NOPE").status_code == 422
 
 
 def test_cancel_unknown_id_is_a_noop(client, app_module):
-    r = post_cancel(client, _PID)
-    assert r.status_code == 200
-    assert r.json() == {"cancelled": False}
-    assert _PID not in tx_progress._BATCH_CANCELLED
+    _assert_cancel(client, False)
 
 
 def test_cancel_flags_an_in_flight_id(client, app_module):
     tx_progress._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "updated": 0}
-    r = post_cancel(client, _PID)
-    assert r.status_code == 200
-    assert r.json() == {"cancelled": True}
-    assert _PID in tx_progress._BATCH_CANCELLED
+    _assert_cancel(client, True)
 
 
 def test_pre_flagged_request_aborts_with_499(client, app_module):
@@ -92,9 +95,7 @@ def test_validation_reject_leaves_no_progress_entry(client, app_module):
     assert r.status_code == 422
     assert _PID not in tx_progress._BATCH_PROGRESS
     assert get_progress(client, _PID).json() == {"stage": "unknown"}
-    r = post_cancel(client, _PID)
-    assert r.json() == {"cancelled": False}
-    assert _PID not in tx_progress._BATCH_CANCELLED
+    _assert_cancel(client, False)
 
 
 def test_progress_and_cancel_are_owner_bound(client, app_module,
@@ -107,20 +108,14 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
     # Another user's id reads exactly like a miss — no existence oracle.
     r = get_progress(client, _PID, bearer(raw_bob))
     assert r.json() == {"stage": "unknown"}
-    r = post_cancel(client, _PID, bearer(raw_bob))
-    assert r.json() == {"cancelled": False}
-    assert _PID not in tx_progress._BATCH_CANCELLED
+    _assert_cancel(client, False, bearer(raw_bob))
     r = get_progress(client, _PID, bearer(raw_alice))
     assert r.json()["stage"] == "transcribing"
-    r = post_cancel(client, _PID, bearer(raw_alice))
-    assert r.json() == {"cancelled": True}
-    assert _PID in tx_progress._BATCH_CANCELLED
+    _assert_cancel(client, True, bearer(raw_alice))
     # Cleared, so the admin step below proves the admin path on its own.
     tx_progress._BATCH_CANCELLED.discard(_PID)
     # An admin may cancel anyone's run (the /stats activity popover).
-    r = post_cancel(client, _PID, bearer(raw_admin))
-    assert r.json() == {"cancelled": True}
-    assert _PID in tx_progress._BATCH_CANCELLED
+    _assert_cancel(client, True, bearer(raw_admin))
 
 
 def test_stage_transition_clears_mirrored_progress(app_module):
