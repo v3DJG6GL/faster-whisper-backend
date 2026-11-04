@@ -5,7 +5,7 @@ import asyncio
 
 from starlette.testclient import TestClient
 
-from tests.conftest import bearer, fake_request
+from tests.conftest import bearer, fake_request, locked_user
 from tests.conftest import status_of as _status_of
 from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.quick_config import routes as quick_config_routes
@@ -37,17 +37,13 @@ def test_locked_down_bad_bearer_is_401(client, make_user_key):
 
 
 def test_non_admin_403_on_admin_route(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", is_admin=False)
+    _uid, raw = locked_user(make_user_key)
     r = client.get("/settings/state", headers=bearer(raw))
     assert r.status_code == 403
 
 
 def test_non_admin_200_on_permitted_page(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key(
-        "alice", is_admin=False, pages={"quick_config": "own"}
-    )
+    _uid, raw = locked_user(make_user_key, pages={"quick_config": "own"})
     r = client.get("/quick-config/state", headers=bearer(raw))
     assert r.status_code == 200
 
@@ -55,10 +51,7 @@ def test_non_admin_200_on_permitted_page(client, make_user_key):
 def test_non_admin_403_on_unpermitted_page(client, make_user_key):
     # New non-admins default to quick_config="own"; revoke it to "none" to
     # exercise the require_page 403 path.
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key(
-        "alice", is_admin=False, pages={"quick_config": "none"}
-    )
+    _uid, raw = locked_user(make_user_key, pages={"quick_config": "none"})
     r = client.get("/quick-config/state", headers=bearer(raw))
     assert r.status_code == 403
 
@@ -79,8 +72,7 @@ def test_cross_user_report_read_is_404(client, make_user_key):
     # other's report by id -> 404 (anti-IDOR), not 403.
     from faster_whisper_backend.reports import store as reports_store
 
-    make_user_key("root", is_admin=True)
-    uid_a, _raw_a = make_user_key("alice", pages={"reports": "own"})
+    uid_a, _raw_a = locked_user(make_user_key, pages={"reports": "own"})
     uid_b, raw_b = make_user_key("bob", pages={"reports": "own"})
 
     rid_a, _ = reports_store.upsert_report(
@@ -108,8 +100,7 @@ def _fake_request(headers=None, query=b""):
 def test_sse_bearer_header_admits(client, make_user_key):
     # The bearer header is the carrier for non-browser SSE clients; browsers
     # ride the session cookie EventSource sends same-origin.
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_user(make_user_key, pages={"quick_config": "own"})
     req = _fake_request(headers={"Authorization": f"Bearer {raw}"})
     rec = quick_config_routes.require_user_or_admin_sse(req)
     assert rec["username"] == "alice"
@@ -118,8 +109,7 @@ def test_sse_bearer_header_admits(client, make_user_key):
 def test_sse_key_query_param_rejected(client, make_user_key):
     # ?key= is not a credential carrier: the raw key would land in every
     # access log that records the request line.
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_user(make_user_key, pages={"quick_config": "own"})
     req = _fake_request(query=f"key={raw}".encode())
     assert _status_of(quick_config_routes.require_user_or_admin_sse, req) == 401
 
@@ -236,8 +226,7 @@ def test_sev_locked_remote_no_key_401(client, make_user_key):
 def test_sev_locked_remote_any_key_ok(client, make_user_key):
     # /sev needs any authenticated user (no specific page perm) — a non-admin
     # key is enough; the user host list is open so the host gate passes.
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", is_admin=False)
+    _uid, raw = locked_user(make_user_key)
     with TestClient(client.app, client=_REMOTE) as c:
         assert c.get("/sev", headers=bearer(raw)).status_code == 200
 
@@ -290,8 +279,7 @@ def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,
     log = tmp_path / "live.log"
     log.write_text("first\n", encoding="utf-8")
     monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"logs": "all"})
+    uid, raw = locked_user(make_user_key, pages={"logs": "all"})
 
     async def drive():
         gen = logs_routes._stream_log_lines(_sse_request("/logs/stream", raw))
@@ -320,8 +308,7 @@ def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "all"})
+    uid, raw = locked_user(make_user_key, pages={"quick_config": "all"})
     req = _sse_request("/quick-config/stream", raw)
 
     async def drive():

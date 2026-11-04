@@ -15,7 +15,7 @@ set_tz where it matters).
 import datetime
 import zoneinfo
 
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 
 _KINDS = ("dictation", "file", "url", "text")
 _CELL = {"sessions", "requests", "errors", "words", "audio_s", "processing_s"}
@@ -202,8 +202,7 @@ def test_v1_usage_requires_bearer_when_locked_down(client, make_user_key):
 
 
 def test_v1_usage_403_without_quick_config_page(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("nopage", pages={"quick_config": "none"})
+    _uid, raw = locked_user(make_user_key, "nopage", pages={"quick_config": "none"})
     assert client.get("/v1/usage", headers=bearer(raw)).status_code == 403
 
 

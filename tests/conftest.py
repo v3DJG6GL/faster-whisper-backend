@@ -821,6 +821,13 @@ def bearer(raw_key):
     return {"Authorization": f"Bearer {raw_key}"}
 
 
+def locked_user(make_user_key, username="alice", **kwargs):
+    """Lock the server down with a root admin key, then create `username`
+    through make_user_key(**kwargs). Returns their (uid, raw_key)."""
+    make_user_key("root", is_admin=True)
+    return make_user_key(username, **kwargs)
+
+
 def fake_request(headers=None, client=("127.0.0.1", 12345), *,
                  path="/stats/stream", query=b"", receive=None):
     """A bare GET Request (on /stats/stream by default) for exercising auth

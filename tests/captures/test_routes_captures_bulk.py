@@ -9,7 +9,7 @@ from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import (
     _insert_member, _insert_sample, _patch, _root_and_alice,
 )
-from tests.conftest import bearer, write_bytes
+from tests.conftest import bearer, locked_user, write_bytes
 
 
 def _row(conn, cid, *, user_id, status="new", audio_s=2.0, created_ts=1.0,
@@ -314,8 +314,7 @@ def test_bulk_status_validation(client):
 
 
 def test_bulk_routes_require_captures_page_when_locked(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("nobody", pages={"captures": "none"})
+    _uid, raw = locked_user(make_user_key, "nobody", pages={"captures": "none"})
     h = bearer(raw)
     assert _bulk(client, raw, ["x" * 12], "ready").status_code == 403
     assert client.post("/captures/api/bulk-delete", headers=h,

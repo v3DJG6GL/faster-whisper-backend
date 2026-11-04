@@ -8,7 +8,7 @@ driving them over HTTP."""
 
 from fastapi import HTTPException
 
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 from tests.conftest import fake_request as _fake_request
 from tests.conftest import status_of as _status_of
 from faster_whisper_backend.auth import dependencies as auth
@@ -18,8 +18,7 @@ _REMOTE = ("203.0.113.9", 1234)  # TEST-NET-3, outside the admin allowlist
 
 
 def test_bearer_header_admits_with_page_access(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"stats": "all"})
+    _uid, raw = locked_user(make_user_key, pages={"stats": "all"})
     rec = auth.resolve_user_for_page_sse(_fake_request(headers=bearer(raw)),
                                          "stats")
     assert rec["username"] == "alice"
@@ -33,8 +32,7 @@ def test_no_credential_is_401(client, make_user_key):
 
 
 def test_no_page_access_is_403_with_the_page_named(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"stats": "all"})
+    _uid, raw = locked_user(make_user_key, pages={"stats": "all"})
     try:
         # "logs" defaults to scope "none" for a fresh non-admin user.
         auth.resolve_user_for_page_sse(_fake_request(headers=bearer(raw)),
@@ -70,8 +68,7 @@ def test_own_scope_user_is_admitted_to_the_stats_stream(client, make_user_key):
     """stats="own" is a real page grant: the SSE gate admits the caller;
     what they then see is the StatsScope's business."""
     from faster_whisper_backend.stats import routes as stats_routes
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("carol", pages={"stats": "own"})
+    uid, raw = locked_user(make_user_key, "carol", pages={"stats": "own"})
     rec = auth.resolve_user_for_page_sse(_fake_request(headers=bearer(raw)),
                                          "stats")
     assert rec["permissions"].scope("stats") == "own"

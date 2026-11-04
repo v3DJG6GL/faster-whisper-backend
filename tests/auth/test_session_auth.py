@@ -15,7 +15,7 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.auth import sessions_store
 from faster_whisper_backend.settings import version as settings_version
 from tests.auth._store_helpers import count_rebuilds, failing_conn, load_sessions_store_copy
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 
 
 def _set_cookie_lines(resp):
@@ -121,8 +121,7 @@ def test_cookie_auth_reaches_admin_route(client, make_user_key):
 
 
 def test_cookie_auth_respects_page_permissions(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_user(make_user_key, pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
     assert client.get("/quick-config/state").status_code == 200
     assert client.get("/settings/state").status_code == 403
@@ -256,8 +255,7 @@ def test_legacy_slid_session_is_capped_at_the_configured_ttl(
 
 
 def test_revoked_user_session_dies(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_user(make_user_key, pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
     assert client.get("/quick-config/state").status_code == 200
     # Revoking the user means get_user_record() returns None -> 401, even
@@ -270,8 +268,7 @@ def test_revoked_key_session_dies(client, make_user_key):
     """Revoking the LOGIN KEY must cut its sessions, not widen them: a revoked
     key_id resolves to the empty key binding (default-allow gates), so a
     surviving session would shed the key's per-key restrictions."""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_user(make_user_key, pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
     assert client.get("/quick-config/state").status_code == 200
     kid = api_keys_store.list_keys(uid)[0]["id"]
@@ -286,8 +283,7 @@ def test_pre_migration_session_without_key_still_works(client, make_user_key):
     """A session created before login stamped key_id (key_id NULL in the DB)
     keeps authenticating with the old no-key-layer behaviour."""
     from faster_whisper_backend.settings import config
-    make_user_key("root", is_admin=True)
-    uid, _raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, _raw = locked_user(make_user_key, pages={"quick_config": "own"})
     raw_token, _csrf = sessions_store.create_session(uid, 3600.0)  # no key_id
     client.cookies.set(config.SESSION_COOKIE_NAME, raw_token)
     assert client.get("/quick-config/state").status_code == 200
@@ -298,8 +294,7 @@ def test_session_use_touches_key_last_used(client, make_user_key):
     already attribute to the stamped key, so last_used_ts must move too —
     otherwise the key looks dormant on /settings/api-keys while its usage
     numbers grow."""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_user(make_user_key, pages={"quick_config": "own"})
     kid = api_keys_store.list_keys(uid)[0]["id"]
     client.post("/auth/login", json={"key": raw})
     # The login itself touches (bearer-style lookup) — reset AFTER it so the

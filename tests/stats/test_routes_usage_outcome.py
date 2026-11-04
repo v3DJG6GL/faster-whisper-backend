@@ -8,7 +8,7 @@ someone else's job id both read `duplicate`.
 
 import pytest
 
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 
 _URL = "/v1/usage/outcome"
 
@@ -42,8 +42,7 @@ def test_outcome_open_mode_from_loopback(client):
 def test_outcome_needs_no_page_permission(client, make_user_key):
     """Outcomes belong to the key that dictated, so a quick_config scope of
     'none' — which 403s GET /v1/usage — does not block them."""
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("nopage", pages={"quick_config": "none"})
+    _uid, raw = locked_user(make_user_key, "nopage", pages={"quick_config": "none"})
     r = client.post(_URL, json={"outcomes": [_outcome()]}, headers=bearer(raw))
     assert r.status_code == 200
 
@@ -96,8 +95,7 @@ def test_outcome_accepted_then_duplicate_and_visible_in_usage(client, make_user_
 
 
 def test_outcome_results_follow_input_order(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice")
+    uid, raw = locked_user(make_user_key)
     _dictate(uid, "1" * 32)
     client.post(_URL, json={"outcomes": [_outcome("1" * 32)]}, headers=bearer(raw))
     r = client.post(_URL, json={"outcomes": [_outcome("2" * 32), _outcome("1" * 32)]},
@@ -125,8 +123,7 @@ def test_outcome_is_scoped_to_the_callers_own_jobs(client, make_user_key):
 
 
 def test_outcome_rate_limited_per_identity(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice")
+    _uid, raw = locked_user(make_user_key)
     _other, raw_other = make_user_key("bob")
     for i in range(60):
         r = client.post(_URL, json={"outcomes": [_outcome(f"{i:032x}")]},

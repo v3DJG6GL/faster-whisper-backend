@@ -2,7 +2,7 @@
 leaves the page before record_timing writes them. The submit route fills
 them from the caller's recent-transcriptions row by request_id."""
 
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 
 _SUBMIT = "/quick-config/reports/api/submit"
 _STAGES = [{"name": "transcribing", "secs": 1.5}, {"name": "translate", "secs": 0.4}]
@@ -35,8 +35,7 @@ def test_submit_without_stages_takes_them_from_the_trace_row(client, make_user_k
 
 
 def test_submit_does_not_take_stages_from_another_users_trace(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    bob_uid, _ = make_user_key("bob", pages={"quick_config": "own"})
+    bob_uid, _ = locked_user(make_user_key, "bob", pages={"quick_config": "own"})
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     _seed_trace("bobs-1", bob_uid)
     r = client.post(_SUBMIT, json={"request_id": "bobs-1", "user_comment": "x"},

@@ -23,7 +23,7 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 from tests._page_helpers import js_body, js_upto
 from tests.captures._store_helpers import insert_capture
-from tests.conftest import bearer, install_fake_wav_transcode, write_bytes, write_wav
+from tests.conftest import bearer, install_fake_wav_transcode, locked_user, write_bytes, write_wav
 
 
 @pytest.fixture
@@ -124,16 +124,14 @@ def test_host_gate_rejects_non_loopback(app_module, monkeypatch):
 
 
 def test_list_requires_page_when_locked(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"captures": "none"})
+    _uid, raw = locked_user(make_user_key, pages={"captures": "none"})
     r = client.get("/captures/api/list", headers=bearer(raw))
     assert r.status_code == 403
 
 
 def test_clear_requires_admin_when_locked(client, make_user_key):
     # POST /captures/api/clear additionally Depends(require_admin).
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"captures": "own"})
+    _uid, raw = locked_user(make_user_key, pages={"captures": "own"})
     r = client.post("/captures/api/clear", headers=bearer(raw))
     assert r.status_code == 403
 
@@ -297,8 +295,7 @@ def test_capture_404_body_uniform_missing_vs_foreign(
         client, make_user_key, monkeypatch, tmp_path):
     """GET /captures/api/{cid}: a scope=own caller gets byte-identical 404
     bodies for a nonexistent id and for another user's id."""
-    make_user_key("root", is_admin=True)
-    owner_uid, _raw_owner = make_user_key("alice", pages={"captures": "own"})
+    owner_uid, _raw_owner = locked_user(make_user_key, pages={"captures": "own"})
     _uid, raw_bob = make_user_key("bob", pages={"captures": "own"})
 
     cid = _audio_capture(captures_store, monkeypatch, tmp_path,
@@ -484,8 +481,7 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
     scope=all non-admin; that read is audited like the read-by-id siblings."""
     import logging
 
-    make_user_key("root", is_admin=True)
-    uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
+    uid_owner, _raw_owner = locked_user(make_user_key, pages={"captures": "own"})
     _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
 
     def _fake_propose(**kw):

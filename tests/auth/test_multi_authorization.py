@@ -9,7 +9,7 @@ Bearer header is the one-value case of the same scan."""
 
 from starlette.requests import Request
 
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 from faster_whisper_backend.auth import dependencies as auth
 
 
@@ -82,8 +82,7 @@ def test_http_route_only_basic_is_401(client, make_user_key):
 
 
 def test_sse_basic_then_bearer_admits(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"stats": "all"})
+    _uid, raw = locked_user(make_user_key, pages={"stats": "all"})
     rec = auth.resolve_user_for_page_sse(
         _request(_BASIC, f"Bearer {raw}"), "stats")
     assert rec["username"] == "alice"

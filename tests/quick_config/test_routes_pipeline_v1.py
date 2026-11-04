@@ -11,7 +11,7 @@ USER_WEBUI_ALLOWED_HOSTS, unlike the browser /quick-config page).
 import copy
 
 from faster_whisper_backend.quick_config import routes as quick_config_routes
-from tests.conftest import bearer, schema_map_cap
+from tests.conftest import bearer, locked_user, schema_map_cap
 from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 from tests.quick_config._rules_helpers import locked_alice
@@ -197,8 +197,7 @@ def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
 
 
 def test_v1_requires_quick_config_page(client, make_user_key):
-    make_user_key("root", is_admin=True)  # lockdown
-    _uid, raw = make_user_key("bob", pages={"quick_config": "none"})
+    _uid, raw = locked_user(make_user_key, "bob", pages={"quick_config": "none"})
     r = client.get("/v1/pipeline-rules", headers=bearer(raw))
     assert r.status_code == 403
 

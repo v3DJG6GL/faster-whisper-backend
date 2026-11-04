@@ -17,7 +17,7 @@ from faster_whisper_backend.stats import routes as stats_routes
 from faster_whisper_backend.stats import usage_store as us
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_upto
-from tests.conftest import bearer, fake_request, read_repo_text
+from tests.conftest import bearer, fake_request, locked_user, read_repo_text
 
 
 def _stats_js() -> str:
@@ -620,8 +620,7 @@ def _two_users(make_user_key):
 
 def _stats_user(make_user_key, name, scope):
     """Leave open mode (the root admin), then add one user with that stats scope."""
-    make_user_key("root", is_admin=True)
-    return make_user_key(name, pages={"stats": scope})
+    return locked_user(make_user_key, name, pages={"stats": scope})
 
 
 def _two_users_with_usage(make_user_key):
