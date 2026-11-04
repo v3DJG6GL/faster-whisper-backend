@@ -18,6 +18,13 @@ def _set_cookie_lines(resp):
     return [v for k, v in resp.headers.multi_items() if k.lower() == "set-cookie"]
 
 
+def _fail_logins(client, n):
+    """POST n junk-key logins; each must 401 (one throttle penalty apiece)."""
+    for _ in range(n):
+        assert client.post("/auth/login",
+                           json={"key": "wk_nope"}).status_code == 401
+
+
 def test_login_open_mode_is_noop(client):
     # No admin key yet => open mode.
     r = client.post("/auth/login", json={"key": "anything"})
@@ -627,9 +634,7 @@ def test_login_failures_are_throttled(client, app_module, make_user_key):
     LOGIN_FAILURE_RATE is refused before the key is even looked up."""
     make_user_key("root", is_admin=True)
     limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
-    for _ in range(limit):
-        assert client.post("/auth/login",
-                           json={"key": "wk_nope"}).status_code == 401
+    _fail_logins(client, limit)
     r = client.post("/auth/login", json={"key": "wk_nope"})
     assert r.status_code == 429
     assert int(r.headers["Retry-After"]) >= 1
@@ -657,13 +662,9 @@ def test_login_with_lone_surrogate_key_is_401_and_counted(
 def test_login_success_resets_the_window(client, app_module, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
     limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
-    for _ in range(limit - 1):
-        assert client.post("/auth/login",
-                           json={"key": "wk_nope"}).status_code == 401
+    _fail_logins(client, limit - 1)
     assert client.post("/auth/login", json={"key": raw}).status_code == 200
-    for _ in range(limit):
-        assert client.post("/auth/login",
-                           json={"key": "wk_nope"}).status_code == 401
+    _fail_logins(client, limit)
 
 
 def test_login_open_mode_is_never_throttled(client, app_module, monkeypatch):
@@ -681,9 +682,7 @@ def test_login_failure_rate_zero_is_unlimited(client, app_module,
     make_user_key("root", is_admin=True)
     monkeypatch.setattr(app_module.cfg, "LOGIN_FAILURE_RATE", 0,
                         raising=False)
-    for _ in range(30):
-        assert client.post("/auth/login",
-                           json={"key": "wk_nope"}).status_code == 401
+    _fail_logins(client, 30)
 
 
 def test_revoke_session_bumps_config_version(client, make_user_key):
