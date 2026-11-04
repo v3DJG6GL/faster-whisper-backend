@@ -262,12 +262,17 @@ def _reload_with_env(monkeypatch, **env):
 
 
 def _assert_nothing_dropped():
-    assert not any("was dropped" in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    _assert_not_warned("was dropped")
 
 
 def _assert_warned(*needles):
     """One startup warning holds every needle."""
     assert any(all(n in m for n in needles) for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+
+
+def _assert_not_warned(*needles):
+    """No startup warning holds any needle."""
+    assert not any(n in m for m in config._ENV_WARNINGS for n in needles), config._ENV_WARNINGS
 
 
 def _stub_stored(monkeypatch, raw):
@@ -316,8 +321,7 @@ def test_model_and_log_file_env_are_stripped_and_blank_keeps_current(monkeypatch
                      WHISPER_LOG_FILE="")
     assert config.DEFAULT_MODEL == "large-v3"
     assert config.LOG_FILE == log_file
-    assert not [w for w in config._ENV_WARNINGS
-                if "DEFAULT_MODEL" in w or "LOG_FILE" in w]
+    _assert_not_warned("DEFAULT_MODEL", "LOG_FILE")
 
 
 def test_set_typed_special_cases_stay_sets(monkeypatch, restore_config):
@@ -563,8 +567,7 @@ def test_env_cross_field_triple_validates_as_a_batch(monkeypatch, restore_config
     )
     assert config.CAPTURES_PROPOSER_TARGET_S == 15
     assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 20
-    assert not [m for m in config._ENV_WARNINGS
-                if "CAPTURES_" in m], config._ENV_WARNINGS
+    _assert_not_warned("CAPTURES_")
 
 
 def test_env_cross_field_triple_inconsistent_pair_is_reverted(monkeypatch, restore_config):
@@ -603,8 +606,7 @@ def test_env_cross_field_backstop_keeps_unrelated_env_values(monkeypatch, restor
     assert "BEAM_SIZE" not in config._ENV_REJECTED
     assert ({"CAPTURES_SAMPLE_MIN_DURATION_S", "CAPTURES_PROPOSER_TARGET_S"}
             & config._ENV_REJECTED)
-    assert not [m for m in config._ENV_WARNINGS
-                if "WHISPER_BEAM_SIZE" in m or "WHISPER_SESSION_COOKIE_SECURE" in m]
+    _assert_not_warned("WHISPER_BEAM_SIZE", "WHISPER_SESSION_COOKIE_SECURE")
 
 
 def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
@@ -940,7 +942,7 @@ def test_env_cross_field_consistent_with_local_override_applies(
     assert config.CAPTURES_PROPOSER_TARGET_S == 29.95
     assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 30
     assert "CAPTURES_PROPOSER_TARGET_S" not in config._ENV_REJECTED
-    assert not [m for m in config._ENV_WARNINGS if "CAPTURES_" in m], config._ENV_WARNINGS
+    _assert_not_warned("CAPTURES_")
 
 
 def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch, restore_config):
@@ -985,8 +987,7 @@ def test_documented_empty_env_overrides_a_stored_value(tmp_path, monkeypatch, re
     assert config.TRANSLATE_TO == ""
     assert config.STREAMING_PARTIAL_MODEL == ""
     assert config.TRANSLATION_LANGUAGES == "de"     # still stripped
-    assert not [w for w in config._ENV_WARNINGS
-                if "TRANSLATE" in w or "PARTIAL_MODEL" in w], config._ENV_WARNINGS
+    _assert_not_warned("TRANSLATE", "PARTIAL_MODEL")
     pinned = config_store.env_pinned_fields()
     assert "TRANSLATE_TO" in pinned
     assert "STREAMING_PARTIAL_MODEL" in pinned
@@ -1363,8 +1364,7 @@ def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch, restore
     _reload_with_env(monkeypatch, **{"WHISPER_MODEL_OVERRIDE__large-v3__BEST_OF": "3"})
     entry = config.MODEL_OVERRIDES.get("large-v3", {})
     assert entry.get("BEST_OF") == 3 and entry.get("BEAM_SIZE") == 3
-    assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_not_warned("large-v3")
     # An env-supplied exclude naming an unknown rule is still refused.
     _reload_with_env(monkeypatch, **{
         "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE": "another-missing-rule"})
@@ -1387,8 +1387,7 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch, rest
     assert entry.get("PIPELINE_RULES_EXCLUDE") == [
         "capitalize-after-terminator"]
     assert entry.get("BEAM_SIZE") == 3
-    assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
-        config._ENV_WARNINGS
+    _assert_not_warned("large-v3")
     # An env exclude naming an unknown rule is still refused.
     _reload_with_env(monkeypatch, **{
         "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE": "another-missing-rule"})
@@ -1489,4 +1488,4 @@ def test_prefixed_cookie_name_without_secure_warns_at_load(monkeypatch, restore_
             if m.startswith("SESSION_COOKIE_NAME '__Host-s' (from "
                             "WHISPER_SESSION_COOKIE_NAME)")], config._ENV_WARNINGS
     _reload_with_env(monkeypatch, WHISPER_SESSION_COOKIE_SECURE="true")
-    assert not [m for m in config._ENV_WARNINGS if "__Host-/__Secure-" in m]
+    _assert_not_warned("__Host-/__Secure-")
