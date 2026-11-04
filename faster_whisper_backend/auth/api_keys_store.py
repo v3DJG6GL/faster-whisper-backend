@@ -181,6 +181,21 @@ def _require_conn() -> sqlite3.Connection:
     return store_common.require_init(_conn, "api_keys_store")
 
 
+def _fetchone(sql: str, params: Any = ()) -> "sqlite3.Row | None":
+    """Run one read statement under _lock (the shared connection's cached
+    statements must not interleave); _require_conn() runs first, unlocked."""
+    conn = _require_conn()
+    with _lock:
+        return conn.execute(sql, params).fetchone()
+
+
+def _fetchall(sql: str, params: Any = ()) -> list[sqlite3.Row]:
+    """_fetchone's multi-row twin."""
+    conn = _require_conn()
+    with _lock:
+        return conn.execute(sql, params).fetchall()
+
+
 def hash_key(raw_key: str) -> str:
     """SHA-256 hex of the raw key bytes (UTF-8)."""
     # surrogatepass: a lone surrogate from a JSON login body ("\ud800") would
@@ -416,20 +431,13 @@ def create_user(username: str, is_admin: bool) -> str:
 
 
 def list_users() -> list[dict[str, Any]]:
-    conn = _require_conn()
-    with _lock:
-        rows = conn.execute(
-            "SELECT * FROM users WHERE revoked_ts IS NULL ORDER BY created_ts DESC"
-        ).fetchall()
+    rows = _fetchall(
+        "SELECT * FROM users WHERE revoked_ts IS NULL ORDER BY created_ts DESC")
     return [_row_to_user_dict(r) for r in rows]
 
 
 def get_user(user_id: str) -> dict[str, Any] | None:
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT * FROM users WHERE id = ?", (user_id,),
-        ).fetchone()
+    row = _fetchone("SELECT * FROM users WHERE id = ?", (user_id,))
     return _row_to_user_dict(row) if row else None
 
 
@@ -455,13 +463,11 @@ def get_usernames(user_ids: "list[str | None]") -> "dict[str, str | None]":
     out: dict[str, "str | None"] = {uid: None for uid in real_ids}
     if not real_ids:
         return out
-    conn = _require_conn()
     placeholders = ",".join("?" * len(real_ids))
-    with _lock:
-        rows = conn.execute(
-            f"SELECT id, username FROM users WHERE id IN ({placeholders})",
-            list(real_ids),
-        ).fetchall()
+    rows = _fetchall(
+        f"SELECT id, username FROM users WHERE id IN ({placeholders})",
+        list(real_ids),
+    )
     for row in rows:
         out[row["id"]] = row["username"]
     return out
@@ -596,25 +602,21 @@ def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
 
 
 def list_keys(user_id: str) -> list[dict[str, Any]]:
-    conn = _require_conn()
-    with _lock:
-        rows = conn.execute(
-            "SELECT * FROM api_keys WHERE user_id = ? AND revoked_ts IS NULL"
-            " ORDER BY created_ts DESC",
-            (user_id,),
-        ).fetchall()
+    rows = _fetchall(
+        "SELECT * FROM api_keys WHERE user_id = ? AND revoked_ts IS NULL"
+        " ORDER BY created_ts DESC",
+        (user_id,),
+    )
     return [_row_to_key_dict(r) for r in rows]
 
 
 def active_key_counts() -> dict[str, int]:
     """Return {user_id: active_key_count} in one SQL roundtrip — the batched
     companion to len(list_keys(user_id=u)) over a /api/users response."""
-    conn = _require_conn()
-    with _lock:
-        rows = conn.execute(
-            "SELECT user_id, COUNT(*) AS n FROM api_keys"
-            " WHERE revoked_ts IS NULL GROUP BY user_id"
-        ).fetchall()
+    rows = _fetchall(
+        "SELECT user_id, COUNT(*) AS n FROM api_keys"
+        " WHERE revoked_ts IS NULL GROUP BY user_id"
+    )
     return {r["user_id"]: int(r["n"]) for r in rows}
 
 
@@ -625,22 +627,16 @@ def last_used_by_user() -> dict[str, float]:
     to non-revoked keys to match the header's "N active keys" framing; users
     with no used active key are absent (caller treats missing as "no activity
     → idle/—")."""
-    conn = _require_conn()
-    with _lock:
-        rows = conn.execute(
-            "SELECT user_id, MAX(last_used_ts) AS t FROM api_keys"
-            " WHERE revoked_ts IS NULL AND last_used_ts IS NOT NULL"
-            " GROUP BY user_id"
-        ).fetchall()
+    rows = _fetchall(
+        "SELECT user_id, MAX(last_used_ts) AS t FROM api_keys"
+        " WHERE revoked_ts IS NULL AND last_used_ts IS NOT NULL"
+        " GROUP BY user_id"
+    )
     return {r["user_id"]: float(r["t"]) for r in rows}
 
 
 def get_key(key_id: str) -> dict[str, Any] | None:
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT * FROM api_keys WHERE id = ?", (key_id,),
-        ).fetchone()
+    row = _fetchone("SELECT * FROM api_keys WHERE id = ?", (key_id,))
     return _row_to_key_dict(row) if row else None
 
 
@@ -710,12 +706,8 @@ def touch_key_if_active(key_id: str) -> bool:
         # Fail closed during a failed / in-progress (re-)init, exactly like
         # lookup_by_raw_key — the cookie path must not outlive the bearer one.
         return False
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT 1 FROM api_keys WHERE id = ? AND revoked_ts IS NULL",
-            (key_id,),
-        ).fetchone()
+    row = _fetchone(
+        "SELECT 1 FROM api_keys WHERE id = ? AND revoked_ts IS NULL", (key_id,))
     if row is None:
         return False
     _touch_last_used_debounced(key_id)
@@ -791,11 +783,7 @@ def get_user_permissions(user_id: str) -> dict[str, Any]:
     still returned). Cheap render-time lookup used by the admin matrix UI."""
     if not user_id or user_id == "(open-mode)":
         return {}
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT permissions FROM users WHERE id = ?", (user_id,),
-        ).fetchone()
+    row = _fetchone("SELECT permissions FROM users WHERE id = ?", (user_id,))
     if row is None:
         return {}
     return _parse_permissions(row["permissions"])
@@ -815,12 +803,10 @@ def get_key_config(key_id: "str | None") -> dict[str, Any]:
     revoked / sentinel ids. Stored in the api_keys.config column."""
     if not key_id or key_id in ("(open-mode)", "(session)"):
         return {"direct": {}, "profiles": []}
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT config FROM api_keys WHERE id = ? AND revoked_ts IS NULL",
-            (key_id,),
-        ).fetchone()
+    row = _fetchone(
+        "SELECT config FROM api_keys WHERE id = ? AND revoked_ts IS NULL",
+        (key_id,),
+    )
     if row is None:
         return {"direct": {}, "profiles": []}
     return _parse_binding(row["config"] if "config" in row.keys() else None)
