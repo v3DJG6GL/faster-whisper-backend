@@ -486,6 +486,11 @@ def _regex(name, pattern="x", replacement="y"):
             "entries": [{"pattern": pattern, "replacement": replacement}]}
 
 
+def _rl(*entries, **extra):
+    return {"name": "rl", "label": "RL", "type": "regex-list",
+            "entries": list(entries), **extra}
+
+
 def _terminal():
     return {"name": "trim-edges", "label": "Trim", "type": "terminal"}
 
@@ -679,27 +684,23 @@ def test_pipeline_terminal_must_be_last():
 
 
 def test_regex_list_validates_and_keeps_order():
-    rule = {"name": "rl", "label": "RL", "type": "regex-list",
-            "entries": [{"pattern": "a", "replacement": "b"},
-                        {"pattern": "b", "replacement": "c", "label": "x", "note": "n"}]}
+    rule = _rl({"pattern": "a", "replacement": "b"},
+               {"pattern": "b", "replacement": "c", "label": "x", "note": "n"})
     m = _ok(PIPELINE_RULES=[rule, _terminal()])
     assert m.PIPELINE_RULES[0].type == "regex-list"
     assert [e.pattern for e in m.PIPELINE_RULES[0].entries] == ["a", "b"]
 
 
 def test_regex_list_requires_pattern_per_entry():
-    _bad(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
-                          "entries": [{"replacement": "b"}]}, _terminal()])
+    _bad(PIPELINE_RULES=[_rl({"replacement": "b"}), _terminal()])
 
 
 def test_regex_list_entry_extra_forbid():
-    _bad(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
-                          "entries": [{"pattern": "a", "bogus": 1}]}, _terminal()])
+    _bad(PIPELINE_RULES=[_rl({"pattern": "a", "bogus": 1}), _terminal()])
 
 
 def test_regex_list_optional_fields_default_and_survive_exclude_none():
-    m = _ok(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
-                             "entries": [{"pattern": "a"}]}, _terminal()])
+    m = _ok(PIPELINE_RULES=[_rl({"pattern": "a"}), _terminal()])
     e = m.PIPELINE_RULES[0].entries[0]
     assert (e.replacement, e.label, e.note) == ("", "", "")
     # exclude_none must KEEP the "" defaults (they are "" not None).
@@ -709,8 +710,7 @@ def test_regex_list_optional_fields_default_and_survive_exclude_none():
 
 def test_regex_list_entry_bad_regex_reports_index():
     with pytest.raises(ValidationError) as ei:
-        _ok(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
-                             "entries": [{"pattern": "("}]}, _terminal()])
+        _ok(PIPELINE_RULES=[_rl({"pattern": "("}), _terminal()])
     assert "entry 0" in str(ei.value)
 
 
@@ -719,9 +719,7 @@ def test_regex_list_entry_conflicting_flags_reports_index():
     # inline flags: the 422 said only "ASCII and UNICODE flags are
     # incompatible", naming no rule or entry.
     with pytest.raises(ValidationError) as ei:
-        _ok(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
-                             "entries": [{"pattern": "a"}, {"pattern": "(?a)(?u)x"}]},
-                            _terminal()])
+        _ok(PIPELINE_RULES=[_rl({"pattern": "a"}, {"pattern": "(?a)(?u)x"}), _terminal()])
     assert "rule 0 ('rl') entry 1: invalid regex" in str(ei.value)
 
 
@@ -743,10 +741,8 @@ def test_regex_list_nested_fixed_counts_refused_before_the_template_sub():
 
     def _validate():
         try:
-            _ok(PIPELINE_RULES=[{
-                "name": "rl", "label": "RL", "type": "regex-list",
-                "entries": [{"pattern": "(?:(?:a{0}){100000}){100000}",
-                             "replacement": "y"}]}, _terminal()])
+            _ok(PIPELINE_RULES=[_rl({"pattern": "(?:(?:a{0}){100000}){100000}",
+                                     "replacement": "y"}), _terminal()])
             out["result"] = "accepted"
         except ValidationError as e:
             out["result"] = str(e)
@@ -764,8 +760,7 @@ def test_nested_fixed_counts_refused_at_load_without_a_replacement():
     # out-of-process guard runs only on a save), or it loops N*N on every request.
     pat = "(?:(?:a{0}){100000}){100000}"
     for rule in (
-            {"name": "rl", "label": "RL", "type": "regex-list",
-             "entries": [{"pattern": pat, "replacement": ""}]},
+            _rl({"pattern": pat, "replacement": ""}),
             {"name": "dd", "label": "DD", "type": "callback:dedup",
              "pattern": pat}):
         with pytest.raises(ValidationError, match="nested fixed counts"):
@@ -789,8 +784,7 @@ def test_map_key_collision_check_is_scoped_to_guard_slugs():
 def test_rule_scoped_to_every_whisper_language_validates():
     # The languages cap tracks the code table (100 with yue).
     langs = sorted(settings_schema.WHISPER_LANGUAGE_CODES)
-    rule = {"name": "rl", "label": "RL", "type": "regex-list",
-            "entries": [{"pattern": "a"}], "languages": langs}
+    rule = _rl({"pattern": "a"}, languages=langs)
     m = _ok(PIPELINE_RULES=[rule, _terminal()])
     assert m.PIPELINE_RULES[0].languages == langs
 
