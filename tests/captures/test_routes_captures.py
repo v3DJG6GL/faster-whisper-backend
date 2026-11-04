@@ -2,9 +2,11 @@
 `install_fake_wav_transcode` (a stub WAV writer) instead of a real ffmpeg transcode.
 """
 
+import io
 import json
 import os
 import re
+import tarfile
 
 import pytest
 from starlette.testclient import TestClient
@@ -680,16 +682,22 @@ def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
                           headers=bearer(raw)).status_code == 404
 
 
-def _export_manifest(only_status="ready"):
-    import io
-    import tarfile
-
+def _export_tar(only_status, include_audio):
+    """The export as an open TarFile (the caller uses it as a context manager)."""
     from faster_whisper_backend.captures import routes as captures_routes
 
-    blob = b"".join(captures_routes._build_export_stream(only_status, False))
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-        text = tar.extractfile("manifest.jsonl").read().decode("utf-8")
+    blob = b"".join(captures_routes._build_export_stream(only_status, include_audio))
+    return tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz")
+
+
+def _manifest_rows(tar):
+    text = tar.extractfile("manifest.jsonl").read().decode("utf-8")
     return [json.loads(line) for line in text.splitlines() if line]
+
+
+def _export_manifest(only_status="ready"):
+    with _export_tar(only_status, False) as tar:
+        return _manifest_rows(tar)
 
 
 def _mark_trimmed(captures_store, cid, trimmed_rel):
@@ -791,11 +799,6 @@ def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
     """A stale audio_trimmed_relpath (partial restore, manual cleanup) must not
     drop the row: like the audio endpoint, the export packs the original at
     its full length."""
-    import io
-    import tarfile
-
-    from faster_whisper_backend.captures import routes as captures_routes
-
     captures_store = captures_store_db
     cid = _ready_capture(captures_store, monkeypatch, tmp_path,
                          language="de", translations={})
@@ -803,8 +806,7 @@ def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
     _mark_trimmed(captures_store, cid, row["audio_relpath"] + ".trim.wav")
     rows = _export_manifest()
     assert [r["duration"] for r in rows] == [pytest.approx(12.4)]
-    blob = b"".join(captures_routes._build_export_stream("ready", True))
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+    with _export_tar("ready", True) as tar:
         assert [n for n in tar.getnames() if n.startswith("audio/")] == [
             f"audio/{cid}.wav"]
 
@@ -820,10 +822,6 @@ def test_export_rereads_a_sample_rebuilt_after_its_list_snapshot(
     merged_duration_ms after it: the manifest shipped the new audio with the
     old duration, and a sample the pass flagged stale was exported anyway.
     Each group is re-read under its rebuild lock before it is packed."""
-    import io
-    import tarfile
-
-    from faster_whisper_backend.captures import routes as captures_routes
     from faster_whisper_backend.captures import samples as capture_samples
     from faster_whisper_backend.captures import samples_store as gs
 
@@ -849,10 +847,8 @@ def test_export_rereads_a_sample_rebuilt_after_its_list_snapshot(
 
     monkeypatch.setattr(gs, "list_samples", _list_then_reprocess)
     monkeypatch.setattr(capture_samples, "_rebuild_lock", _counting)
-    blob = b"".join(captures_routes._build_export_stream(None, True))
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-        rows = [json.loads(line) for line in tar.extractfile(
-            "manifest.jsonl").read().decode("utf-8").splitlines() if line]
+    with _export_tar(None, True) as tar:
+        rows = _manifest_rows(tar)
         assert [n for n in tar.getnames() if n.startswith("audio/")] == [
             f"audio/{rebuilt}.wav"]
         audio = tar.extractfile(f"audio/{rebuilt}.wav").read()
@@ -868,9 +864,6 @@ def test_export_joins_the_text_with_the_strategy_of_the_reread_sample(
     lock, so a VAD reprocess that restamped transcript_join_strategy after it
     shipped the new WAV with text joined by the old separator. Members and
     text come from the row re-read under the lock."""
-    import io
-    import tarfile
-
     from faster_whisper_backend.captures import routes as captures_routes
     from faster_whisper_backend.captures import samples_store as gs
 
@@ -890,10 +883,8 @@ def test_export_joins_the_text_with_the_strategy_of_the_reread_sample(
         return snapshot
 
     monkeypatch.setattr(gs, "list_samples", _list_then_reprocess)
-    blob = b"".join(captures_routes._build_export_stream(None, True))
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-        rows = [json.loads(line) for line in tar.extractfile(
-            "manifest.jsonl").read().decode("utf-8").splitlines() if line]
+    with _export_tar(None, True) as tar:
+        rows = _manifest_rows(tar)
         assert tar.extractfile(f"audio/{sid}.wav").read() == b"new audio"
     assert [(r["text"], r["member_count"]) for r in rows] == [
         ("quelle. quelle", 2)]
@@ -906,9 +897,6 @@ def test_export_skips_a_sample_whose_members_no_longer_match_its_wav(
     could pack the 2-member WAV with the surviving member's text and
     member_count 1. A sample with no recorded build (empty member_hashes)
     is still exported."""
-    import io
-    import tarfile
-
     from faster_whisper_backend.captures import routes as captures_routes
     from faster_whisper_backend.captures import samples_store as gs
 
@@ -925,10 +913,8 @@ def test_export_skips_a_sample_whose_members_no_longer_match_its_wav(
     with captures_store_db._lock:
         with captures_store_db._require_conn() as conn:
             conn.execute("DELETE FROM captures WHERE id = ?", (gone,))
-    blob = b"".join(captures_routes._build_export_stream(None, True))
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-        rows = [json.loads(line) for line in tar.extractfile(
-            "manifest.jsonl").read().decode("utf-8").splitlines() if line]
+    with _export_tar(None, True) as tar:
+        rows = _manifest_rows(tar)
         assert [n for n in tar.getnames() if n.startswith("audio/")] == [
             f"audio/{legacy}.wav"]
     assert [(r["audio_filepath"], r["member_count"]) for r in rows] == [
@@ -942,8 +928,6 @@ def test_export_sizes_each_wav_from_the_file_it_opened(
     out of the new file: a shorter one aborted the whole streamed download
     with "unexpected end of data". Both the group and the singleton site."""
     import builtins
-    import io
-    import tarfile
 
     from faster_whisper_backend.captures import routes as captures_routes
     from faster_whisper_backend.captures import samples_store as gs
@@ -967,9 +951,8 @@ def test_export_sizes_each_wav_from_the_file_it_opened(
 
     monkeypatch.setattr(captures_routes, "open", _replace_then_open,
                         raising=False)
-    blob = b"".join(captures_routes._build_export_stream(None, True))
-    assert swaps == {}
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+    with _export_tar(None, True) as tar:
+        assert swaps == {}
         assert tar.extractfile(f"audio/{sid}.wav").read() == b"short"
         assert tar.extractfile(f"audio/{cid}.wav").read() == b"tiny"
 
