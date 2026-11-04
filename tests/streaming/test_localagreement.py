@@ -12,14 +12,17 @@ def _texts(words):
     return [w.text for w in words]
 
 
+def _hyp(*words):
+    """Hypothesis of ``words`` on a 0.5 s grid starting at 0.0."""
+    return [(i * 0.5, (i + 1) * 0.5, w) for i, w in enumerate(words)]
+
+
 def _der_patient_hat():
     """Two agreeing passes: " Der Patient" committed, " hat" provisional."""
     p = LocalAgreementProcessor()
-    p.insert_hypothesis([(0.0, 0.5, " Der"), (0.5, 1.0, " Patient")], 0.0)
+    p.insert_hypothesis(_hyp(" Der", " Patient"), 0.0)
     p.commit()
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat")], 0.0
-    )
+    p.insert_hypothesis(_hyp(" Der", " Patient", " hat"), 0.0)
     p.commit()
     return p
 
@@ -27,7 +30,7 @@ def _der_patient_hat():
 def test_first_iteration_commits_nothing():
     """LA-2 needs two hypotheses to agree, so the first decode commits nothing."""
     p = LocalAgreementProcessor()
-    p.insert_hypothesis([(0.0, 0.5, " Der"), (0.5, 1.0, " Patient")], 0.0)
+    p.insert_hypothesis(_hyp(" Der", " Patient"), 0.0)
     assert p.commit() == []
     assert _texts(p.provisional()) == [" Der", " Patient"]
     assert p.committed_text == ""
@@ -37,11 +40,9 @@ def test_commits_common_prefix_of_two_hypotheses():
     """The prefix two consecutive hypotheses agree on is committed; the fresh tail
     stays provisional."""
     p = LocalAgreementProcessor()
-    p.insert_hypothesis([(0.0, 0.5, " Der"), (0.5, 1.0, " Patient")], 0.0)
+    p.insert_hypothesis(_hyp(" Der", " Patient"), 0.0)
     p.commit()
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat")], 0.0
-    )
+    p.insert_hypothesis(_hyp(" Der", " Patient", " hat"), 0.0)
     delta = p.commit()
     assert _texts(delta) == [" Der", " Patient"]
     assert _texts(p.provisional()) == [" hat"]
@@ -53,26 +54,17 @@ def test_unstable_tail_is_never_committed_until_agreement():
     corrected word only commits once two passes agree on it."""
     # Build up a committed prefix "Der Patient hat".
     p = _der_patient_hat()
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat"),
-         (1.5, 2.0, " Vieber")], 0.0,
-    )
+    p.insert_hypothesis(_hyp(" Der", " Patient", " hat", " Vieber"), 0.0)
     p.commit()  # commits "hat"; "Vieber" only provisional
     assert "Vieber" not in p.committed_text
 
     # Next pass corrects the tail to "Fieber" — disagrees with "Vieber", so nothing
     # new commits yet.
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat"),
-         (1.5, 2.0, " Fieber")], 0.0,
-    )
+    p.insert_hypothesis(_hyp(" Der", " Patient", " hat", " Fieber"), 0.0)
     assert _texts(p.commit()) == []
     assert _texts(p.provisional()) == [" Fieber"]
 
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat"),
-         (1.5, 2.0, " Fieber")], 0.0,
-    )
+    p.insert_hypothesis(_hyp(" Der", " Patient", " hat", " Fieber"), 0.0)
     assert _texts(p.commit()) == [" Fieber"]
     assert p.committed_text == " Der Patient hat Fieber"
     assert "Vieber" not in p.committed_text
