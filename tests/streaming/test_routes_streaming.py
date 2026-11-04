@@ -20,6 +20,7 @@ from tests._streaming_helpers import (
     const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake,
     locked_down_user, speak_and_stop, stop_and_drain, stream_ws)
 from tests._transcription_helpers import guard_line
+from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.transcription import models as tx_models
 
 _pcm = const_pcm
@@ -436,7 +437,6 @@ def test_safe_ws_send_swallows_dead_socket():
     message ... after ... close'); the send must be swallowed, not surface as an
     error traceback."""
     import asyncio
-    from faster_whisper_backend.streaming import routes as streaming_routes
 
     class DeadWS:
         async def send_json(self, _m):
@@ -460,7 +460,6 @@ def test_stream_handshake_idle_timeout_frees_slot(client, app_module, monkeypatc
     # A client that connects + passes auth but never sends its config handshake
     # must not hold a session slot forever: the server abandons the wait after
     # STREAMING_IDLE_TIMEOUT_S and closes with the idle close code (4408).
-    from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming.routes import _WS_IDLE_TIMEOUT
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
     with stream_ws(client) as ws:
@@ -547,7 +546,6 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
     """One client must not be able to fill the pool. The global cap is left
     wide open, so a refusal here can only come from the per-user one."""
     import logging
-    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 10,
                         raising=False)
@@ -566,8 +564,6 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
 
 
 def test_per_user_cap_zero_is_unlimited(client, app_module, monkeypatch):
-    from faster_whisper_backend.streaming import routes as streaming_routes
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
                         raising=False)
     with stream_ws(client) as a, stream_ws(client) as b, stream_ws(client) as c:
@@ -584,8 +580,6 @@ def test_session_admitted_with_the_cap_off_releases_no_slot(client, app_module,
     slot. When the cap is raised mid-session and a second session takes the
     identity's one real slot, the first one's teardown must leave that slot
     alone — an unconditional release there frees a slot a live session holds."""
-    from faster_whisper_backend.streaming import routes as streaming_routes
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
                         raising=False)
     counts = streaming_routes._stream_sessions._counts
@@ -613,8 +607,6 @@ def test_global_cap_refusal_with_the_cap_off_releases_no_slot(client, app_module
     """Same guard at the server-wide refusal: a connection refused there while
     the per-user cap is off took no slot, so it must not give back the one a
     live session of the same identity holds."""
-    from faster_whisper_backend.streaming import routes as streaming_routes
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 1, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
@@ -636,8 +628,6 @@ def test_serial_sessions_never_leak_a_slot(client, app_module, monkeypatch):
     """The leak guard: open and close cap+2 sessions one at a time. Each must
     succeed, and the gauge must be empty afterwards — a release skipped on any
     teardown path would strand a slot and refuse the next connection."""
-    from faster_whisper_backend.streaming import routes as streaming_routes
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 2,
                         raising=False)
     for _ in range(4):
@@ -650,8 +640,6 @@ def test_per_user_cap_is_per_user(client, make_user_key, app_module,
                                   monkeypatch):
     """Open mode resolves every caller to one synthetic admin, so real keys
     are what prove the cap is keyed per identity."""
-    from faster_whisper_backend.streaming import routes as streaming_routes
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
     _uid_a, key_a = locked_down_user(make_user_key)
@@ -675,7 +663,6 @@ def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
     without its own release an aborted handshake burns one slot for the life
     of the process."""
     import starlette.websockets
-    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
@@ -706,7 +693,6 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
     has ALREADY returned: the lease was taken, the record of it never made.
     The teardown must still find and release it."""
     import asyncio
-    from faster_whisper_backend.streaming import routes as streaming_routes
 
     _real = tx_models._get_or_load_model
 
@@ -786,7 +772,6 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(
     value (with the non-default marker once it is switched off)."""
     import logging
     from faster_whisper_backend.transcription import decode_trace as dt
-    from faster_whisper_backend.streaming import routes as streaming_routes
 
     seen = []
     real = dt.capture
@@ -834,7 +819,6 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     STREAMING_FINAL_BEST_OF; partials keep their own knobs."""
     import logging
     from faster_whisper_backend.transcription import decode_trace as dt
-    from faster_whisper_backend.streaming import routes as streaming_routes
 
     caps = []
     real = dt.capture
@@ -1010,8 +994,7 @@ def test_preview_decode_does_not_charge_the_session_wait():
     (the contract itself is in tests/stats/test_metrics.py)."""
     import inspect
 
-    from faster_whisper_backend.streaming import routes as s_routes
-    src = inspect.getsource(s_routes)
+    src = inspect.getsource(streaming_routes)
     body = src[src.index("async def decode_partial("):]
     body = body[:body.index("\n        async def ", 1)]
     unset = body.index("metrics.WAIT_ACC.set(None)")
@@ -1025,8 +1008,7 @@ def test_final_decode_starts_from_a_clean_session_wait():
     left over from an earlier decode cannot land on this utterance's wait_s."""
     import inspect
 
-    from faster_whisper_backend.streaming import routes as s_routes
-    src = inspect.getsource(s_routes)
+    src = inspect.getsource(streaming_routes)
     body = src[src.index("async def decode_final("):]
     body = body[:body.index("\n        async def ", 1)]
     take = body.index("metrics.take_wait()")

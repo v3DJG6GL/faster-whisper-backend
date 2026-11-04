@@ -8,7 +8,11 @@ import time
 
 import pytest
 
+from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import effective_config
+from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.streaming import routes as streaming_routes
+from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 from tests._streaming_helpers import (
     config_drain, config_frame, const_pcm, dictate_session, handshake, locked_down_user,
     speak_and_stop, stop_and_drain, stream_ws, ws_drain)
@@ -92,7 +96,6 @@ def test_stream_picks_up_binding_change_without_reconnect(
     uid, raw_alice = make_user_key("alice")
     _bind(client, h, uid, profiles=["p7"])
 
-    from faster_whisper_backend.auth import api_keys_store
     with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         # utterance 1 under profile p7
@@ -226,12 +229,9 @@ def _refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, gon
     from starlette.websockets import WebSocket as _WS
     monkeypatch.setattr(_WS, "send", gone_send(_WS.send))
 
-    from faster_whisper_backend.stats import metrics
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
     caplog.set_level(logging.ERROR, logger="faster_whisper_backend.streaming.routes")
-
-    from faster_whisper_backend.streaming import routes as streaming_routes
 
     with stream_ws(client, raw_alice) as ws:
         ws.send_json(config_frame())
@@ -311,7 +311,6 @@ def test_model_load_failure_records_a_classified_error_row(
     _, raw_alice = make_user_key("alice")
     fail_model_load(monkeypatch,
                     RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"))
-    from faster_whisper_backend.stats import metrics
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
 
@@ -340,7 +339,6 @@ def test_partial_model_load_failure_row_names_the_partial_model(
         return await real(name, lease=lease)
 
     monkeypatch.setattr(tx_models, "_get_or_load_model", _load)
-    from faster_whisper_backend.stats import metrics
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
 
@@ -360,7 +358,6 @@ def test_handshake_drops_unknown_decode_override_keys(
     keys never reach the transcribe kwargs."""
     _, raw_alice = make_user_key("alice")
 
-    from faster_whisper_backend.streaming import routes as streaming_routes
     seen_keys: list = []
     real_values = streaming_routes._client_stream_values
 
@@ -455,9 +452,6 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     """Revoking the user mid-stream cuts the session: no further transcripts,
     an `unauthorized` notice, and a 4401 close. revoke_user bumps the config
     version, which is the signal _refresh_ident already consumes."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
-
     uid, raw_alice = locked_down_user(make_user_key)
 
     with stream_ws(client, raw_alice) as ws:
@@ -490,9 +484,6 @@ def test_revoked_session_closes_without_a_further_client_frame(
     a client that then goes silent (sends no further frame) must not keep the
     revoked session open until the idle timeout; the producer's own
     _auth_revoked branch is only the backstop."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
-
     uid, raw_alice = locked_down_user(make_user_key)
 
     with stream_ws(client, raw_alice) as ws:
@@ -516,10 +507,6 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
     (the config message, a cold model load) still closes the connection: the
     version snapshot predates authentication, so _refresh_ident sees the
     revocation and the first decode re-auths and closes."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.streaming import routes as streaming_routes
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
-
     uid, raw_alice = locked_down_user(make_user_key)
 
     real = streaming_routes.authenticate_ws
@@ -576,8 +563,6 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
     """The re-auth hangs off the SAME version-bump branch as the ident refresh,
     so the steady state costs exactly nothing: one authenticate_ws call, at the
     handshake, no matter how many partial/final decodes run."""
-    from faster_whisper_backend.streaming import routes as streaming_routes
-
     _, raw_alice = locked_down_user(make_user_key)
 
     calls = []
@@ -597,7 +582,6 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
     stream on sign-out: sessions_store.revoke_session (/auth/logout) bumps the
     config version, which is the only signal _refresh_ident consumes."""
     from faster_whisper_backend.auth import sessions_store
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
     _uid, raw_alice = locked_down_user(make_user_key)
     assert client.post("/auth/login", json={"key": raw_alice}).status_code == 200
@@ -632,10 +616,6 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     decode_final → _refresh_ident → _CredentialRevoked outside the pump. It
     must still close with 4401 like every other revocation path, with no
     "internal" error frame, no last final and no error ledger row."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.stats import metrics
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
-
     uid, raw_alice = locked_down_user(make_user_key)
     rows = []
     monkeypatch.setattr(metrics, "record_transcription",
@@ -658,9 +638,8 @@ def _knobs_handshake(client, monkeypatch, overrides, headers=None):
     """Handshake with `overrides` and return (ready frame, seen): seen holds
     the client values _stream_config received ("client"), the config it built
     ("config") and the endpointer threshold ("threshold")."""
-    from faster_whisper_backend.streaming import routes
     seen = {}
-    real_cfg, real_ep = routes._stream_config, routes.make_endpointer
+    real_cfg, real_ep = streaming_routes._stream_config, streaming_routes.make_endpointer
 
     def _cfg(cfg_for, ident=None, client=None):
         seen["client"] = dict(client or {})
@@ -670,8 +649,8 @@ def _knobs_handshake(client, monkeypatch, overrides, headers=None):
     def _ep(*a, **kw):
         seen["threshold"] = kw.get("threshold")
         return real_ep(*a, **kw)
-    monkeypatch.setattr(routes, "_stream_config", _cfg)
-    monkeypatch.setattr(routes, "make_endpointer", _ep)
+    monkeypatch.setattr(streaming_routes, "_stream_config", _cfg)
+    monkeypatch.setattr(streaming_routes, "make_endpointer", _ep)
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=headers or {}) as ws:
         ready = handshake(ws, decode_overrides=overrides)
@@ -745,7 +724,6 @@ def test_profile_silence_gates_are_fitted_to_the_resolved_outer(monkeypatch):
     """AdminConfig refuses only a GLOBAL silence pair that does not fit: a
     profile outer above the global hard break made every dictated sentence
     its own document, and a profile inner >= outer stretched every commit."""
-    from faster_whisper_backend.streaming import routes
     c = effective_config.cfg
     monkeypatch.setattr(c, "STREAMING_VAD_INNER_SILENCE_MS", 700)
     monkeypatch.setattr(c, "STREAMING_VAD_OUTER_SILENCE_MS", 1200)
@@ -753,7 +731,7 @@ def test_profile_silence_gates_are_fitted_to_the_resolved_outer(monkeypatch):
 
     def sc_for(**values):
         ident = effective_config.Resolved(values=values)
-        return routes._stream_config(effective_config.cfg_for, ident)
+        return streaming_routes._stream_config(effective_config.cfg_for, ident)
     sc = sc_for(STREAMING_VAD_OUTER_SILENCE_MS=6000)
     assert (sc.commit_silence_ms, sc.hard_break_silence_ms) == (6000, 7000)
     sc = sc_for(STREAMING_VAD_INNER_SILENCE_MS=1500)
@@ -771,17 +749,16 @@ def test_profile_silence_gates_are_fitted_to_the_resolved_outer(monkeypatch):
 def test_profile_trim_keep_at_or_above_trim_is_clamped_below_it(monkeypatch):
     """AdminConfig only validates the GLOBAL keep < trim pair: a profile
     keep above the global trim would stop the buffer trim from ever firing."""
-    from faster_whisper_backend.streaming import routes
     monkeypatch.setattr(effective_config.cfg, "STREAMING_BUFFER_TRIM_S", 15.0)
     ident = effective_config.Resolved(
         values={"STREAMING_BUFFER_TRIM_KEEP_S": 20.0})
-    sc = routes._stream_config(effective_config.cfg_for, ident)
+    sc = streaming_routes._stream_config(effective_config.cfg_for, ident)
     assert sc.buffer_trim_sec == 15.0
     assert sc.buffer_trim_keep_sec < sc.buffer_trim_sec
     # A valid pair passes through untouched.
     ident = effective_config.Resolved(
         values={"STREAMING_BUFFER_TRIM_KEEP_S": 8.0})
-    sc = routes._stream_config(effective_config.cfg_for, ident)
+    sc = streaming_routes._stream_config(effective_config.cfg_for, ident)
     assert sc.buffer_trim_keep_sec == 8.0
 
 
@@ -791,15 +768,14 @@ def test_spelled_newline_separator_is_decoded_from_every_source(monkeypatch, raw
     '\\n' = newline, so config.local.json, a profile and a client override all
     hold backslash + n; passed on as is, live dictation typed a literal "\\n"
     at every hard break. A real newline passes unchanged."""
-    from faster_whisper_backend.streaming import routes
     field = "STREAMING_HARD_BREAK_SEPARATOR"
     monkeypatch.setattr(effective_config.cfg, field, raw)
-    assert routes._stream_config(effective_config.cfg_for).hard_break_separator == want
+    assert streaming_routes._stream_config(effective_config.cfg_for).hard_break_separator == want
     monkeypatch.setattr(effective_config.cfg, field, "")
     ident = effective_config.Resolved(values={field: raw})
-    sc = routes._stream_config(effective_config.cfg_for, ident)
+    sc = streaming_routes._stream_config(effective_config.cfg_for, ident)
     assert sc.hard_break_separator == want
-    sc = routes._stream_config(effective_config.cfg_for, client={field: raw})
+    sc = streaming_routes._stream_config(effective_config.cfg_for, client={field: raw})
     assert sc.hard_break_separator == want
 
 
@@ -852,7 +828,6 @@ def test_stream_client_output_wrappers_survive_a_refresh(
     # _refresh_ident recomputes the wrappers; it must keep the client's.
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
     uid, raw_alice = locked_down_user(make_user_key)
-    from faster_whisper_backend.auth import api_keys_store
     with stream_ws(client, raw_alice) as ws:
         assert handshake(ws, decode_overrides={"output_prefix": ">> ",
                                                "output_suffix": " <<"})["type"] == "ready"
@@ -877,7 +852,6 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[old] ")
     uid, raw_alice = make_user_key("alice")
-    from faster_whisper_backend.auth import api_keys_store
     with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
