@@ -2036,10 +2036,7 @@ async def dictate_page() -> HTMLResponse:
     except (OSError, ValueError) as exc:   # ValueError: CRLF / not UTF-8
         logger.error("[dictate] cannot read page template: %s", exc)
         return HTMLResponse("<h1>dictate unavailable</h1>", status_code=500)
-    return HTMLResponse(
-        web_common.render_page(template, current="dictate"),
-        headers={"Cache-Control": "no-store"},
-    )
+    return web_common.no_store_page(template, current="dictate")
 
 
 def _reset_for_tests() -> None:

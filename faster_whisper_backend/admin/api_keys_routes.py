@@ -137,10 +137,7 @@ class ImportClientSettingsIn(web_common.StrictIn):
 
 @router.get("", response_class=HTMLResponse)
 async def api_keys_page() -> HTMLResponse:
-    return HTMLResponse(
-        web_common.render_page(_API_KEYS_HTML, current="api-keys"),
-        headers={"Cache-Control": "no-store"},
-    )
+    return web_common.no_store_page(_API_KEYS_HTML, current="api-keys")
 
 
 # The store-backed handlers below are plain `def` so FastAPI runs them in its

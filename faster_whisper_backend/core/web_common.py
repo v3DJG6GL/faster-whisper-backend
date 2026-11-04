@@ -110,6 +110,13 @@ def sse_response(generator):
     )
 
 
+def no_store_page(template: str, current: str):
+    """render_page() as an HTMLResponse browsers and proxies must not store."""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(render_page(template, current=current),
+                        headers={"Cache-Control": "no-store"})
+
+
 def validation_error_response(err):
     """422 {"errors": [...]} for a settings ValidationError (the /settings and
     /overrides save contract)."""

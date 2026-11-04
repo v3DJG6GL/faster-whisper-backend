@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core.web_common import (
     brand_mark_svg,
-    render_page,
+    no_store_page,
     require_user_webui_host,
 )
 from faster_whisper_backend.core import templates
@@ -128,7 +128,4 @@ async def home_page():
         .replace("{{HUB_TILES}}", tiles)
         .replace("{{HUB_ADMIN_ZONE}}", admin_zone)
     )
-    return HTMLResponse(
-        render_page(html, current="home"),
-        headers={"Cache-Control": "no-store"},
-    )
+    return no_store_page(html, current="home")

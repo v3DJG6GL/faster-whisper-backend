@@ -249,10 +249,7 @@ async def logs_viewer():
     # Shell gated only by USER_WEBUI_ALLOWED_HOSTS (loopback always), so a
     # keyless navigation still gets the shell + login popup; the data endpoints
     # add _require_logs_page_sse (scope("logs") == "all").
-    return HTMLResponse(
-        web_common.render_page(_LOG_VIEWER_HTML, current="logs"),
-        headers={"Cache-Control": "no-store"},
-    )
+    return web_common.no_store_page(_LOG_VIEWER_HTML, current="logs")
 
 
 @router.get(

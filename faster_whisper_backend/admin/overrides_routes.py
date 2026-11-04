@@ -210,10 +210,7 @@ def _state_payload() -> dict[str, Any]:
 @router.get("", response_class=HTMLResponse,
             dependencies=[Depends(require_admin_webui_host)])
 async def overrides_page() -> HTMLResponse:
-    return HTMLResponse(
-        web_common.render_page(_OVERRIDES_HTML, current="overrides"),
-        headers={"Cache-Control": "no-store"},
-    )
+    return web_common.no_store_page(_OVERRIDES_HTML, current="overrides")
 
 
 @router.post("/state", dependencies=ADMIN_API_DEPS)
