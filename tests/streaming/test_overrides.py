@@ -11,6 +11,7 @@ import pytest
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
     config_frame, const_pcm, handshake, speak_and_stop, ws_drain)
+from tests._transcription_helpers import bind_profile
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -36,12 +37,9 @@ def _bind(client, h, uid, **binding):
 
 
 def test_ready_frame_reports_locked_handshake_override(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profile(client, h, "p", TEMPERATURE="0.0", DEFAULT_LANGUAGE="de",
-             locks=["TEMPERATURE", "DEFAULT_LANGUAGE"])
-    uid, raw_alice = make_user_key("alice")
-    _bind(client, h, uid, profiles=["p"])
+    _, raw_alice = bind_profile(client, make_user_key, "p",
+                                {"TEMPERATURE": "0.0", "DEFAULT_LANGUAGE": "de",
+                                 "locks": ["TEMPERATURE", "DEFAULT_LANGUAGE"]})
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
@@ -56,11 +54,7 @@ def test_ready_frame_reports_locked_handshake_override(client, make_user_key):
 def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
                                         app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profile(client, h, "p", BEAM_SIZE=7)
-    uid, raw_alice = make_user_key("alice")
-    _bind(client, h, uid, profiles=["p"])
+    _, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 7})
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
@@ -626,11 +620,7 @@ def test_stream_survives_an_unrelated_config_bump(
     """The other direction: a settings save bumps the same config version, and
     the still-valid credential must NOT be treated as revoked."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profile(client, h, "p", BEAM_SIZE=3)
-    uid, raw_alice = make_user_key("alice")
-    _bind(client, h, uid, profiles=["p"])
+    h, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 3})
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
@@ -894,12 +884,9 @@ def test_spelled_newline_separator_is_decoded_from_every_source(monkeypatch, raw
 
 
 def test_stream_knobs_locked_are_ignored(client, make_user_key, monkeypatch):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profile(client, h, "p", STREAMING_VAD_OUTER_SILENCE_MS=1500,
-             locks=["STREAMING_VAD_OUTER_SILENCE_MS"])
-    uid, raw_alice = make_user_key("alice")
-    _bind(client, h, uid, profiles=["p"])
+    _, raw_alice = bind_profile(client, make_user_key, "p",
+                                {"STREAMING_VAD_OUTER_SILENCE_MS": 1500,
+                                 "locks": ["STREAMING_VAD_OUTER_SILENCE_MS"]})
     ready, seen = _knobs_handshake(
         client, monkeypatch,
         {"streaming_vad_outer_silence_ms": 3000, "streaming_vad_threshold": 0.3},
@@ -912,14 +899,11 @@ def test_stream_knobs_locked_are_ignored(client, make_user_key, monkeypatch):
 def test_stream_knobs_never_move_a_locked_partner(client, make_user_key, monkeypatch):
     """A client outer that would push a LOCKED inner or hard break is dropped;
     the admin's locked pair stays exactly as set."""
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profile(client, h, "p", STREAMING_HARD_BREAK_SILENCE_MS=5000,
-             STREAMING_VAD_INNER_SILENCE_MS=800,
-             locks=["STREAMING_HARD_BREAK_SILENCE_MS",
-                    "STREAMING_VAD_INNER_SILENCE_MS"])
-    uid, raw_alice = make_user_key("alice")
-    _bind(client, h, uid, profiles=["p"])
+    _, raw_alice = bind_profile(client, make_user_key, "p",
+                                {"STREAMING_HARD_BREAK_SILENCE_MS": 5000,
+                                 "STREAMING_VAD_INNER_SILENCE_MS": 800,
+                                 "locks": ["STREAMING_HARD_BREAK_SILENCE_MS",
+                                           "STREAMING_VAD_INNER_SILENCE_MS"]})
     for outer in (6000, 300):
         _, seen = _knobs_handshake(
             client, monkeypatch, {"streaming_vad_outer_silence_ms": outer},
