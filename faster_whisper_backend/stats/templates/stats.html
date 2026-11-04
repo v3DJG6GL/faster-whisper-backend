@@ -1466,6 +1466,7 @@ function setBar(barEl, pct) {
   barEl.classList.toggle('warn', pct >= 75 && pct < 90);
   barEl.classList.toggle('crit', pct >= 90);
 }
+function setVal(id, val, sub) { $(id).innerHTML = val + '<span class="sub">' + sub + '</span>'; }
 
 // The payload's `scope` ("own"|"all") and `machine` (bool) are decided
 // server-side (StatsScope). scope=own hides the per-user controls — the only
@@ -1638,7 +1639,7 @@ function render(snap) {
     $('gpu-error').textContent = snap.gpu_error || '';
   }
 
-  $('cpu-pct').innerHTML = (snap.host.cpu_pct ?? 0).toFixed(1) + '<span class="sub">%</span>';
+  setVal('cpu-pct', (snap.host.cpu_pct ?? 0).toFixed(1), '%');
   const stripEl = $('cpu-cores');
   const cores = snap.host.cpu_per_core || [];
   if (stripEl.children.length !== cores.length) {
@@ -1651,24 +1652,21 @@ function render(snap) {
   setData(sparks.cpu, hist.cpu);
   setReadout('cpu-now', snap.host.cpu_pct ?? 0);
 
-  $('ram-val').innerHTML = `${fmtBytes(snap.host.ram_used_mb)} ` +
-    `<span class="sub">/ ${fmtBytes(snap.host.ram_total_mb)}</span>`;
+  setVal('ram-val', fmtBytes(snap.host.ram_used_mb) + ' ', '/ ' + fmtBytes(snap.host.ram_total_mb));
   setBar($('ram-bar'), snap.host.ram_pct);
   $('ram-meta').innerHTML = `<b>${snap.host.ram_pct.toFixed(1)}%</b> used &nbsp; ` +
     `<b>disk free</b> ${snap.host.disk_free_gb ?? '—'} GB (model cache)`;
   setData(sparks.ram, hist.ram_pct);
   setReadout('ram-now', snap.host.ram_pct ?? 0);
 
-  $('proc-rss').innerHTML = (snap.process.rss_mb ?? 0).toFixed(0) +
-    '<span class="sub">MB RSS</span>';
+  setVal('proc-rss', (snap.process.rss_mb ?? 0).toFixed(0), 'MB RSS');
   $('proc-meta').innerHTML =
     `<b>PID</b> ${snap.process.pid} &nbsp; ` +
     `<b>CPU</b> ${(snap.process.cpu_pct ?? 0).toFixed(1)}% &nbsp; ` +
     `<b>threads</b> ${snap.process.threads ?? '—'} &nbsp; ` +
     `<b>uptime</b> ${fmtSec(snap.process.uptime_sec)}`;
 
-  $('inflight-val').innerHTML = `${snap.in_flight_transcriptions}` +
-    `<span class="sub">in flight</span>`;
+  setVal('inflight-val', snap.in_flight_transcriptions, 'in flight');
   const gate = snap.gpu_gate || {};
   const gateEl = $('gate-meta');
   if (gateEl) {
@@ -1708,7 +1706,7 @@ function render(snap) {
   const lat = snap.latency_ms || { n: 0, p50: 0, p95: 0, p99: 0 };
   $('lat-n').textContent = lat.n;
   if (lat.n > 0) {
-    $('lat-val').innerHTML = lat.p50.toFixed(0) + '<span class="sub">ms p50</span>';
+    setVal('lat-val', lat.p50.toFixed(0), 'ms p50');
     $('lat-meta').innerHTML =
       `<b>p95</b> ${lat.p95.toFixed(0)} ms &nbsp; ` +
       `<b>p99</b> ${lat.p99.toFixed(0)} ms`;
