@@ -2077,9 +2077,7 @@
         'Click a word, or use ← / → and type, to mark '
       + 'and correct it; shift-click extends a range; Enter accepts, Del removes.');
     var strip = _el('div', 'word-strip');
-    state.wordEls = _renderWordStrip(strip, state.words, function(i, sh) {
-      onWordClick(state, i, sh);
-    }, ' ');
+    state.wordEls = _renderWordStrip(state, strip, ' ');
     corrSec.appendChild(strip);
     state.stripEl = strip;
     if (typeof state.cursorIdx !== 'number') state.cursorIdx = -1;
@@ -3544,19 +3542,16 @@
     }
   }
 
-  // onClick (optional): function(idx, shiftKey), called on a click on a
-  // word span. `lead` goes to _paintWordSpan.
-  function _renderWordStrip(stripEl, words, onClick, lead) {
+  // `lead` goes to _paintWordSpan.
+  function _renderWordStrip(state, stripEl, lead) {
     stripEl.innerHTML = '';
     var els = [];
-    words.forEach(function(w, i) {
+    state.words.forEach(function(w, i) {
       var sp = _el('span', 'word');
       _paintWordSpan(sp, w, lead);
-      if (onClick) {
-        sp.addEventListener('click', function(e) {
-          onClick(i, !!e.shiftKey);
-        });
-      }
+      sp.addEventListener('click', function(e) {
+        onWordClick(state, i, !!e.shiftKey);
+      });
       stripEl.appendChild(sp);
       els.push(sp);
     });
@@ -4135,9 +4130,7 @@
         if (panel._corrSec) panel._corrSec.hidden = false;
         if (panel._gtSec) panel._gtSec.hidden = false;
         _previewActivePanel = panel;
-        state.wordEls = _renderWordStrip(stripEl, wordsArr, function(i, sh) {
-          onWordClick(state, i, sh);
-        }, ' ');
+        state.wordEls = _renderWordStrip(state, stripEl, ' ');
         _bindStripKeyboard(state);
         // Read by the karaoke binding and the batch-card keyboard/focus code.
         panel._state = state;
@@ -5195,9 +5188,7 @@
           // below must not leave the card "unsaved" for a heal.
           sampleState.saveBlocked = !!d.is_locked && !_isAdmin;
 
-          sampleState.wordEls = _renderWordStrip(strip, sampleState.words, function(i, sh) {
-            onWordClick(sampleState, i, sh);
-          }, ' ');
+          sampleState.wordEls = _renderWordStrip(sampleState, strip, ' ');
           var prevMember = -1;
           sampleState.wordEls.forEach(function(sp, i) {
             var member = sampleState.words[i].member_idx;
