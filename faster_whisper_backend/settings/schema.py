@@ -1839,6 +1839,7 @@ class AdminConfig(BaseModel):
                     raise ValueError(f"only one terminal rule allowed (already at index {terminal_idx})")
                 terminal_idx = idx
                 continue
+            where = f"rule {idx} ({slug!r})"
             # callback:map has no pattern field (auto-built from map keys at
             # compile time); skip it here.  On save, reject case-collisions:
             # the compiler lowercases all keys, so two keys differing only by
@@ -1854,7 +1855,7 @@ class AdminConfig(BaseModel):
                     for lower, originals in lc.items():
                         if len(originals) > 1:
                             raise ValueError(
-                                f"rule {idx} ({slug!r}): map keys "
+                                f"{where}: map keys "
                                 f"{originals} collide when lowercased")
                 continue
             if rtype == "regex-list":
@@ -1862,17 +1863,16 @@ class AdminConfig(BaseModel):
                     epat = getattr(entry, "pattern", None)
                     if not epat:
                         continue
-                    where = f"rule {idx} ({slug!r}) entry {eidx}"
-                    rx = _compile(where, epat, str(slug or ""))
+                    entry_where = f"{where} entry {eidx}"
+                    rx = _compile(entry_where, epat, str(slug or ""))
                     erepl = getattr(entry, "replacement", "") or ""
-                    checks.append((where, epat, erepl, str(slug or ""), rx))
+                    checks.append((entry_where, epat, erepl, str(slug or ""), rx))
                 continue
             # callback:* pattern-only rows (lowercase-wordlist / dedup / upper):
             # smoke-test the pattern with an empty replacement.
             pattern = getattr(rule, "pattern", None)
             if not pattern:
                 continue
-            where = f"rule {idx} ({slug!r})"
             rx = _compile(where, pattern, str(slug or ""))
             # The replacer drops only the text before group 1 and lowercases
             # group 2 (the first letter) when groups 2 + 3 spell a wordlist
