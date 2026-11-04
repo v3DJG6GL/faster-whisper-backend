@@ -784,6 +784,11 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _de_en(segs, mode="faithful"):
+    return _run(translation.translate_segments(
+        segs, ["en"], source_lang="de", mode=mode))
+
+
 @pytest.fixture()
 def base_cfg(monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "org/model",
@@ -860,8 +865,7 @@ def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
     calls = []
     _install_fake(monkeypatch, _xlate, calls)
     segs = _segs("Erstens 1.", "Zweitens.", "Drittens.")
-    res, warns, _ = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(segs)
     assert warns == []
     assert [r["en"] for r in res] == \
         ["eRSTENS 1.", "zWEITENS.", "dRITTENS."]
@@ -885,8 +889,7 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
     _install_complete(monkeypatch, fake)
 
     segs = _segs("Eins zwei.", "Drei vier.", "Fuenf sechs.", "Sieben acht.")
-    res, warns, _ = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(segs)
     assert warns == []
     assert [r["en"] for r in res] == [
         "eINS ZWEI.", "dREI VIER.", "fUENF SECHS.", "sIEBEN ACHT."]
@@ -911,8 +914,7 @@ def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
     # Every numbered batch is a count mismatch.
     _install_complete(monkeypatch, _numbered_fake(calls, lambda lines: True))
 
-    res, warns, _ = _run(translation.translate_segments(
-        _segs(*texts), ["en"], source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(_segs(*texts))
     assert warns == []
     assert [r["en"] for r in res if r["en"]] == ["eINS ZWEI.", "dREI VIER."]
     numbered = [c for c in calls
@@ -932,9 +934,7 @@ def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
         calls, lambda lines: len(calls) == 1))
 
     live = [f"Satz nummer {n}." for n in range(28)]
-    res, warns, _ = _run(translation.translate_segments(
-        _segs(*([""] * 4 + live)), ["en"], source_lang="de",
-        mode="faithful"))
+    res, warns, _ = _de_en(_segs(*([""] * 4 + live)))
     assert warns == []
     assert [r["en"] for r in res[4:]] == [_xlate(t) for t in live]
     # 8 (mismatch) → 6: [4 blanks + 2 live], then k grows back to 8 over
@@ -985,8 +985,7 @@ def _batch_sizes(calls):
 
 def _assert_faithful_roundtrip(live):
     """Translate ``live`` faithfully de→en: no warnings, every cue back as _xlate."""
-    res, warns, _ = _run(translation.translate_segments(
-        _segs(*live), ["en"], source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(_segs(*live))
     assert warns == []
     assert [r["en"] for r in res] == [_xlate(t) for t in live]
 
@@ -1041,9 +1040,7 @@ def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
     spaces; its verbatim echo must still read as a copy of the source."""
     _install_fake(monkeypatch, lambda t: " ".join(t.split())
                   if t.startswith("Guten") else _xlate(t))
-    res, warns, meta = _run(translation.translate_segments(
-        _segs("Guten Tag\nwie geht es", "Noch was hier."), ["en"],
-        source_lang="de", mode="faithful"))
+    res, warns, meta = _de_en(_segs("Guten Tag\nwie geht es", "Noch was hier."))
     assert meta["kept"] == {0: ["en"]}
     assert res[0]["en"] == "Guten Tag\nwie geht es"
     assert res[1]["en"] == "nOCH WAS HIER."
@@ -1075,8 +1072,7 @@ def test_fluent_group_revert_never_marks_a_blank_member_kept(base_cfg,
     _install_fake(monkeypatch, lambda t: t)          # copies → guard fails
     segs = _segs("Guten Tag", "", "wie geht es dir.")
     assert translation._merge_sentences(segs) == [[0, 1, 2]]
-    res, warns, meta = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="fluent"))
+    res, warns, meta = _de_en(segs, mode="fluent")
     assert [r["en"] for r in res] == ["Guten Tag", "", "wie geht es dir."]
     assert meta["kept"] == {0: ["en"], 2: ["en"]}
     assert len(warns) == 1 and "segments 1-3 (en)" in warns[0]
@@ -1098,8 +1094,7 @@ def test_guards_keep_original_without_retry_for_greedy_family(
         base_cfg, monkeypatch, src, bad_out, reason):
     calls = []
     _install_fake(monkeypatch, bad_out, calls)
-    res, warns, meta = _run(translation.translate_segments(
-        _segs(src), ["en"], source_lang="de", mode="faithful"))
+    res, warns, meta = _de_en(_segs(src))
     assert res == [{"en": src}]
     # Greedy family (chatml) + no context on the first attempt: the retry
     # would re-send a bit-identical prompt at temperature 0 — skipped.
@@ -1118,8 +1113,7 @@ def test_inference_error_surfaces_as_a_client_safe_translation_error(
         raise RuntimeError("CUDA error: out of memory at 0xdeadbeef")
     _install_complete(monkeypatch, boom)
     with pytest.raises(translation.TranslationError) as ei:
-        _run(translation.translate_segments(
-            _segs("Hallo Welt"), ["en"], source_lang="de", mode="faithful"))
+        _de_en(_segs("Hallo Welt"))
     assert "see the server log" in str(ei.value)
     assert "deadbeef" not in str(ei.value)
 
@@ -1150,8 +1144,7 @@ def test_faithful_batch_past_the_context_window_is_halved(base_cfg,
     two = len(translation._NUMBERED_INSTRUCTION) + 2 * 50
     fake, calls = _overflow_past(two)
     _install_complete(monkeypatch, fake)
-    res, warns, meta = _run(translation.translate_segments(
-        _segs(*texts), ["en"], source_lang="de", mode="faithful"))
+    res, warns, meta = _de_en(_segs(*texts))
     assert warns == [] and meta["kept"] == {}
     assert [r["en"] for r in res] == [_xlate(t) for t in texts]
     assert len(calls) == 3                       # 4 (too long) → 2 + 2
@@ -1201,8 +1194,7 @@ def test_retry_drops_context(base_cfg, monkeypatch):
     monkeypatch.setattr(translation, "_complete", fake)
 
     segs = _segs("Hallo Welt du schoene.", "Wie geht es dir denn heute?")
-    res, warns, _ = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(segs)
     assert warns == []
     assert res[1]["en"] == "A GOOD ENOUGH TRANSLATION HERE"
     # seg 1 (no context) + seg 2 first attempt (context) + seg 2 retry.
@@ -1225,8 +1217,7 @@ def test_hunyuan_no_context_still_rerolls(base_cfg, monkeypatch):
         return ""                     # empty output → guard fails every time
     monkeypatch.setattr(translation, "_complete", fake)
 
-    res, warns, _ = _run(translation.translate_segments(
-        _segs("Hallo Welt"), ["en"], source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(_segs("Hallo Welt"))
     assert res == [{"en": "Hallo Welt"}]
     assert len(calls) == 2                               # initial + ONE retry
     assert calls[0] == calls[1]      # same (context-free) prompt, re-rolled
@@ -1255,9 +1246,7 @@ def test_batch_guard_failure_retries_that_segment_alone(base_cfg, monkeypatch):
         return inner(llm, family, prompt_or_msgs, max_tokens)
     monkeypatch.setattr(translation, "_complete", fake)
 
-    res, warns, _ = _run(translation.translate_segments(
-        _segs("Erstens gut.", "Zweitens kaputt."), ["en"],
-        source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(_segs("Erstens gut.", "Zweitens kaputt."))
     assert warns == []
     assert res[0]["en"] == "eRSTENS GUT."
     assert res[1]["en"] == "sECOND FIXED."
@@ -1275,9 +1264,7 @@ def test_batch_kept_original_recorded_per_segment(base_cfg, monkeypatch):
         return _xlate(t)
     _install_fake(monkeypatch, per_item)
 
-    res, warns, meta = _run(translation.translate_segments(
-        _segs("Erstens gut.", "Zweitens kaputt."), ["en"],
-        source_lang="de", mode="faithful"))
+    res, warns, meta = _de_en(_segs("Erstens gut.", "Zweitens kaputt."))
     assert res[0]["en"] == "eRSTENS GUT."
     assert res[1]["en"] == "Zweitens kaputt."            # source kept
     assert meta["kept"] == {1: ["en"]}
@@ -1294,8 +1281,7 @@ def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
     _install_fake(monkeypatch, fake_group, calls)
 
     segs = _segs("Hallo Welt.", "Wie geht", "es dir?")
-    res, warns, _ = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="fluent"))
+    res, warns, _ = _de_en(segs, mode="fluent")
     assert warns == []
     assert res[0]["en"] == "Hello world."
     # Group ["Wie geht", "es dir?"] redistributed across both members at a
@@ -1326,8 +1312,7 @@ def test_fluent_short_reply_reverts_group_instead_of_blank_cues(
     and every member lands in meta['kept'], exactly like a guard hit."""
     _install_fake(monkeypatch, lambda t: "ok")           # 2 chars, 6 members
     segs = _segs("uh", "um", "ja", "ne", "so", "hm")
-    res, warns, meta = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="fluent"))
+    res, warns, meta = _de_en(segs, mode="fluent")
     assert all(r["en"] for r in res)
     assert [r["en"] for r in res] == [s["text"] for s in segs]
     assert len(warns) == 1 and "redistribution left empty cues" in warns[0]
@@ -1350,8 +1335,7 @@ def test_fluent_reply_with_fewer_clusters_than_cues_reverts_group(
 def test_fluent_group_failure_keeps_member_originals(base_cfg, monkeypatch):
     _install_fake(monkeypatch, lambda t: t)              # always a copy → fail
     segs = _segs("Hallo Welt und mehr Text", "es dir heute wirklich?")
-    res, warns, meta = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="fluent"))
+    res, warns, meta = _de_en(segs, mode="fluent")
     assert res[0]["en"] == segs[0]["text"]
     assert res[1]["en"] == segs[1]["text"]
     assert len(warns) == 1 and "kept original" in warns[0]
@@ -1443,8 +1427,7 @@ def test_greedy_context_blind_family_skips_context_retry(base_cfg,
     calls = []
     _install_fake(monkeypatch, lambda t: t, calls)       # copy → guard fails
     segs = _segs("Hallo Welt und mehr", "Wie geht es dir denn?")
-    res, warns, _ = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode="faithful"))
+    res, warns, _ = _de_en(segs)
     assert [r["en"] for r in res] == [s["text"] for s in segs]
     assert len(calls) == 2       # one per segment — NO context-free retry
     assert len(warns) == 2
@@ -2475,8 +2458,7 @@ def test_without_override_custom_family_still_reads_cfg(base_cfg, monkeypatch):
                         "SAVED {text}", raising=False)
     prompts = _record_complete(monkeypatch, "Hello world.")
 
-    _run(translation.translate_segments(
-        _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful"))
+    _de_en(_segs("Hallo Welt."))
     assert prompts[0][1] == [{"role": "user", "content": "SAVED Hallo Welt."}]
 
 
