@@ -20,7 +20,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 from faster_whisper_backend.transcription import decode_trace as _decode_trace
@@ -2081,6 +2081,24 @@ async def transcribe(
                     tx_receipt._failed_stage(stage, t0, model, exc))
                 _rplan.stage_failed(stage)
 
+            @contextmanager
+            def _soft_fail_stage(stage: str, t0: float, model,
+                                 cancelled_exc: type, error_exc: type,
+                                 tag: str, fallback: str):
+                try:
+                    yield
+                except tx_progress._ClientCancelled:
+                    raise
+                except cancelled_exc:
+                    raise tx_progress._ClientCancelled() from None
+                except error_exc as e:
+                    # str(e) is client-safe by the module's contract.
+                    _stage_soft_failed(stage, t0, model, e, str(e))
+                except Exception as e:  # noqa: BLE001 — soft-fail
+                    logger.error("%s unexpected failure: %s", tag,
+                                 _log_safe(str(e)))
+                    _stage_soft_failed(stage, t0, model, e, fallback)
+
             _separate = bool(effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "SEPARATE_BGM", "separate_bgm", _form_bool(separate_bgm),
@@ -2327,8 +2345,13 @@ async def transcribe(
                           "music separation requested but not enabled on this "
                           "server (BGM_SEPARATION_ENABLED is off)")
                 else:
-                    try:
-                        _sep_t0 = time.perf_counter()
+                    _sep_t0 = time.perf_counter()
+                    with _soft_fail_stage(
+                            "separating", _sep_t0, _separation_model,
+                            _bgm_separation.BgmCancelled,
+                            _bgm_separation.BgmSeparationError, "[bgm]",
+                            "music separation failed; transcribing the "
+                            "original audio"):
                         _cur_stage = "separating"
                         _ps(
                             stage="separating", progress=None,
@@ -2435,21 +2458,6 @@ async def transcribe(
                             detail=("incl. transcode"
                                     if _sep_wav is not None else None)))
                         _rplan.stage_done("separating")
-                    except tx_progress._ClientCancelled:
-                        raise
-                    except _bgm_separation.BgmCancelled:
-                        raise tx_progress._ClientCancelled() from None
-                    except _bgm_separation.BgmSeparationError as _se:
-                        # str(_se) is client-safe by the module's contract.
-                        _stage_soft_failed("separating", _sep_t0,
-                                           _separation_model, _se, str(_se))
-                    except Exception as _se:  # noqa: BLE001 — soft-fail
-                        logger.error("[bgm] unexpected failure: %s",
-                                     _log_safe(str(_se)))
-                        _stage_soft_failed(
-                            "separating", _sep_t0, _separation_model, _se,
-                            "music separation failed; transcribing the "
-                            "original audio")
 
             # CT2 releases the GIL, so concurrent requests on different models
             # decode in parallel threads (subject to GPU compute scheduling).
@@ -2810,8 +2818,13 @@ async def transcribe(
                           "diarization requested but not enabled on this "
                           "server (DIARIZATION_ENABLED is off)")
                 else:
-                    try:
-                        _diar_t0 = time.perf_counter()
+                    _diar_t0 = time.perf_counter()
+                    with _soft_fail_stage(
+                            "diarizing", _diar_t0, _diarization_model,
+                            _diarization.DiarizeCancelled,
+                            _diarization.DiarizationError, "[diarize]",
+                            "diarization failed; the transcript has no "
+                            "speaker labels"):
                         _cur_stage = "diarizing"
                         _ps(
                             stage="diarizing", progress=None,
@@ -2848,21 +2861,6 @@ async def transcribe(
                             detail=f"{len(speakers_list)} speakers",
                             speakers=len(speakers_list)))
                         _rplan.stage_done("diarizing")
-                    except tx_progress._ClientCancelled:
-                        raise
-                    except _diarization.DiarizeCancelled:
-                        raise tx_progress._ClientCancelled() from None
-                    except _diarization.DiarizationError as _de:
-                        # str(_de) is client-safe by the module's contract.
-                        _stage_soft_failed("diarizing", _diar_t0,
-                                           _diarization_model, _de, str(_de))
-                    except Exception as _de:  # noqa: BLE001 — soft-fail
-                        logger.error("[diarize] unexpected failure: %s",
-                                     _log_safe(str(_de)))
-                        _stage_soft_failed(
-                            "diarizing", _diar_t0, _diarization_model, _de,
-                            "diarization failed; the transcript has no "
-                            "speaker labels")
             elif _diarize:
                 _skip("diarizing", "diarization skipped: no speech segments")
 
@@ -2896,8 +2894,13 @@ async def transcribe(
                               "requested translation model is not in "
                               "TRANSLATION_ALLOWED_MODELS on this server")
                     else:
-                        try:
-                            _tr_t0 = time.perf_counter()
+                        _tr_t0 = time.perf_counter()
+                        with _soft_fail_stage(
+                                "translating", _tr_t0, _tr_model,
+                                _tr.TranslationCancelled, _tr.TranslationError,
+                                "[translate]",
+                                "translation failed; the transcript is "
+                                "untranslated"):
                             _cur_stage = "translating"
                             tx_progress._check_cancelled(_pid)
                             _ps(
@@ -3003,21 +3006,6 @@ async def transcribe(
                                 # source text in at least one target.
                                 kept_original=sum(
                                     1 for _k in _tr_kept.values() if _k)))
-                        except tx_progress._ClientCancelled:
-                            raise
-                        except _tr.TranslationCancelled:
-                            raise tx_progress._ClientCancelled() from None
-                        except _tr.TranslationError as _te:
-                            # str(_te) is client-safe by the module's contract.
-                            _stage_soft_failed("translating", _tr_t0,
-                                               _tr_model, _te, str(_te))
-                        except Exception as _te:  # noqa: BLE001 — soft-fail
-                            logger.error("[translate] unexpected failure: %s",
-                                         _log_safe(str(_te)))
-                            _stage_soft_failed(
-                                "translating", _tr_t0, _tr_model, _te,
-                                "translation failed; the transcript is "
-                                "untranslated")
             elif _translate_to:
                 _skip("translating", "translation skipped: no speech segments")
 
