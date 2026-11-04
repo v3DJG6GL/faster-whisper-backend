@@ -14,7 +14,7 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import (
     WAV_UPLOAD as _FILE, fail_model_load, get_progress, post_transcription as _post,
-    post_verbose, record_runs, serve_model, watch_progress)
+    post_verbose_ok, record_runs, serve_model, watch_progress)
 
 
 def test_default_json_returns_text_object(client):
@@ -117,15 +117,13 @@ def test_unknown_response_format_is_refused_before_the_model_loads(
 def test_words_gated_by_config_disabled(client, app_module):
     # WORD_TIMESTAMPS_ENABLED=False beats a request asking for word granularity.
     app_module.cfg.WORD_TIMESTAMPS_ENABLED = False
-    r = post_verbose(client, **{"timestamp_granularities[]": "word"})
-    assert r.status_code == 200
-    assert r.json().get("words") == []
+    body = post_verbose_ok(client, **{"timestamp_granularities[]": "word"})
+    assert body.get("words") == []
 
 
 def test_words_included_with_granularity_field(client, app_module):
-    r = post_verbose(client, **{"timestamp_granularities[]": "word"})
-    assert r.status_code == 200
-    assert [w["word"] for w in r.json()["words"]] == ["hallo", "welt"]
+    body = post_verbose_ok(client, **{"timestamp_granularities[]": "word"})
+    assert [w["word"] for w in body["words"]] == ["hallo", "welt"]
 
 
 def _serve_failing_decode(monkeypatch, msg):
@@ -790,12 +788,11 @@ def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
     def _refuse(src, dst, *, rate=44100, layout="stereo"):
         raise ValueError("unsupported container")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _refuse)
-    r = post_verbose(client, separate_bgm="true",
-                     files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
-    assert r.status_code == 200, r.text
+    body = post_verbose_ok(client, separate_bgm="true",
+                           files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
     assert calls == []
     assert any("music separation skipped" in w
-               for w in r.json().get("warnings") or [])
+               for w in body.get("warnings") or [])
 
 
 def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
@@ -819,12 +816,11 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
         raise av.error.InvalidDataError(1094995529, "Invalid data",
                                         "avcodec_send_packet()")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _invalid)
-    r = post_verbose(client, separate_bgm="true",
-                     files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
-    assert r.status_code == 200, r.text
+    body = post_verbose_ok(client, separate_bgm="true",
+                           files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
     assert len(calls) == 1 and not calls[0].endswith(".wav")
     assert not any("could not be prepared" in w
-                   for w in r.json().get("warnings") or [])
+                   for w in body.get("warnings") or [])
 
 
 def _record_captures_on(app_module, monkeypatch):

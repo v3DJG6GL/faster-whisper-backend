@@ -13,7 +13,7 @@ from tests.conftest import RATE, FakeSegment, FakeWord
 from faster_whisper_backend.streaming import routes as sr
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
-from tests._transcription_helpers import post_transcription, post_verbose
+from tests._transcription_helpers import post_transcription, post_verbose, post_verbose_ok
 
 
 def _worded(text: str, start: float, end: float) -> FakeSegment:
@@ -67,9 +67,7 @@ def test_word_rate_falls_back_to_text_when_no_words(app_module):
 def test_batch_drops_echo_segment(client, fake_model):
     real = _worded("hallo welt", 0.0, 1.0)
     fake_model._segments = [real, _echo_segment()]
-    r = post_verbose(client)
-    assert r.status_code == 200
-    body = r.json()
+    body = post_verbose_ok(client)
     assert "Unterschenkel" not in body["text"]
     assert body["text"] == "hallo welt"
     # Kept segments only, with contiguous ids.
@@ -89,9 +87,7 @@ def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
     app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
     real = _worded("hallo welt", 0.0, 1.0)
     fake_model._segments = [real, _echo_segment()]
-    r = post_verbose(client)
-    assert r.status_code == 200
-    body = r.json()
+    body = post_verbose_ok(client)
     assert "Unterschenkel" in body["text"]
     assert len(body["segments"]) == 2
 
@@ -114,9 +110,7 @@ def test_batch_cuts_made_up_tail_everywhere(client, fake_model, caplog):
     from faster_whisper_backend.stats import metrics
     fake_model._segments = [_loop_segment()]
     with caplog.at_level("INFO"):
-        r = post_verbose(client, **{"timestamp_granularities[]": "word"})
-    assert r.status_code == 200
-    body = r.json()
+        body = post_verbose_ok(client, **{"timestamp_granularities[]": "word"})
     assert body["text"] == _SPOKEN
     assert body["segments"][0]["text"].strip() == _SPOKEN
     assert body["segments"][0]["end"] == 5.54
@@ -200,10 +194,8 @@ def test_batch_cuts_prompt_echo_from_the_start(client, fake_model, caplog):
     from faster_whisper_backend.stats import metrics
     fake_model._segments = [_head_echo_segment()]
     with caplog.at_level("INFO"):
-        r = post_verbose(client, prompt=_ECHO_PROMPT,
-                         **{"timestamp_granularities[]": "word"})
-    assert r.status_code == 200
-    body = r.json()
+        body = post_verbose_ok(client, prompt=_ECHO_PROMPT,
+                               **{"timestamp_granularities[]": "word"})
     assert "Tabletten" not in body["text"] and body["text"].startswith("Morgen")
     assert body["segments"][0]["start"] == 0.5
     assert [w["word"] for w in body["words"]][0] == " Morgen"

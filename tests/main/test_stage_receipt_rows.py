@@ -14,14 +14,14 @@ from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
-from tests._transcription_helpers import post_verbose as _post, serve_model, wav_bytes as _wav_bytes
+from tests._transcription_helpers import (
+    post_verbose as _post, post_verbose_ok as _post_ok, serve_model, wav_bytes as _wav_bytes)
 from tests.main._stage_helpers import capture_receipt, must_not_run
 
 
 def _separating_row(client, monkeypatch, upload):
     seen = capture_receipt(monkeypatch)
-    r = _post(client, files={"file": upload}, separate_bgm="true")
-    assert r.status_code == 200, r.text
+    _post_ok(client, files={"file": upload}, separate_bgm="true")
     return next(s for s in seen["stages"] if s["name"] == "separating")
 
 
@@ -66,9 +66,8 @@ def test_vad_row_bills_the_lead_pad_pre_decode(client, app_module,
     monkeypatch.setattr(_fwa, "decode_audio", _slow_decode)
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
     seen = capture_receipt(monkeypatch)
-    r = _post(client, files={"file": ("a.wav", _wav_bytes(), "audio/wav")},
-              vad_filter="true")
-    assert r.status_code == 200, r.text
+    _post_ok(client, files={"file": ("a.wav", _wav_bytes(), "audio/wav")},
+             vad_filter="true")
     vad = next(s for s in seen["stages"] if s["name"] == "vad")
     assert vad["secs"] >= 0.05
     assert "decode" in (vad.get("detail") or "")
@@ -82,8 +81,7 @@ def test_diarization_block_present_when_stage_labels_nobody(
         return []
     monkeypatch.setattr(diarization, "diarize", _no_turns)
     seen = capture_receipt(monkeypatch)
-    r = _post(client, diarize="true")
-    assert r.status_code == 200, r.text
+    _post_ok(client, diarize="true")
     assert any(s["name"] == "diarizing" for s in seen["stages"])
     assert seen["diarization"] is not None
     assert seen["diarization"]["result"].startswith("0 speakers")
@@ -159,9 +157,8 @@ def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
                       "max": max_speakers})
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake)
-    r = _post(client, diarize="true", num_speakers="0",
-              min_speakers="0", max_speakers="0")
-    assert r.status_code == 200, r.text
+    _post_ok(client, diarize="true", num_speakers="0",
+             min_speakers="0", max_speakers="0")
     assert calls == [{"num": None, "min": None, "max": None}]
 
 
@@ -171,6 +168,5 @@ def test_translation_skipped_warning_without_speech_segments(
     must_not_run(monkeypatch, translation, "translate_segments",
                  "translate_segments() must not run")
     serve_model(monkeypatch, FakeModel(segments=[]))
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200, r.text
-    assert "translation skipped: no speech segments" in r.json()["warnings"]
+    body = _post_ok(client, translate_to="en")
+    assert "translation skipped: no speech segments" in body["warnings"]

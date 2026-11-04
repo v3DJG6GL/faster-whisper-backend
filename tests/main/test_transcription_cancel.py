@@ -6,7 +6,8 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._transcription_helpers import get_progress, post_cancel, post_verbose as _post, record_runs
+from tests._transcription_helpers import (
+    get_progress, post_cancel, post_verbose as _post, post_verbose_ok as _post_ok, record_runs)
 from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import must_not_run
 
@@ -204,8 +205,7 @@ def test_in_flight_progress_id_is_treated_as_absent(client, app_module, caplog):
     caplog.set_level("INFO", logger="whisper-api")
     tx_progress._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": "other", "updated": 0}
-    r = _post(client, progress_id=_PID)
-    assert r.status_code == 200, r.text
+    _post_ok(client, progress_id=_PID)
     assert "id already in flight" in caplog.text
     entry = tx_progress._BATCH_PROGRESS.get(_PID)
     assert entry is not None

@@ -8,7 +8,7 @@ from tests.conftest import FakeModel
 from tests.conftest import bearer
 from tests.main.test_transcription_overrides import _bind_profile_user
 from faster_whisper_backend.transcription import models as tx_models
-from tests._transcription_helpers import post_verbose, serve_model
+from tests._transcription_helpers import post_verbose_ok, serve_model
 OV = "/settings/overrides"
 
 
@@ -41,10 +41,9 @@ def test_locked_ladderless_temperature_ignores_client_form_field(
     # "," (every token blank) is a non-blank string that produces NO ladder
     # in the assembler; the lock must still bind the Form field.
     raw_alice = _lock_temperature_for_alice(client, make_user_key, ladder)
-    r = post_verbose(client, bearer(raw_alice), temperature="0.97")
-    assert r.status_code == 200, r.text
+    body = post_verbose_ok(client, bearer(raw_alice), temperature="0.97")
     assert fake_model.last_kwargs["temperature"] == 0.0
-    assert "temperature" in r.json()["overrides_ignored"]
+    assert "temperature" in body["overrides_ignored"]
 
 
 def test_segment_temperature_falls_back_to_the_decoded_value(
@@ -60,21 +59,18 @@ def test_segment_temperature_falls_back_to_the_decoded_value(
 
     serve_model(monkeypatch, FakeModel(segments=[_BareSegment()]))
     raw_alice = _lock_temperature_for_alice(client, make_user_key, "")
-    r = post_verbose(client, bearer(raw_alice), temperature="0.9")
-    assert r.status_code == 200, r.text
-    assert r.json()["segments"][0]["temperature"] == 0.0
+    body = post_verbose_ok(client, bearer(raw_alice), temperature="0.9")
+    assert body["segments"][0]["temperature"] == 0.0
 
 
 def test_client_ladder_reaches_the_decoder(client, make_user_key, fake_model):
     _, raw_alice = make_user_key("alice")
-    r = post_verbose(client, bearer(raw_alice), decode_overrides='{"temperature": "0,0.4,0.8"}')
-    assert r.status_code == 200, r.text
+    post_verbose_ok(client, bearer(raw_alice), decode_overrides='{"temperature": "0,0.4,0.8"}')
     assert fake_model.last_kwargs["temperature"] == (0.0, 0.4, 0.8)
 
 
 def test_locked_temperature_drops_a_client_ladder(client, make_user_key, fake_model):
     raw_alice = _lock_temperature_for_alice(client, make_user_key, "0.0,0.2")
-    r = post_verbose(client, bearer(raw_alice), decode_overrides='{"temperature": "0.5,1.0"}')
-    assert r.status_code == 200, r.text
+    body = post_verbose_ok(client, bearer(raw_alice), decode_overrides='{"temperature": "0.5,1.0"}')
     assert fake_model.last_kwargs["temperature"] == (0.0, 0.2)
-    assert "temperature" in r.json()["overrides_ignored"]
+    assert "temperature" in body["overrides_ignored"]
