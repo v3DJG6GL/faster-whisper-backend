@@ -366,11 +366,8 @@ def test_snapshot_running_row_carries_the_username(client, app_module,
     # test_snapshot_carries_running_jobs), so a row parked with a username
     # surfaces as that username to an admin viewer.
     jid = jobs.job_start("transcribe", model="m", user="root")
-    try:
-        snap = client.get("/stats/snapshot", headers=bearer(raw_admin)).json()
-        assert next(j for j in snap["jobs"] if j["id"] == jid)["user"] == "root"
-    finally:
-        jobs.job_end(jid)
+    snap = client.get("/stats/snapshot", headers=bearer(raw_admin)).json()
+    assert next(j for j in snap["jobs"] if j["id"] == jid)["user"] == "root"
 
 
 _MACHINE_KEYS = {"gpu", "gpu_error", "host", "process", "models", "model_loads",
@@ -395,12 +392,9 @@ def _seed_jobs():
 
 
 def _own_payload_with_seeded_jobs(lite=False):
-    a, b = _seed_jobs()
-    try:
-        return stats_routes._build_payload(
-            stats_routes.stats_scope_for(_user("own")), lite=lite), a
-    finally:
-        jobs.job_end(a); jobs.job_end(b)
+    a, _ = _seed_jobs()
+    return stats_routes._build_payload(
+        stats_routes.stats_scope_for(_user("own")), lite=lite), a
 
 
 def test_stats_scope_rules(client, app_module, monkeypatch):
@@ -489,11 +483,8 @@ def test_nonadmin_all_scope_unchanged(client):
     a, b = _seed_jobs()
     jobs.job_update(a, progress_id="pid-a")
     jobs.job_update(b, progress_id="pid-b")
-    try:
-        snap = stats_routes._build_payload(
-            stats_routes.stats_scope_for(_user("all")))
-    finally:
-        jobs.job_end(a); jobs.job_end(b)
+    snap = stats_routes._build_payload(
+        stats_routes.stats_scope_for(_user("all")))
     assert snap["scope"] == "all" and snap["machine"] is True
     assert {"gpu", "host", "latency_ms"} <= set(snap)
     rows = {j["id"]: j for j in snap["jobs"]}
@@ -509,11 +500,8 @@ def test_snapshot_route_own_user_over_http(client, make_user_key, monkeypatch):
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "own"})
     a = jobs.job_start("transcribe", model="m", user="alice", user_id=uid)
-    b = jobs.job_start("transcribe", model="m", user="bob", user_id="other")
-    try:
-        snap = client.get("/stats/snapshot", headers=bearer(raw)).json()
-    finally:
-        jobs.job_end(a); jobs.job_end(b)
+    jobs.job_start("transcribe", model="m", user="bob", user_id="other")
+    snap = client.get("/stats/snapshot", headers=bearer(raw)).json()
     assert snap["scope"] == "own" and snap["machine"] is False
     assert [j["id"] for j in snap["jobs"]] == [a]
     assert "gpu" not in snap and "server" in snap
@@ -1026,23 +1014,20 @@ def test_stats_jobs_scope_rules(client, make_user_key):
     _seed_jobs_pages(3, user_id=bob)
     a = jobs.job_start("transcribe", model="m", user="alice", user_id=alice)
     jobs.job_update(a, progress_id="pid-a")
-    try:
-        own = client.get("/stats/jobs", headers=bearer(raw_alice)).json()
-        assert own["scope"] == "own"
-        assert {j["request_id"][:len(alice)] for j in own["jobs"]} == {alice}
-        assert own["jobs"][0]["key_label"] == "lbl"                # own rows keep identity
-        assert [r["id"] for r in own["running"]] == [a]
-        assert own["running"][0]["progress_id"] == "pid-a"       # own cancel handle
-        all_ = client.get("/stats/jobs", headers=bearer(raw_bob)).json()
-        assert all_["scope"] == "all" and len(all_["jobs"]) == 5
-        assert all(j["key_label"] == "" for j in all_["jobs"])   # scrubbed
-        assert "progress_id" not in all_["running"][0]           # not bob's job
-        assert client.get(f"/stats/jobs?user={alice}",
-                          headers=bearer(raw_bob)).status_code == 403
-        prev = client.get(f"/stats/jobs?user={alice}", headers=bearer(raw_admin)).json()
-        assert prev["scope"] == "own" and len(prev["jobs"]) == 2
-    finally:
-        jobs.job_end(a)
+    own = client.get("/stats/jobs", headers=bearer(raw_alice)).json()
+    assert own["scope"] == "own"
+    assert {j["request_id"][:len(alice)] for j in own["jobs"]} == {alice}
+    assert own["jobs"][0]["key_label"] == "lbl"                # own rows keep identity
+    assert [r["id"] for r in own["running"]] == [a]
+    assert own["running"][0]["progress_id"] == "pid-a"       # own cancel handle
+    all_ = client.get("/stats/jobs", headers=bearer(raw_bob)).json()
+    assert all_["scope"] == "all" and len(all_["jobs"]) == 5
+    assert all(j["key_label"] == "" for j in all_["jobs"])   # scrubbed
+    assert "progress_id" not in all_["running"][0]           # not bob's job
+    assert client.get(f"/stats/jobs?user={alice}",
+                      headers=bearer(raw_bob)).status_code == 403
+    prev = client.get(f"/stats/jobs?user={alice}", headers=bearer(raw_admin)).json()
+    assert prev["scope"] == "own" and len(prev["jobs"]) == 2
 
 
 def test_stats_jobs_users_filter(client, make_user_key):
