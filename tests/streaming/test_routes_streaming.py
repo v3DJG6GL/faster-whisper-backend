@@ -7,7 +7,10 @@ Open mode (no API key) → the synthetic admin passes auth, from the admin host
 allowlist only (loopback here).
 """
 
+import asyncio
+import inspect
 import json
+import logging
 import shutil
 import subprocess
 import time
@@ -20,7 +23,11 @@ from tests._streaming_helpers import (
     const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake,
     locked_down_user, ready_ws, speak_and_stop, stop_and_drain, stream_ws)
 from tests._transcription_helpers import guard_line
+from tests.conftest import FakeInfo, FakeSegment, FakeWord
+from faster_whisper_backend.stats import metrics, usage_store
 from faster_whisper_backend.streaming import routes as streaming_routes
+from faster_whisper_backend.streaming.routes import _WS_UNAUTH
+from faster_whisper_backend.transcription import decode_trace as dt
 from faster_whisper_backend.transcription import models as tx_models
 
 _pcm = const_pcm
@@ -97,9 +104,6 @@ def test_stream_rejects_a_non_string_audio_format(client, monkeypatch, caplog, f
     """An unhashable audio.format used to raise TypeError at the set-membership
     test and reach the handler's blanket except: a full traceback, an error
     usage row, and a generic error frame instead of unsupported_format."""
-    import logging
-
-    from faster_whisper_backend.stats import metrics
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
     caplog.set_level(logging.ERROR, logger="faster_whisper_backend.streaming.routes")
@@ -337,7 +341,6 @@ def test_ws_bearer_subprotocol_admits(client, make_user_key):
 
 
 def test_ws_key_query_param_rejected(client, make_user_key):
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
     _uid, raw = locked_down_user(make_user_key)
     with pytest.raises(WebSocketDisconnect) as ei:
         with client.websocket_connect(
@@ -350,7 +353,6 @@ def test_ws_open_mode_remote_rejected(app_module):
     # /v1 has no host allowlist, but the open-mode synthetic admin is confined
     # to ADMIN_WEBUI_ALLOWED_HOSTS — so a remote peer on an unbootstrapped
     # server gets the unauth close, not a free session.
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         with pytest.raises(WebSocketDisconnect) as ei:
             with c.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -390,7 +392,6 @@ def test_stream_records_the_key_label_on_the_trace_row(
     """The recent-transcriptions row snapshots the API key's label straight
     from the auth record (user["key_label"]), the same way /transcribe does."""
     from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.stats import metrics
     make_user_key("root", is_admin=True)   # locks the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
     raw, _rec = api_keys_store.create_key(uid, label="alice-laptop")
@@ -405,8 +406,6 @@ def test_flush_after_new_audio_is_not_coalesced(client, monkeypatch, energy_vad)
     `flush A → audio → flush B` has to deliver BOTH flushes to the pump (new
     audio makes the queued flush no longer authoritative), instead of silently
     degrading to flush A and leaving utterance B waiting for the silence gate."""
-    import asyncio
-
     from faster_whisper_backend.streaming import session as streaming_session
 
     flushes = []
@@ -435,7 +434,6 @@ def test_safe_ws_send_swallows_dead_socket():
     sends a final to a dead socket. uvicorn raises RuntimeError('Unexpected ASGI
     message ... after ... close'); the send must be swallowed, not surface as an
     error traceback."""
-    import asyncio
 
     class DeadWS:
         async def send_json(self, _m):
@@ -540,8 +538,6 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
         client, app_module, monkeypatch, caplog):
     """One client must not be able to fill the pool. The global cap is left
     wide open, so a refusal here can only come from the per-user one."""
-    import logging
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 10,
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
@@ -683,8 +679,6 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
     """A cancellation delivered while the keepalive loop waits on a load that
     has ALREADY returned: the lease was taken, the record of it never made.
     The teardown must still find and release it."""
-    import asyncio
-
     _real = tx_models._get_or_load_model
 
     async def _loader(name, *, lease=False):
@@ -717,7 +711,6 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
 def test_stream_client_job_names_the_usage_job(client, energy_vad):
     """The handshake's `client_job` becomes the usage job id, so the outcome
     the client posts afterwards lands on the session's own utterances."""
-    from faster_whisper_backend.stats import usage_store
     dictate_session(client, client_job="ab" * 16)
     rows = usage_store._require_conn().execute(
         "SELECT job_id, kind, utterances FROM usage_jobs").fetchall()
@@ -725,7 +718,6 @@ def test_stream_client_job_names_the_usage_job(client, energy_vad):
 
 
 def test_stream_malformed_client_job_falls_back_to_session_id(client, energy_vad):
-    from faster_whisper_backend.stats import usage_store
     dictate_session(client, client_job="../not-hex")
     rows = usage_store._require_conn().execute(
         "SELECT job_id, kind FROM usage_jobs").fetchall()
@@ -761,9 +753,6 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(
     """The FINAL decode resolves DECODE_SKIP_RESIDUAL_WINDOWS through cfg_for,
     hands it to the trace capture, and the receipt's guards block shows the
     value (with the non-default marker once it is switched off)."""
-    import logging
-    from faster_whisper_backend.transcription import decode_trace as dt
-
     seen = []
     real = dt.capture
 
@@ -808,9 +797,6 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     17-token answer waited 13.9 s for a looping sibling. The FINAL
     decode gets the token cap (through the trace capture) and
     STREAMING_FINAL_BEST_OF; partials keep their own knobs."""
-    import logging
-    from faster_whisper_backend.transcription import decode_trace as dt
-
     caps = []
     real = dt.capture
 
@@ -861,7 +847,6 @@ def test_stream_final_best_of_pins_when_the_client_value_does_not_apply(
 # returned on 2026-09-19.
 
 def _loop_segment():
-    from tests.conftest import FakeSegment, FakeWord
     real = [(" Besser", 0.32, 0.74), (" wäre", 0.74, 1.0), (" zwei", 1.0, 1.4),
             (" Tabletten", 1.4, 2.0)]
     tail = [(" zu", 2.0, 2.04), (" nehmen", 2.04, 2.04), (" und", 2.04, 2.4)] + [
@@ -871,7 +856,6 @@ def _loop_segment():
 
 
 def test_stream_final_and_previews_cut_the_made_up_tail(client, fake_model, caplog, energy_vad):
-    from faster_whisper_backend.stats import metrics
     fake_model._segments = [_loop_segment()]
     with caplog.at_level("INFO"):
         msgs = dictate_session(client)
@@ -894,7 +878,6 @@ def test_stream_preview_drops_a_segment_cut_to_nothing(client, fake_model, monke
     (start, made-up end, "") two previews agree on "" and LocalAgreement
     commits an empty word at the made-up end — every later real word before
     that time is then dropped. The preview must hand on nothing instead."""
-    from tests.conftest import FakeSegment, FakeWord
     from faster_whisper_backend.streaming import localagreement
     ws = [FakeWord(f" x{i}", 2.4, 2.4) for i in range(12)]
     fake_model._segments = [FakeSegment("".join(w.word for w in ws), 0.3, 2.4, words=ws)]
@@ -931,7 +914,6 @@ def test_stream_formats_the_first_final_in_the_detected_language(client, fake_mo
     got the Spanish '¿'), so the closing final extends it unchanged. The
     previews guess Spanish on purpose: _fmt_lang falls back to the partials'
     guess, so a matching preview language would hide a missing detection."""
-    from tests.conftest import FakeInfo, FakeSegment
     fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
     real_transcribe = fake_model.transcribe
     seen = {"preview": 0, "final": 0}
@@ -958,7 +940,6 @@ def test_stream_unknown_language_skips_language_tagged_rules(client, fake_model,
     """No language requested, none detected: "und" — every language-tagged rule
     is skipped (the German map and the Spanish marks alike) instead of all of
     them running."""
-    from tests.conftest import FakeInfo, FakeSegment
     fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
     fake_model._info = FakeInfo(language=None)
     msgs = dictate_session(client)
@@ -970,7 +951,6 @@ def test_stream_unknown_language_skips_language_tagged_rules(client, fake_model,
 def test_stream_holds_a_split_dictation_phrase_until_the_close(client, fake_model, energy_vad):
     """The route wires the real hold-back: the trailing 'neue' of a final is
     held back (the rest is sent) until the close releases it."""
-    from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment(" Befund unauffällig Punkt neue", 0.0, 1.0)]
     msgs = dictate_session(client)
     finals = [m for m in msgs if m["type"] == "final"]
@@ -983,8 +963,6 @@ def test_preview_decode_does_not_charge_the_session_wait():
     """A live preview's GPU-gate wait must not land on the dictation row's
     wait_s: decode_partial unsets the session accumulator around its decode
     (the contract itself is in tests/stats/test_metrics.py)."""
-    import inspect
-
     src = inspect.getsource(streaming_routes)
     body = src[src.index("async def decode_partial("):]
     body = body[:body.index("\n        async def ", 1)]
@@ -997,8 +975,6 @@ def test_final_decode_starts_from_a_clean_session_wait():
     """decode_final zeroes the session wait accumulator (metrics.take_wait())
     after the revoked-credential check and before its own decode, so a wait
     left over from an earlier decode cannot land on this utterance's wait_s."""
-    import inspect
-
     src = inspect.getsource(streaming_routes)
     body = src[src.index("async def decode_final("):]
     body = body[:body.index("\n        async def ", 1)]
