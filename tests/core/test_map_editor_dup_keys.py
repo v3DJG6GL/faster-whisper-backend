@@ -7,12 +7,11 @@ The real _makeMapRow / _readMap run under node against a minimal DOM stub
 (table > tr > td > input), no browser needed."""
 
 import json
-import shutil
 
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json
+from tests._page_helpers import needs_node, node_json
 
 
 _DOM_STUB = r"""
@@ -71,7 +70,7 @@ const dup = (r) => key(r).classList.contains('map-dup');
 """
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_duplicate_spoken_word_flags_both_rows_and_clears_when_fixed():
     res = _run(_SETUP + r"""
 key(r2).value = 'foo'; key(r2).fire('input');
@@ -85,7 +84,7 @@ console.log(JSON.stringify({ clash, d1: dup(r1), d2: dup(r2), title: key(r1).tit
     assert (res["d1"], res["d2"], res["title"]) == (False, False, "")
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_deleting_the_clashing_row_clears_the_flag():
     res = _run(_SETUP + r"""
 key(r2).value = 'foo'; key(r2).fire('input');
@@ -100,7 +99,7 @@ def test_duplicate_flag_is_styled():
     assert ".rule-editor .map-table input.map-dup {" in web_common.NAV_CSS
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_spoken_words_differing_only_in_case_are_flagged():
     # compile_map lowercases keys and the save validator rejects case
     # collisions, so "Komma" and "komma" clash.
@@ -115,7 +114,7 @@ console.log(JSON.stringify({ map: rule.map, d1: dup(r1), d2: dup(r2), title: key
 
 
 @pytest.mark.parametrize("word", ["constructor", "toString", "__proto__"])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_object_prototype_names_are_ordinary_spoken_words(word):
     res = _run(_SETUP + f"""
 key(r2).value = {json.dumps(word)}; key(r2).fire('input');

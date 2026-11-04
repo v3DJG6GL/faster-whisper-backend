@@ -10,17 +10,12 @@ The real editor functions run under node against a small DOM stub."""
 
 import json
 import os
-import shutil
-
-import pytest
 
 from faster_whisper_backend import paths
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests._page_helpers import js_fn, node_json, script_src
-
-needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+from tests._page_helpers import js_fn, needs_node, node_json, script_src
 
 _SETTINGS_HTML = os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
                               "templates", "settings.html")

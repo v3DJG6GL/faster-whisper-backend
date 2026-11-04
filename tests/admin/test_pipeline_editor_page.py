@@ -6,13 +6,10 @@ and a missing config.json rule, no JS errors.
 """
 
 import json
-import shutil
-
-import pytest
 
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests._page_helpers import TOP_CLOSE, js_body, js_upto, node_json
+from tests._page_helpers import TOP_CLOSE, js_body, js_upto, needs_node, node_json
 
 
 def _html(client):
@@ -383,7 +380,7 @@ def _run_postfactory(html, drive, extra_fns=""):
     return node_json(fns + drive)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_unshadowed_promote_of_a_new_rule_leaves_save_unlit(client):
     """A new custom rule is seeded:false in the editor; the server writes it
     to config.json as seeded:true and _postFactory synced fieldDef to that,
@@ -408,7 +405,7 @@ const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: se
     assert _run_postfactory(html, drive) == {"clean": True, "seeded": True}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_unshadowed_promote_of_a_new_map_rule_leaves_save_unlit(client):
     """The server's canonical MapRule always carries `map_meta: {}` (a
     default_factory field survives exclude_none); the '+ add' dialog builds a
@@ -440,7 +437,7 @@ const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SE
     assert _run_postfactory(html, drive, strip) == {"clean": True, "hash_free": True}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_unshadowed_promote_after_a_map_key_delete_leaves_save_unlit(client):
     """The map editor's row delete leaves the key's map_meta timestamp behind;
     the server's MapRule validator drops it, so after the promote fieldDef

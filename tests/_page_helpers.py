@@ -6,10 +6,15 @@ Kept out of conftest.py so the fixture file stays about fixtures; import as
 """
 
 import json
+import shutil
 import subprocess
+
+import pytest
 
 # Column-0 closing brace of a top-level page-script function.
 TOP_CLOSE = "\n}\n"
+
+needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
 
 def js_upto(html: str, start: str, end: str) -> str:

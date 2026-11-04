@@ -10,12 +10,11 @@ against a minimal DOM stub whose node moves and disabled setter blur a
 focused node like a browser does."""
 
 import json
-import shutil
 
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json
+from tests._page_helpers import needs_node, node_json
 
 
 _DOM_STUB = r"""
@@ -109,7 +108,7 @@ def _setup(patterns: str) -> str:
     return _SETUP.replace("PATTERNS", json.dumps(list(patterns)))
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_move_up_keeps_focus_on_the_pressed_button():
     res = _run(_setup("abc") + r"""
 btn(rows[2], 'up').focus();
@@ -123,7 +122,7 @@ console.log(JSON.stringify({ first, second,
                    "top": True, "commits": 2}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_move_down_keeps_focus_on_the_pressed_button():
     res = _run(_setup("abc") + r"""
 btn(rows[0], 'down').focus();
@@ -137,7 +136,7 @@ console.log(JSON.stringify({ first, second,
                    "last": True, "ord": "3"}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_end_stop_move_in_a_two_entry_list_hands_focus_to_the_other_arrow():
     # every move in a 2-entry list lands on an end-stop
     res = _run(_setup("ab") + r"""
@@ -150,7 +149,7 @@ console.log(JSON.stringify({ up, down }));
                    "down": {"order": "ab", "focus": "up"}}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_end_stop_move_without_focus_leaves_focus_alone():
     # a mouse click that never focused the button must not pull focus to the row
     res = _run(_setup("ab") + r"""
@@ -181,7 +180,7 @@ rule.entries = rows.map((_, i) => ({ pattern: 'abcd'[i] }));
 """
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 @pytest.mark.parametrize("start", [0, 3])
 def test_cancelled_drag_puts_the_row_back_and_commits_nothing(start):
     res = _run(_setup("abcd") + _DRAG + f"""
@@ -190,7 +189,7 @@ console.log(JSON.stringify(dragTo(rows[{start}], {3 - start}, 'none')));
     assert res == {"dom": "0123", "ords": "1234", "order": "abcd", "commits": 0}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_real_drag_drop_keeps_the_new_order():
     res = _run(_setup("abcd") + _DRAG + r"""
 console.log(JSON.stringify(dragTo(rows[0], 3, 'move')));
@@ -198,7 +197,7 @@ console.log(JSON.stringify(dragTo(rows[0], 3, 'move')));
     assert res == {"dom": "1230", "ords": "1234", "order": "bcda", "commits": 1}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_drag_payload_is_not_a_text_type():
     # A text/plain payload is a native drop for every text field: releasing the
     # grip over another card's pattern input inserted it there and dragend saw

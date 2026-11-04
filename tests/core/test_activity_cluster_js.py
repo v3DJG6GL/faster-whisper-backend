@@ -5,12 +5,8 @@ rebuilds its cancel buttons / footer link from the markup and detaches the
 old nodes (blurring a focused one, like a browser), EventSource and fetch are
 fakes the drive script controls."""
 
-import shutil
-
-import pytest
-
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json, script_src
+from tests._page_helpers import needs_node, node_json, script_src
 
 
 _DOM_STUB = r"""
@@ -106,7 +102,7 @@ def _run(drive: str) -> dict:
     return node_json(_DOM_STUB + js + "\n(async () => {" + drive + "})();")
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_denied_probe_drops_allowed_so_the_css_really_hides_the_button():
     """`.hdr-activity.allowed` / `.page-link.allowed` set display:inline-flex,
     which beats [hidden], so a 401/403 probe drops `allowed` too or the button
@@ -130,7 +126,7 @@ console.log(JSON.stringify({ before, denied,
                    "back": {"hidden": False, "allowed": True, "streams": 2}}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_frame_rebuild_keeps_keyboard_focus_on_the_same_cancel_button():
     """renderPop swaps the popover's innerHTML on every changed 1 Hz frame, so
     it puts focus back on the same cancel button or footer link, or keyboard

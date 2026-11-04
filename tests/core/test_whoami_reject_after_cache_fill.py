@@ -8,12 +8,9 @@ Reuses the node harness of test_whoami_unavailable_retry; the fetch stub is
 wrapped so the page's own whoami "succeeds" right before the retry fires."""
 
 import json
-import shutil
-
-import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json, script_src
+from tests._page_helpers import needs_node, node_json, script_src
 from tests.core.test_whoami_unavailable_retry import (
     _CHROME_DRIVE, _CHROME_STUB, _CLOCK,
 )
@@ -30,7 +27,7 @@ global.fetch = (url) => {
 """
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_rejected_retry_reapplies_a_cache_filled_meanwhile():
     js = script_src(web_common.OPEN_MODE_BANNER_JS)
     given = f"const STATUSES = {json.dumps([503, 'reject', 200])};\n"

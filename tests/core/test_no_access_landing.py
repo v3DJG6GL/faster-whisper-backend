@@ -9,12 +9,9 @@ reads back the action buttons it rendered into <main>."""
 
 import json
 import re
-import shutil
-
-import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_stdout
+from tests._page_helpers import needs_node, node_stdout
 
 
 _DOM_STUB = r"""
@@ -39,7 +36,7 @@ def _buttons(html: str) -> list[str]:
     return re.findall(r'<a href="([^"]+)" class="landing-btn">', html)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_a_key_with_no_page_scope_is_offered_dictate():
     pages = {p: "none" for p in
              ("quick_config", "captures", "reports", "stats", "logs")}
@@ -48,7 +45,7 @@ def test_a_key_with_no_page_scope_is_offered_dictate():
     assert "no other pages are available" not in html
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_dictate_joins_the_scoped_pages_a_key_can_reach():
     pages = {"quick_config": "none", "captures": "none", "reports": "read",
              "stats": "none", "logs": "read"}

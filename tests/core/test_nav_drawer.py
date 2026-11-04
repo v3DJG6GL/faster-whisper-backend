@@ -5,12 +5,8 @@ The script runs under node against a minimal DOM stub (header with toggle,
 nav row and backdrop, plus a <main> sibling) — enough for open()/close() and
 the inert bookkeeping, no browser needed."""
 
-import shutil
-
-import pytest
-
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json, script_src
+from tests._page_helpers import needs_node, node_json, script_src
 
 
 _DOM_STUB = r"""
@@ -65,7 +61,7 @@ def _run(drive: str) -> dict:
     return node_json(_DOM_STUB + js + drive)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_drawer_closes_and_releases_inert_when_viewport_leaves_breakpoint():
     """Rotating a phone to landscape widens past the 40em drawer breakpoint:
     the toggle and backdrop vanish, but <main> stayed inert, so no tap
@@ -86,7 +82,7 @@ console.log(JSON.stringify({
                    "expanded": "false"}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_drawer_stays_open_while_still_inside_breakpoint():
     res = _run(r"""
 btn.fire('click');

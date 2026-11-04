@@ -1,12 +1,11 @@
 """Integration tests for /reports + the /quick-config submission endpoint."""
 
 import json
-import shutil
 import subprocess
 
 import pytest
 
-from tests._page_helpers import js_body, js_fn
+from tests._page_helpers import js_body, js_fn, needs_node
 from tests.conftest import bearer
 
 _SUBMIT = "/quick-config/reports/api/submit"
@@ -74,7 +73,7 @@ def test_reports_page(client):
     assert "text/html" in r.headers["content-type"]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_reports_page_403_landing_keys_on_reports_scope(client):
     """A 403 on a status/notes save can come from the CSRF/Origin middleware
     or the host gate, not only require_page("reports"). Keying the landing

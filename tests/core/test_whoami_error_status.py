@@ -7,12 +7,11 @@ The script runs under node against a minimal DOM stub and a fetch stub that
 answers whoami with a chosen status, no browser needed."""
 
 import json
-import shutil
 
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json, script_src
+from tests._page_helpers import needs_node, node_json, script_src
 
 
 _STUB = r"""
@@ -57,19 +56,19 @@ _ADMIN = {"open_mode": False, "is_admin": True}
 
 
 @pytest.mark.parametrize("status", [500, 502, 503, 429])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_server_error_keeps_the_signed_in_chrome(status):
     res = _run(status, _ADMIN)
     assert res == {"gate": 0, "admin": True, "whoami": _ADMIN}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_server_error_without_a_cached_whoami_shows_no_gate():
     assert _run(500, None)["gate"] == 0
 
 
 @pytest.mark.parametrize("status", [401, 403])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_rejected_session_shows_the_gate_and_drops_whoami(status):
     res = _run(status, _ADMIN)
     assert res == {"gate": 1, "admin": False, "whoami": None}

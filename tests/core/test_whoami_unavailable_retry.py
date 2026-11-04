@@ -11,13 +11,12 @@ delays are recorded but fire at once, no browser needed."""
 import json
 import pathlib
 import re
-import shutil
 
 import pytest
 
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.paths import REPO_ROOT
-from tests._page_helpers import node_json, script_src
+from tests._page_helpers import needs_node, node_json, script_src
 
 
 _CLOCK = r"""
@@ -84,7 +83,7 @@ def _run_chrome(statuses: list) -> dict:
 
 
 @pytest.mark.parametrize("first", [503, 429, "reject"])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_chrome_retries_and_notes_an_unavailable_server_on_load(first):
     res = _run_chrome([first, first, 200])
     assert res == {
@@ -93,13 +92,13 @@ def test_chrome_retries_and_notes_an_unavailable_server_on_load(first):
     }
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_chrome_retry_that_gets_a_401_shows_the_gate():
     res = _run_chrome([502, 401])
     assert (res["gate"], res["calls"], res["note_left"]) == (1, 2, False)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_chrome_backoff_is_capped():
     res = _run_chrome([500] * 8 + [200])
     assert res["delays"] == [2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000]
@@ -155,7 +154,7 @@ def _hub_script() -> str:
 
 
 @pytest.mark.parametrize("first", [500, 502, 429, "reject"])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_hub_retries_until_whoami_answers_on_load(first):
     given = f"const STATUSES = {json.dumps([first, 200])};\n"
     assert node_json(given + _HUB_STUB + _CLOCK + _hub_script() + _HUB_DRIVE) == {
@@ -175,7 +174,7 @@ def _run_hub(statuses: list, extra: str, drive: str) -> dict:
     return node_json(given + stub + _CLOCK + extra + _hub_script() + drive)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_hub_rejected_fetch_paints_the_cached_whoami():
     # The chrome's whoami filled the cache before the hub's fetch was
     # rejected: the hub paints from it instead of backing off again.
@@ -186,7 +185,7 @@ def test_hub_rejected_fetch_paints_the_cached_whoami():
         False, True, 1)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_hub_paints_when_the_chrome_answers_during_its_backoff():
     # The hub's first fetch is rejected with an empty cache, so it backs off;
     # the chrome's whoami answers during that backoff. The hub paints at once
@@ -217,7 +216,7 @@ realSetTimeout(() => {
         "body_hidden": False, "tile_on": True, "held": True, "calls": 1}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_chrome_announces_a_fresh_whoami():
     js = script_src(web_common.OPEN_MODE_BANNER_JS)
     events = (

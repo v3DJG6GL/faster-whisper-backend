@@ -10,12 +10,11 @@ whisper:auth-changed refresh, no browser needed."""
 import json
 import pathlib
 import re
-import shutil
 
 import pytest
 
 from faster_whisper_backend.paths import REPO_ROOT
-from tests._page_helpers import node_json
+from tests._page_helpers import needs_node, node_json
 
 
 _STUB = r"""
@@ -79,12 +78,12 @@ def _run(first: int, then: int) -> dict:
 
 
 @pytest.mark.parametrize("status", [500, 502, 503, 429])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_server_error_keeps_the_hub_visible(status):
     assert _run(200, status) == {"body_hidden": False, "tile_on": True}
 
 
 @pytest.mark.parametrize("status", [401, 403])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_rejected_session_hides_the_hub(status):
     assert _run(200, status) == {"body_hidden": True, "tile_on": False}

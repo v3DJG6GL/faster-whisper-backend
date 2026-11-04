@@ -7,12 +7,8 @@ The script runs under node against a minimal DOM stub whose node moves blur
 a focused node like a browser does; widths are faked (10px per link, nav
 10*navCap+5px) so lowering navCap tucks links into the "more" list."""
 
-import shutil
-
-import pytest
-
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json, script_src
+from tests._page_helpers import needs_node, node_json, script_src
 
 
 _DOM_STUB = r"""
@@ -99,7 +95,7 @@ def _run(drive: str) -> dict:
     return node_json(_DOM_STUB + js + drive)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_relayout_keeps_focus_on_a_link_in_the_bar():
     res = _run(r"""
 links[1].focus();
@@ -110,7 +106,7 @@ console.log(JSON.stringify({ focused: document.activeElement.textContent,
     assert res == {"focused": "b", "order": ["a", "b", "c"]}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_relayout_keeps_focus_on_a_link_in_the_open_more_list():
     res = _run(r"""
 navCap = 2; relayout();

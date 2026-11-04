@@ -13,12 +13,11 @@ Reuses the chrome DOM stub of test_whoami_unavailable_retry; the fetch stub
 answers whoami with a cached token S1 while the cookie carries S2."""
 
 import json
-import shutil
 
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json, script_src
+from tests._page_helpers import needs_node, node_json, script_src
 from tests.core.test_whoami_unavailable_retry import _CHROME_STUB
 
 
@@ -77,25 +76,25 @@ def _sign_out(logout: list, clicks: int = 1, gap_ms: int = 0,
     ([500], {"tokens": ["S2"], "reloads": 0, "alerts": 1}),
     (["reject"], {"tokens": ["S2"], "reloads": 0, "alerts": 1}),
 ])
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_sign_out_reloads_only_once_the_session_ended(logout, expected):
     assert _sign_out(logout) == dict(expected, csrf="S2")
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_csrf_token_prefers_the_live_cookie_over_the_cached_whoami_token():
     # whoami cached S1, then another tab signed in again and the browser now
     # carries S2: every write sent the dead session's S1 and 403'd.
     assert _sign_out([200])["csrf"] == "S2"
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_csrf_token_falls_back_to_whoami_without_a_readable_cookie():
     assert _sign_out([200], csrf_cookie=None) == {
         "tokens": ["S1"], "reloads": 1, "alerts": 0, "csrf": "S1"}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 @pytest.mark.parametrize("logout, expected", [
     ([403, 200], {"tokens": ["S2", "S3"], "reloads": 1, "alerts": 0}),
     ([403, 403], {"tokens": ["S2", "S3"], "reloads": 0, "alerts": 1}),
@@ -104,7 +103,7 @@ def test_a_403_retries_once_with_a_cookie_rotated_mid_request(logout, expected):
     assert _sign_out(logout, rotate=True) == dict(expected, csrf="S3")
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_double_click_sends_one_sign_out():
     # The second click's POST used to land after the first had revoked the
     # session; its 403 (no live cookie left) alerted "Sign-out failed" over
@@ -113,13 +112,13 @@ def test_double_click_sends_one_sign_out():
         "tokens": ["S2"], "reloads": 1, "alerts": 0, "csrf": "S2"}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_a_failed_sign_out_can_be_retried():
     assert _sign_out([500, 200], clicks=2, gap_ms=20) == {
         "tokens": ["S2", "S2"], "reloads": 1, "alerts": 1, "csrf": "S2"}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_reads_a_renamed_csrf_cookie():
     # SESSION_CSRF_COOKIE_NAME renamed the cookie (e.g. __Host- behind
     # HTTPS): the live-cookie lookup matched only "whisper_csrf" and found

@@ -2,11 +2,8 @@
 per-account synced client settings (metadata map, export, import, delete)."""
 
 import json
-import shutil
 
-import pytest
-
-from tests._page_helpers import js_body, js_fn, js_upto, node_json
+from tests._page_helpers import js_body, js_fn, js_upto, needs_node, node_json
 from tests.conftest import bearer
 
 _API = "/settings/api-keys/api"
@@ -328,7 +325,7 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
     )
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@needs_node
 def test_import_preview_uses_served_blob_cap(client):
     """The import preview gated on a hard-coded 500 KB long after the store
     cap rose to ~4 MiB, so a 1 MB file the server accepts (one this page's own
