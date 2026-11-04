@@ -6,11 +6,9 @@ server started and those pins were silently gone. UTF-8, with or without a
 BOM, still loads.
 """
 
-import json
-
 import pytest
 
-from tests.settings.test_secret_file_encoding import _DOTENV, _import_config_from
+from tests.settings.test_secret_file_encoding import _DOTENV, _import_config_from, _printed
 
 
 @pytest.mark.parametrize("data", [
@@ -31,5 +29,4 @@ def test_a_utf16_dotenv_stops_import_naming_the_file_and_utf8(tmp_path, data):
 ], ids=["utf8", "utf8-bom"])
 def test_a_utf8_dotenv_still_loads(tmp_path, data):
     out = _import_config_from(tmp_path, data)
-    assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout.strip().splitlines()[-1]) == [3, "Grüße"]
+    assert _printed(out) == [3, "Grüße"]
