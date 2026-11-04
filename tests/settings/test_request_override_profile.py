@@ -10,19 +10,15 @@ the request profile, the gate disables it, and the names endpoint behaves.
 
 
 from faster_whisper_backend.settings import config as cfg
+from tests._transcription_helpers import bind_profile, post_verbose
 from tests.conftest import bearer
 
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
 
 def _transcribe(client, profile, headers=None):
-    return client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=headers,
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "override_profile": profile},
-    )
+    return post_verbose(client, headers, override_profile=profile)
 
 
 def _gate_profiles(monkeypatch, allow, profiles=None):
@@ -106,31 +102,21 @@ def test_none_sentinel_suppresses_bound_profile(client, make_user_key, fake_mode
     # A profile bound to a user normally applies; sending the reserved "__none__"
     # request name suppresses it, falling back to plain server defaults.
     from faster_whisper_backend.settings.schema import NO_PROFILE_SENTINEL
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post(f"{OV}/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {"clinic": {"BEAM_SIZE": 7}}})
-    assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {}, "profiles": ["clinic"], "locks": []}})
-    assert r.status_code == 200, r.text
+    admin_h, raw_alice = bind_profile(client, make_user_key, "clinic", {"BEAM_SIZE": 7})
 
-    base = {"model": "whisper-1", "response_format": "verbose_json"}
     # Baseline: admin has no bound profile → the plain default beam_size.
-    r = client.post("/v1/audio/transcriptions", files=_FILE, headers=admin_h, data=base)
+    r = post_verbose(client, admin_h)
     assert r.status_code == 200, r.text
     default_beam = fake_model.last_kwargs["beam_size"]
     assert default_beam != 7
 
     # Alice with the bound profile, no override → the profile applies.
-    r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice), data=base)
+    r = post_verbose(client, bearer(raw_alice))
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == 7
 
     # Alice sends "__none__" → bound profile suppressed → back to the plain default.
-    r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-                    data={**base, "override_profile": NO_PROFILE_SENTINEL})
+    r = post_verbose(client, bearer(raw_alice), override_profile=NO_PROFILE_SENTINEL)
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == default_beam
     assert r.json()["profile_applied"] is None
