@@ -21,7 +21,6 @@ Deliberately tiny and in-process:
 """
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import re
@@ -31,7 +30,7 @@ import time
 import uuid
 
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.core.store_common import secure_dir, secure_file
+from faster_whisper_backend.core.store_common import secure_dir, secure_file, unlink_quietly
 
 logger = logging.getLogger("whisper-api")
 
@@ -196,8 +195,7 @@ def make_pipeline_copy(src: str) -> "str | None":
                 shutil.copyfileobj(sf, df)
     except OSError as e:
         logger.error("[url-dl] pipeline copy failed: %s", e)
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
+        unlink_quietly(tmp)
         return None
     # The os.link fast path inherits the download's umask mode (typically
     # 0644) in the shared tempdir — tighten it like the fallback already is.

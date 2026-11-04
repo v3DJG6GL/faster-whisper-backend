@@ -679,14 +679,12 @@ async def upload_media(request: Request,
         media_id = await asyncio.to_thread(
             url_media_store.register, final, user_id=user.get("user_id"), kind="video")
         if media_id is None:
-            with contextlib.suppress(OSError):
-                os.unlink(final)
+            store_common.unlink_quietly(final)
             raise HTTPException(status_code=507,
                                 detail="the server's media store is full")
     finally:
         if part:
-            with contextlib.suppress(OSError):
-                os.unlink(part)
+            store_common.unlink_quietly(part)
     logger.info("[package] upload retained (%.1f MB, %s)", received / 1e6, ext)
     return {"media_id": media_id, "expires_at": url_media_store.expires_at_unix(media_id),
             "bytes": received}
