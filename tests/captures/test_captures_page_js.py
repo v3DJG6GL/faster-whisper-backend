@@ -1545,7 +1545,7 @@ def test_group_members_list_places_chips_by_aligned_words(page, tmp_path):
     """The open group card's members list applied each member's chips
     without its aligned words (only raw words come with the members), so a
     chip after removed fillers moved to another copy of its word."""
-    fns = _js_functions(page, "applyServerSample", "_applyChipsToText", "_chipFields")
+    fns = _js_functions(page, "applyServerSample", "_applyChipsToText", "_chipFields", "_el")
     member = {"id": "m1", "text_for_training": _KATZE_TEXT, "corrections": [_KATZE_CHIP],
               "words": _KATZE_RAW, "sample_order": 0, "audio_s": 1.0}
     merged = [dict(w, start=i * 0.1, end=i * 0.1 + 0.05, member_idx=0)
