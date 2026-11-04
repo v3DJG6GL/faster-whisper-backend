@@ -24,12 +24,11 @@ def test_start_update_end_roundtrip():
 
 
 def test_snapshot_scrubs_identity_by_default():
-    jid = jobs.job_start("transcribe", model="large-v3", user="uid",
-                         key="kid", detail="secret.wav")
+    jobs.job_start("transcribe", model="large-v3", user="uid",
+                   key="kid", detail="secret.wav")
     row = jobs.jobs_snapshot()[0]
     assert "user" not in row and "key" not in row and "detail" not in row
     assert row["model"] == "large-v3"          # model is not identity
-    jobs.job_end(jid)
 
 
 def test_update_merges_only_non_none_and_ignores_unknown_ids():
@@ -45,20 +44,17 @@ def test_update_merges_only_non_none_and_ignores_unknown_ids():
 
 
 def test_snapshot_sorted_by_start_and_caller_id_wins():
-    a = jobs.job_start("transcribe", id="a" * 32)
-    b = jobs.job_start("dictate", id="b" * 32)
+    jobs.job_start("transcribe", id="a" * 32)
+    jobs.job_start("dictate", id="b" * 32)
     snap = jobs.jobs_snapshot()
     assert [r["id"] for r in snap] == ["a" * 32, "b" * 32]
     assert snap[1]["kind"] == "dictate"
-    jobs.job_end(a)
-    jobs.job_end(b)
 
 
 def test_registry_is_bounded():
-    ids = [jobs.job_start("transcribe") for _ in range(jobs._MAX_JOBS + 10)]
+    for _ in range(jobs._MAX_JOBS + 10):
+        jobs.job_start("transcribe")
     assert len(jobs.jobs_snapshot()) == jobs._MAX_JOBS
-    for jid in ids:
-        jobs.job_end(jid)
 
 
 def test_update_clear_sentinel_writes_none():
@@ -70,7 +66,6 @@ def test_update_clear_sentinel_writes_none():
     assert row["progress"] is None
     assert row["step"] == "s"
     assert row["stage"] == "diarizing"
-    jobs.job_end(jid)
 
 
 def test_snapshot_filters_by_user_id():
@@ -79,25 +74,18 @@ def test_snapshot_filters_by_user_id():
     a = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
     b = jobs.job_start("dictate", model="m", user="bob", user_id="ub")
     d = jobs.job_start("download", model="gguf:org/m")
-    try:
-        ids = {r["id"] for r in jobs.jobs_snapshot(user_id="ua")}
-        assert ids == {a}
-        assert {r["id"] for r in jobs.jobs_snapshot()} == {a, b, d}
-        assert jobs.jobs_snapshot(user_id="nobody") == []
-    finally:
-        for j in (a, b, d):
-            jobs.job_end(j)
+    ids = {r["id"] for r in jobs.jobs_snapshot(user_id="ua")}
+    assert ids == {a}
+    assert {r["id"] for r in jobs.jobs_snapshot()} == {a, b, d}
+    assert jobs.jobs_snapshot(user_id="nobody") == []
 
 
 def test_user_id_is_never_emitted():
-    jid = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
-    try:
-        for row in (jobs.jobs_snapshot()[0],
-                    jobs.jobs_snapshot(include_identity=True)[0],
-                    jobs.jobs_snapshot(user_id="ua")[0]):
-            assert "user_id" not in row
-    finally:
-        jobs.job_end(jid)
+    jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
+    for row in (jobs.jobs_snapshot()[0],
+                jobs.jobs_snapshot(include_identity=True)[0],
+                jobs.jobs_snapshot(user_id="ua")[0]):
+        assert "user_id" not in row
 
 
 def test_progress_id_visible_to_owner_and_admin_only():
@@ -105,10 +93,7 @@ def test_progress_id_visible_to_owner_and_admin_only():
     the row's own owner (viewer_user_id) — never for another non-admin."""
     jid = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
     jobs.job_update(jid, progress_id="pid-1")
-    try:
-        assert jobs.jobs_snapshot(include_identity=True)[0]["progress_id"] == "pid-1"
-        assert jobs.jobs_snapshot(viewer_user_id="ua")[0]["progress_id"] == "pid-1"
-        assert "progress_id" not in jobs.jobs_snapshot(viewer_user_id="ub")[0]
-        assert "progress_id" not in jobs.jobs_snapshot()[0]
-    finally:
-        jobs.job_end(jid)
+    assert jobs.jobs_snapshot(include_identity=True)[0]["progress_id"] == "pid-1"
+    assert jobs.jobs_snapshot(viewer_user_id="ua")[0]["progress_id"] == "pid-1"
+    assert "progress_id" not in jobs.jobs_snapshot(viewer_user_id="ub")[0]
+    assert "progress_id" not in jobs.jobs_snapshot()[0]
