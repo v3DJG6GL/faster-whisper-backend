@@ -6,6 +6,13 @@ import os
 import pytest
 
 
+def _touch(path, data=b"x"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
 def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
                   language="de", transcript="hello", member_hashes="{}",
                   admin_notes="", member_trims="{}"):
@@ -211,10 +218,7 @@ def test_dissolve_group_nulls_members_and_unlinks(captures_store_db, groups_stor
     relpath = _insert_group(gs, sid)
     _insert_capture(cs, "capdissolve00001", sample_id=sid, sample_order=0)
     # Put a merged WAV on disk so dissolve has something to unlink.
-    abs_p = gs.abs_path_for(relpath)
-    os.makedirs(os.path.dirname(abs_p), exist_ok=True)
-    with open(abs_p, "wb") as f:
-        f.write(b"x")
+    abs_p = _touch(gs.abs_path_for(relpath))
 
     gs.dissolve_sample(sid)
     assert gs.get_sample(sid) is None
@@ -370,13 +374,8 @@ def test_reconcile_unlinks_orphan_files(captures_store_db, groups_store_db):
     gs = groups_store_db
     groups_dir = gs._require_audio_root()
     sub = os.path.join(groups_dir, "ab", "cd")
-    os.makedirs(sub, exist_ok=True)
-    orphan = os.path.join(sub, "orphan.wav")
-    with open(orphan, "wb") as f:
-        f.write(b"x")
-    tmpf = os.path.join(sub, "stale.wav.tmp")
-    with open(tmpf, "wb") as f:
-        f.write(b"x")
+    orphan = _touch(os.path.join(sub, "orphan.wav"))
+    tmpf = _touch(os.path.join(sub, "stale.wav.tmp"))
     missing, unlinked, orphan_fks = gs.reconcile_on_startup()
     assert not os.path.isfile(orphan)
     assert not os.path.isfile(tmpf)
@@ -387,10 +386,7 @@ def test_reconcile_keeps_known_wav(captures_store_db, groups_store_db):
     gs = groups_store_db
     sid = "greconkeep00000a"
     relpath = _insert_group(gs, sid)
-    abs_p = gs.abs_path_for(relpath)
-    os.makedirs(os.path.dirname(abs_p), exist_ok=True)
-    with open(abs_p, "wb") as f:
-        f.write(b"x")
+    abs_p = _touch(gs.abs_path_for(relpath))
     missing, unlinked, orphan_fks = gs.reconcile_on_startup()
     assert missing == 0
     assert os.path.isfile(abs_p)
@@ -437,10 +433,7 @@ def test_get_members_carries_task_and_group_manifest_row_says_translate(
         cs._require_conn().execute(
             "UPDATE captures SET task = 'translate', text_for_training = 'hi'"
             " WHERE id = ?", (cid,))
-    abs_p = gs.abs_path_for(relpath)
-    os.makedirs(os.path.dirname(abs_p), exist_ok=True)
-    with open(abs_p, "wb") as f:
-        f.write(b"RIFF")
+    _touch(gs.abs_path_for(relpath), b"RIFF")
 
     members = gs.get_members(sid)
     assert [m["task"] for m in members] == ["translate", "translate"]
