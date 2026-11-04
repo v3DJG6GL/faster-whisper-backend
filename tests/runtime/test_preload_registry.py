@@ -13,6 +13,7 @@ import time
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.core import jobs
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import model_registry
@@ -578,7 +579,6 @@ def test_sync_entry_points_are_thread_safe_against_the_sweeper(monkeypatch):
     # And no /stats "preload" row outlived its plan: a plan evicted as
     # "registry full" between another thread's lock windows must not have
     # had a job row stamped onto the detached object afterwards.
-    from faster_whisper_backend.core import jobs
     live = {f"plan {pid[:8]}" for pid in preload._plans}
     orphans = [j for j in jobs.jobs_snapshot(include_identity=True)
                if j["kind"] == "preload" and j["detail"] not in live]
@@ -628,7 +628,6 @@ def test_a_full_queue_keeps_the_cursor_so_the_next_tick_retries(monkeypatch):
 def test_the_preload_job_row_carries_the_display_name(monkeypatch):
     """/stats shows and filters a job's `user` as a username; the preload
     row must not put the opaque id there."""
-    from faster_whisper_backend.core import jobs
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
     preload.register_plan("uid1", [("diarization", "p/x")], plan_id="3" * 8,
@@ -640,7 +639,6 @@ def test_the_preload_job_row_carries_the_display_name(monkeypatch):
 
 
 def _preload_rows(user_id):
-    from faster_whisper_backend.core import jobs
     return [j for j in jobs.jobs_snapshot(include_identity=True,
                                           user_id=user_id)
             if j["kind"] == "preload"]
