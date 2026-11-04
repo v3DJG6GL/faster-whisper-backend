@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from tests.conftest import install_fake_wav_transcode
+from tests.conftest import install_fake_wav_transcode, write_bytes
 
 
 def _make(cs, monkeypatch, tmp_path, **over):
@@ -667,10 +667,7 @@ def test_byte_pass_keeps_rows_whose_audio_is_already_gone(
     fresh = [f"new{i:012d}" for i in range(3)]
     for n, cid in enumerate(fresh):
         rel = cs._relpath_for(cid, ".wav")
-        path = cs.abs_audio_path(rel)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(b"\x00" * (1024 * 1024))
+        write_bytes(cs.abs_audio_path(rel), b"\x00" * (1024 * 1024))
         conn.execute(
             "INSERT INTO captures (id, created_ts, model, audio_relpath,"
             " audio_format, raw_text, final_text, words, segments,"

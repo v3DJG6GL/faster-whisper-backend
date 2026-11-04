@@ -401,6 +401,14 @@ def write_wav(path, pcm, *, nchannels=1, sampwidth=2, rate=RATE):
     return path
 
 
+def write_bytes(path, data=b"x"):
+    """Write `data` to `path`, creating its parent dirs; returns `path`."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
 def fake_wav_transcode(src_path, dst_path):
     """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
     write_wav(dst_path, b"\x00\x00" * 100)

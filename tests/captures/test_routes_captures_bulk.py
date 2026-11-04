@@ -4,7 +4,7 @@ the bulk status / delete endpoints (the summary strip + bulk bar backend)."""
 import time
 
 from tests.captures.test_routes_captures import _insert_member, _insert_sample
-from tests.conftest import bearer
+from tests.conftest import bearer, write_bytes
 
 
 def _row(conn, cid, *, user_id, status="new", audio_s=2.0, created_ts=1.0,
@@ -275,12 +275,8 @@ def test_single_patch_on_audio_missing_row_saves_edits_but_not_status(
 
 
 def _restore_audio(captures_store, cid):
-    import os
-    p = captures_store.abs_audio_path(
-        captures_store.get_capture(cid)["audio_relpath"])
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "wb") as f:
-        f.write(b"RIFF")
+    write_bytes(captures_store.abs_audio_path(
+        captures_store.get_capture(cid)["audio_relpath"]), b"RIFF")
 
 
 def test_audio_missing_row_with_restored_file_can_be_retriaged(

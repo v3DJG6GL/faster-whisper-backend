@@ -5,12 +5,7 @@ import os
 
 import pytest
 
-
-def _touch(path, data=b"x"):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
-    return path
+from tests.conftest import write_bytes as _touch
 
 
 def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",

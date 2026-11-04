@@ -5,12 +5,7 @@ config, the SQLite stores or the logs that live there."""
 
 import os
 
-
-def _touch(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(b"x")
-    return path
+from tests.conftest import write_bytes as _touch
 
 
 def test_reconcile_leaves_files_outside_the_fanout_alone(captures_store_db):
