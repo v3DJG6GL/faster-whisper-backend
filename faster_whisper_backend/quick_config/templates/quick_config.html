@@ -703,10 +703,7 @@ function _matchesSearch(entry) {
 }
 
 function _el(tag, cls, text) {
-  const e = document.createElement(tag);
-  e.className = cls;
-  if (text != null) e.textContent = text;
-  return e;
+  return _reEl(tag, cls, text);
 }
 
 // absTime is injected via TIME_HELPERS_JS.
@@ -784,10 +781,7 @@ function diffExcerpt(A, B, region) {
   const el = _el('div', 'step-excerpt');
   const push = (cls, text) => {
     if (!text) return;
-    const sp = document.createElement('span');
-    if (cls) sp.className = cls;
-    sp.textContent = text;
-    el.appendChild(sp);
+    el.appendChild(_reEl('span', cls, text));
   };
   const pre = A.slice(Math.max(0, as - TRACE_DIFF_CONTEXT), as).join(' ');
   const post = A.slice(ae, ae + TRACE_DIFF_CONTEXT).join(' ');
