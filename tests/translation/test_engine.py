@@ -877,16 +877,9 @@ def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
 def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 4, raising=False)
     calls = []
-
-    def fake(llm, family, prompt_or_msgs, max_tokens):
-        payload = _payload_of(prompt_or_msgs)
-        calls.append(payload)
-        if payload.startswith(translation._NUMBERED_INSTRUCTION):
-            if len(payload.split("\n\n", 1)[1].splitlines()) > 2:
-                return "sorry, here is a poem instead"   # count mismatch
-            return _numbered_reply(payload)
-        return _xlate(payload)
-    _install_complete(monkeypatch, fake)
+    # A batch above two lines is a count mismatch.
+    _install_complete(monkeypatch, _numbered_fake(
+        calls, lambda lines: len(lines) > 2))
 
     segs = _segs("Eins zwei.", "Drei vier.", "Fuenf sechs.", "Sieben acht.")
     res, warns, _ = _de_en(segs)
@@ -948,14 +941,9 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
     through, k grows back to TRANSLATION_BATCH_SEGMENTS instead of staying
     shrunk for every later cue of the target."""
     calls = []
-
-    def fake(llm, family, prompt_or_msgs, max_tokens):
-        payload = _payload_of(prompt_or_msgs)
-        calls.append(payload)
-        if len(calls) == 1:
-            return "one line only"                  # first batch mismatches
-        return _numbered_reply(payload)
-    _install_complete(monkeypatch, fake)
+    # The first batch mismatches.
+    _install_complete(monkeypatch, _numbered_fake(
+        calls, lambda lines: len(calls) == 1))
 
     live = [f"Satz nummer {n}." for n in range(32)]
     _assert_faithful_roundtrip(live)
