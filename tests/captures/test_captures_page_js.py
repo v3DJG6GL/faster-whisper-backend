@@ -1308,7 +1308,7 @@ def test_group_audio_fetch_superseded_or_after_collapse_is_dropped(page, tmp_pat
     overtaken by a newer refresh, or landing after the card collapsed, set
     a blob URL nothing would revoke, and an older WAV could win the race
     against the regenerated one."""
-    out = _run_node(tmp_path, "var audioSeq = 0;\n" + _js_function(page, "refreshAudio") + r"""
+    out = _run_node(tmp_path, "var audioSeq = 0;\n" + _js_functions(page, "_revokeAudioBlob", "refreshAudio") + r"""
 var made = [], pending = [];
 var audioPlayerWrap = {}, audioSlot = { firstChild: audioPlayerWrap };
 var audio = { src: '', removeAttribute: function() { this.src = ''; } };
@@ -2185,7 +2185,7 @@ def test_header_collapse_asks_before_dropping_a_cards_unsaved_edits(page, tmp_pa
     """A header click collapsed an open capture or group card holding
     unsaved chips / notes with no prompt; the edits were gone."""
     fns = _js_functions(page, "_okToCollapse", "toggleExpand", "collapse", "_revokeRowBlob",
-                        "_toggleSampleExpand", "_trainingBase")
+                        "_revokeAudioBlob", "_toggleSampleExpand", "_trainingBase")
     out = _run_node(tmp_path, fns + _MK_CARD_JS + r"""
 var asked = 0, answers = [];
 async function _confirm() { asked++; return answers.shift(); }

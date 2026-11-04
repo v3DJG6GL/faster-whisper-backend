@@ -2025,13 +2025,17 @@
   function _revokeOpenRowBlobs() {
     Object.keys(_openRows).forEach(function(cid) { _revokeRowBlob(_openRows[cid]); });
   }
+  // Revoke a group card player's audio URL, if it is a blob: one.
+  function _revokeAudioBlob(audio) {
+    if (audio.src && audio.src.indexOf('blob:') === 0) {
+      try { URL.revokeObjectURL(audio.src); } catch(_) {}
+    }
+  }
   // Revoke each open group card's blob: audio URL (render wipe, Clear all, tab close).
   function _revokeOpenSampleBlobs() {
     Object.keys(_openSamples).forEach(function(sid) {
       var st = _openSamples[sid];
-      if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
-        try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
-      }
+      if (st && st.audio) _revokeAudioBlob(st.audio);
     });
   }
 
@@ -4971,9 +4975,7 @@
       var st = _openSamples[g.id];
       if (st && st.audio) {
         try { st.audio.pause(); } catch(_) {}
-        if (st.audio.src && st.audio.src.indexOf('blob:') === 0) {
-          try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
-        }
+        _revokeAudioBlob(st.audio);
       }
       delete _openSamples[g.id];
       var bodyEl = card.querySelector('.cc-body');
@@ -5161,9 +5163,7 @@
             var st = _openSamples[g.id];
             return seq !== audioSeq || !st || st.audio !== audio;
           }
-          if (audio.src && audio.src.indexOf('blob:') === 0) {
-            try { URL.revokeObjectURL(audio.src); } catch (_) {}
-          }
+          _revokeAudioBlob(audio);
           audio.removeAttribute('src');
           // Reclaim the compact-player wrapper if the banner replaced it.
           if (audioSlot.firstChild !== audioPlayerWrap) {
