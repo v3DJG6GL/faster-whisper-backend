@@ -109,6 +109,12 @@ def _profile_layer_id(scope: str, name: str) -> str:
     return f"{scope}.profile:{name}"
 
 
+def _profile_layer(scope: str, name: str, blob: Any) -> dict[str, Any] | None:
+    """A profile blob as the identity layer of `scope` (None when empty)."""
+    return _blob_to_layer(_profile_layer_id(scope, name),
+                          f"{scope} · profile {name}", name, blob)
+
+
 def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
                    blob: Any) -> dict[str, Any] | None:
     """Normalise an OverrideProfile-shaped dict (a direct blob or a profile)
@@ -267,8 +273,7 @@ def _gather_identity_layers(key_binding: Any,
             return
         for pname in (binding.get("profiles") or []):
             prof = profiles.get(pname)
-            lyr = _blob_to_layer(_profile_layer_id(scope, pname),
-                                 f"{scope} · profile {pname}", pname, prof)
+            lyr = _profile_layer(scope, pname, prof)
             if lyr is not None:
                 layers.append(lyr)
             # A referenced-but-missing/empty profile contributes nothing — the
@@ -314,12 +319,7 @@ def _request_profile_layer(request_profile: str | None, *,
     # by a client, even if the identity's allowlist would otherwise permit it.
     if isinstance(blob, dict) and blob.get("requestable") is False:
         return None
-    return _blob_to_layer(
-        _profile_layer_id("request", request_profile),
-        f"request · profile {request_profile}",
-        request_profile,
-        blob,
-    )
+    return _profile_layer("request", request_profile, blob)
 
 
 def _per_model_entry(model_id: str | None) -> dict[str, Any] | None:

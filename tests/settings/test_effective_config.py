@@ -16,8 +16,7 @@ def _layer(scope, **blob):
 
 
 def _prof(scope, name, **blob):
-    return ec._blob_to_layer(f"{scope}.profile:{name}",
-                             f"{scope} · profile {name}", name, blob)
+    return ec._profile_layer(scope, name, blob)
 
 
 def _resolve(layers, model_id=None, req=None, prov=False):
