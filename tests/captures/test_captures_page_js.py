@@ -2167,25 +2167,31 @@ global.document = { getElementById: function() { return footer; } };
     assert out == {"hidden": True, "urls": ["/captures/api/list"], "samples": ["bob0"]}
 
 
+# A capture / group card, open or shut; `name` tags its body for buildBody stubs.
+_MK_CARD_JS = r"""
+function mkCard(opened, name) {
+  var open = opened, body = { dataset: { built: open ? '1' : '0' }, card: name };
+  return { isConnected: true,
+           classList: { contains: function(c) { return c === 'open' && open; },
+                        remove: function() { open = false; }, add: function() { open = true; } },
+           querySelector: function() { return body; }, isOpen: function() { return open; } };
+}
+"""
+
+
 @needs_node
 def test_header_collapse_asks_before_dropping_a_cards_unsaved_edits(page, tmp_path):
     """A header click collapsed an open capture or group card holding
     unsaved chips / notes with no prompt; the edits were gone."""
     fns = _js_functions(page, "_okToCollapse", "toggleExpand", "collapse", "_revokeRowBlob",
                         "_toggleSampleExpand", "_trainingBase")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, fns + _MK_CARD_JS + r"""
 var asked = 0, answers = [];
 async function _confirm() { asked++; return answers.shift(); }
-function mkCard() {
-  var open = true, body = { dataset: { built: '1' }, innerHTML: 'x' };
-  return { classList: { contains: function(c) { return c === 'open' && open; },
-                        remove: function() { open = false; }, add: function() { open = true; } },
-           querySelector: function() { return body; }, isOpen: function() { return open; } };
-}
 var _openRows = {}, _openSamples = {};
 (async function() {
   var res = {};
-  var c = mkCard();
+  var c = mkCard(true);
   _openRows.c1 = { dirty: true };
   answers = [false];
   await toggleExpand(c, { id: 'c1' });
@@ -2193,11 +2199,11 @@ var _openRows = {}, _openSamples = {};
   answers = [true];
   await toggleExpand(c, { id: 'c1' });
   res.capDropped = [c.isOpen(), !!_openRows.c1];
-  var c2 = mkCard();
+  var c2 = mkCard(true);
   _openRows.c2 = { dirty: false };
   await toggleExpand(c2, { id: 'c2' });
   res.cleanClosed = c2.isOpen();
-  var s = mkCard();
+  var s = mkCard(true);
   _openSamples.g1 = { audio: null, state: { dirty: true } };
   answers = [false];
   await _toggleSampleExpand(s, { id: 'g1' });
@@ -2221,23 +2227,17 @@ def test_failed_reopen_after_render_drops_the_old_cards_state(page, tmp_path):
     every refresh was skipped for "unsaved edits" no card showed, and its
     blob URL was never revoked. A first open that fails has no state."""
     fns = _js_functions(page, "toggleExpand", "collapse", "_revokeRowBlob")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, fns + _MK_CARD_JS + r"""
 var revoked = [], paused = 0;
 global.URL = { revokeObjectURL: function(u) { revoked.push(u); } };
 function api() { return Promise.reject(new Error('HTTP 503')); }
 function toast() {}
-function mkCard() {
-  var open = false, body = { dataset: { built: '0' }, innerHTML: '' };
-  return { classList: { contains: function(c) { return c === 'open' && open; },
-                        remove: function() { open = false; }, add: function() { open = true; } },
-           querySelector: function() { return body; }, isOpen: function() { return open; } };
-}
 var _openRows = { c1: { dirty: true, blobUrl: 'blob:1',
                         audio: { pause: function() { paused++; } } } };
 (async function() {
-  var c = mkCard();
+  var c = mkCard(false);
   await toggleExpand(c, { id: 'c1' });
-  var c2 = mkCard();
+  var c2 = mkCard(false);
   await toggleExpand(c2, { id: 'c2' });
   console.log(JSON.stringify({ open: [c.isOpen(), c2.isOpen()], rows: Object.keys(_openRows),
     revoked: revoked, paused: paused }));
@@ -2253,21 +2253,14 @@ def test_superseded_reopen_leaves_the_live_cards_state(page, tmp_path):
     card's dirty state in _openRows with a clean one, so the unsaved-edits
     prompt no longer fired. A card collapsed while its GET ran stays shut."""
     fns = _js_functions(page, "toggleExpand", "collapse", "_revokeRowBlob")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, fns + _MK_CARD_JS + r"""
 var pending = [];
 function api() { return new Promise(function(res) { pending.push(res); }); }
 function toast() {}
 function buildBody(body, r) { _openRows[r.id] = { card: body.card, dirty: false }; }
-function mkCard(name) {
-  var open = false, body = { dataset: { built: '0' }, innerHTML: '', card: name };
-  return { isConnected: true,
-           classList: { contains: function(c) { return c === 'open' && open; },
-                        remove: function() { open = false; }, add: function() { open = true; } },
-           querySelector: function() { return body; } };
-}
 var _openRows = {};
 (async function() {
-  var a1 = mkCard('a1'), a2 = mkCard('a2');
+  var a1 = mkCard(false, 'a1'), a2 = mkCard(false, 'a2');
   var p1 = toggleExpand(a1, { id: 'c1' });
   a1.isConnected = false;                 // render 2 rebuilt the list
   var p2 = toggleExpand(a2, { id: 'c1' });
@@ -2276,7 +2269,7 @@ var _openRows = {};
   _openRows.c1.dirty = true;              // user edits the live card
   pending[0]({ capture: { id: 'c1' } });
   await p1;
-  var b = mkCard('b');
+  var b = mkCard(false, 'b');
   var p3 = toggleExpand(b, { id: 'c2' });
   b.classList.remove('open');             // collapsed while loading
   pending[2]({ capture: { id: 'c2' } });
