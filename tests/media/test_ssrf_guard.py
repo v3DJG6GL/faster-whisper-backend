@@ -42,7 +42,7 @@ import pytest
 
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.media import download as udl
-from tests.media._server_helpers import _stopping
+from tests.media._server_helpers import _QuietHandler, _stopping
 
 SECRET = b"INTERNAL-SECRET-" * 64
 PUBLIC_BODY = b"\xff\xfb\x90\x44" + b"\x00" * 4092  # plausible MPEG audio head
@@ -54,24 +54,18 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class _Internal(http.server.BaseHTTPRequestHandler):
+class _Internal(_QuietHandler):
     hits: "list[str]" = []
 
     def do_GET(self):
         type(self).hits.append(f"{self.command} {self.path}")
-        self.send_response(200)
-        self.send_header("Content-Type", "audio/mpeg")
-        self.send_header("Content-Length", str(len(SECRET)))
-        self.end_headers()
+        self._ok_headers("audio/mpeg", len(SECRET))
         self.wfile.write(SECRET)
 
     do_HEAD = do_GET
 
-    def log_message(self, *a):
-        pass
 
-
-class _Public(http.server.BaseHTTPRequestHandler):
+class _Public(_QuietHandler):
     """200 audio/mpeg for the direct-media probe, a redirect for everyone
     else — exactly the shape that slipped past the pre-guard code."""
 
@@ -80,10 +74,7 @@ class _Public(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         ua = self.headers.get("User-Agent") or ""
         if ua.startswith("faster-whisper-backend") or self.path.startswith("/direct"):
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/mpeg")
-            self.send_header("Content-Length", str(len(PUBLIC_BODY)))
-            self.end_headers()
+            self._ok_headers("audio/mpeg", len(PUBLIC_BODY))
             if self.command == "GET":
                 self.wfile.write(PUBLIC_BODY)
             return
@@ -93,9 +84,6 @@ class _Public(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     do_HEAD = do_GET
-
-    def log_message(self, *a):
-        pass
 
 
 def _serve(handler, host):
@@ -395,7 +383,7 @@ def test_download_allows_a_public_looking_target(tmp_path, servers,
     assert _Internal.hits == []
 
 
-class _Dribbler(http.server.BaseHTTPRequestHandler):
+class _Dribbler(_QuietHandler):
     """200 audio/mpeg for the direct-media probe at once; yt-dlp's page GET
     gets its status line and then one header byte every 0.3 s — never
     tripping a per-op socket timeout, never finishing."""
@@ -403,10 +391,7 @@ class _Dribbler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         ua = self.headers.get("User-Agent") or ""
         if ua.startswith("faster-whisper-backend"):
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/mpeg")
-            self.send_header("Content-Length", str(len(PUBLIC_BODY)))
-            self.end_headers()
+            self._ok_headers("audio/mpeg", len(PUBLIC_BODY))
             self.wfile.write(PUBLIC_BODY)
             return
         import time as _t
@@ -419,9 +404,6 @@ class _Dribbler(http.server.BaseHTTPRequestHandler):
                 _t.sleep(0.3)
         except OSError:
             pass
-
-    def log_message(self, *a):
-        pass
 
 
 def test_probe_extraction_is_cut_at_its_wall_clock_deadline(

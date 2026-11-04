@@ -18,7 +18,7 @@ import urllib.error
 import pytest
 
 from faster_whisper_backend.media import download as udl
-from tests.media._server_helpers import _stopping
+from tests.media._server_helpers import _QuietHandler, _stopping
 
 
 @pytest.mark.parametrize("url", [
@@ -1446,18 +1446,12 @@ def _ok_server(content_type, body, on_get=None):
     import http.server
     import threading
 
-    class _H(http.server.BaseHTTPRequestHandler):
+    class _H(_QuietHandler):
         def do_GET(self):
             if on_get:
                 on_get(self)
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
+            self._ok_headers(content_type, len(body))
             self.wfile.write(body)
-
-        def log_message(self, *a):
-            pass
 
     srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
