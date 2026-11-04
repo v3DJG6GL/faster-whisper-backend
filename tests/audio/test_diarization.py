@@ -691,10 +691,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
     that loaded and leased another pipeline meanwhile must not be orphaned
     by the speculative load (two pipelines in memory)."""
     import asyncio
-    cfg = diarization.cfg
-    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
-                        raising=False)
+    _diar_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("p/a", "cpu", 4), {"p/a": 1})
     loads: list = []
@@ -717,10 +714,7 @@ def test_a_zombie_inference_makes_the_singleton_busy(monkeypatch):
     load_unleased force-drops (unregisters, empty_cache) the pipeline under
     the zombie and loads a second one beside it."""
     import asyncio
-    cfg = diarization.cfg
-    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
-                        raising=False)
+    _diar_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("p/a", "cpu", 4))
     loads: list = []
