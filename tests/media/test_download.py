@@ -350,11 +350,9 @@ def test_unreachable_hand_off_target_is_not_called_a_policy_refusal(
     server's URL policy doesn't allow" (a refusal nobody retries)."""
     real_probe = udl._direct_media_probe_sync
     _probe_opener_raising(monkeypatch, exc)  # the real GET, its opener failing
-    _handoff_policy(monkeypatch)
-    _stand_in_yt_dlp(monkeypatch, "Youtube", {
-        "title": "t", "extractor_key": "Generic",
-        "webpage_url": "https://cdn.example/live.m3u8",
-        "protocol": "m3u8_native"})
+    _youtube_handing_off_to_generic(
+        monkeypatch, webpage_url="https://cdn.example/live.m3u8",
+        protocol="m3u8_native")
     monkeypatch.setattr(udl, "_direct_media_probe_sync", real_probe)
     with pytest.raises(error) as ei:
         _run(udl.probe("https://x/watch", timeout=5.0))
@@ -427,6 +425,14 @@ def _probe_with_extractor(monkeypatch, matched, ran):
                             {"title": "t", "extractor_key": ran})
 
 
+def _youtube_handing_off_to_generic(monkeypatch, **info):
+    """`_handoff_policy` + a stand-in yt-dlp: matched Youtube, extraction
+    ended on GenericIE with `info`."""
+    _handoff_policy(monkeypatch)
+    _stand_in_yt_dlp(monkeypatch, "Youtube",
+                     {"title": "t", "extractor_key": "Generic", **info})
+
+
 def test_probe_refuses_a_direct_media_link_handed_to_a_site_extractor(monkeypatch):
     """A Generic URL admitted only as direct media (the probe's distinctive
     request saw audio/*) must not come back from a site extractor GenericIE
@@ -479,14 +485,11 @@ def test_probe_admits_an_hls_manifest_handed_off_to_generic(monkeypatch):
     GenericIE fetched. The info is url_transparent-shaped: yt-dlp overlays
     the outer site result, so webpage_url is the SITE page (the probed
     URL), not the manifest."""
-    _handoff_policy(monkeypatch)
     fmt = {"format_id": "hls-1", "protocol": "m3u8_native",
            "url": "https://cdn.example/live/variant.m3u8",
            "manifest_url": "https://cdn.example/live.m3u8"}
-    _stand_in_yt_dlp(monkeypatch, "Youtube", {
-        "title": "t", "extractor_key": "Generic",
-        "webpage_url": "https://x/watch",
-        **fmt, "formats": [fmt]})
+    _youtube_handing_off_to_generic(
+        monkeypatch, webpage_url="https://x/watch", **fmt, formats=[fmt])
     probed: "list[str]" = []
 
     def _media(u, timeout, accept_hls=False):
@@ -502,11 +505,9 @@ def test_probe_bounds_the_hand_off_check_by_the_probe_deadline(monkeypatch):
     pool) spends from the probe's one wall-clock budget like the steps
     before it: "took too long", not a request running past the timeout."""
     import threading
-    _handoff_policy(monkeypatch)
-    _stand_in_yt_dlp(monkeypatch, "Youtube", {
-        "title": "t", "extractor_key": "Generic",
-        "webpage_url": "https://cdn.example/live.m3u8",
-        "protocol": "m3u8_native"})
+    _youtube_handing_off_to_generic(
+        monkeypatch, webpage_url="https://cdn.example/live.m3u8",
+        protocol="m3u8_native")
     release = threading.Event()
 
     def _slow(u, timeout, **kw):
@@ -560,11 +561,9 @@ def test_probe_refuses_a_direct_flagged_non_media_hand_off(monkeypatch):
     """GenericIE flags ANY non-HTML body "direct" (octet-stream, JSON…);
     the offline gate would refuse that URL, so the hand-off is refused
     too."""
-    _handoff_policy(monkeypatch)
-    _stand_in_yt_dlp(monkeypatch, "Youtube", {
-        "title": "t", "extractor_key": "Generic", "direct": True,
-        "url": "https://cdn.example/blob.bin",
-        "webpage_url": "https://x/watch"})
+    _youtube_handing_off_to_generic(
+        monkeypatch, direct=True, url="https://cdn.example/blob.bin",
+        webpage_url="https://x/watch")
     probed: "list[str]" = []
 
     def _octet_stream(u, timeout, **kw):
