@@ -15,6 +15,10 @@ from tests.conftest import bearer, schema_map_cap
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
+def _patch_rules(client, rules_patch, **kw):
+    return client.patch("/v1/pipeline-rules", json={"rules_patch": rules_patch}, **kw)
+
+
 def _expose_first_regex_list_rule(app_module):
     """Expose the first regex-list rule (no tags = visible to all)."""
     return _expose_first(app_module, "regex-list")
@@ -77,36 +81,27 @@ def test_v1_get_includes_exposed_rule_with_fingerprint(client, app_module):
 
 
 def test_v1_patch_empty_is_noop(client):
-    r = client.patch("/v1/pipeline-rules", json={"rules_patch": {}})
+    r = _patch_rules(client, {})
     assert r.status_code == 200
     assert r.json()["saved"] == []
 
 
 def test_v1_patch_valid_field_saves(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
-    r = client.patch(
-        "/v1/pipeline-rules",
-        json={"rules_patch": {slug: {"enabled": False}}},
-    )
+    r = _patch_rules(client, {slug: {"enabled": False}})
     assert r.status_code == 200
     assert slug in r.json()["saved"]
 
 
 def test_v1_patch_unknown_slug_400(client):
-    r = client.patch(
-        "/v1/pipeline-rules",
-        json={"rules_patch": {"no-such-rule": {"enabled": False}}},
-    )
+    r = _patch_rules(client, {"no-such-rule": {"enabled": False}})
     assert r.status_code == 400
 
 
 def test_v1_patch_disallowed_field_400(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
     # `label` is admin-only / not in the per-type allow-list -> 400.
-    r = client.patch(
-        "/v1/pipeline-rules",
-        json={"rules_patch": {slug: {"label": "hacked"}}},
-    )
+    r = _patch_rules(client, {slug: {"label": "hacked"}})
     assert r.status_code == 400
 
 
@@ -122,10 +117,7 @@ def test_v1_patch_extra_top_level_field_422(client):
 def test_v1_patch_bad_regex_returns_422_errors(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
     # An uncompilable pattern fails the server-side save validation.
-    r = client.patch(
-        "/v1/pipeline-rules",
-        json={"rules_patch": {slug: {"entries": [{"pattern": "(", "replacement": ""}]}}},
-    )
+    r = _patch_rules(client, {slug: {"entries": [{"pattern": "(", "replacement": ""}]}})
     assert r.status_code == 422
     assert "errors" in r.json()
 
@@ -184,11 +176,7 @@ def test_v1_patch_rule_not_visible_is_indistinguishable_from_unknown(
     raw = _alice_alpha_key(make_user_key)
 
     def _patch(slug):
-        return client.patch(
-            "/v1/pipeline-rules",
-            json={"rules_patch": {slug: {"enabled": False}}},
-            headers=bearer(raw),
-        )
+        return _patch_rules(client, {slug: {"enabled": False}}, headers=bearer(raw))
 
     hidden = _patch(beta)              # exists, but not visible to alice
     missing = _patch("no-such-rule")   # does not exist at all
@@ -205,11 +193,7 @@ def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
     hidden-equals-unknown 400 must not hide their own rules from them."""
     alpha, _beta, _untagged = _expose_tagged(app_module)
     raw = _alice_alpha_key(make_user_key)
-    r = client.patch(
-        "/v1/pipeline-rules",
-        json={"rules_patch": {alpha: {"enabled": False}}},
-        headers=bearer(raw),
-    )
+    r = _patch_rules(client, {alpha: {"enabled": False}}, headers=bearer(raw))
     assert r.status_code == 200
     assert alpha in r.json()["saved"]
 
@@ -248,11 +232,7 @@ def test_v1_nonadmin_can_edit_exposed_regex_entries(client, app_module, make_use
     slug = _expose_first_regex_list_rule(app_module)
     make_user_key("root", is_admin=True)  # flips lockdown
     _uid, alice = make_user_key("alice", pages={"quick_config": "own"})
-    r = client.patch(
-        "/v1/pipeline-rules",
-        json={"rules_patch": {slug: {"entries": [
-            {"pattern": "behaviour", "replacement": "behavior"}]}}},
-        headers=bearer(alice),
-    )
+    r = _patch_rules(client, {slug: {"entries": [
+        {"pattern": "behaviour", "replacement": "behavior"}]}}, headers=bearer(alice))
     assert r.status_code == 200
     assert slug in r.json()["saved"]
