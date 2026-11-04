@@ -720,6 +720,12 @@ def test_stream_knobs_hard_break_kept_above_outer(client, app_module, monkeypatc
         app_module.cfg.STREAMING_VAD_OUTER_SILENCE_MS + 1000)
 
 
+def _sc_for(**values):
+    """The StreamConfig a profile with these ``values`` resolves to."""
+    ident = effective_config.Resolved(values=values)
+    return streaming_routes._stream_config(effective_config.cfg_for, ident)
+
+
 def test_profile_silence_gates_are_fitted_to_the_resolved_outer(monkeypatch):
     """AdminConfig refuses only a GLOBAL silence pair that does not fit: a
     profile outer above the global hard break made every dictated sentence
@@ -729,19 +735,16 @@ def test_profile_silence_gates_are_fitted_to_the_resolved_outer(monkeypatch):
     monkeypatch.setattr(c, "STREAMING_VAD_OUTER_SILENCE_MS", 1200)
     monkeypatch.setattr(c, "STREAMING_HARD_BREAK_SILENCE_MS", 5000)
 
-    def sc_for(**values):
-        ident = effective_config.Resolved(values=values)
-        return streaming_routes._stream_config(effective_config.cfg_for, ident)
-    sc = sc_for(STREAMING_VAD_OUTER_SILENCE_MS=6000)
+    sc = _sc_for(STREAMING_VAD_OUTER_SILENCE_MS=6000)
     assert (sc.commit_silence_ms, sc.hard_break_silence_ms) == (6000, 7000)
-    sc = sc_for(STREAMING_VAD_INNER_SILENCE_MS=1500)
+    sc = _sc_for(STREAMING_VAD_INNER_SILENCE_MS=1500)
     assert (sc.vad_min_silence_ms, sc.commit_silence_ms) == (1150, 1200)
     # Hard break 0 (off) stays off; a fitting pair passes through untouched.
-    sc = sc_for(STREAMING_VAD_OUTER_SILENCE_MS=6000,
-                STREAMING_HARD_BREAK_SILENCE_MS=0)
+    sc = _sc_for(STREAMING_VAD_OUTER_SILENCE_MS=6000,
+                 STREAMING_HARD_BREAK_SILENCE_MS=0)
     assert sc.hard_break_silence_ms == 0
-    sc = sc_for(STREAMING_VAD_INNER_SILENCE_MS=900,
-                STREAMING_HARD_BREAK_SILENCE_MS=3000)
+    sc = _sc_for(STREAMING_VAD_INNER_SILENCE_MS=900,
+                 STREAMING_HARD_BREAK_SILENCE_MS=3000)
     assert (sc.vad_min_silence_ms, sc.commit_silence_ms,
             sc.hard_break_silence_ms) == (900, 1200, 3000)
 
@@ -750,15 +753,11 @@ def test_profile_trim_keep_at_or_above_trim_is_clamped_below_it(monkeypatch):
     """AdminConfig only validates the GLOBAL keep < trim pair: a profile
     keep above the global trim would stop the buffer trim from ever firing."""
     monkeypatch.setattr(effective_config.cfg, "STREAMING_BUFFER_TRIM_S", 15.0)
-    ident = effective_config.Resolved(
-        values={"STREAMING_BUFFER_TRIM_KEEP_S": 20.0})
-    sc = streaming_routes._stream_config(effective_config.cfg_for, ident)
+    sc = _sc_for(STREAMING_BUFFER_TRIM_KEEP_S=20.0)
     assert sc.buffer_trim_sec == 15.0
     assert sc.buffer_trim_keep_sec < sc.buffer_trim_sec
     # A valid pair passes through untouched.
-    ident = effective_config.Resolved(
-        values={"STREAMING_BUFFER_TRIM_KEEP_S": 8.0})
-    sc = streaming_routes._stream_config(effective_config.cfg_for, ident)
+    sc = _sc_for(STREAMING_BUFFER_TRIM_KEEP_S=8.0)
     assert sc.buffer_trim_keep_sec == 8.0
 
 
@@ -772,8 +771,7 @@ def test_spelled_newline_separator_is_decoded_from_every_source(monkeypatch, raw
     monkeypatch.setattr(effective_config.cfg, field, raw)
     assert streaming_routes._stream_config(effective_config.cfg_for).hard_break_separator == want
     monkeypatch.setattr(effective_config.cfg, field, "")
-    ident = effective_config.Resolved(values={field: raw})
-    sc = streaming_routes._stream_config(effective_config.cfg_for, ident)
+    sc = _sc_for(**{field: raw})
     assert sc.hard_break_separator == want
     sc = streaming_routes._stream_config(effective_config.cfg_for, client={field: raw})
     assert sc.hard_break_separator == want
