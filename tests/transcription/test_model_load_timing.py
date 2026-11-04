@@ -8,6 +8,7 @@ the evictor must only claim an unload that actually happened.
 import asyncio
 import logging
 import sys
+import threading
 import types
 
 import pytest
@@ -109,7 +110,6 @@ def test_cancelled_load_holds_the_lock_until_its_queued_register_lands(
     unregisters nothing, then the late write leaves a registry entry with no
     model behind it (/stats and the admin page list it as loaded)."""
     import concurrent.futures
-    import threading
     _stub_load(monkeypatch, max_loaded=4)
     gate, queued = threading.Event(), []
 
@@ -155,7 +155,6 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
     is still running on the executor thread: the next waiter would start a
     second build of the same model. The build is finished, cached unleased,
     and the retry gets that model without a second constructor call."""
-    import threading
     entered, go = threading.Event(), threading.Event()
     built = []
 
@@ -200,7 +199,6 @@ def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
     across the await logged a cancelled caller's still-running download as
     aborted and wrote its done row on the event loop."""
     import contextlib
-    import threading
 
     from faster_whisper_backend.runtime import download_progress
     _stub_load(monkeypatch, max_loaded=4)
