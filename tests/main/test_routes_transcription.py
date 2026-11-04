@@ -5,13 +5,19 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 """
 
 import pytest
+from fastapi import HTTPException
 
 from tests.conftest import FakeModel, FakeSegment, bearer, write_wav
 from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import capture_receipt
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import transcode as audio_transcode
+from faster_whisper_backend.captures import store as captures_store
+from faster_whisper_backend.media import media_store
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.transcription import run_plan
 from tests._transcription_helpers import (
     WAV_UPLOAD as _FILE, fail_model_load, get_progress, post_transcription as _post,
     post_verbose_ok, record_runs, serve_model, watch_progress)
@@ -410,8 +416,6 @@ def test_progress_entry_is_closed_on_a_413_before_the_decode(
 
 def test_progress_entry_is_closed_when_the_model_load_fails(
         client, app_module, monkeypatch):
-    from fastapi import HTTPException
-
     fail_model_load(monkeypatch, HTTPException(status_code=400, detail="model not allowed"))
     pid = "f" * 32
     r = _post(client, response_format="json", progress_id=pid)
@@ -566,8 +570,6 @@ def test_unknown_failure_is_other_and_success_has_no_class(client, app_module,
 def test_curated_4xx_is_rejected_not_a_server_failure(client, app_module, monkeypatch):
     """A caller error that the handler turns into a 4xx must not count as a
     server failure class."""
-    from fastapi import HTTPException
-
     fail_model_load(monkeypatch, HTTPException(status_code=400, detail="model not allowed"))
     assert _post(client, response_format="json").status_code == 400
     row = _ledger_row()
@@ -578,7 +580,6 @@ def test_progress_carries_plan_overall_and_eta(client, app_module):
     """A polled entry with a run plan behind it publishes the plan, the
     overall fraction and the ETA; an entry without one (the admin prompt
     lab's) answers None for all three, never a KeyError."""
-    from faster_whisper_backend.transcription import run_plan
     pid = "e" * 32
     plan = run_plan.RunPlan(kind="file")
     plan.set_stages(["transcribing", "translating"])
@@ -633,7 +634,6 @@ def test_plan_receipt_is_clocked_without_a_progress_id(client, app_module,
     with took_s 0.0 and the rates ledger never learns from API callers."""
     import time
     from faster_whisper_backend.runtime import stage_rates
-    from faster_whisper_backend.transcription import run_plan
     monkeypatch.setattr(run_plan, "_MIN_SAMPLE_S", 0.0)
     orig = fake_model.transcribe
 
@@ -774,8 +774,6 @@ def test_upload_with_no_audio_stream_is_a_400_not_a_server_fault(
 
 def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import bgm_separation
-    from faster_whisper_backend.audio import transcode as audio_transcode
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
                         raising=False)
     calls = []
@@ -801,8 +799,6 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
     ValueError is a refusal: any other av error keeps the fallback (the
     separator decodes the original) instead of skipping separation."""
     import av
-    from faster_whisper_backend.audio import bgm_separation
-    from faster_whisper_backend.audio import transcode as audio_transcode
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
                         raising=False)
     calls = []
@@ -835,8 +831,6 @@ def test_a_full_capture_store_still_records_a_batch_request(
     """At CAPTURES_MAX the batch gate must still reach create_capture so its
     _evict_to_cap rotates oldest-first; refusing up front means no later
     request records anything (streaming twin: tests/streaming/test_finalize_paths.py)."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
@@ -853,8 +847,6 @@ def test_a_store_full_of_ready_captures_skips_the_batch_capture(
         client, app_module, fake_model, monkeypatch, created_captures):
     """Ready rows alone fill CAPTURES_MAX: _evict_to_cap would evict the new
     row itself, so the gate records nothing and does not force DTW."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
 
@@ -872,7 +864,6 @@ def test_batch_capture_gate_reads_the_store_off_the_event_loop(
     holds across a full VACUUM: called on the loop, that VACUUM would freeze
     every request and stream. It must run in a worker thread."""
     import asyncio
-    from faster_whisper_backend.captures import store as captures_store
 
     _record_captures_on(app_module, monkeypatch)
     on_loop = []
@@ -903,7 +894,6 @@ def test_retain_media_over_the_store_cap_is_declined_with_a_warning(
     """A store cap below MEDIA_MAX_BYTES: an upload the store would drop at
     once is never copied or registered, and the response says why instead
     of silently omitting source_media_id."""
-    from faster_whisper_backend.media import media_store
     _retain_on(app_module, monkeypatch, tmp_path)
     monkeypatch.setattr(app_module.cfg, "RETAINED_MEDIA_MAX_BYTES", 4,
                         raising=False)
@@ -925,7 +915,6 @@ def test_retain_media_with_a_body_that_cannot_name_it_is_refused(
         client, app_module, monkeypatch, tmp_path, fmt):
     """A plain-text or subtitle body has no field for source_media_id: the
     retained copy could never be addressed, so no copy is staged at all."""
-    from faster_whisper_backend.media import media_store
     _retain_on(app_module, monkeypatch, tmp_path)
     calls = []
     monkeypatch.setattr(media_store, "make_pipeline_copy",
@@ -938,7 +927,6 @@ def test_retain_media_with_a_body_that_cannot_name_it_is_refused(
 
 def test_retain_media_refused_by_register_says_so(client, app_module,
                                                   monkeypatch, tmp_path):
-    from faster_whisper_backend.media import media_store
     _retain_on(app_module, monkeypatch, tmp_path)
     monkeypatch.setattr(media_store, "register", lambda *a, **kw: None)
     r = _post(client, response_format="json", retain_media="true")
@@ -953,7 +941,6 @@ def test_retain_media_staging_failure_says_so(client, app_module,
     """make_pipeline_copy returns None when both the hardlink and the copy
     fail: the register block never runs, so the response must say why
     instead of silently omitting source_media_id."""
-    from faster_whisper_backend.media import media_store
     _retain_on(app_module, monkeypatch, tmp_path)
     calls = []
     monkeypatch.setattr(media_store, "register",
