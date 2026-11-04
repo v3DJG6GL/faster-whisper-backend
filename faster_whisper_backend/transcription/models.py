@@ -30,7 +30,7 @@ from faster_whisper_backend.transcription import decode_trace as _decode_trace
 from faster_whisper_backend.core import device_memory
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.core import languages
-from faster_whisper_backend.core.loop_lock import CancelLatch, release_count
+from faster_whisper_backend.core.loop_lock import CancelLatch, register_through_latch, release_count
 from faster_whisper_backend.core.store_common import log_safe
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
@@ -1457,34 +1457,30 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         # learns about. Awaited to the end under the lock even when cancelled
         # (like _construct): an eviction slipped in before the queued write
         # lands would unregister nothing and leave that write a phantom.
-        reg_fut = asyncio.ensure_future(asyncio.to_thread(
+        def _unlease() -> None:
+            # Failed or cancelled during the register: the caller never
+            # receives the model, so never releases.
+            if leased:
+                _release_model_lease(name, new_model)
+
+        def _forget() -> None:
+            # A failed register leaves nothing cached. Forced, as a
+            # lock-free cache hit may have leased the model during the
+            # write: that holder's lease turns orphaned, so its release
+            # cannot leave a count pinning the next load of name.
+            _drop_loaded_model(name, force=True)
+
+        await register_through_latch(
+            latch,
             model_registry.register_loaded_model,
             name,
             vram_bytes=vram_delta,
             device=loaded_device,
             compute_type=loaded_compute,
             load_secs=load_secs,
-        ))
-        try:
-            await latch.wait(reg_fut)
-        except BaseException as e:
-            # The caller never receives the model, so never releases.
-            if leased:
-                _release_model_lease(name, new_model)
-            if not isinstance(e, asyncio.CancelledError):
-                # A failed register leaves nothing cached. Forced, as a
-                # lock-free cache hit may have leased the model during the
-                # write: that holder's lease turns orphaned, so its release
-                # cannot leave a count pinning the next load of name.
-                _drop_loaded_model(name, force=True)
-                if latch.cancelled is not None:
-                    raise latch.cancelled from e
-            raise
-        if latch.cancelled is not None:
-            if leased:
-                # Cancelled during the register: the caller never gets the model to release it.
-                _release_model_lease(name, new_model)
-            raise latch.cancelled
+            release=_unlease,
+            forget=_forget,
+        )
         return new_model
 
 

@@ -19,6 +19,7 @@ built on ``asyncio.Lock`` can; with one loop it is exactly an
 ``CancelLatch`` and ``release_count`` are the model caches' other shared
 primitives: the latch finishes an un-stoppable load / registry write under
 such a lock and defers the caller's cancellation until it has landed;
+``register_through_latch`` is the unwind around such a registry write;
 ``release_count`` drops a lease / in-flight count. ``cancel_and_wait`` is the
 teardown of a background task (lifespan loops, the preload worker, a stream's
 consumer); ``run_every`` is the body of those lifespan loops.
@@ -97,6 +98,30 @@ class CancelLatch:
                 if fut.cancelled():
                     raise
                 self.cancelled = self.cancelled or c
+
+
+async def register_through_latch(latch: CancelLatch, register, *args,
+                                 release, forget, **kwargs) -> None:
+    """Run the blocking ``register(*args, **kwargs)`` on a thread, shielded and
+    awaited to its end through cancellations, then unwind for the caller who
+    will not receive the model: ``release`` undoes its lease on every failure
+    or cancellation, then ``forget`` clears the cache entry after a failed
+    register (a cancel keeps it). The latch is a parameter because a load
+    shares it with its constructor, keeping one first cancellation for both.
+    """
+    fut = asyncio.ensure_future(asyncio.to_thread(register, *args, **kwargs))
+    try:
+        await latch.wait(fut)
+    except BaseException as e:
+        release()
+        if not isinstance(e, asyncio.CancelledError):
+            forget()
+            if latch.cancelled is not None:
+                raise latch.cancelled from e
+        raise
+    if latch.cancelled is not None:
+        release()
+        raise latch.cancelled
 
 
 async def cancel_and_wait(task: asyncio.Task | None) -> None:

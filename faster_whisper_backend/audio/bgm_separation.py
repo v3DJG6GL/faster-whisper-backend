@@ -28,7 +28,7 @@ from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core import device_memory
 from faster_whisper_backend.core import store_common
-from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, release_count, run_every
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock, register_through_latch, release_count, run_every
 
 logger = logging.getLogger("whisper-server")
 
@@ -633,30 +633,23 @@ async def _get_separator(model_filename: "str | None" = None, *,
             # queued on the default executor (a cached separator /stats never
             # lists), and a drop slipped in before a running write lands
             # would leave that write a phantom row.
-            latch = CancelLatch()
-            reg_fut = asyncio.ensure_future(asyncio.to_thread(
-                model_registry.register_loaded_model,
-                _STATS_PREFIX + model, vram, actual, "onnx", load_secs))
-            try:
-                await latch.wait(reg_fut)
-            except BaseException as e:
-                # The caller never receives the separator, so never releases.
+            def _unlease() -> None:
+                # Failed or cancelled during the register: the caller never
+                # receives the separator, so never releases. A cancel leaves
+                # it cached and registered.
                 if lease:
                     _release_locked(model, sep)
-                if not isinstance(e, asyncio.CancelledError):
-                    # A failed register leaves nothing cached.
-                    _separator = None
-                    _separator_key = None
-                    if latch.cancelled is not None:
-                        raise latch.cancelled from e
-                raise
-            if latch.cancelled is not None:
-                # Cancelled during the register: the caller never receives
-                # the separator, so never releases; it stays cached and
-                # registered.
-                if lease:
-                    _release_locked(model, sep)
-                raise latch.cancelled
+
+            def _forget() -> None:
+                # A failed register leaves nothing cached.
+                global _separator, _separator_key
+                _separator = None
+                _separator_key = None
+
+            await register_through_latch(
+                CancelLatch(), model_registry.register_loaded_model,
+                _STATS_PREFIX + model, vram, actual, "onnx", load_secs,
+                release=_unlease, forget=_forget)
             logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                         model, actual, load_secs)
             model_registry.record_load_stat(_STATS_PREFIX + model, load_secs)
