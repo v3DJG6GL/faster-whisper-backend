@@ -549,7 +549,7 @@ console.log(JSON.stringify({ span: span, heal: chip.wrong,
 
 def _heal_fns(page):
     """renderChips and its heal helpers, with a do-nothing DOM."""
-    return _chip_max(page) + _js_functions(page, "_dispWord", "_dispRemoved", "recomputeWrong",
+    return _chip_max(page) + _js_functions(page, "_dispWord", "_dispRemoved", "spanText", "recomputeWrong",
                                            "renderChips", "markDirty", "_el") + r"""
 function el() { return { classList: { remove: function() {} },
   appendChild: function() {}, addEventListener: function() {} }; }
@@ -640,7 +640,7 @@ def test_chip_text_past_the_server_cap_is_refused_on_the_page(page, tmp_path):
     toasted "Saved." anyway: the export then rewrote only part of a long span
     or emitted a cut correction. Extending or clicking past the cap now
     toasts instead, and the correction input stops at the cap."""
-    fns = _heal_fns(page) + _js_functions(page, "extendLastChip", "spanText", "onWordClick", "_chipIndexAt")
+    fns = _heal_fns(page) + _js_functions(page, "extendLastChip", "onWordClick", "_chipIndexAt")
     out = _run_node(tmp_path, fns + r"""
 var toasts = [], inputs = [];
 function toast(m, err) { toasts.push(m); }
