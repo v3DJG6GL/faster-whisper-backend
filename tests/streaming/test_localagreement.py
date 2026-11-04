@@ -12,6 +12,18 @@ def _texts(words):
     return [w.text for w in words]
 
 
+def _der_patient_hat():
+    """Two agreeing passes: " Der Patient" committed, " hat" provisional."""
+    p = LocalAgreementProcessor()
+    p.insert_hypothesis([(0.0, 0.5, " Der"), (0.5, 1.0, " Patient")], 0.0)
+    p.commit()
+    p.insert_hypothesis(
+        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat")], 0.0
+    )
+    p.commit()
+    return p
+
+
 def test_first_iteration_commits_nothing():
     """LA-2 needs two hypotheses to agree, so the first decode commits nothing."""
     p = LocalAgreementProcessor()
@@ -39,14 +51,8 @@ def test_commits_common_prefix_of_two_hypotheses():
 def test_unstable_tail_is_never_committed_until_agreement():
     """A mis-heard tail word that changes between passes is never committed; the
     corrected word only commits once two passes agree on it."""
-    p = LocalAgreementProcessor()
     # Build up a committed prefix "Der Patient hat".
-    p.insert_hypothesis([(0.0, 0.5, " Der"), (0.5, 1.0, " Patient")], 0.0)
-    p.commit()
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat")], 0.0
-    )
-    p.commit()
+    p = _der_patient_hat()
     p.insert_hypothesis(
         [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat"),
          (1.5, 2.0, " Vieber")], 0.0,
@@ -76,13 +82,7 @@ def test_boundary_ngram_dedup_prevents_double_emission():
     """Whisper often re-emits the last committed word at the front of a fresh
     decode (e.g. after a buffer trim). The n-gram guard drops it so it is not
     committed twice."""
-    p = LocalAgreementProcessor()
-    p.insert_hypothesis([(0.0, 0.5, " Der"), (0.5, 1.0, " Patient")], 0.0)
-    p.commit()
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat")], 0.0
-    )
-    p.commit()  # committed "Der Patient", provisional "hat"
+    p = _der_patient_hat()  # committed "Der Patient", provisional "hat"
 
     # A new hypothesis that re-emits "Patient" at the seam (start≈1.0).
     p.insert_hypothesis([(1.0, 1.5, " Patient"), (1.5, 2.0, " hat")], 0.0)
@@ -105,13 +105,7 @@ def test_pop_committed_trims_in_buffer_window():
 
 
 def test_finish_returns_tail_without_reset_then_reset_clears():
-    p = LocalAgreementProcessor()
-    p.insert_hypothesis([(0.0, 0.5, " Der"), (0.5, 1.0, " Patient")], 0.0)
-    p.commit()
-    p.insert_hypothesis(
-        [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat")], 0.0
-    )
-    p.commit()
+    p = _der_patient_hat()
     tail = p.finish()
     assert _texts(tail) == [" hat"]
     assert p.committed_text == " Der Patient"
