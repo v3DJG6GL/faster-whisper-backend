@@ -19,6 +19,11 @@ import time
 import types
 import unicodedata
 
+import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
+import huggingface_hub
+from huggingface_hub.errors import (
+    CacheNotFound, HfHubHTTPError, LocalEntryNotFoundError, OfflineModeIsEnabled)
+from huggingface_hub.utils import hf_raise_for_status
 import pytest
 
 from faster_whisper_backend.settings import config as cfg
@@ -1484,7 +1489,6 @@ def test_load_fails_instead_of_falling_back_when_the_hub_times_out(
         monkeypatch):
     """A hub timeout must not fall back to from_pretrained: its listing
     hits the same hub with no deadline and would hang the load forever."""
-    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
     record = _predownload_fails(
         monkeypatch, lambda: httpx.ReadTimeout("hub stalled"), None)
     with pytest.raises(translation.TranslationError, match="did not answer"):
@@ -1493,7 +1497,6 @@ def test_load_fails_instead_of_falling_back_when_the_hub_times_out(
 
     # hf_hub_download wraps a HEAD timeout — the cause chain still counts.
     def wrapped(repo, quant, cb=None):
-        from huggingface_hub.errors import LocalEntryNotFoundError
         try:
             raise httpx.ConnectTimeout("hub stalled")
         except httpx.ConnectTimeout as e:
@@ -1509,7 +1512,6 @@ def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
     """The hub resumes a timed-out download inside its except-timeout block:
     a disk-full error of that resume carries the timeout only as
     __context__ and is not a hub timeout."""
-    import httpx2 as httpx
     record = _install_fake_llama(monkeypatch)
 
     def disk_full(repo, quant, cb=None):
@@ -1525,7 +1527,6 @@ def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
 def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
     """model_info runs before hf_hub_download (which would serve the cache
     on a HEAD timeout): a GGUF already on disk must still load."""
-    import httpx2 as httpx
     record = _predownload_fails(
         monkeypatch, lambda: httpx.ReadTimeout("hub stalled"),
         "/cache/m.Q4.gguf")
@@ -1535,27 +1536,22 @@ def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
 
 
 def _hub_status_error(status):
-    import httpx2 as httpx
-    from huggingface_hub.errors import HfHubHTTPError
     req = httpx.Request("GET", "https://huggingface.co/api/models/org/repo")
     return HfHubHTTPError(f"{status}",
                           response=httpx.Response(status, request=req))
 
 
 def _connect_error():
-    import httpx2 as httpx
     return httpx.ConnectError("Name or service not known")
 
 
 def _wrapped_connect_error():
-    from huggingface_hub.errors import LocalEntryNotFoundError
     wrapped = LocalEntryNotFoundError("cannot locate")
     wrapped.__cause__ = _connect_error()            # `raise … from` it
     return wrapped
 
 
 def _offline_mode_error():
-    from huggingface_hub.errors import OfflineModeIsEnabled
     return OfflineModeIsEnabled("Cannot reach https://huggingface.co: "
                                 "offline mode is enabled")
 
@@ -1577,8 +1573,6 @@ def test_load_uses_the_cached_gguf_when_the_hub_is_unreachable(
 
 def _hub_answer(status, headers=None):
     """The error huggingface_hub itself raises for this hub answer."""
-    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
-    from huggingface_hub.utils import hf_raise_for_status
     req = httpx.Request("GET", "https://huggingface.co/api/models/org/repo")
     try:
         hf_raise_for_status(httpx.Response(status, request=req,
@@ -3090,13 +3084,11 @@ def _fake_cache(files_by_repo):
 
 
 def _stub_cache_scan(monkeypatch, files_by_repo):
-    import huggingface_hub
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir",
                         lambda cache_dir=None: _fake_cache(files_by_repo))
 
 
 def test_cached_gguf_resolves_unique_match(monkeypatch, tmp_path):
-    import huggingface_hub
     from faster_whisper_backend.runtime import hf_cache
     # The offline resolver scans DOWNLOAD_ROOT's hub cache, where the online
     # load downloaded it — the hub's own default froze HF_HOME at import.
@@ -3115,8 +3107,6 @@ def test_cached_gguf_resolves_unique_match(monkeypatch, tmp_path):
 
 
 def test_cached_gguf_none_on_ambiguous_or_missing(monkeypatch):
-    import huggingface_hub
-    from huggingface_hub.errors import CacheNotFound
     _stub_cache_scan(monkeypatch, {"org/repo": ["a.Q4.gguf", "b.Q4.gguf"]})
     assert translation._cached_gguf("org/repo", "Q4") is None      # ambiguous
     assert translation._cached_gguf("org/other", "Q4") is None     # unknown
