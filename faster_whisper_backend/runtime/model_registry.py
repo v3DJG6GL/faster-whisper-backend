@@ -111,6 +111,15 @@ def load_secs_since(name: str, since_ts: float) -> float:
         return float(info.get("load_secs") or 0.0)
 
 
+def record_load_stat(name: str, load_secs: float) -> None:
+    """Best-effort metrics.record_model_load: a stats failure never fails a load."""
+    try:
+        from faster_whisper_backend.stats import metrics
+        metrics.record_model_load(name, load_secs)
+    except Exception:  # noqa: BLE001 — stats only
+        pass
+
+
 def touch_loaded_model(name: str) -> None:
     """Bump last_used timestamp on cache hit — drives the warm/cold UI badge
     and the idle-evictor's eviction decision."""

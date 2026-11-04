@@ -659,11 +659,7 @@ async def _get_separator(model_filename: "str | None" = None, *,
                 raise latch.cancelled
             logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                         model, actual, load_secs)
-            try:
-                from faster_whisper_backend.stats import metrics
-                metrics.record_model_load(_STATS_PREFIX + model, load_secs)
-            except Exception:  # noqa: BLE001 — stats only
-                pass
+            model_registry.record_load_stat(_STATS_PREFIX + model, load_secs)
         except BaseException:
             if _separator_key != key:
                 _redo_deferred_frees()

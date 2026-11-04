@@ -415,11 +415,7 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
             raise latch.cancelled
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)
-        try:
-            from faster_whisper_backend.stats import metrics
-            metrics.record_model_load(_STATS_PREFIX + model_id, load_secs)
-        except Exception:  # noqa: BLE001 — stats only
-            pass
+        model_registry.record_load_stat(_STATS_PREFIX + model_id, load_secs)
         return pipe
 
 

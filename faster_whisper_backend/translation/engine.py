@@ -964,11 +964,7 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             model_registry.unregister_loaded_model(_STATS_PREFIX + ref)
         logger.info("[translate] model %s loaded on %s in %.1fs",
                     ref, device, load_secs)
-        try:
-            from faster_whisper_backend.stats import metrics
-            metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
-        except Exception:  # noqa: BLE001 — stats only
-            pass
+        model_registry.record_load_stat(_STATS_PREFIX + ref, load_secs)
         if latch.cancelled is not None:
             raise latch.cancelled
         return llm
