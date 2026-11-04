@@ -15,7 +15,7 @@ from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.streaming import routes as sr
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
-from tests._transcription_helpers import post_transcription, post_verbose, post_verbose_ok
+from tests._transcription_helpers import post_transcription, post_verbose_ok
 
 
 def _worded(text: str, start: float, end: float) -> FakeSegment:
@@ -148,8 +148,7 @@ def test_batch_emptied_segment_counts_as_dropped(client, app_module, fake_model)
     real = _worded("hallo welt", 0.0, 1.0)
     pile = [FakeWord(f" x{i}", 2.0, 2.0) for i in range(12)]
     fake_model._segments = [real, FakeSegment("".join(w.word for w in pile), 2.0, 2.0, words=pile)]
-    r = post_verbose(client)
-    body = r.json()
+    body = post_verbose_ok(client)
     assert body["text"] == "hallo welt"
     assert [s["id"] for s in body["segments"]] == [0]
     assert metrics.guard_hits["emptied"] == 1
@@ -229,8 +228,7 @@ def test_batch_whole_segment_prompt_echo_is_emptied(client, app_module, fake_mod
     real = FakeSegment(" Morgen wieder.", 0.5, 1.5,
                        words=[FakeWord(" Morgen", 0.5, 1.0), FakeWord(" wieder.", 1.0, 1.5)])
     fake_model._segments = [FakeSegment(" Tabletten am Abend.", 0.0, 0.04, words=ws), real]
-    r = post_verbose(client, prompt=_ECHO_PROMPT)
-    body = r.json()
+    body = post_verbose_ok(client, prompt=_ECHO_PROMPT)
     assert body["text"] == "Morgen wieder"         # factory strip-trailing-period
     assert [s["id"] for s in body["segments"]] == [0]
     assert metrics.guard_hits["head_echo"] == 1 and metrics.guard_hits["emptied"] == 1

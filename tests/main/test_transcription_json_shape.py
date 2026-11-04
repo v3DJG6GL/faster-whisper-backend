@@ -7,7 +7,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeSegment, bearer
 from tests._translation_helpers import enable_translation, stub_translate
-from tests._transcription_helpers import bind_profile, post_transcription
+from tests._transcription_helpers import bind_profile, post_transcription, post_verbose_ok
 
 
 def _post(client, headers=None, **data):
@@ -65,9 +65,7 @@ def test_plain_json_translation_meta_names_kept_originals(client, app_module,
     assert "segments" not in body
     assert body["translation"]["kept"] == {"en": [0]}
     # verbose_json exposes the same map beside its per-segment markers.
-    r = _post(client, translate_to="en", response_format="verbose_json")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = post_verbose_ok(client, translate_to="en")
     assert body["translation"]["kept"] == {"en": [0]}
     assert body["segments"][0]["translations_kept"] == ["en"]
 

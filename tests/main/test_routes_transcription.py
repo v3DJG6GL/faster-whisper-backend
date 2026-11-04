@@ -46,9 +46,7 @@ def test_translations_text_format_returns_plain_string(client):
 
 
 def test_verbose_json_shape(client):
-    r = _post(client, response_format="verbose_json")
-    assert r.status_code == 200
-    body = r.json()
+    body = post_verbose_ok(client)
     assert body["task"] == "transcribe"
     assert body["language"] == "de"
     assert body["duration"] == 1.0
@@ -248,17 +246,15 @@ def test_model_id_regex_rejects_a_trailing_newline(app_module):
 
 
 def test_task_translate_reaches_model_and_response(client, fake_model):
-    r = _post(client, response_format="verbose_json", task="translate")
-    assert r.status_code == 200
+    body = post_verbose_ok(client, task="translate")
     assert fake_model.last_kwargs["task"] == "translate"
-    assert r.json()["task"] == "translate"
+    assert body["task"] == "translate"
 
 
 def test_task_default_is_not_forwarded(client, fake_model):
-    r = _post(client, response_format="verbose_json")
-    assert r.status_code == 200
+    body = post_verbose_ok(client)
     assert "task" not in fake_model.last_kwargs
-    assert r.json()["task"] == "transcribe"
+    assert body["task"] == "transcribe"
 
 
 def test_task_invalid_is_422(client):
@@ -276,11 +272,9 @@ def test_translations_endpoint_pins_task(client, fake_model):
 def test_task_config_default_applies_when_field_absent(client, app_module, fake_model):
     app_module.cfg.TASK = "translate"
     try:
-        r = _post(client, response_format="verbose_json")
-        assert r.status_code == 200
+        post_verbose_ok(client)
         assert fake_model.last_kwargs["task"] == "translate"
-        r = _post(client, response_format="verbose_json", task="transcribe")
-        assert r.status_code == 200
+        post_verbose_ok(client, task="transcribe")
         assert "task" not in fake_model.last_kwargs
     finally:
         app_module.cfg.TASK = "transcribe"
@@ -309,8 +303,7 @@ def test_progress_live_entry_and_cleanup(client, app_module):
     # Release the seeded entry first: the handler treats an id still in
     # flight as absent, so it would neither adopt nor pop it.
     tx_progress._BATCH_PROGRESS.pop(pid, None)
-    r = _post(client, response_format="verbose_json", progress_id=pid)
-    assert r.status_code == 200
+    post_verbose_ok(client, progress_id=pid)
     assert get_progress(client, pid).json() == {"stage": "unknown"}
 
 
@@ -328,8 +321,7 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
         return segs, info
 
     fake_model.transcribe = spy
-    r = _post(client, response_format="verbose_json", progress_id=pid)
-    assert r.status_code == 200
+    post_verbose_ok(client, progress_id=pid)
     # transcribe() runs inside the executor slot, after "waiting" gave way
     # to the "analyzing" stage (audio decode + VAD window).
     assert seen.get("stage") == "analyzing"
@@ -423,18 +415,14 @@ def test_verbose_json_reports_duration_after_vad(client, fake_model):
     # VAD_FILTER defaults on → the response carries the VAD receipt, and it
     # is the VAD figure itself, not the audio duration.
     fake_model._info.duration_after_vad = 0.4
-    r = _post(client, response_format="verbose_json")
-    assert r.status_code == 200
-    body = r.json()
+    body = post_verbose_ok(client)
     assert body["duration_after_vad"] == 0.4
     assert body["duration"] == 1.0
 
 
 def test_verbose_json_omits_vad_receipt_when_filter_off(client):
-    r = _post(client, response_format="verbose_json",
-              decode_overrides='{"vad_filter": false}')
-    assert r.status_code == 200
-    assert "duration_after_vad" not in r.json()
+    body = post_verbose_ok(client, decode_overrides='{"vad_filter": false}')
+    assert "duration_after_vad" not in body
 
 
 def test_progress_reports_skipped_separation(client, app_module, monkeypatch):
@@ -444,17 +432,14 @@ def test_progress_reports_skipped_separation(client, app_module, monkeypatch):
     # carries the warning text.
     pid = "d" * 32
     seen = watch_progress(monkeypatch, pid)
-    r = _post(client, response_format="verbose_json",
-              separate_bgm="true", progress_id=pid)
-    assert r.status_code == 200
+    body = post_verbose_ok(client, separate_bgm="true", progress_id=pid)
     assert seen.get("skipped") == ["separating"]
     assert any("music separation requested" in w
-               for w in (r.json().get("warnings") or []))
+               for w in (body.get("warnings") or []))
 
 
 def test_progress_malformed_id_is_ignored_on_post(client, app_module):
-    r = _post(client, response_format="verbose_json", progress_id="Nope!")
-    assert r.status_code == 200
+    post_verbose_ok(client, progress_id="Nope!")
     assert "Nope!" not in tx_progress._BATCH_PROGRESS
 
 
@@ -608,9 +593,7 @@ def test_verbose_json_carries_plan_receipt_and_entry_is_gone(client,
     """The response carries the plan's receipt (every stage done with its
     took_s) and the plan registry is cleaned with the progress entry."""
     pid = "a1" * 16
-    r = _post(client, response_format="verbose_json", progress_id=pid)
-    assert r.status_code == 200, r.text
-    plan = r.json()["plan"]
+    plan = post_verbose_ok(client, progress_id=pid)["plan"]
     assert [s["stage"] for s in plan] == ["transcribing"]
     assert plan[0]["state"] == "done"
     assert plan[0]["took_s"] >= 0.0
@@ -640,9 +623,7 @@ def test_plan_receipt_is_clocked_without_a_progress_id(client, app_module,
             yield from segs
         return _gen(), info
     monkeypatch.setattr(fake_model, "transcribe", slow)
-    r = _post(client, response_format="verbose_json")
-    assert r.status_code == 200, r.text
-    plan = {s["stage"]: s for s in r.json()["plan"]}
+    plan = {s["stage"]: s for s in post_verbose_ok(client)["plan"]}
     assert plan["transcribing"]["state"] == "done"
     assert plan["transcribing"]["took_s"] > 0.0
     assert any(k.startswith("transcribing|") for k in stage_rates._read())
@@ -662,16 +643,14 @@ def test_plan_reports_skipped_separation(client, app_module):
 
     tx_progress._progress_set = spy
     try:
-        r = _post(client, response_format="verbose_json",
-                  separate_bgm="true", progress_id=pid)
+        body = post_verbose_ok(client, separate_bgm="true", progress_id=pid)
     finally:
         tx_progress._progress_set = orig
-    assert r.status_code == 200
-    states = {s["stage"]: s["state"] for s in seen["snap"]["plan"]}
+    states ={s["stage"]: s["state"] for s in seen["snap"]["plan"]}
     assert states["separating"] == "skipped"
     # The last tick lands mid-decode; the receipt in the response is final.
     assert states["transcribing"] in ("active", "done")
-    receipt = {s["stage"]: s["state"] for s in r.json()["plan"]}
+    receipt = {s["stage"]: s["state"] for s in body["plan"]}
     assert receipt == {"separating": "skipped", "transcribing": "done"}
 
 
@@ -714,9 +693,8 @@ def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module
     enable_translation(app_module, monkeypatch)
     stub_translate(monkeypatch)
     codes =",".join(f"aa-{i:05d}" for i in range(50_000))
-    r = _post(client, response_format="verbose_json", translate_to=codes)
-    assert r.status_code == 200, r.text
-    dropped = [w for w in r.json().get("warnings", []) if "were dropped" in w]
+    body = post_verbose_ok(client, translate_to=codes)
+    dropped = [w for w in body.get("warnings", []) if "were dropped" in w]
     assert len(dropped) == 1
     assert len(dropped[0]) < 1024
 

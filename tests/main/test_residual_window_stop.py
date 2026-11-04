@@ -12,7 +12,7 @@ import logging
 
 from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo, FakeSegment
-from tests._transcription_helpers import guard_line, post_transcription as _post
+from tests._transcription_helpers import guard_line, post_transcription as _post, post_verbose_ok
 
 
 def _stopping_generator():
@@ -23,9 +23,7 @@ def _stopping_generator():
 def test_batch_keeps_segments_yielded_before_the_stop(client, app_module, fake_model, caplog):
     fake_model.transcribe = lambda path, **kw: (_stopping_generator(), FakeInfo(duration=4.8))
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = _post(client, response_format="verbose_json")
-    assert r.status_code == 200, r.text
-    body = r.json()
+        body = post_verbose_ok(client)
     assert body["text"].strip() == "erster satz"
     assert len(body["segments"]) == 1
     assert guard_line(caplog, "skip_residual_windows").endswith("true")
