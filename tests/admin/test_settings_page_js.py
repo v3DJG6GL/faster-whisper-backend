@@ -119,7 +119,7 @@ def _captures_harness(html, body, real_list=False):
     `real_list` runs the page's own makeRuleListEditor on the fake DOM."""
     branch = _block(html, "  if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {")
     if real_list:
-        rle = _fns(html, "makeRuleListEditor", "_helpDiv", "_el", "_button")
+        rle = _fns(html, "makeRuleListEditor", "_helpDiv", "_el", "_button", "_switch")
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
 function _lsGet() { return null; }
@@ -1220,7 +1220,7 @@ console.log(JSON.stringify([view.disabled, cb.disabled]));
 """, real_list=True))
     assert out == [False, True]
     # The dim switch lives in the big MODEL_OVERRIDES builder: pin its marker.
-    side = _block(html, "    const toggleCb = document.createElement('input');",
+    side = _block(html, "    const toggleCb = _switch(diffMode);",
                   "toggleWrap.appendChild(toggleCb);\n")
     assert "toggleCb.dataset.diagnostic = '1';" in side
     assert "setDirty" not in side

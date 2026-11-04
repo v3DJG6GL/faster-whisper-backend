@@ -1097,6 +1097,13 @@ function _button(className, text, title) {
   return b;
 }
 
+function _switch(checked) {
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
+  cb.checked = checked;
+  return cb;
+}
+
 function fieldRow(name) {
   const row = _el('div', 'field');
   row.dataset.field = name;   // used by jumpToGlobalRule() + the global admin:dirty handler
@@ -1495,10 +1502,7 @@ function modelOverridesEditor(name, v) {
     // Top row: diff-mode toggle. The row is a <label>, so a click anywhere flips it.
     const toggleWrap = _el('label', 'mo-sidebar-toggle');
     toggleWrap.title = 'Dim per-model rows whose value equals the resolved global';
-    const toggleCb = document.createElement('input');
-    toggleCb.type = 'checkbox'; toggleCb.className = 'switch';
-    toggleCb.setAttribute('role', 'switch');
-    toggleCb.checked = diffMode;
+    const toggleCb = _switch(diffMode);
     // Display-only (dims rows, saves nothing): stays live on a pinned field.
     toggleCb.dataset.diagnostic = '1';
     toggleCb.addEventListener('change', () => {
@@ -1734,9 +1738,7 @@ function modelOverridesEditor(name, v) {
 
   function makeInputWidget(field, meta, currentVal) {
     if (meta.kind === 'bool') {
-      const cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
-      cb.checked = !!currentVal;
+      const cb = _switch(!!currentVal);
       cb.addEventListener('change', () => setOverrideValue(selectedId, field, cb.checked));
       return cb;
     }
@@ -2821,11 +2823,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
       const head = _el('div', 'row-header');
 
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'switch';
-      cb.setAttribute('role', 'switch');
-      cb.checked = effective;
+      const cb = _switch(effective);
       // Per-model PIPELINE_RULES_EXCLUDE: the live /transcribe path
       // re-trims after wrappers unconditionally, so a per-model exclude
       // on `trim-edges` is a no-op — the checkbox stays locked to avoid
@@ -2966,9 +2964,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const wrap = _el('label', 'toggle');
       if (checked) wrap.classList.add('on');
       if (opts.title) wrap.title = opts.title;
-      const cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
-      cb.checked = !!checked;
+      const cb = _switch(!!checked);
       if (opts.disabled) cb.disabled = true;
       cb.addEventListener('change', () => {
         wrap.classList.toggle('on', cb.checked);
@@ -4729,9 +4725,7 @@ function numberEditor(name, v) {
   return i;
 }
 function boolEditor(name, v) {
-  const i = document.createElement('input');
-  i.type = 'checkbox'; i.className = 'switch'; i.setAttribute('role', 'switch');
-  i.checked = !!v;
+  const i = _switch(!!v);
   i.addEventListener('change', () => setDirty(name, i.checked));
   return i;
 }
