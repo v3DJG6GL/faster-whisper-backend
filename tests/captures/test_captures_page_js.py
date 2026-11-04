@@ -947,11 +947,17 @@ def _batch_fns(page):
 
 
 def _batch_reload_harness(page):
-    """The batch card plus _loadProposals; `gets` is for the test's GET stub,
-    and a reload replaces the queue."""
-    return (_batch_fns(page) + _js_function(page, "_loadProposals") + _BATCH_STUBS
-            + "\nvar _filtSpeakers = [], gets = [];\n"
-            + "function _renderProposals(ps) { _proposals = ps; }")
+    """The batch card plus _loadProposals; `gets` holds each GET's { r, j }
+    settlers, and a reload replaces the queue."""
+    return _batch_fns(page) + _js_function(page, "_loadProposals") + _BATCH_STUBS + r"""
+var _filtSpeakers = [], gets = [];
+function _renderProposals(ps) { _proposals = ps; }
+api = function(m, u, body) {
+  if (m === 'GET') return new Promise(function(r, j) { gets.push({ r: r, j: j }); });
+  posts.push(body.member_ids[0]);
+  return new Promise(function(r) { pendingPost.push(r); });
+};
+"""
 
 
 @needs_node
@@ -1000,11 +1006,6 @@ def test_batch_refresh_blocks_the_card_until_the_queue_reloads(page, tmp_path):
     Accept meanwhile POSTed a sample, then the reloaded queue (swept before
     that create) showed the merged proposal again with its Revert gone."""
     out = _run_node(tmp_path, _batch_reload_harness(page) + r"""
-api = function(m, u, body) {
-  if (m === 'GET') return new Promise(function(r, j) { gets.push({ r: r, j: j }); });
-  posts.push(body.member_ids[0]);
-  return new Promise(function(r) { pendingPost.push(r); });
-};
 (async function() {
   var p = _loadProposals();               // Refresh
   _advanceBatch('accept');                // Ctrl+Right before the GET returns
@@ -1026,16 +1027,11 @@ def test_batch_refresh_during_an_accept_leaves_the_card_held(page, tmp_path):
     when its GET landed: the card showed the proposal still being POSTed,
     and the next Accept sent the same members a second time."""
     out = _run_node(tmp_path, _batch_reload_harness(page) + r"""
-api = function(m, u, body) {
-  if (m === 'GET') return new Promise(function(r) { gets.push(r); });
-  posts.push(body.member_ids[0]);
-  return new Promise(function(r) { pendingPost.push(r); });
-};
 (async function() {
   _batchCurrentCard = fakeEl();
   _advanceBatch('accept');                // POST 'a' in flight
   _loadProposals();                       // Refresh
-  if (gets.length) gets[0]({ proposals: [{ member_ids: ['b'] }, { member_ids: ['c'] }] });
+  if (gets.length) gets[0].r({ proposals: [{ member_ids: ['b'] }, { member_ids: ['c'] }] });
   await wait(0);
   _advanceBatch('accept');
   var busy = _batchBusy;
@@ -1055,11 +1051,6 @@ def test_batch_double_refresh_holds_the_card_until_the_latest_reload(page, tmp_p
     first reply (or failure) released it, an Accept then went through, and
     the second reply put back the queue swept before that Accept."""
     out = _run_node(tmp_path, _batch_reload_harness(page) + r"""
-api = function(m, u, body) {
-  if (m === 'GET') return new Promise(function(r, j) { gets.push({ r: r, j: j }); });
-  posts.push(body.member_ids[0]);
-  return Promise.resolve({ sample_id: 's1' });
-};
 var FIRST = """ + json.dumps(first) + r""";
 (async function() {
   var p1 = _loadProposals(), p2 = _loadProposals();   // double-click Refresh
