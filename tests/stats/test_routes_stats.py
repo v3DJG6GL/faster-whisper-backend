@@ -5,7 +5,6 @@ import re
 import time
 
 import pytest
-from starlette.testclient import TestClient
 
 from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.auth import api_keys_store
@@ -75,13 +74,8 @@ def test_stats_usage_ok(client):
 # /stats is user-tier (USER_WEBUI_ALLOWED_HOSTS, OPEN by default). Narrow the
 # list to loopback so a non-loopback host exercises the host gate (403 before
 # the page-permission check).
-def test_stats_snapshot_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    monkeypatch.setattr(
-        cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
-    )
-    with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
-        r = c.get("/stats/snapshot")
-        assert r.status_code == 403
+def test_stats_snapshot_host_gate_rejects_non_loopback(narrowed_remote_client):
+    assert narrowed_remote_client.get("/stats/snapshot").status_code == 403
 
 
 def test_snapshot_carries_running_jobs(client):
@@ -330,12 +324,8 @@ def test_translate_run_registers_a_job(client, app_module, monkeypatch):
     assert jobs.jobs_snapshot() == []          # ended by the finally
 
 
-def test_stats_page_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    monkeypatch.setattr(
-        cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
-    )
-    with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
-        assert c.get("/stats").status_code == 403
+def test_stats_page_host_gate_rejects_non_loopback(narrowed_remote_client):
+    assert narrowed_remote_client.get("/stats").status_code == 403
 
 
 def test_snapshot_running_row_carries_the_username(client, app_module,

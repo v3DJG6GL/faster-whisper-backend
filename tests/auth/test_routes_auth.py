@@ -246,17 +246,12 @@ def test_logs_data_locked_no_key_401(client, make_user_key):
         assert c.get("/logs/older").status_code == 401
 
 
-def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
+def test_user_host_narrowing_blocks_shell(client, make_user_key, narrowed_remote_client):
     # Narrowing USER_WEBUI_ALLOWED_HOSTS to loopback blocks a remote host from
     # even the user-page shell (the host gate fires before the in-page login).
-    from faster_whisper_backend.settings import config as cfg
     make_user_key("root", is_admin=True)
-    monkeypatch.setattr(
-        cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
-    )
-    with TestClient(client.app, client=_REMOTE) as c:
-        assert c.get("/stats").status_code == 403
-        assert c.get("/logs").status_code == 403
+    assert narrowed_remote_client.get("/stats").status_code == 403
+    assert narrowed_remote_client.get("/logs").status_code == 403
 
 
 # Both live tails re-authenticate on config-version bumps, so a revoked user

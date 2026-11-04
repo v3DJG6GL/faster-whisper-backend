@@ -775,6 +775,17 @@ def client(app_module):
 
 
 @pytest.fixture
+def narrowed_remote_client(app_module, monkeypatch):
+    """A non-loopback TestClient with USER_WEBUI_ALLOWED_HOSTS narrowed to
+    loopback: the user-tier host gate 403s it."""
+    from starlette.testclient import TestClient
+    monkeypatch.setattr(app_module.cfg, "USER_WEBUI_ALLOWED_HOSTS",
+                        ["127.0.0.1", "::1"], raising=False)
+    with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
+        yield c
+
+
+@pytest.fixture
 def make_user_key(app_module):
     """Return create(username, is_admin=False, pages=None) -> (uid, raw_key).
 

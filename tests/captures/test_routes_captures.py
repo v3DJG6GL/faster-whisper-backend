@@ -112,15 +112,11 @@ def test_by_request_id_ok(client):
     assert r.json()["captures"] == []
 
 
-def test_host_gate_rejects_non_loopback(app_module, monkeypatch):
+def test_host_gate_rejects_non_loopback(narrowed_remote_client):
     # /captures is user-tier (require_user_webui_host / USER_WEBUI_ALLOWED_HOSTS).
     # The list defaults OPEN, so narrow it to loopback to exercise the host gate:
     # a non-loopback host is then 403 before the page-permission check.
-    monkeypatch.setattr(
-        cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
-    )
-    with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
-        assert c.get("/captures/api/list").status_code == 403
+    assert narrowed_remote_client.get("/captures/api/list").status_code == 403
 
 
 def test_list_requires_page_when_locked(client, make_user_key):
