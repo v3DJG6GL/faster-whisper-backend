@@ -1863,13 +1863,16 @@
     el.classList.toggle('off', !enabled);
   }
 
+  // Page twin of Python capture_samples._training_base: a NULL column (a
+  // legacy row) falls back to `final`, then `raw`; "" is the pipeline
+  // blanking the text and stays blank.
+  function _trainingBase(r) { return (r.text_for_training ?? r.final ?? r.raw) || ''; }
+
   // The card's one-line text preview. `words` are the aligned karaoke words
   // (from the detail GET, so only once the card was expanded); without them
   // an anchored chip falls back to the unaligned nearest match.
   function _capturePreviewText(r, words) {
-    return _applyChipsToText(
-      (r.text_for_training ?? r.final ?? r.raw) || '', r.corrections || [], words)
-      || '(empty)';
+    return _applyChipsToText(_trainingBase(r), r.corrections || [], words) || '(empty)';
   }
   // Redraw an open card's preview after a PATCH / reprocess reply was merged
   // into its row, and keep the aligned words on the row: that reply carries
@@ -2049,10 +2052,8 @@
       words: r.words || [],
       // Training-form text is the canonical column reviewers see and
       // chips operate against — it's what the export emits and what
-      // Whisper will be fine-tuned on. `final` then `raw` stand in only
-      // for a NULL column (a legacy row): "" is the pipeline blanking the
-      // text (Python _training_base), not a cue to show the raw text.
-      finalText: (r.text_for_training ?? r.final ?? r.raw) || '',
+      // Whisper will be fine-tuned on (_trainingBase: "" stays blank).
+      finalText: _trainingBase(r),
       corrections: (r.corrections || []).map(_chipFields),
       // Frozen snapshot of `corrections` at GET time. Sent back to the
       // server with the PATCH so it can three-way-merge against any
@@ -2869,7 +2870,7 @@
           if (k in fresh) r[k] = fresh[k];
         });
         _syncCapturePreview(state, r);
-        state.finalText = (fresh.text_for_training ?? fresh.final ?? fresh.raw) || '';
+        state.finalText = _trainingBase(fresh);
         if (state.gtArea) {
           state.gtArea.textContent = state.finalText;
           applyCorrectionsToGround(state);
@@ -3445,12 +3446,10 @@
   function _buildDefaultTranscript(rows, strategy) {
     // Chips-applied join. Source from `text_for_training` so the preview
     // matches the word-form training text the export will actually emit
-    // (falls back to `final` then `raw` only for a NULL column, a legacy
-    // capture predating text_for_training, as Python _training_base). A
-    // row expanded once carries its aligned words, which place anchored
-    // chips the way the export does.
+    // (_trainingBase). A row expanded once carries its aligned words, which
+    // place anchored chips the way the export does.
     var parts = rows.map(function(r) {
-      var base = (r.text_for_training ?? r.final ?? r.raw) || '';
+      var base = _trainingBase(r);
       return _applyChipsToText(base, r.corrections || [], r.words).trim();
     }).filter(Boolean);
     // A member ending in Han / kana (past its "。" / "」" / "，") meets a next
@@ -3474,7 +3473,7 @@
     rows.forEach(function(r, i) {
       var line = document.createElement('div');
       line.className = 'seg-line';
-      var base = (r.text_for_training ?? r.final ?? r.raw) || '';
+      var base = _trainingBase(r);
       var memberText = _applyChipsToText(base, r.corrections || [], r.words);
       line.innerHTML = '<span class="seg-time">[' + (i + 1) + '] '
         + (r.audio_s || 0).toFixed(1) + 's</span>'
@@ -5325,7 +5324,7 @@
           (d.members || []).forEach(function(m, mi) {
             var line = document.createElement('div');
             line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
-            var base = (m.text_for_training ?? m.final ?? m.raw) || '';
+            var base = _trainingBase(m);
             var memberWords = (d.merged_words || []).filter(function(w) {
               return w && w.member_idx === mi;
             });
