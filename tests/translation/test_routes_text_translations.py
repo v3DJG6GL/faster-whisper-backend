@@ -100,10 +100,10 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
             "kept": {1: ["en"], 2: ["en"]}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    r = client.post(URL, json={
-        "segments": [{"id": 7, "text": "eins"}, {"id": 3, "text": "zwei"},
-                     {"id": 42, "text": "drei"}],
-        "targets": ["en"], "source": "de"})
+    r = client.post(URL, json=_body(
+        segments=[{"id": 7, "text": "eins"}, {"id": 3, "text": "zwei"},
+                  {"id": 42, "text": "drei"}],
+        source="de"))
     assert r.status_code == 200, r.text
     body = r.json()
     segs = body["segments"]
@@ -339,10 +339,10 @@ def test_413_over_total_char_cap(client, app_module, monkeypatch):
 def test_422_malformed_shapes(client, app_module, monkeypatch):
     calls = _enable_stubbed(app_module, monkeypatch, TRANSLATION_MAX_TARGETS=3)
     cases = [
-        {"segments": "not-a-list", "targets": ["en"]},
-        {"segments": [], "targets": ["en"]},
-        {"segments": [{"id": 0}], "targets": ["en"]},        # no text
-        {"segments": [{"text": 5}], "targets": ["en"]},      # non-str text
+        _body(segments="not-a-list"),
+        _body(segments=[]),
+        _body(segments=[{"id": 0}]),                          # no text
+        _body(segments=[{"text": 5}]),                        # non-str text
         _body(targets=[]),                                    # empty targets
         _body(targets=["NOT A CODE"]),
         _body(targets=["en", "fr", "it", "es"]),              # over MAX (3)
@@ -350,9 +350,8 @@ def test_422_malformed_shapes(client, app_module, monkeypatch):
         _body(context_segments="three"),
         _body(context_segments=True),                         # bool is not an int here
         "just a string",
-        {"segments": [{"id": i, "text": "x"} for i
-                      in range(tr_routes._TEXT_TRANSLATE_MAX_SEGMENTS + 1)],
-         "targets": ["en"]},                                  # over entry cap
+        _body(segments=[{"id": i, "text": "x"} for i
+                        in range(tr_routes._TEXT_TRANSLATE_MAX_SEGMENTS + 1)]),  # over entry cap
     ]
     for case in cases:
         r = client.post(URL, json=case)
@@ -373,8 +372,7 @@ def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
                 {"id": "\ud800", "text": "a"}):
         _park("cap-u", hold_s=90)
         r = client.post(URL, content=json.dumps(
-            {"segments": [seg], "targets": ["en"],
-             "captured_id": "cap-u"}),
+            _body(segments=[seg], captured_id="cap-u")),
             headers={"Content-Type": "application/json"})
         assert r.status_code == 422, r.text
         assert "surrogate" in r.json()["detail"]
@@ -441,17 +439,15 @@ def test_speaker_is_clipped_and_counted_against_the_char_cap(
     """The speaker prefixes every context line of every prompt: clipped at
     parse time, control characters neutralised, and counted in the cap."""
     calls = _enable_stubbed(app_module, monkeypatch)
-    r = client.post(URL, json={"segments": [
-        {"id": 0, "text": "eins", "speaker": "S\nPEAKER" + "x" * 500}],
-        "targets": ["en"]})
+    r = client.post(URL, json=_body(segments=[
+        {"id": 0, "text": "eins", "speaker": "S\nPEAKER" + "x" * 500}]))
     assert r.status_code == 200, r.text
     spk = calls[-1]["segments"][0]["speaker"]
     assert len(spk) == tr_routes._TEXT_TRANSLATE_MAX_SPEAKER
     assert spk.startswith("S?PEAKER")
     n = tr_routes._TEXT_TRANSLATE_MAX_CHARS // 100
-    r = client.post(URL, json={"segments": [
-        {"id": i, "text": "x" * 90, "speaker": "y" * 64} for i in range(n)],
-        "targets": ["en"]})
+    r = client.post(URL, json=_body(segments=[
+        {"id": i, "text": "x" * 90, "speaker": "y" * 64} for i in range(n)]))
     assert r.status_code == 413, r.text
 
 
