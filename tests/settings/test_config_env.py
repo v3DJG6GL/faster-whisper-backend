@@ -150,13 +150,14 @@ def test_env_value_is_stored_as_the_schema_normalizes_it(monkeypatch, restore_co
     assert config.CONSOLE_LOG_LEVEL == "warning"
 
 
-def _write_cfg(tmp_path, **extra):
-    """Write a minimal-but-valid config.json into tmp_path and return its path."""
+def _defaults_from(monkeypatch, tmp_path, **extra):
+    """_load_defaults() over a minimal-but-valid config.json in tmp_path."""
     data = {"schema_version": 1,
             "PIPELINE_RULES": [{"name": "trim", "label": "Trim", "type": "terminal"}],
             **extra}
     (tmp_path / "config.json").write_text(json.dumps(data), encoding="utf-8")
-    return tmp_path
+    monkeypatch.setattr(config, "_REPO_DIR", str(tmp_path))
+    return config._load_defaults()
 
 
 def test_load_defaults_reads_committed_config():
@@ -192,9 +193,7 @@ def test_load_defaults_missing_rules_raises(monkeypatch, tmp_path):
 
 
 def test_load_defaults_is_the_source(monkeypatch, tmp_path):
-    _write_cfg(tmp_path, BEST_OF=9, DEFAULT_MODEL="my-model")
-    monkeypatch.setattr(config, "_REPO_DIR", str(tmp_path))
-    d = config._load_defaults()
+    d = _defaults_from(monkeypatch, tmp_path, BEST_OF=9, DEFAULT_MODEL="my-model")
     assert d["BEST_OF"] == 9
     assert d["DEFAULT_MODEL"] == "my-model"
 
@@ -203,15 +202,13 @@ def test_load_defaults_resolves_data_dir_placeholders(monkeypatch, tmp_path):
     # {DATA_DIR}/{DB_DIR}/{MODELS_DIR} resolve against the import-time
     # data-layout knobs (_DATA_DIR/_DB_DIR/_MODELS_DIR), NOT the repo dir.
     # End-to-end env → path matrix: tests/settings/test_data_dir.py.
-    _write_cfg(tmp_path,
-               LOG_FILE="{DATA_DIR}/logs/whisper.log",
-               API_KEYS_DB="{DB_DIR}/api_keys.local.sqlite3",
-               DOWNLOAD_ROOT="{MODELS_DIR}")
-    monkeypatch.setattr(config, "_REPO_DIR", str(tmp_path))
     monkeypatch.setattr(config, "_DATA_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(config, "_DB_DIR", str(tmp_path / "state" / "db"))
     monkeypatch.setattr(config, "_MODELS_DIR", str(tmp_path / "models"))
-    d = config._load_defaults()
+    d = _defaults_from(monkeypatch, tmp_path,
+                       LOG_FILE="{DATA_DIR}/logs/whisper.log",
+                       API_KEYS_DB="{DB_DIR}/api_keys.local.sqlite3",
+                       DOWNLOAD_ROOT="{MODELS_DIR}")
     assert d["LOG_FILE"] == os.path.normpath(
         os.path.join(str(tmp_path), "state", "logs/whisper.log"))
     assert d["API_KEYS_DB"] == os.path.normpath(
@@ -222,11 +219,9 @@ def test_load_defaults_resolves_data_dir_placeholders(monkeypatch, tmp_path):
 
 
 def test_load_defaults_coerces_set_fields(monkeypatch, tmp_path):
-    _write_cfg(tmp_path,
-               ALLOWED_MODELS=["large-v2", "large-v3"],
-               CAPTURES_PIPELINE_RULES_EXCLUDE=["de-dictation-map"])
-    monkeypatch.setattr(config, "_REPO_DIR", str(tmp_path))
-    d = config._load_defaults()
+    d = _defaults_from(monkeypatch, tmp_path,
+                       ALLOWED_MODELS=["large-v2", "large-v3"],
+                       CAPTURES_PIPELINE_RULES_EXCLUDE=["de-dictation-map"])
     assert d["ALLOWED_MODELS"] == {"large-v2", "large-v3"}
     assert isinstance(d["ALLOWED_MODELS"], set)
     assert isinstance(d["CAPTURES_PIPELINE_RULES_EXCLUDE"], set)
