@@ -129,6 +129,7 @@ const localStorage = {
   setItem: (k, v) => { _ls[k] = String(v); },
   removeItem: (k) => { delete _ls[k]; },
 };
+const _okResp = (body) => ({ ok: true, status: 200, json: async () => body });
 const _toasts = [];
 function showToast(msg, kind) { _toasts.push([kind, msg]); }
 function _words(form) {
@@ -384,9 +385,7 @@ def test_first_submit_reveals_remove_button(client, tmp_path):
     # trace reported for the first time could not be withdrawn on reopen.
     res = _run_js(client, tmp_path, r"""
       globalThis._detailText = (j, d) => d;
-      globalThis.api = async () => ({
-        ok: true, status: 200, json: async () => ({ was_updated: false }),
-      });
+      globalThis.api = async () => _okResp({ was_updated: false });
       const { form } = _traceItem('Alpha Beta');
       const removeBtn = form.querySelector('.rep-remove');
       const before = removeBtn.style.display;
@@ -432,11 +431,8 @@ def test_partial_conflict_save_still_reapplies_saved_rules(client, tmp_path):
     # historical captures unless the admin saved again.
     res = _run_save_js(client, tmp_path, r"""
       const calls = [];
-      globalThis.api = async () => ({
-        ok: true, status: 200,
-        json: async () => ({
-          saved: ['dict'], conflicts: [{ slug: 'other' }], captures_count: 7,
-        }),
+      globalThis.api = async () => _okResp({
+        saved: ['dict'], conflicts: [{ slug: 'other' }], captures_count: 7,
       });
       globalThis._reapplyDiffs = () => false;
       globalThis.startReapplyJobSilent = (n) => { calls.push(n); };
@@ -456,7 +452,7 @@ def test_resubmit_sends_seeded_chips_as_baseline(client, tmp_path):
       const sent = [];
       globalThis.api = async (_m, _u, body) => {
         sent.push(JSON.parse(JSON.stringify(body)));
-        return { ok: true, status: 200, json: async () => ({ was_updated: true }) };
+        return _okResp({ was_updated: true });
       };
       _serverReportedChips = { rid1: { corrections: [
         { wrong: 'Beta', correct: 'Bet', idx: 1 },
@@ -482,7 +478,7 @@ def test_reopened_form_keeps_the_stored_comment(client, tmp_path):
       const sent = [];
       globalThis.api = async (_m, _u, body) => {
         sent.push(body.user_comment);
-        return { ok: true, status: 200, json: async () => ({ was_updated: true }) };
+        return _okResp({ was_updated: true });
       };
       _serverReportedChips = { rid1: { corrections: [], user_comment: 'speaker said X' } };
       const { form } = _traceItem('Alpha Beta');
@@ -505,7 +501,7 @@ def test_edit_made_while_the_report_posts_keeps_the_form_open(client, tmp_path):
       globalThis._detailText = (j, d) => d;
       let release;
       globalThis.api = (_m, _u, body) => new Promise((res) => {
-        release = () => res({ ok: true, status: 200, json: async () => ({ was_updated: false }) });
+        release = () => res(_okResp({ was_updated: false }));
       });
       const { form } = _traceItem('Alpha Beta Gamma');
       form.classList.add('open');
@@ -923,17 +919,14 @@ def test_save_toasts_say_an_entry_the_user_deleted_is_back(client, tmp_path):
         await _doSave({ rx: {} }, {});
         toasts[name] = _toasts[_toasts.length - 1][1];
       };
-      await run('merged', { ok: true, status: 200,
-                            json: async () => ({ saved: [], conflicts: [{ slug: 'rx' }] }) });
-      await run('inflight', { ok: true, status: 200,
-                              json: async () => ({ saved: ['rx'], conflicts: [] }) });
+      await run('merged', _okResp({ saved: [], conflicts: [{ slug: 'rx' }] }));
+      await run('inflight', _okResp({ saved: ['rx'], conflicts: [] }));
       await run('refused', { ok: false, status: 403, json: async () => ({ detail: 'locked' }) });
       calls = 1;  // the conflicted rule took no diff, the in-flight one did
       globalThis._reapplyDiffs = (d, clashed, restored) => {
         if (calls++ === 2) { restored.push('rx'); return 1; } return 0;
       };
-      globalThis.api = async () => ({ ok: true, status: 200,
-                                      json: async () => ({ saved: [], conflicts: [{ slug: 'rx' }] }) });
+      globalThis.api = async () => _okResp({ saved: [], conflicts: [{ slug: 'rx' }] });
       _toasts.length = 0;
       await _doSave({ rx: {} }, {});
       toasts.unmerged = _toasts[_toasts.length - 1][1];
@@ -1105,10 +1098,7 @@ def test_reapply_keeps_one_spelling_of_a_dictionary_key_both_writers_added_in_an
 
 def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path):
     res = _run_save_js(client, tmp_path, r"""
-      globalThis.api = async () => ({
-        ok: true, status: 200,
-        json: async () => ({ saved: [], conflicts: [{ slug: 'rx' }, { slug: 'ok' }] }),
-      });
+      globalThis.api = async () => _okResp({ saved: [], conflicts: [{ slug: 'rx' }, { slug: 'ok' }] });
       let calls = 0;  // the conflicted rules' re-apply, then the in-flight one
       globalThis._reapplyDiffs = (d, clashed) => { if (!calls++) clashed.push('rx'); return 1; };
       await _doSave({ rx: {}, ok: {} }, {});
@@ -1124,9 +1114,7 @@ def test_save_toasts_a_clash_on_an_edit_typed_while_the_post_was_in_flight(clien
     # The in-flight re-apply passed no `clashed` array, so an edit typed
     # during the POST that another writer had also made went unreported.
     res = _run_save_js(client, tmp_path, r"""
-      globalThis.api = async () => ({
-        ok: true, status: 200, json: async () => ({ saved: ['r1'], conflicts: [] }),
-      });
+      globalThis.api = async () => _okResp({ saved: ['r1'], conflicts: [] });
       globalThis._reapplyDiffs = (d, clashed) => { clashed.push('rx'); return 1; };
       await _doSave({ r1: {} }, {});
       out(_toasts);
