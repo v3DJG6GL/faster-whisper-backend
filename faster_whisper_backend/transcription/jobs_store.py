@@ -176,15 +176,7 @@ def _side_json(value: Any) -> str | None:
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     for key in ("stages_json", "plan_json"):
-        raw = d.pop(key, None)
-        name = key[:-5]
-        if raw:
-            try:
-                d[name] = json.loads(raw)
-            except (TypeError, ValueError):
-                d[name] = None
-        else:
-            d[name] = None
+        d[key[:-5]] = store_common.json_column(d.pop(key, None), "null")
     d["result_available"] = bool(d.get("state") == "done"
                                  and int(d.get("result_bytes") or 0) > 0)
     return d
@@ -379,12 +371,9 @@ def get_result(job_id: str) -> Any:
             "SELECT result_json FROM jobs WHERE job_id = ? AND state = 'done'",
             (job_id,),
         ).fetchone()
-    if not row or row["result_json"] is None:
+    if not row:
         return None
-    try:
-        return json.loads(row["result_json"])
-    except (TypeError, ValueError):
-        return None
+    return store_common.json_column(row["result_json"], "null")
 
 
 def _owner_clause(user_id: str | None, key_id: str | None,
