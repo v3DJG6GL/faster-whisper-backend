@@ -3,14 +3,19 @@ the segment-assignment helper, and the pipeline's load / lease / registry
 lifecycle. Real pyannote is never imported: handler tests stub `diarize`,
 lifecycle tests stub the load and inference below it."""
 
+import asyncio
 import logging
 import os
+import sys
+import threading
+import types
 
 import huggingface_hub.constants
 import pytest
 
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import hf_cache
+from faster_whisper_backend.runtime import model_registry
 from tests._transcription_helpers import (
     assert_cancelled_load_listed as _assert_cancelled_load_listed)
 from tests._transcription_helpers import blocked_register as _blocked_register
@@ -341,7 +346,6 @@ def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     must not desynchronise the lease and release keys — the release would
     then decrement a bucket that was never leased and the real lease would
     pin the pipeline forever."""
-    import asyncio
     cfg = _diar_model(monkeypatch, "m1")
     monkeypatch.setattr(diarization, "_load_blocking",
                         lambda model_id, device, batch: object())
@@ -361,7 +365,6 @@ def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
     """_lock is held across a whole executor-long load; the release must not
     wait on it (a cancellation delivered at that wait would leak the lease
     and pin the pipeline against idle eviction forever)."""
-    import asyncio
     pipe = object()
     _seed(monkeypatch, pipe, ("m1", "cpu", 4), {"m1": 1})
 
@@ -377,7 +380,6 @@ def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
 
 
 def test_cancel_during_diarize_still_drops_the_lease(monkeypatch):
-    import asyncio
     # The key must match _pipeline_key below: a miss would take _lock, which
     # _main holds — a hang instead of a failure.
     _diar_model(monkeypatch, "m1")
@@ -410,7 +412,6 @@ def test_idle_drop_waits_for_a_same_id_orphan(monkeypatch):
     """A force-drop orphaned pipeline A, A reloaded under the same id and
     then idled: dropping the reload must leave the stats row and teardown
     to the orphan's last release (job 1 is still running on A)."""
-    from faster_whisper_backend.runtime import model_registry
     _seed(monkeypatch, object(), ("A", "cpu", 4), orphans={"A": 1})
     unregistered: "list[str]" = []
     monkeypatch.setattr(model_registry, "unregister_loaded_model",
@@ -430,8 +431,6 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
     """The end-of-run restamp touches only the model this job leased: after
     a mid-job re-key to another model, that model's idle clock / stats
     'last used' must not move for a job that never touched it."""
-    import asyncio
-    from faster_whisper_backend.runtime import model_registry
     _diar_model(monkeypatch, "m1")
 
     class _Ann:
@@ -460,8 +459,6 @@ def test_pipeline_load_passes_the_models_volume_cache_dir(monkeypatch,
     setdefault cannot redirect the download — without an explicit cache_dir
     the pipeline landed in ~/.cache/huggingface on bare metal, off the
     models volume and invisible to model_sizes (size_unknown forever)."""
-    import sys
-    import types
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", str(tmp_path),
                         raising=False)
@@ -501,8 +498,6 @@ def test_pipeline_load_passes_the_models_volume_cache_dir(monkeypatch,
 def test_placement_error_keeps_raw_torch_text_out_of_the_message(monkeypatch):
     """str(DiarizationError) lands in the client's `warnings` — torch's own
     text (VRAM figures, driver paths) must stay in the server log."""
-    import sys
-    import types
     monkeypatch.setattr(diarization.cfg, "HF_TOKEN", None, raising=False)
 
     class _Pipe:
@@ -558,8 +553,6 @@ def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
     """A batch edit orphans the leased pipeline and reloads the same id; the
     orphan's last release landing while the new row is being registered must
     not unregister the row the live pipeline just wrote."""
-    import asyncio
-    from faster_whisper_backend.runtime import model_registry
     _diar_model(monkeypatch, batch=8)
     old, new = object(), object()
     _seed(monkeypatch, old, ("A", "cpu", 4), {"A": 1})
@@ -584,7 +577,6 @@ def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
 def test_cancel_after_the_mutex_wait_skips_the_inference():
     """The _infer_mutex wait can be minutes (a zombie diarization); a request
     cancelled meanwhile must not start pipe() once it gets the mutex."""
-    import asyncio
     answers = iter([False])          # queued: not yet; acquired: cancelled
     calls: "list[str]" = []
 
@@ -604,9 +596,6 @@ def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):
     """A cancelled diarize released its lease, but its executor thread is
     still inside pipe() holding _infer_mutex: a non-forced drop must decline
     (no unregister, no "unloaded") until the thread lets go."""
-    import asyncio
-    import threading
-    from faster_whisper_backend.runtime import model_registry
     _seed(monkeypatch, object(), ("m1", "cpu", 4))
     unregistered: "list[str]" = []
     monkeypatch.setattr(model_registry, "unregister_loaded_model",
@@ -636,7 +625,6 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
     """preload admits on busy() BEFORE load_unleased waits on _lock; a job
     that loaded and leased another pipeline meanwhile must not be orphaned
     by the speculative load (two pipelines in memory)."""
-    import asyncio
     _diar_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("p/a", "cpu", 4), {"p/a": 1})
@@ -657,7 +645,6 @@ def test_a_zombie_inference_makes_the_singleton_busy(monkeypatch):
     holds _infer_mutex inside pipe(): busy() must say so, or the preload's
     load_unleased force-drops (unregisters, empty_cache) the pipeline under
     the zombie and loads a second one beside it."""
-    import asyncio
     _diar_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("p/a", "cpu", 4))

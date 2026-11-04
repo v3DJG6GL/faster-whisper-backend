@@ -2,17 +2,25 @@
 contract). audio-separator is never imported — the module's `separate`
 coroutine is monkeypatched at the boundary the handler uses."""
 
+import asyncio
 import os
+import sys
 import tempfile
+import threading
+import time
+import types
 
 import pytest
 
 from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import transcode as audio_transcode
+from faster_whisper_backend.runtime import model_registry
 from tests._transcription_helpers import (
-    bind_profile, blocked_register, cancel_while_register_held,
-    assert_cancelled_load_listed, cancel_with_register_queued, record_loads)
+    assert_cancelled_load_listed, bind_profile, blocked_register,
+    cancel_while_register_held, cancel_with_register_queued, record_loads)
 from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
+from tests.conftest import bearer
 
 
 @pytest.fixture
@@ -71,7 +79,6 @@ def test_separate_transcodes_non_libsndfile_container(
         client, monkeypatch, fake_model, bgm_on):
     """An .m4a input is pre-transcoded to 44.1 kHz stereo WAV for the
     separator (libsndfile can't read AAC/MP4 → slow audioread fallback)."""
-    from faster_whisper_backend.audio import transcode as audio_transcode
 
     calls, made = _stub_separate(monkeypatch)
     transcoded = []
@@ -101,8 +108,6 @@ def test_separate_transcodes_non_libsndfile_container(
 
 def test_separate_transcode_failure_falls_back_to_original(
         client, monkeypatch, fake_model, bgm_on):
-    from faster_whisper_backend.audio import transcode as audio_transcode
-
     calls, _ = _stub_separate(monkeypatch)
 
     def _boom(src, dst, *, rate, layout):
@@ -125,8 +130,6 @@ def test_separate_transcode_failure_falls_back_to_original(
 
 def test_separate_wav_input_skips_transcode(
         client, monkeypatch, fake_model, bgm_on):
-    from faster_whisper_backend.audio import transcode as audio_transcode
-
     calls, _ = _stub_separate(monkeypatch)
 
     # Record instead of only raising: the route swallows any transcode
@@ -179,7 +182,6 @@ def test_separate_absent_inherits_config_default(client, app_module, monkeypatch
 
 def test_locked_separate_ignores_client_param(client, make_user_key,
                                               monkeypatch, bgm_on):
-    from tests.conftest import bearer
     calls, _ = _stub_separate(monkeypatch)
     _, raw_alice = bind_profile(client, make_user_key, "nosep",
                                 {"locks": ["SEPARATE_BGM"]})
@@ -203,8 +205,6 @@ def test_separator_construction_error_keeps_raw_text_out_of_the_message(
     """str(BgmSeparationError) lands in the client's `warnings` — the
     library's own text (an output-dir path, CUDA driver detail) must stay
     in the server log."""
-    import sys
-    import types
 
     class _Separator:
         def __init__(self, **kw):
@@ -242,8 +242,6 @@ def test_free_locked_clears_the_session_device(monkeypatch):
 def test_register_records_the_actual_session_device(monkeypatch):
     """ORT can silently fall back to CPU at session creation — the stats/
     ledger row must carry the session's real placement, not the request."""
-    import asyncio
-    from faster_whisper_backend.runtime import model_registry
 
     _foo_model(monkeypatch, device="cuda")
     monkeypatch.setattr(bgm_separation, "_session_device", None)
@@ -298,7 +296,6 @@ def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     running must not desynchronise the lease and release keys — the release
     would then decrement a bucket that was never leased and the real lease
     would pin the model forever."""
-    import asyncio
     cfg = _foo_model(monkeypatch)
     monkeypatch.setattr(bgm_separation, "_load_blocking",
                         lambda model, device: object())
@@ -319,8 +316,6 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
     _separator_key names when the run ends — otherwise a concurrent load of
     another model mid-run gets its idle clock / stats 'last used' refreshed
     by a job that never touched it."""
-    import asyncio
-    from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch)
     made = []
 
@@ -349,7 +344,6 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
 
 
 def test_cancel_after_the_mutex_wait_skips_the_separation(monkeypatch):
-    import asyncio
     answers = iter([False])          # queued: not yet; acquired: cancelled
 
     def _cancel():
@@ -365,7 +359,6 @@ def test_cancel_after_the_mutex_wait_skips_the_separation(monkeypatch):
     sep = _Sep()
     # _run executes in the executor thread: swap the threading.local for a
     # plain namespace so its post-condition is observable from this thread.
-    import types
     monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
     with pytest.raises(bgm_separation.BgmCancelled):
         asyncio.run(bgm_separation._separate_with(
@@ -380,7 +373,6 @@ def test_release_returns_the_lease_immediately_while_a_load_holds_the_lock(
     is DONE must not sit in its finally until another user's model finishes
     downloading — the release is lock-free and lands before the lock is
     ever given up."""
-    import asyncio
     _foo_model(monkeypatch)
     sep = object()
     _seed(monkeypatch, sep, ("Foo.onnx", "cpu"))
@@ -406,7 +398,6 @@ def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     """Force-drop orphans S1, a later job loads S2 under the same key and
     releases it, the idle evictor drops S2 — that must not unregister the
     stats row / wipe the session device while the S1 job still runs."""
-    from faster_whisper_backend.runtime import model_registry
     _seed(monkeypatch, object(), ("m.onnx", "cpu"), orphans={"m.onnx": 1})
     monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
     unregistered = []
@@ -453,9 +444,6 @@ def test_failed_reload_redoes_the_free_an_orphan_deferred_to_it(monkeypatch):
     model; the orphan's last release lands mid-load and skips its unregister
     (the reload would re-register). When that load then fails, the dead
     separator's row and session device must go anyway."""
-    import asyncio
-    import threading
-    from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch, device="cuda")
     old = object()
     _seed(monkeypatch, old, ("Foo.onnx", "cpu"), {"Foo.onnx": 1})
@@ -490,10 +478,6 @@ def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
     inside sep.separate: the lease is gone, but a non-forced drop must not
     free a session the zombie still uses, and the vocals WAV it writes has
     no owner left — the zombie side unlinks it."""
-    import asyncio
-    import threading
-    import time
-    import types
     monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
     _foo_model(monkeypatch)
     entered, gate = threading.Event(), threading.Event()
@@ -536,7 +520,6 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_separator(
         monkeypatch):
     """Same re-check as diarization: a speculative load that waited on _lock
     must not orphan a separator a job leased meanwhile."""
-    import asyncio
     _foo_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("Bar.onnx", "cpu"), {"Bar.onnx": 1})
@@ -553,7 +536,6 @@ def test_a_zombie_separation_makes_the_singleton_busy(monkeypatch):
     """Same zombie as diarization: a cancelled job's thread still inside
     sep.separate holds _separate_mutex after its lease is gone, so busy()
     must refuse the speculative load that would force-drop it."""
-    import asyncio
     _foo_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("Bar.onnx", "cpu"))
