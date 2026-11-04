@@ -51,6 +51,13 @@ def _seed_rows(conn, ids, status="new", ts=1.0):
         "'[]',?,'bob')", [(i, ts, status) for i in ids])
 
 
+def _caps(monkeypatch, rows, mb):
+    """Set the store's CAPTURES_MAX row cap and CAPTURES_MAX_MB byte cap."""
+    from faster_whisper_backend.settings import config
+    monkeypatch.setattr(config, "CAPTURES_MAX", rows, raising=False)
+    monkeypatch.setattr(config, "CAPTURES_MAX_MB", mb, raising=False)
+
+
 def test_relpath_fanout_and_ext_lowercase(captures_store_db):
     cs = captures_store_db
     rel = cs._relpath_for("abcdef1234", ".WAV")
@@ -554,8 +561,7 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
 def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     from faster_whisper_backend.settings import config
-    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 5000, raising=False)
+    _caps(monkeypatch, 5000, 5000)
     c_dismissed = _make(cs, monkeypatch, tmp_path)
     c_new = _make(cs, monkeypatch, tmp_path)
     cs.update_capture(c_dismissed, {"status": "dismissed"})
@@ -573,8 +579,7 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     cs = captures_store_db
     gs = groups_store_db
     from faster_whisper_backend.settings import config
-    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 5000, raising=False)
+    _caps(monkeypatch, 5000, 5000)
     member = _make(cs, monkeypatch, tmp_path)
     other = _make(cs, monkeypatch, tmp_path)
     sid = "gmemberexcl00000"
@@ -604,8 +609,7 @@ def test_evicting_create_invalidates_every_proposer_key(
     cs = captures_store_db
     from faster_whisper_backend.captures import merge_proposer
     from faster_whisper_backend.settings import config
-    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 5000, raising=False)
+    _caps(monkeypatch, 5000, 5000)
     calls = []
     monkeypatch.setattr(merge_proposer, "invalidate", calls.append)
     old = _make(cs, monkeypatch, tmp_path, user_id="u2")
@@ -635,12 +639,10 @@ def test_failing_eviction_keeps_the_committed_row_and_its_audio(
 def test_evict_deletes_more_ids_than_one_in_list_chunk(
         captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
     conn = cs._require_conn()
     many = [f"evict{i:07d}" for i in range(1100)]
     _seed_rows(conn, many, "dismissed")
-    monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
+    _caps(monkeypatch, 1, 0)
     # Builds differ (Debian's sqlite allows 250000 variables, stock 32766):
     # lower the limit below the 1099 ids so one unchunked IN-list would fail.
     with _var_limit(conn):
@@ -655,7 +657,6 @@ def test_byte_pass_keeps_rows_whose_audio_is_already_gone(
     kept going, so the "audio_missing" pass wiped every such row (which
     reconcile_on_startup keeps for the admin) for nothing gained."""
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
     conn = cs._require_conn()
     missing = [f"gone{i:011d}" for i in range(10)]
     conn.executemany(
@@ -673,8 +674,7 @@ def test_byte_pass_keeps_rows_whose_audio_is_already_gone(
             " audio_format, raw_text, final_text, words, segments,"
             " corrections, status, user_id) VALUES (?,?,'m',?,'wav','r','f',"
             "'[]','[]','[]','new','bob')", (cid, 2.0 + n, rel))
-    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 2, raising=False)
+    _caps(monkeypatch, 5000, 2)
     with cs._lock:
         assert cs._evict_to_cap(conn) is True
     assert all(cs.get_capture(i) is not None for i in missing)
@@ -729,9 +729,7 @@ def test_a_store_full_of_ready_rows_records_nothing(
     traced a capture link to a deleted row, after a wasted transcode."""
     cs = captures_store_db
     from faster_whisper_backend.audio import transcode as audio_transcode
-    from faster_whisper_backend.settings import config
-    monkeypatch.setattr(config, "CAPTURES_MAX", 10, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
+    _caps(monkeypatch, 10, 0)
     _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(10)], "ready")
     assert cs.ready_fills_cap() is True
     install_fake_wav_transcode(monkeypatch)
@@ -754,9 +752,7 @@ def test_a_byte_cap_that_evicts_the_new_row_returns_none(
     CAPTURES_MAX_MB evicts the fresh row: create_capture must not hand back
     the id of a row it already deleted."""
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
-    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 1, raising=False)
+    _caps(monkeypatch, 5000, 1)
     ready = _make(cs, monkeypatch, tmp_path)
     cs.update_capture(ready, {"status": "ready"})
     # Just under the cap alone; the new row's WAV tips the total over it.
@@ -772,8 +768,7 @@ def test_an_older_new_row_is_evicted_before_the_fresh_one(
         captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     from faster_whisper_backend.settings import config
-    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
+    _caps(monkeypatch, 5000, 0)
     older = _make(cs, monkeypatch, tmp_path)
     cs._require_conn().execute(
         "UPDATE captures SET created_ts=0.5 WHERE id=?", (older,))
@@ -788,9 +783,7 @@ def test_an_older_new_row_is_evicted_before_the_fresh_one(
 
 def test_evict_disabled_when_caps_below_one(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
-    monkeypatch.setattr(config, "CAPTURES_MAX", 0, raising=False)
-    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
+    _caps(monkeypatch, 0, 0)
     for _ in range(4):
         _make(cs, monkeypatch, tmp_path)
     assert cs.count() == 4
