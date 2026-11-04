@@ -2434,6 +2434,12 @@
     var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
     return c.idx <= idx && idx <= end;
   }
+  function _chipIndexAt(state, idx) {
+    for (var i = 0; i < state.corrections.length; i++) {
+      if (chipCovers(state.corrections[i], idx)) return i;
+    }
+    return -1;
+  }
   function spanText(state, a, b) {
     // Each token carries its own leading space and punctuation, so a plain
     // join keeps the spacing. Rule-removed words are skipped: the exported
@@ -2476,10 +2482,7 @@
       extendLastChip(state, idx);
       return;
     }
-    var existing = -1;
-    for (var i = 0; i < state.corrections.length; i++) {
-      if (chipCovers(state.corrections[i], idx)) { existing = i; break; }
-    }
+    var existing = _chipIndexAt(state, idx);
     if (existing >= 0) {
       removeChip(state, existing);
       return;
@@ -3815,16 +3818,11 @@
   // requested. Returns the chip's <input> DOM (focused) or null.
   function _focusChipForCursor(state, createIfAbsent) {
     if (state.cursorIdx < 0) return null;
-    var chipIdx = -1;
-    for (var i = 0; i < state.corrections.length; i++) {
-      if (chipCovers(state.corrections[i], state.cursorIdx)) { chipIdx = i; break; }
-    }
+    var chipIdx = _chipIndexAt(state, state.cursorIdx);
     if (chipIdx < 0) {
       if (!createIfAbsent) return null;
       onWordClick(state, state.cursorIdx, false);
-      for (var j = 0; j < state.corrections.length; j++) {
-        if (chipCovers(state.corrections[j], state.cursorIdx)) { chipIdx = j; break; }
-      }
+      chipIdx = _chipIndexAt(state, state.cursorIdx);
     }
     if (chipIdx < 0) return null;
     var inputs = state.chipBox.querySelectorAll('.correct-input');
@@ -3836,12 +3834,8 @@
   }
   function _removeChipAtCursor(state) {
     if (state.cursorIdx < 0) return;
-    for (var i = 0; i < state.corrections.length; i++) {
-      if (chipCovers(state.corrections[i], state.cursorIdx)) {
-        removeChip(state, i);
-        return;
-      }
-    }
+    var i = _chipIndexAt(state, state.cursorIdx);
+    if (i >= 0) removeChip(state, i);
   }
   function _bindStripKeyboard(state) {
     var strip = state.stripEl;

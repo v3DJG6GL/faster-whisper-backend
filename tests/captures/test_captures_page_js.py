@@ -640,7 +640,7 @@ def test_chip_text_past_the_server_cap_is_refused_on_the_page(page, tmp_path):
     toasted "Saved." anyway: the export then rewrote only part of a long span
     or emitted a cut correction. Extending or clicking past the cap now
     toasts instead, and the correction input stops at the cap."""
-    fns = _heal_fns(page) + _js_functions(page, "extendLastChip", "spanText", "onWordClick")
+    fns = _heal_fns(page) + _js_functions(page, "extendLastChip", "spanText", "onWordClick", "_chipIndexAt")
     out = _run_node(tmp_path, fns + r"""
 var toasts = [], inputs = [];
 function toast(m, err) { toasts.push(m); }
