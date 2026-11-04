@@ -10,6 +10,8 @@ from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.stats import routes as stats_routes
+from faster_whisper_backend.stats import usage_store as us
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_upto
 from tests.conftest import bearer
@@ -180,7 +182,6 @@ def test_stage_hues_have_one_definition():
     /logs receipt, /quick-config traces, captures) reference the tokens
     rather than carrying their own hexes."""
     from faster_whisper_backend.quick_config import routes as quick_config_routes
-    from faster_whisper_backend.stats import routes as stats_routes
     from faster_whisper_backend.core import web_common
 
     assert set(web_common.STAGE_COLORS) == {
@@ -232,7 +233,6 @@ def test_stats_stream_frame_is_built_off_the_loop(client):
     import asyncio
     import inspect
 
-    from faster_whisper_backend.stats import routes as stats_routes
 
     src = inspect.getsource(stats_routes.stats_stream)
     assert "await asyncio.to_thread(" in src
@@ -251,7 +251,6 @@ def test_stats_snapshot_is_built_off_the_loop(client):
     the loop either."""
     import inspect
 
-    from faster_whisper_backend.stats import routes as stats_routes
 
     src = inspect.getsource(stats_routes.stats_snapshot)
     assert "await asyncio.to_thread(" in src
@@ -409,7 +408,6 @@ def _seed_jobs():
 
 
 def _own_payload_with_seeded_jobs(lite=False):
-    from faster_whisper_backend.stats import routes as stats_routes
     a, b = _seed_jobs()
     try:
         return stats_routes._build_payload(
@@ -419,7 +417,6 @@ def _own_payload_with_seeded_jobs(lite=False):
 
 
 def test_stats_scope_rules(client, app_module, monkeypatch):
-    from faster_whisper_backend.stats import routes as stats_routes
     admin = stats_routes.stats_scope_for(_user("all", is_admin=True))
     assert admin == stats_routes.ADMIN_SCOPE
     preview = stats_routes.stats_scope_for(_user("all", is_admin=True),
@@ -472,7 +469,6 @@ def _with_gpu(monkeypatch, present=True):
 
 
 def test_own_scope_lite_payload_scoped(client, monkeypatch):
-    from faster_whisper_backend.stats import routes as stats_routes
     _with_gpu(monkeypatch)
     snap, a = _own_payload_with_seeded_jobs(lite=True)
     assert set(snap) == {"ts", "scope", "machine", "jobs", "severity", "gpu",
@@ -503,7 +499,6 @@ def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
 def test_nonadmin_all_scope_unchanged(client):
     """stats="all" for a non-admin: every job, machine visible, identities
     scrubbed — plus the cancel handle on their own row."""
-    from faster_whisper_backend.stats import routes as stats_routes
     a, b = _seed_jobs()
     jobs.job_update(a, progress_id="pid-a")
     jobs.job_update(b, progress_id="pid-b")
@@ -544,7 +539,6 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     (a permission edit) and ends only when the caller lost access."""
     import inspect
     from faster_whisper_backend.settings import version as settings_version
-    from faster_whisper_backend.stats import routes as stats_routes
     from fastapi import HTTPException
     from tests.conftest import fake_request as _fake_request
 
@@ -581,7 +575,6 @@ def test_stream_rechecks_the_caller_before_its_first_frame(
     import asyncio
 
     from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.stats import routes as stats_routes
     from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
@@ -629,7 +622,6 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.settings import config
     from faster_whisper_backend.settings import version as settings_version
-    from faster_whisper_backend.stats import routes as stats_routes
     from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
@@ -653,7 +645,6 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
 
 
 def _seed_usage(alice, bob, alice_key, bob_key):
-    from faster_whisper_backend.stats import usage_store as us
     h = us.now_hour()
     us.record_usage(key_id=alice_key, user_id=alice, audio_s=10.0, words=5,
                     status="ok", hour=h)
@@ -663,7 +654,6 @@ def _seed_usage(alice, bob, alice_key, bob_key):
 
 def _usage_now(key_id, user_id, audio_s, words, job_id, kind, processing_s=1.0):
     """One "ok" usage row in the current hour (the list-filter / picker tests)."""
-    from faster_whisper_backend.stats import usage_store as us
     us.record_usage(key_id=key_id, user_id=user_id, audio_s=audio_s, words=words,
                     status="ok", hour=us.now_hour(), processing_s=processing_s,
                     job_id=job_id, kind=kind)
@@ -769,7 +759,6 @@ def test_stats_page_removes_machine_tiles_for_own(client):
 
 
 def test_stats_usage_v2_params(client, app_module):
-    from faster_whisper_backend.stats import usage_store as us
     h = us.now_hour()
     us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
                     status="ok", hour=h, processing_s=2.0, job_id="j1", kind="file",
@@ -811,7 +800,6 @@ def test_snapshot_models_carry_size_meta(client, monkeypatch):
     on-disk weight; the lookup is held for a minute because the stream
     rebuilds the payload every second and disk_size walks a directory."""
     from faster_whisper_backend.runtime import model_sizes
-    from faster_whisper_backend.stats import routes as stats_routes
     from faster_whisper_backend.runtime import model_registry
     calls = {"lookup": 0, "disk": 0}
 
@@ -844,7 +832,6 @@ def test_stats_page_loads_static_stats_js(client):
     linked with the build version so the cacheable /static mount serves a
     fresh copy per build, and placed BEFORE the inline dashboard IIFE that
     reads its globals."""
-    from faster_whisper_backend.stats import routes as stats_routes
     html = client.get("/stats").text
     tag = f'<script src="/static/stats.js?v={stats_routes.ASSET_VERSION}"></script>'
     assert tag in html
@@ -938,7 +925,6 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
 
 
 def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
-    from faster_whisper_backend.stats import routes as stats_routes
     lite = stats_routes._build_payload(stats_routes.ADMIN_SCOPE, lite=True)
     assert set(lite["gpu_gate"]) == {"capacity", "held", "queue_depth", "oldest_wait_s"}
     html = client.get("/stats").text
@@ -1002,7 +988,6 @@ def test_snapshot_carries_slot_busy(client):
 
 
 def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
-    from faster_whisper_backend.stats import usage_store as us
     raw_admin, alice, raw_alice, bob, raw_bob, keys = _two_users(make_user_key)
     h = us.now_hour()
     us.record_usage(key_id=keys[alice], user_id=alice, audio_s=10.0, words=5, status="error",
@@ -1326,7 +1311,6 @@ def test_stats_scrubbed_viewer_sees_sentinel_ids_literally(client, make_user_key
     """The open-mode sentinel names nobody, so a non-admin 'all' viewer sees
     "(open-mode)" on the user and key pickers, not an opaque label that reads
     like a real person; real users stay scrubbed."""
-    from faster_whisper_backend.stats import usage_store as us
     make_user_key("root", is_admin=True)
     _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
     _usage_now(None, None, 5.0, 1, "o1", "file")
