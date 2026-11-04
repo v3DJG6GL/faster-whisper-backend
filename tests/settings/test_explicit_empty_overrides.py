@@ -7,7 +7,7 @@ used to be swallowed as "not set".
 import json
 
 from faster_whisper_backend.settings import effective_config as ec
-from tests._transcription_helpers import bind_profile, post_verbose
+from tests._transcription_helpers import bind_profile, post_verbose_ok
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -131,11 +131,9 @@ def test_suppress_chars_survive_a_client_suppress_tokens_override(monkeypatch):
 
 def test_empty_language_form_field_is_explicit_auto_detect(client, make_user_key, fake_model):
     _, raw = bind_profile(client, make_user_key, "p", {"DEFAULT_LANGUAGE": "de"})
-    r = post_verbose(client, bearer(raw))
-    assert r.status_code == 200, r.text
+    post_verbose_ok(client, bearer(raw))
     assert fake_model.last_kwargs["language"] == "de"          # absent → inherit
-    r = post_verbose(client, bearer(raw), language="")
-    assert r.status_code == 200, r.text
+    post_verbose_ok(client, bearer(raw), language="")
     assert fake_model.last_kwargs["language"] is None          # "" → auto-detect
 
 
@@ -156,19 +154,16 @@ def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
     _, raw = bind_profile(client, make_user_key, "p", {
         "TRANSLATE_TO": "en", "TRANSLATION_GLOSSARY": "Messung = measurement"})
     # absent → both inherited from the profile
-    r = post_verbose(client, bearer(raw))
-    assert r.status_code == 200, r.text
+    post_verbose_ok(client, bearer(raw))
     assert calls[-1] == {"targets": ["en"], "glossary": "Messung = measurement"}
     # "" glossary → explicitly none, targets still inherited
-    r = post_verbose(client, bearer(raw), translation_glossary="")
-    assert r.status_code == 200, r.text
+    post_verbose_ok(client, bearer(raw), translation_glossary="")
     assert calls[-1] == {"targets": ["en"], "glossary": ""}
     # "" translate_to → explicitly no targets: the stage does not run at all
     n = len(calls)
-    r = post_verbose(client, bearer(raw), translate_to="")
-    assert r.status_code == 200, r.text
+    body = post_verbose_ok(client, bearer(raw), translate_to="")
     assert len(calls) == n
-    assert "translations" not in json.dumps(r.json().get("segments", [{}])[0])
+    assert "translations" not in json.dumps(body.get("segments", [{}])[0])
 
 
 def _stream_decode_languages(client, app_module, fake_model, monkeypatch, **conf):
