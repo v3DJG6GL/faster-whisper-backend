@@ -436,10 +436,10 @@ def test_installers_require_python_314():
     assert "Python 3.10" not in ps1
 
 
-def _venv_block():
-    """install-service.sh's venv bootstrap, up to the service stop."""
+def _venv_script(as_user):
+    """install-service.sh's venv bootstrap, up to the service stop, under strict mode with the given as_user stub."""
     sh = _read("install-service.sh")
-    return sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+    return f"set -euo pipefail\n{as_user}\n" + sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
@@ -448,7 +448,6 @@ def test_linux_installer_finds_a_python314_beside_an_older_python3(tmp_path):
     # ship 3.14 beside it as python3.14: a fresh clone must build its venv on
     # that, or on PYTHON=, never tell the operator to replace python3. Run the
     # script's own venv block against stub interpreters only.
-    block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
 
@@ -458,7 +457,7 @@ def test_linux_installer_finds_a_python314_beside_an_older_python3(tmp_path):
                     f"exit {ok}\n")
 
     def run(**env):
-        out = _bash(f'set -euo pipefail\nas_user() {{ echo "ran: $*"; }}\n{block}',
+        out = _bash(_venv_script('as_user() { echo "ran: $*"; }'),
                     {"PATH": str(bindir), "REPO_DIR": str(tmp_path), **env})
         return out.returncode, out.stdout, out.stderr
     stub("python3", (3, 13))
@@ -491,7 +490,6 @@ def test_linux_installer_removes_a_venv_whose_build_failed(tmp_path):
     # Without python3.14-venv, `python3.14 -m venv` writes bin/python and then
     # fails in ensurepip. A re-run after installing the package must build the
     # venv again, not keep the pip-less one because bin/python is executable.
-    block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     py314 = _exe(bindir / "python3.14", "#!/bin/sh\nexit 0\n")
@@ -500,7 +498,7 @@ def test_linux_installer_removes_a_venv_whose_build_failed(tmp_path):
                     'chmod +x "$PY"; echo "ensurepip is not available" >&2; return 1; }')
 
     def run(as_user):
-        out = _bash(f"set -euo pipefail\n{as_user}\n{block}",
+        out = _bash(_venv_script(as_user),
                     {"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)})
         return out.returncode, out.stdout, out.stderr
     rc, _, stderr = run(no_ensurepip)
@@ -521,7 +519,6 @@ def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_pat
     # an older installer's failed build left an executable but pip-less one.
     # Both die at `$PY -m pip` on every re-run unless rebuilt, and with --clear:
     # `python -m venv` keeps an existing bin/python link as it is.
-    block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     py314 = _exe(bindir / "python3.14", "#!/bin/sh\nexit 0\n")
@@ -533,7 +530,7 @@ def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_pat
     def run():
         # Echo every as_user step; run only the pip probe, against the stub.
         return _bash_ok(
-            f'set -euo pipefail\nas_user() {{ echo "ran: $*"; [ "$1" != "$PY" ] || "$@"; }}\n{block}',
+            _venv_script('as_user() { echo "ran: $*"; [ "$1" != "$PY" ] || "$@"; }'),
             {"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)}).stdout
     py.symlink_to(tmp_path / "gone" / "python3.12")
     assert f"ran: {py314} -m venv --clear {venv}" in run()
