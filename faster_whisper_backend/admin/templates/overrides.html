@@ -583,7 +583,7 @@ window._renderWaterfall = (function () {
       // Two 409s: the name collision, and an env-pinned library (the detail
       // names the env var to rename in) — show the server's reason.
       var jc = await r.json().catch(function () { return {}; });
-      setStatus(jc.detail || ('a profile named "' + newName + '" already exists'), 'err');
+      setStatus(_detailMsg(jc, 'a profile named "' + newName + '" already exists'), 'err');
       return;
     }
     if (!r.ok) { setStatus('rename failed (' + r.status + ')', 'err'); return; }
@@ -935,7 +935,7 @@ window._renderWaterfall = (function () {
         var jc = await r.json().catch(function () { return {}; });
         await refreshServerState();
         render();
-        setStatus(jc.detail || 'profile still in use', 'err');
+        setStatus(_detailMsg(jc, 'profile still in use'), 'err');
         return;
       }
       if (!r.ok) { setStatus('save failed (' + r.status + ')', 'err'); return; }

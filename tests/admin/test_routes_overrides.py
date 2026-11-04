@@ -58,7 +58,7 @@ def test_overrides_page_renders(client):
                    "ov-wrap", "tab-explorer", "/settings/overrides",
                    # save() surfaces the server 409 in-use guard's detail
                    # instead of a bare "save failed (409)"
-                   "setStatus(jc.detail || 'profile still in use'",
+                   "setStatus(_detailMsg(jc, 'profile still in use')",
                    # the What-if row names the decode path's own outcomes
                    "ignored_invalid: '⊘ ignored — invalid value'",
                    # a dropped outer names its locked partner, not itself, and
@@ -564,7 +564,7 @@ def test_page_rename_409_shows_the_server_detail(client):
     branch = body[body.index("if (r.status === 409) {"):]
     branch = branch[:branch.index("return;")]
     assert "r.json()" in branch
-    assert "setStatus(jc.detail || (" in branch
+    assert "setStatus(_detailMsg(jc, " in branch
 
 
 def test_state_save_env_pinned_409(client, make_user_key, monkeypatch):
@@ -658,7 +658,7 @@ def test_page_save_409_keeps_the_working_copy(client):
     assert "loadState(" not in branch
     assert "profiles =" not in branch and "snapshot =" not in branch
     assert "await refreshServerState();" in branch
-    assert "setStatus(jc.detail || 'profile still in use', 'err');" in branch
+    assert "setStatus(_detailMsg(jc, 'profile still in use'), 'err');" in branch
 
 
 def test_page_save_keeps_edits_made_while_in_flight(client):
