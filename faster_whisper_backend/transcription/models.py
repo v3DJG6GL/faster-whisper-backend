@@ -448,7 +448,8 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     for field, key, default in (("PATIENCE", "patience", 1.0),
                                 ("LENGTH_PENALTY", "length_penalty", 1.0),
                                 ("REPETITION_PENALTY", "repetition_penalty", 1.0),
-                                ("NO_REPEAT_NGRAM_SIZE", "no_repeat_ngram_size", 0)):
+                                ("NO_REPEAT_NGRAM_SIZE", "no_repeat_ngram_size", 0),
+                                ("LANGUAGE_DETECTION_SEGMENTS", "language_detection_segments", 1)):
         v = cf(field)
         if v and v != default:
             transcribe_kwargs[key] = v
@@ -460,9 +461,6 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     _lang_thresh = cf("LANGUAGE_DETECTION_THRESHOLD")
     if _lang_thresh is not None and _lang_thresh != 0.5:
         transcribe_kwargs["language_detection_threshold"] = _lang_thresh
-    _lang_segs = cf("LANGUAGE_DETECTION_SEGMENTS")
-    if _lang_segs and _lang_segs != 1:
-        transcribe_kwargs["language_detection_segments"] = _lang_segs
     _hallu_silence = cf("HALLUCINATION_SILENCE_THRESHOLD")
     if _hallu_silence:
         # 0 is "off" here, but an active threshold to faster-whisper (it only
