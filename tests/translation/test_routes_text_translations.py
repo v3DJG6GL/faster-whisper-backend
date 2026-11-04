@@ -125,8 +125,7 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
 
 def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
     _enable_stubbed(app_module, monkeypatch)
-    r = client.post(URL, json={"segments": [{"text": "a"}, {"text": "b"}],
-                               "targets": ["en"]})
+    r = client.post(URL, json=_body(segments=[{"text": "a"}, {"text": "b"}]))
     assert r.status_code == 200, r.text
     assert [s["id"] for s in r.json()["segments"]] == [0, 1]
 
@@ -171,13 +170,11 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     window = tr_routes._text_translate_rate
     window._state.clear()
     # A body that fails validation still counts against the window.
-    assert client.post(URL, json={"segments": [], "targets": ["en"]}
-                       ).status_code == 422
+    assert client.post(URL, json=_body(segments=[])).status_code == 422
     assert client.post(URL, json=_body()).status_code == 200
     # Over the ceiling a malformed body is refused by the window, not
     # by the validation it never reaches.
-    assert client.post(URL, json={"segments": [], "targets": ["en"]}
-                       ).status_code == 429
+    assert client.post(URL, json=_body(segments=[])).status_code == 429
     r = client.post(URL, json=_body())
     assert r.status_code == 429, r.text
     body = r.json()
@@ -789,10 +786,8 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
         "TRANSLATION_MODEL": "org/small:Q4_K_M",
         "locks": ["TRANSLATION_MODEL"]})
 
-    r = client.post(
-        "/v1/text/translations", headers=bearer(raw_bob),
-        json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
-              "translation_model": "org/huge:Q8_0"})
+    r = client.post(URL, headers=bearer(raw_bob),
+                    json=_body(translation_model="org/huge:Q8_0"))
     assert r.status_code == 200, r.text
     assert calls[0]["model_ref"] == "org/small:Q4_K_M"  # locked value wins
     assert any("locked" in w for w in r.json().get("warnings", []))
@@ -841,17 +836,13 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
 
     # No translation_model in the request: the pinned (admin-policy) model
     # resolves and passes even though it is not on the allowlist.
-    r = client.post(
-        "/v1/text/translations", headers=bearer(raw_bob),
-        json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"]})
+    r = client.post(URL, headers=bearer(raw_bob), json=_body())
     assert r.status_code == 200, r.text
     assert calls[0]["model_ref"] == "org/pinned-GGUF:Q4"
 
     # A CLIENT asking for a non-allowlisted model is still refused.
-    r = client.post(
-        "/v1/text/translations", headers=admin_h,
-        json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
-              "translation_model": "org/evil-GGUF:Q8"})
+    r = client.post(URL, headers=admin_h,
+                    json=_body(translation_model="org/evil-GGUF:Q8"))
     assert r.status_code == 400, r.text
 
 
@@ -937,7 +928,7 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.post(URL, json={**_body(), "client_job": "a" * 32})
+        r = client.post(URL, json=_body(client_job="a" * 32))
     assert r.status_code == 200, r.text
     blocks = [rec.getMessage() for rec in caplog.records
               if "/v1/text/translations" in rec.getMessage()
@@ -1000,12 +991,10 @@ def test_dictation_translation_joins_its_session_usage_job(
     sess = "5e55" * 8
     usage_store.record_usage(key_id="k", user_id=uid, audio_s=5.0, words=20,
                              status="ok", kind="dictation", job_id=sess)
-    r = client.post(URL, json={**_body(), "client_job": sess,
-                               "progress_id": "a1" * 16},
+    r = client.post(URL, json=_body(client_job=sess, progress_id="a1" * 16),
                     headers=bearer(raw))
     assert r.status_code == 200, r.text
-    r = client.post(URL, json={**_body(), "client_job": sess,
-                               "progress_id": "b2" * 16},
+    r = client.post(URL, json=_body(client_job=sess, progress_id="b2" * 16),
                     headers=bearer(raw_bob))
     assert r.status_code == 200, r.text
     utc = zoneinfo.ZoneInfo("UTC")
