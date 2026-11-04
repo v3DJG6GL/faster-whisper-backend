@@ -7,6 +7,7 @@ revision gets probed, converted and cached, not the conversion itself.
 
 import asyncio
 import os
+from pathlib import Path
 
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._conversion_helpers import stub_conversion_stack, stub_hub
@@ -43,8 +44,7 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
 
         def convert(self, out, quantization, force):
             os.makedirs(out)
-            with open(os.path.join(out, "model.bin"), "w") as f:
-                f.write(os.path.basename(self._src))
+            Path(out, "model.bin").write_text(os.path.basename(self._src))
 
     stub_hub(monkeypatch, list_repo_files=_list_repo_files,
              snapshot_download=_snapshot_download)
@@ -56,8 +56,7 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
     assert probed == ["v2"]
     assert snapshots == [("org/ft", "v2")]
     assert converted == [(str(tmp_path / "snapshots" / "v2"), None)]
-    with open(os.path.join(out, "model.bin")) as f:
-        assert f.read() == "v2"
+    assert Path(out, "model.bin").read_text() == "v2"
     assert (head / "model.bin").read_bytes() == b"HEAD"
 
 
@@ -71,8 +70,7 @@ def test_local_dir_is_reconverted_once_its_weights_change(
     out_dir = tx_models._converted_dir_for(str(src), "float16")
     os.makedirs(out_dir)
     cached = os.path.join(out_dir, "model.bin")
-    with open(cached, "w") as f:
-        f.write("old")
+    Path(cached).write_text("old")
     os.utime(src / "config.json", (1_000, 1_000))
     os.utime(weights, (1_000, 1_000))
     os.utime(cached, (2_000, 2_000))
@@ -84,8 +82,7 @@ def test_local_dir_is_reconverted_once_its_weights_change(
     os.utime(weights, (3_000, 3_000))
     assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
     assert converted == [str(src)]
-    with open(cached) as f:
-        assert f.read() == "new"
+    assert Path(cached).read_text() == "new"
 
 
 def _stub_local_conversion(monkeypatch, tmp_path, during_convert=None):
@@ -104,8 +101,7 @@ def _stub_local_conversion(monkeypatch, tmp_path, during_convert=None):
             if during_convert is not None:
                 during_convert()
             os.makedirs(out)
-            with open(os.path.join(out, "model.bin"), "w") as f:
-                f.write(data)
+            Path(out, "model.bin").write_text(data)
 
     stub_conversion_stack(monkeypatch, _Converter,
                           converted_dir=tmp_path / "ct2", overrides={})
@@ -142,8 +138,7 @@ def test_local_dir_swapped_in_with_older_mtimes_is_reconverted(
     os.utime(weights, (1_500, 1_500))
     assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
     assert converted == [str(src), str(src)]
-    with open(cached) as f:
-        assert f.read() == "v2"
+    assert Path(cached).read_text() == "v2"
 
 
 def test_local_dir_written_during_conversion_is_reconverted(
@@ -168,8 +163,7 @@ def test_local_dir_written_during_conversion_is_reconverted(
     assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
     assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
     assert converted == [str(src), str(src)]
-    with open(os.path.join(out_dir, "model.bin")) as f:
-        assert f.read() == "final"
+    assert Path(out_dir, "model.bin").read_text() == "final"
 
 
 def test_converted_models_dir_tilde_is_expanded(monkeypatch, tmp_path):
