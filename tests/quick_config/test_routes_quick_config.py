@@ -638,22 +638,23 @@ class _ExposedOnly:
         return bool(rule.get("exposed"))
 
 
-def _exposed_only_user():
-    """A non-admin caller who sees exactly the exposed rules."""
-    return {"is_admin": False, "permissions": _ExposedOnly()}
+_GEHEIM_MEINS = [{"name": "geheim", "exposed": False},
+                 {"name": "meins", "exposed": True}]
+
+
+def _redact_one(msg, rules=_GEHEIM_MEINS, loc="PIPELINE_RULES"):
+    """_redact_invisible_slugs on one error, for a non-admin caller who sees
+    exactly the exposed rules."""
+    return qc._redact_invisible_slugs(
+        [{"loc": loc, "msg": msg}],
+        {"is_admin": False, "permissions": _ExposedOnly()}, rules)
 
 
 def test_redact_collapses_hidden_rule_ordinals():
     """The schema's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
     position and entry count."""
-    user = _exposed_only_user()
-    rules = [{"name": "geheim", "exposed": False},
-             {"name": "meins", "exposed": True}]
-    out = qc._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES",
-          "msg": "rule 0 ('geheim') entry 2: invalid regex: boom"}],
-        user, rules)
+    out = _redact_one("rule 0 ('geheim') entry 2: invalid regex: boom")
     assert out == [{"loc": "PIPELINE_RULES",
                     "msg": "<hidden rule>: invalid regex: boom"}]
     # The sentinel must survive the collapse — the page's _doSave keys on it
@@ -663,16 +664,12 @@ def test_redact_collapses_hidden_rule_ordinals():
     assert not re.search(r"\b(rule|entry) \d+", out[0]["msg"])
     # A dotted Pydantic loc on the hidden index is blanked wholesale so the
     # page's '<hidden rule>' guard routes it to the generic toast.
-    out = qc._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES.0.callback:map.map.x",
-          "msg": "Input should be a valid string"}],
-        user, rules)
+    out = _redact_one("Input should be a valid string",
+                      loc="PIPELINE_RULES.0.callback:map.map.x")
     assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
     # The visible rule's errors stay legible.
-    out = qc._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES.1.regex-list.entries.0.pattern",
-          "msg": "rule 1 ('meins'): bad"}],
-        user, rules)
+    out = _redact_one("rule 1 ('meins'): bad",
+                      loc="PIPELINE_RULES.1.regex-list.entries.0.pattern")
     assert out == [{"loc": "PIPELINE_RULES.1.regex-list.entries.0.pattern",
                     "msg": "rule 1 ('meins'): bad"}]
 
@@ -682,25 +679,15 @@ def test_redact_blanks_non_guard_errors_naming_a_hidden_rule():
     hidden rule used to reach a non-admin as "<hidden rule>: map keys
     ['Passwort', 'passwort'] collide ...", i.e. the admin dictionary's own
     keys, and a duplicate-name error kept the hidden rule's index."""
-    user = _exposed_only_user()
-    rules = [{"name": "geheim", "exposed": False},
-             {"name": "meins", "exposed": True}]
-    out = qc._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES",
-          "msg": "Value error, rule 0 ('geheim'): map keys "
-                 "['Passwort', 'passwort'] collide when lowercased"}],
-        user, rules)
+    out = _redact_one("Value error, rule 0 ('geheim'): map keys "
+                      "['Passwort', 'passwort'] collide when lowercased")
     assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
-    out = qc._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES",
-          "msg": "Value error, duplicate rule name 'geheim' at index 3"}],
-        user, rules)
+    out = _redact_one("Value error, duplicate rule name 'geheim' at index 3")
     assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
     # The caller's own rule keeps its collision message.
     msg = ("Value error, rule 1 ('meins'): map keys ['A', 'a'] collide "
            "when lowercased")
-    out = qc._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
+    out = _redact_one(msg)
     assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
 
 
@@ -709,13 +696,11 @@ def test_redact_keeps_own_map_keys_that_equal_a_hidden_slug():
     key equal to a hidden slug (echoed in quotes by the collision message)
     blanked their own error — and its presence told them the hidden rule
     exists, one guess per save."""
-    user = _exposed_only_user()
     rules = [{"name": "meins", "exposed": True},
              {"name": "geheim-rule", "exposed": False}]
     msg = ("rule 1 ('meins'): map keys ['Geheim-rule', 'geheim-rule'] "
            "collide when lowercased")
-    out = qc._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
+    out = _redact_one(msg, rules)
     assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
 
 
