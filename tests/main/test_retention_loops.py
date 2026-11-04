@@ -8,6 +8,7 @@ import asyncio
 import threading
 
 import pytest
+from fastapi.testclient import TestClient
 
 
 def _drive(monkeypatch, loop_fn, store_mod):
@@ -60,7 +61,6 @@ def test_startup_ages_out_recent_rows_past_retention(app_module, monkeypatch):
     arrived. The lifespan sweeps once before serving."""
     import time
 
-    from fastapi.testclient import TestClient
     from faster_whisper_backend.stats import recent_transcriptions_store as rts
 
     monkeypatch.setattr(app_module.cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30,
@@ -81,7 +81,6 @@ def test_startup_sweeps_usage_rows_past_retention(app_module, monkeypatch):
     """The hourly usage loop sleeps before its first sweep, so a server
     restarted more often than hourly kept per-app rows past
     USAGE_APP_RETENTION_DAYS. The lifespan sweeps once before serving."""
-    from fastapi.testclient import TestClient
     from faster_whisper_backend.stats import usage_store as us
 
     monkeypatch.setattr(app_module.cfg, "USAGE_APP_RETENTION_DAYS", 7, raising=False)
