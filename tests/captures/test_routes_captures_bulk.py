@@ -19,6 +19,11 @@ def _row(conn, cid, *, user_id, status="new", audio_s=2.0, created_ts=1.0,
                    reviewed_ts=reviewed_ts)
 
 
+def _bulk(client, raw, ids, status):
+    return client.patch("/captures/api/bulk", headers=bearer(raw),
+                        json={"ids": ids, "status": status})
+
+
 def test_stats_empty_queue(client):
     st = client.get("/captures/api/stats").json()
     assert st["total"] == {"n": 0, "s": 0.0, "median_s": None}
@@ -164,9 +169,7 @@ def test_bulk_status_updates_and_reports_prev(client, make_user_key):
     _row(conn, "a2a2a2a2a2a2", user_id=uid_a, status="reviewed",
          reviewed_ts=123.0)
 
-    r = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                     json={"ids": ["a2a2a2a2a2a2", "a1a1a1a1a1a1",
-                                   "a2a2a2a2a2a2"], "status": "ready"})
+    r = _bulk(client, raw_root, ["a2a2a2a2a2a2", "a1a1a1a1a1a1", "a2a2a2a2a2a2"], "ready")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ready" and body["skipped"] == []
@@ -177,8 +180,7 @@ def test_bulk_status_updates_and_reports_prev(client, make_user_key):
         row = captures_store.get_capture(cid)
         assert row["status"] == "ready" and row["reviewed_ts"] > 1000.0
     # back to new NULLs reviewed_ts (the undo path)
-    client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                 json={"ids": ["a1a1a1a1a1a1"], "status": "new"})
+    _bulk(client, raw_root, ["a1a1a1a1a1a1"], "new")
     assert captures_store.get_capture("a1a1a1a1a1a1")["reviewed_ts"] is None
 
 
@@ -192,9 +194,7 @@ def test_bulk_status_keeps_reviewed_ts_of_rows_already_at_the_target(
     _row(conn, "a2a2a2a2a2a2", user_id=uid_a, status="ready",
          reviewed_ts=old_ts)
 
-    r = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                     json={"ids": ["a1a1a1a1a1a1", "a2a2a2a2a2a2"],
-                           "status": "ready"})
+    r = _bulk(client, raw_root, ["a1a1a1a1a1a1", "a2a2a2a2a2a2"], "ready")
     assert r.status_code == 200
     assert r.json()["updated"] == [
         {"id": "a1a1a1a1a1a1", "prev_status": "new"},
@@ -269,8 +269,7 @@ def test_audio_missing_row_with_restored_file_can_be_retriaged(
     assert r.status_code == 200, r.text
     assert captures_store.get_capture("back00000001")["status"] == "reviewed"
 
-    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                        json={"ids": ["back00000002"], "status": "ready"}).json()
+    body = _bulk(client, raw_root, ["back00000002"], "ready").json()
     assert body["skipped"] == []
     assert body["updated"] == [{"id": "back00000002",
                                 "prev_status": "audio_missing"}]
@@ -283,15 +282,12 @@ def test_bulk_status_skips_locked_member_for_nonadmin_only(client, make_user_key
     _insert_member(conn, "locked01cid", "locked01sid", user_id=uid)
     _row(conn, "free0001cid0", user_id=uid)
 
-    body = client.patch("/captures/api/bulk", headers=bearer(raw),
-                        json={"ids": ["locked01cid", "free0001cid0"],
-                              "status": "reviewed"}).json()
+    body = _bulk(client, raw, ["locked01cid", "free0001cid0"], "reviewed").json()
     assert body["skipped"] == [{"id": "locked01cid", "reason": "locked"}]
     assert [u["id"] for u in body["updated"]] == ["free0001cid0"]
     assert captures_store.get_capture("locked01cid")["status"] == "new"
     # admins are exempt from the lock, as on the single-id route
-    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                        json={"ids": ["locked01cid"], "status": "reviewed"}).json()
+    body = _bulk(client, raw_root, ["locked01cid"], "reviewed").json()
     assert body["skipped"] == [] and captures_store.get_capture("locked01cid")["status"] == "reviewed"
 
 
@@ -302,9 +298,7 @@ def test_bulk_status_foreign_and_missing_are_both_not_found(client, make_user_ke
     conn = captures_store._require_conn()
     _row(conn, "b1b1b1b1b1b1", user_id=uid_b)
 
-    body = client.patch("/captures/api/bulk", headers=bearer(raw_a),
-                        json={"ids": ["b1b1b1b1b1b1", "nope00000000"],
-                              "status": "ready"}).json()
+    body = _bulk(client, raw_a, ["b1b1b1b1b1b1", "nope00000000"], "ready").json()
     assert body["updated"] == []
     assert body["skipped"] == [{"id": "b1b1b1b1b1b1", "reason": "not_found"},
                                {"id": "nope00000000", "reason": "not_found"}]
@@ -314,8 +308,7 @@ def test_bulk_status_foreign_and_missing_are_both_not_found(client, make_user_ke
 def test_bulk_status_skips_audio_missing_rows(client, make_user_key):
     raw_root, uid, _, conn = _root_and_alice(make_user_key)
     _row(conn, "gone00000001", user_id=uid, status="audio_missing")
-    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                        json={"ids": ["gone00000001"], "status": "ready"}).json()
+    body = _bulk(client, raw_root, ["gone00000001"], "ready").json()
     assert body["skipped"] == [{"id": "gone00000001", "reason": "audio_missing"}]
     assert captures_store.get_capture("gone00000001")["status"] == "audio_missing"
 
@@ -339,8 +332,7 @@ def test_bulk_routes_require_captures_page_when_locked(client, make_user_key):
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("nobody", pages={"captures": "none"})
     h = bearer(raw)
-    assert client.patch("/captures/api/bulk", headers=h,
-                        json={"ids": ["x" * 12], "status": "ready"}).status_code == 403
+    assert _bulk(client, raw, ["x" * 12], "ready").status_code == 403
     assert client.post("/captures/api/bulk-delete", headers=h,
                        json={"ids": ["x" * 12]}).status_code == 403
     assert client.get("/captures/api/stats", headers=h).status_code == 403
@@ -380,8 +372,7 @@ def test_bulk_guard_never_loads_the_full_capture_row(client, make_user_key,
     # (the *_DB paths, config overrides, the model loader) mid-test.
     with monkeypatch.context() as m:
         m.setattr(captures_store, "get_capture", _boom)
-        body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                            json={"ids": ids, "status": "reviewed"}).json()
+        body = _bulk(client, raw_root, ids, "reviewed").json()
     assert [u["id"] for u in body["updated"]] == ids
     assert body["skipped"] == []
     assert captures_store.get_capture(ids[-1])["status"] == "reviewed"
@@ -399,10 +390,8 @@ def test_bulk_guard_looks_a_shared_sample_lock_up_once(client, make_user_key,
     real = gs.get_sample
     monkeypatch.setattr(gs, "get_sample",
                         lambda sid: (calls.append(sid), real(sid))[1])
-    body = client.patch(
-        "/captures/api/bulk", headers=bearer(raw),
-        json={"ids": ["locked00cid", "locked01cid", "free0001cid0",
-                      "locked02cid"], "status": "ready"}).json()
+    body = _bulk(client, raw, ["locked00cid", "locked01cid", "free0001cid0",
+                               "locked02cid"], "ready").json()
     assert [u["id"] for u in body["updated"]] == ["free0001cid0"]
     assert body["skipped"] == [
         {"id": c, "reason": "locked"}
@@ -426,8 +415,6 @@ def test_bulk_status_reports_a_row_deleted_after_the_guard(client, make_user_key
         return real(ids, new_status)
     monkeypatch.setattr(captures_store, "bulk_update_status", _racing)
 
-    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                        json={"ids": ["a1a1a1a1a1a1", "a2a2a2a2a2a2"],
-                              "status": "ready"}).json()
+    body = _bulk(client, raw_root, ["a1a1a1a1a1a1", "a2a2a2a2a2a2"], "ready").json()
     assert body["updated"] == [{"id": "a1a1a1a1a1a1", "prev_status": "new"}]
     assert body["skipped"] == [{"id": "a2a2a2a2a2a2", "reason": "not_found"}]
