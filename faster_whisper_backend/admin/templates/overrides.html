@@ -46,9 +46,10 @@
     cursor: pointer; font: inherit; font-size: var(--fs-sm); }
   .ov-tab.active { color: var(--bold); border-color: var(--cyan); }
   .ov-wrap { display: grid; grid-template-columns: 17rem 1fr; gap: 1rem; align-items: start; }
-  .ov-side { display: flex; flex-direction: column; gap: 0.15rem;
-    border: 1px solid var(--border); border-radius: 9px; padding: 0.5rem;
-    background: var(--panel); align-self: start; }
+  .ov-side, .ov-empty, .ov-sec, .ex-card { border: 1px solid var(--border);
+    border-radius: 9px; background: var(--panel); }
+  .ov-side { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.5rem;
+    align-self: start; }
   .ov-side-h { display: flex; align-items: center; justify-content: space-between;
     padding: 0.1rem 0.35rem 0.4rem; color: var(--dim); font-size: var(--fs-xs);
     text-transform: uppercase; letter-spacing: 0.04em; }
@@ -83,13 +84,11 @@
   .icon-btn:hover { background: #1f2630; color: var(--fg); }
   .icon-btn.ok { color: var(--green); }
   .ov-main { padding: 0; min-height: 8rem; }
-  .ov-empty { color: var(--dim); padding: 2rem 1rem; text-align: center;
-    border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
+  .ov-empty { color: var(--dim); padding: 2rem 1rem; text-align: center; }
   .ov-pane-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; }
   .ov-pane-head .pname { font-family: var(--font-mono); color: var(--bold);
     font-size: var(--fs-lg); }
-  .ov-sec { border: 1px solid var(--border); border-radius: 9px;
-    background: var(--panel); overflow: hidden; margin-bottom: 0.9rem; }
+  .ov-sec { overflow: hidden; margin-bottom: 0.9rem; }
   .ov-sec:last-child { margin-bottom: 0; }
   .ov-sec > h4 { margin: 0; padding: 0.5rem 0.8rem; background: #12171f;
     border-bottom: 1px solid var(--border); color: var(--bold);
@@ -150,7 +149,6 @@
     font-size: var(--fs-xs); }
   /* explorer — two labelled zones: Identity (who) + What-if (simulate) */
   .ex-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
-  .ex-card { border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
   .ex-card.identity { border-left: 3px solid rgba(121,192,255,0.7);
     background: linear-gradient(90deg, rgba(121,192,255,0.08), rgba(121,192,255,0.015) 55%), var(--panel); }
   .ex-card.simulate { border-left: 3px solid rgba(210,153,34,0.75);
