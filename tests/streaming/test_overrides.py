@@ -10,8 +10,8 @@ import pytest
 
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
-    config_drain, config_frame, const_pcm, handshake, speak_and_stop, stop_and_drain, stream_ws,
-    ws_drain)
+    config_drain, config_frame, const_pcm, dictate_session, handshake, speak_and_stop,
+    stop_and_drain, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -51,9 +51,7 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
                                         app_module, monkeypatch, energy_vad):
     _, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 7})
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
-        speak_and_stop(ws)
+    dictate_session(client, raw_alice)
 
     # The final decode is the last transcribe call; it uses the assembler with
     # the profile's BEAM_SIZE (partials force STREAMING_PARTIAL_BEAM instead).
@@ -124,9 +122,7 @@ def test_final_drops_low_confidence_hallucination_segment(
     good.avg_logprob, good.temperature = -0.2, 0.0       # healthy → keep
     fake_model._segments = [bad, good]
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
-        msgs = speak_and_stop(ws)[0]
+    msgs = dictate_session(client, raw_alice)
 
     finals = [m for m in msgs if m["type"] == "final"]
     doc = (finals[-1]["committed"] + finals[-1]["tail"]) if finals else ""
@@ -144,9 +140,7 @@ def test_stream_prompt_sentinel_inherit_clear_value(
     _, raw_alice = make_user_key("alice")
 
     def _run(conf_extra):
-        with stream_ws(client, raw_alice) as ws:
-            assert handshake(ws, **conf_extra)["type"] == "ready"
-            speak_and_stop(ws)
+        dictate_session(client, raw_alice, **conf_extra)
         return fake_model.last_kwargs.get("initial_prompt")
 
     assert _run({}) == "SERVER PROMPT"
@@ -401,9 +395,7 @@ def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
     _, raw_alice = make_user_key("alice")
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws, language=language)["type"] == "ready"
-        speak_and_stop(ws)
+    dictate_session(client, raw_alice, language=language)
 
     assert "language" in fake_model.last_kwargs   # a decode ran
     assert fake_model.last_kwargs["language"] is None
@@ -599,9 +591,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
     monkeypatch.setattr(streaming_routes, "authenticate_ws",
                         lambda ws: (calls.append(1), real(ws))[1])
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
-        msgs, _code = speak_and_stop(ws)
+    msgs = dictate_session(client, raw_alice)
 
     assert any(m.get("type") == "final" for m in msgs), msgs
     assert len(calls) == 1, f"re-authenticated {len(calls)}x with no version bump"

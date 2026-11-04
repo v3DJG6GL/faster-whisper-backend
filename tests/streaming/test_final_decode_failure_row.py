@@ -2,7 +2,7 @@
 partial-committed text, and the ledger row must say the decode failed (an
 error row, classified like the identical batch failure), not a success."""
 
-from tests._streaming_helpers import handshake, speak_and_stop
+from tests._streaming_helpers import dictate_session
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
 
@@ -24,9 +24,7 @@ def test_failed_final_decode_is_recorded_as_a_classified_error(
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert handshake(ws)["type"] == "ready"
-        msgs, _code = speak_and_stop(ws)
+    msgs = dictate_session(client)
     assert any(m["type"] == "final" for m in msgs), msgs
     rows = _stream_rows()
     assert rows, "the fallback utterance wrote no ledger row"
@@ -46,9 +44,7 @@ def test_failed_final_decode_receipt_says_the_decode_failed(
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
-        with client.websocket_connect(_STREAM_URL) as ws:
-            assert handshake(ws)["type"] == "ready"
-            speak_and_stop(ws)
+        dictate_session(client)
     receipts = [r.getMessage() for r in caplog.records
                 if _STREAM_URL in r.getMessage() and "═" in r.getMessage()]
     assert receipts, "no receipt was logged"
@@ -59,9 +55,7 @@ def test_failed_final_decode_receipt_says_the_decode_failed(
 
 
 def test_decoded_utterance_stays_an_ok_row(client, app_module, monkeypatch, energy_vad):
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert handshake(ws)["type"] == "ready"
-        speak_and_stop(ws)
+    dictate_session(client)
     rows = _stream_rows()
     assert rows
     assert rows[0]["status"] == "ok"
@@ -85,9 +79,7 @@ def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
     monkeypatch.setattr(s_routes, "_build_transcribe_kwargs", _kwargs)
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert handshake(ws)["type"] == "ready"
-        msgs, _code = speak_and_stop(ws)
+    msgs = dictate_session(client)
     assert not any(m["type"] == "final" and (m.get("committed") or m.get("tail"))
                    for m in msgs), msgs
     assert any(m["type"] == "utterance" and m.get("reason") == "error" for m in msgs), msgs
@@ -113,9 +105,7 @@ def test_failed_final_decode_broadcasts_an_error_entry(
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     q = recent_feed.subscribe()
     try:
-        with client.websocket_connect(_STREAM_URL) as ws:
-            assert handshake(ws)["type"] == "ready"
-            speak_and_stop(ws)
+        dictate_session(client)
         entries = []
         while not q.empty():
             item = q.get_nowait()

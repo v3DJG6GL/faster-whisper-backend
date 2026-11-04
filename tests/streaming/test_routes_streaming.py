@@ -17,8 +17,8 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    const_pcm, drain_frames as _drain, handshake as _handshake, speak_and_stop, stop_and_drain,
-    stream_ws)
+    const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake, speak_and_stop,
+    stop_and_drain, stream_ws)
 from tests._transcription_helpers import guard_line
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -377,9 +377,7 @@ def test_stream_records_trace_text_per_utterance(client, energy_vad):
     raw/final text (drives /quick-config + /reports), not just numeric metrics."""
     from faster_whisper_backend.stats import recent_transcriptions_store
     before = recent_transcriptions_store.count()
-    with stream_ws(client) as ws:
-        assert _handshake(ws)["type"] == "ready"
-        speak_and_stop(ws)
+    dictate_session(client)
     rows = recent_transcriptions_store.list_recent(limit=10)
     after = recent_transcriptions_store.count()
     assert after > before, "no recent-transcription row recorded for the utterance"
@@ -399,9 +397,7 @@ def test_stream_records_the_key_label_on_the_trace_row(
     make_user_key("root", is_admin=True)   # locks the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
     raw, _rec = api_keys_store.create_key(uid, label="alice-laptop")
-    with stream_ws(client, raw) as ws:
-        assert _handshake(ws)["type"] == "ready"
-        speak_and_stop(ws)
+    dictate_session(client, raw)
     rows = metrics.metrics_snapshot(include_identity=True)["recent_transcriptions"]
     assert rows, "no recent-transcription row recorded for the utterance"
     assert rows[0]["key_label"] == "alice-laptop"
@@ -746,17 +742,11 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
     assert streaming_routes._active_sessions == set()
 
 
-def _dictate_one_utterance(client, conf_extra):
-    with stream_ws(client) as ws:
-        assert _handshake(ws, **conf_extra)["type"] == "ready"
-        speak_and_stop(ws)
-
-
 def test_stream_client_job_names_the_usage_job(client, energy_vad):
     """The handshake's `client_job` becomes the usage job id, so the outcome
     the client posts afterwards lands on the session's own utterances."""
     from faster_whisper_backend.stats import usage_store
-    _dictate_one_utterance(client, {"client_job": "ab" * 16})
+    dictate_session(client, client_job="ab" * 16)
     rows = usage_store._require_conn().execute(
         "SELECT job_id, kind, utterances FROM usage_jobs").fetchall()
     assert [tuple(r) for r in rows] == [("ab" * 16, "dictation", 1)]
@@ -764,7 +754,7 @@ def test_stream_client_job_names_the_usage_job(client, energy_vad):
 
 def test_stream_malformed_client_job_falls_back_to_session_id(client, energy_vad):
     from faster_whisper_backend.stats import usage_store
-    _dictate_one_utterance(client, {"client_job": "../not-hex"})
+    dictate_session(client, client_job="../not-hex")
     rows = usage_store._require_conn().execute(
         "SELECT job_id, kind FROM usage_jobs").fetchall()
     assert len(rows) == 1 and rows[0]["kind"] == "dictation"
@@ -812,14 +802,14 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(
     monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
 
     with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-        _dictate_one_utterance(client, {})
+        dictate_session(client)
     assert seen == [True], "one final decode, stop rule armed"
     assert guard_line(caplog, "skip_residual_windows").endswith("true")
 
     seen.clear(); caplog.clear()
     monkeypatch.setattr(app_module.cfg, "DECODE_SKIP_RESIDUAL_WINDOWS", False, raising=False)
     with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-        _dictate_one_utterance(client, {})
+        dictate_session(client)
     assert seen == [False]
     assert guard_line(caplog, "skip_residual_windows").endswith("false *")
 
@@ -861,7 +851,7 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     calls = _final_and_partial_kwargs(fake_model)
 
     with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-        _dictate_one_utterance(client, {})
+        dictate_session(client)
     assert caps == [10.0]
     finals = [kw for kw in calls if _is_final(kw)]
     assert len(finals) == 1 and finals[0]["best_of"] == 1
@@ -872,14 +862,14 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     caps.clear(); calls.clear()
     monkeypatch.setattr(app_module.cfg, "DECODE_TOKEN_CAP_PER_SECOND", 0.0, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 3, raising=False)
-    _dictate_one_utterance(client, {})
+    dictate_session(client)
     assert caps == [0.0]
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [3]
 
 
 def test_stream_final_best_of_yields_to_a_client_override(client, fake_model, energy_vad):
     calls = _final_and_partial_kwargs(fake_model)
-    _dictate_one_utterance(client, {"decode_overrides": {"best_of": 4}})
+    dictate_session(client, decode_overrides={"best_of": 4})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [4]
 
 
@@ -892,7 +882,7 @@ def test_stream_final_best_of_pins_when_the_client_value_does_not_apply(
     monkeypatch.setattr(app_module.cfg, "BEST_OF", 5, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 1, raising=False)
     calls = _final_and_partial_kwargs(fake_model)
-    _dictate_one_utterance(client, {"decode_overrides": {"best_of": value}})
+    dictate_session(client, decode_overrides={"best_of": value})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [1]
 
 
@@ -910,19 +900,11 @@ def _loop_segment():
     return FakeSegment("".join(w.word for w in ws), 0.32, 2.4, words=ws)
 
 
-def _stream_once(client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    with stream_ws(client) as ws:
-        assert _handshake(ws)["type"] == "ready"
-        return speak_and_stop(ws)[0]
-
-
-def test_stream_final_and_previews_cut_the_made_up_tail(client, app_module, fake_model,
-                                                        monkeypatch, caplog):
+def test_stream_final_and_previews_cut_the_made_up_tail(client, fake_model, caplog, energy_vad):
     from faster_whisper_backend.stats import metrics
     fake_model._segments = [_loop_segment()]
     with caplog.at_level("INFO"):
-        msgs = _stream_once(client, app_module, monkeypatch)
+        msgs = dictate_session(client)
     finals = [m for m in msgs if m["type"] == "final"]
     partials = [m for m in msgs if m["type"] == "partial"]
     text = "".join(m["committed"] + m.get("tail", "") for m in finals[-1:])
@@ -936,8 +918,8 @@ def test_stream_final_and_previews_cut_the_made_up_tail(client, app_module, fake
     assert "tail_cut" in caplog.text
 
 
-def test_stream_preview_drops_a_segment_cut_to_nothing(client, app_module, fake_model,
-                                                       monkeypatch):
+def test_stream_preview_drops_a_segment_cut_to_nothing(client, fake_model, monkeypatch,
+                                                       energy_vad):
     """A preview whose only segment is one zero-length pile: handed on as
     (start, made-up end, "") two previews agree on "" and LocalAgreement
     commits an empty word at the made-up end — every later real word before
@@ -955,24 +937,25 @@ def test_stream_preview_drops_a_segment_cut_to_nothing(client, app_module, fake_
         return orig(self, words, offset)
 
     monkeypatch.setattr(localagreement.LocalAgreementProcessor, "insert_hypothesis", spy)
-    msgs = _stream_once(client, app_module, monkeypatch)
+    msgs = dictate_session(client)
     assert seen, "no preview was decoded"
     assert all(h == [] for h in seen)
     assert all(m["committed"] == "" for m in msgs if m["type"] == "partial")
 
 
-def test_stream_tail_cuts_off_keep_the_tail(client, app_module, fake_model, monkeypatch):
+def test_stream_tail_cuts_off_keep_the_tail(client, app_module, fake_model, monkeypatch,
+                                            energy_vad):
     for name in ("SEGMENT_MAX_WORD_BURST_PER_S", "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
                  "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", "SEGMENT_MAX_WORDS_PER_S"):
         monkeypatch.setattr(app_module.cfg, name, 0, raising=False)
     fake_model._segments = [_loop_segment()]
-    msgs = _stream_once(client, app_module, monkeypatch)
+    msgs = dictate_session(client)
     finals = [m for m in msgs if m["type"] == "final"]
     assert "abzuschliessen" in "".join(m["committed"] + m.get("tail", "") for m in finals)
 
 
-def test_stream_formats_the_first_final_in_the_detected_language(client, app_module, fake_model,
-                                                                 monkeypatch):
+def test_stream_formats_the_first_final_in_the_detected_language(client, fake_model, monkeypatch,
+                                                                 energy_vad):
     """Auto language: the utterance's own final is formatted in the language
     its decode detected, not with every language's rules (a German question
     got the Spanish '¿'), so the closing final extends it unchanged. The
@@ -991,7 +974,7 @@ def test_stream_formats_the_first_final_in_the_detected_language(client, app_mod
         seen["preview"] += 1
         return segs, FakeInfo(language="es")
     monkeypatch.setattr(fake_model, "transcribe", transcribe)
-    msgs = _stream_once(client, app_module, monkeypatch)
+    msgs = dictate_session(client)
     assert seen["preview"] and seen["final"]
     docs = [m["committed"] + m.get("tail", "") for m in msgs if m["type"] == "final"]
     assert len(docs) >= 2                                # the utterance's final + the close
@@ -1001,27 +984,25 @@ def test_stream_formats_the_first_final_in_the_detected_language(client, app_mod
         assert b.startswith(a)
 
 
-def test_stream_unknown_language_skips_language_tagged_rules(client, app_module, fake_model,
-                                                             monkeypatch):
+def test_stream_unknown_language_skips_language_tagged_rules(client, fake_model, energy_vad):
     """No language requested, none detected: "und" — every language-tagged rule
     is skipped (the German map and the Spanish marks alike) instead of all of
     them running."""
     from tests.conftest import FakeInfo, FakeSegment
     fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
     fake_model._info = FakeInfo(language=None)
-    msgs = _stream_once(client, app_module, monkeypatch)
+    msgs = dictate_session(client)
     docs = [m["committed"] + m.get("tail", "") for m in msgs if m["type"] == "final"]
     assert docs and all("¿" not in d for d in docs)
     assert "Fragezeichen" in docs[-1]
 
 
-def test_stream_holds_a_split_dictation_phrase_until_the_close(client, app_module, fake_model,
-                                                                monkeypatch):
+def test_stream_holds_a_split_dictation_phrase_until_the_close(client, fake_model, energy_vad):
     """The route wires the real hold-back: the trailing 'neue' of a final is
     held back (the rest is sent) until the close releases it."""
     from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment(" Befund unauffällig Punkt neue", 0.0, 1.0)]
-    msgs = _stream_once(client, app_module, monkeypatch)
+    msgs = dictate_session(client)
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals[0]["committed"] + finals[0]["tail"] == "Befund unauffällig."
     assert finals[-1].get("last") is True

@@ -79,6 +79,14 @@ def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     return stop_and_drain(ws, limit)
 
 
+def dictate_session(client, raw_key=None, **extra) -> list[dict]:
+    """One whole session: the handshake (must answer ready), ``speak_and_stop``;
+    returns the frames."""
+    with stream_ws(client, raw_key) as ws:
+        assert handshake(ws, **extra)["type"] == "ready"
+        return speak_and_stop(ws)[0]
+
+
 class AlwaysSpeech:
     """VAD stuck on: background noise (room mic, HVAC, music) whose flicker keeps
     resetting commit_silence_ms, so the utterance never ends on its own."""
