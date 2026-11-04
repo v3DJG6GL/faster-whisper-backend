@@ -18,7 +18,7 @@ from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media import subtitle_mux as pk
 from tests.conftest import bearer, write_bytes
-from tests.media.test_routes_url import _video_ids
+from tests.media.test_routes_url import _assert_refused, _video_ids
 from tests.media.test_subtitle_mux import TESTSRC_1S, run_ffmpeg
 
 _ID = "a" * 32
@@ -142,8 +142,7 @@ def test_upload_over_the_retention_cap_is_an_early_413_naming_it(
     monkeypatch.setattr(package_enabled.cfg, "RETAINED_MEDIA_MAX_BYTES", 1000,
                         raising=False)
     r = _upload(client, data=b"x" * 5000)
-    assert r.status_code == 413
-    assert "RETAINED_MEDIA_MAX_BYTES" in r.json()["detail"]
+    _assert_refused(r, 413, "RETAINED_MEDIA_MAX_BYTES")
 
     def _gen():
         for _ in range(5):
@@ -161,8 +160,7 @@ def test_upload_without_disk_space_is_507_and_leaves_no_file(
         return real(path)._replace(free=1024)
     monkeypatch.setattr(media_routes.shutil, "disk_usage", _full)
     r = _upload(client)
-    assert r.status_code == 507
-    assert "disk space" in r.json()["detail"]
+    _assert_refused(r, 507, "disk space")
     assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
 
 
@@ -204,8 +202,7 @@ def test_upload_rate_limited(client, package_enabled, monkeypatch):
     monkeypatch.setattr(package_enabled.cfg, "MEDIA_UPLOAD_RATE_PER_MIN", 1, raising=False)
     assert _upload(client).status_code == 200
     r = _upload(client)
-    assert r.status_code == 429
-    assert "upload" in r.json()["detail"]
+    _assert_refused(r, 429, "upload")
 
 
 def test_upload_is_exempt_from_the_request_body_cap(client, package_enabled, monkeypatch):
@@ -462,8 +459,7 @@ def test_package_lone_surrogates_are_422_or_stripped_never_500(
     mid = _upload(client).json()["media_id"]
     r = _post({"container": "mkv", "subtitles": [
         {"lang": "en", "srt": "1\n00:00:00,000 --> 00:00:01,000\n\ud800\n"}]})
-    assert r.status_code == 422
-    assert "not SRT" in r.json()["detail"]
+    _assert_refused(r, 422, "not SRT")
     seen = {}
 
     def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
@@ -486,8 +482,7 @@ def test_package_srt_over_the_size_cap_422(client, package_enabled):
     mid = _upload(client).json()["media_id"]
     big = "1\n00:00:00,000 --> 00:00:01,000\n" + "x" * (pk.MAX_SRT_BYTES + 1)
     r = _package(client, mid, {"container": "mkv", "subtitles": [{"lang": "en", "srt": big}]})
-    assert r.status_code == 422
-    assert "larger" in r.json()["detail"]
+    _assert_refused(r, 422, "larger")
 
 
 def test_package_unknown_id_404_and_disabled_403_and_no_ffmpeg_503(
@@ -613,8 +608,7 @@ def test_retain_media_with_a_text_response_is_422(client, package_enabled):
     # A text body has no field for the media id: refused up front, before
     # the spool (and its hardlinked copy) is written.
     r = _transcribe_mp4(client, response_format="text", retain_media="true")
-    assert r.status_code == 422
-    assert "retain_media" in r.json()["detail"]
+    _assert_refused(r, 422, "retain_media")
     assert not _recent_spools()
     assert not _video_ids()
 

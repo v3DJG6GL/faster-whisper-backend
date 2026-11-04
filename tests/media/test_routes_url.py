@@ -67,6 +67,11 @@ def _poll(fetch, done=bool, tries=300):
     return value
 
 
+def _assert_refused(r, status, needle):
+    assert r.status_code == status, r.text
+    assert needle in r.json()["detail"]
+
+
 def _probe_raises(monkeypatch, exc):
     async def _probe(url, *, timeout):
         raise exc
@@ -124,8 +129,7 @@ def test_lifespan_reset_is_temp_rooted(client, app_module, tmp_path):
 
 def test_source_url_403_when_disabled(client):
     r = _post_url(client)
-    assert r.status_code == 403
-    assert "not enabled" in r.json()["detail"]
+    _assert_refused(r, 403, "not enabled")
 
 
 def test_media_403_when_disabled(client, app_module, monkeypatch):
@@ -157,8 +161,7 @@ def test_me_reports_disabled(client):
 def test_both_file_and_url_is_422(client, url_enabled):
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1", "source_url": _URL})
-    assert r.status_code == 422
-    assert "not both" in r.json()["detail"]
+    _assert_refused(r, 422, "not both")
 
 
 def test_neither_file_nor_url_is_422(client):
@@ -317,16 +320,14 @@ def test_preview_lists_tracks_never_their_urls(client, url_enabled, monkeypatch)
 def test_preview_policy_reject_400(client, url_enabled, monkeypatch):
     _probe_raises(monkeypatch, UrlDownloadError("live streams aren't supported"))
     r = client.post("/v1/audio/url-preview", json={"url": _URL})
-    assert r.status_code == 400
-    assert "live" in r.json()["detail"]
+    _assert_refused(r, 400, "live")
 
 
 def test_preview_and_source_url_with_an_unencodable_host_are_400(client, url_enabled):
     # `a..com`: getaddrinfo raises UnicodeError, which must map to the 400 too.
     bad = "https://a..com/x.mp3"
     r = client.post("/v1/audio/url-preview", json={"url": bad})
-    assert r.status_code == 400, r.text
-    assert "host name is invalid" in r.json()["detail"]
+    _assert_refused(r, 400, "host name is invalid")
     assert _post_url(client, source_url=bad).status_code == 400
 
 
@@ -587,8 +588,7 @@ def test_keep_video_without_progress_id_is_rejected(client, video_enabled):
     # The fetch outlives the response and reports through the progress entry
     # alone: without an id its media id would be unreachable by anyone.
     r = _post_url(client, keep_video="true")
-    assert r.status_code == 422
-    assert "progress_id" in r.json()["detail"]
+    _assert_refused(r, 422, "progress_id")
     assert video_enabled._video_calls == []
     assert not _video_ids()
 
@@ -596,15 +596,13 @@ def test_keep_video_without_progress_id_is_rejected(client, video_enabled):
 def test_keep_video_with_an_upload_is_422(client, video_enabled):
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1", "keep_video": "true"})
-    assert r.status_code == 422
-    assert "link" in r.json()["detail"]
+    _assert_refused(r, 422, "link")
 
 
 def test_keep_video_403_when_video_disabled(client, url_enabled, monkeypatch):
     monkeypatch.setattr(url_enabled.cfg, "URL_VIDEO_ENABLED", False, raising=False)
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 403
-    assert "video" in r.json()["detail"]
+    _assert_refused(r, 403, "video")
 
 
 def test_keep_video_rate_limited(client, video_enabled, monkeypatch):
@@ -612,8 +610,7 @@ def test_keep_video_rate_limited(client, video_enabled, monkeypatch):
     assert _post_url(client, keep_video="true",
                      progress_id=_PID).status_code == 200
     r = _post_url(client, keep_video="true", progress_id="cafe" * 8)
-    assert r.status_code == 429
-    assert "video" in r.json()["detail"]
+    _assert_refused(r, 429, "video")
 
 
 def test_keep_video_no_video_track_is_a_soft_error(client, url_enabled, monkeypatch):
@@ -671,12 +668,10 @@ def test_on_demand_video_falls_back_to_the_best_rung_under_the_size_cap(
     assert video_enabled._video_calls[-1]["max_height"] == 720
     r = client.post("/v1/audio/url-media/video",
                     json={"url": _URL, "format_id": "137+140"})
-    assert r.status_code == 400
-    assert "size limit" in r.json()["detail"]
+    _assert_refused(r, 400, "size limit")
     ladder[1]["over_cap"] = True
     r = client.post("/v1/audio/url-media/video", json={"url": _URL})
-    assert r.status_code == 400
-    assert "size limit" in r.json()["detail"]
+    _assert_refused(r, 400, "size limit")
 
 @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
 def test_clamp_video_height_non_finite_is_best(value):
@@ -776,8 +771,7 @@ def test_on_demand_audio_leaves_no_staging_job(client, url_enabled, monkeypatch)
 def test_on_demand_video_over_cap_is_400(client, video_enabled, monkeypatch):
     _stub_probe(monkeypatch, video_ladder=[dict(r, over_cap=True) for r in _LADDER])
     r = client.post("/v1/audio/url-media/video", json={"url": _URL})
-    assert r.status_code == 400
-    assert "size limit" in r.json()["detail"]
+    _assert_refused(r, 400, "size limit")
 
 
 def test_me_reports_video_caps(client, url_enabled, monkeypatch):
