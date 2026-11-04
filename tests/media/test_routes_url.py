@@ -72,6 +72,11 @@ def _assert_refused(r, status, needle):
     assert needle in r.json()["detail"]
 
 
+def _ok_body(r):
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def _probe_raises(monkeypatch, exc):
     async def _probe(url, *, timeout):
         raise exc
@@ -181,8 +186,7 @@ def test_file_upload_regression_unchanged(client, url_enabled):
 
 def test_url_verbose_json_carries_media_id(client, url_enabled):
     r = _post_url(client)
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert body["text"] == "hallo welt"
     mid = body["source_media_id"]
     assert isinstance(mid, str) and len(mid) == 32
@@ -201,8 +205,7 @@ def test_url_verbose_json_carries_media_id(client, url_enabled):
 
 def test_url_plain_json_carries_media_id(client, url_enabled):
     r = _post_url(client, response_format="json")
-    assert r.status_code == 200
-    body = r.json()
+    body = _ok_body(r)
     assert body["text"] == "hallo welt"
     assert len(body["source_media_id"]) == 32
 
@@ -291,8 +294,7 @@ def test_translations_twin_accepts_source_url(client, url_enabled):
 
 def test_preview_happy_path(client, url_enabled):
     r = client.post("/v1/audio/url-preview", json={"url": _URL})
-    assert r.status_code == 200
-    body = r.json()
+    body = _ok_body(r)
     assert body == {
         "title": "A talk", "duration": 90.0, "uploader": "chan",
         "extractor": "Youtube", "estimated_bytes": 4096, "thumbnail": None,
@@ -444,8 +446,7 @@ def test_keep_video_response_carries_video_id_when_the_task_finishes(
         client, video_enabled):
     r = _post_url(client, keep_video="true", video_max_height="720",
                   progress_id=_PID)
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     vid = body.get("source_video_media_id")
     # The stub finishes instantly, but the task still runs on the loop: the
     # response either carries the id or says pending — never an error.
@@ -641,8 +642,7 @@ def test_keep_video_falls_back_to_the_best_rung_under_the_size_cap(
 def test_on_demand_video_route(client, video_enabled):
     r = client.post("/v1/audio/url-media/video",
                     json={"url": _URL, "max_height": 720, "progress_id": _PID})
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert len(body["media_id"]) == 32
     assert body["height"] == 720 and body["container"] == "mp4"
     assert body["expires_at"] > 0 and body["bytes"] == len(b"video-bytes" * 8)
@@ -721,8 +721,7 @@ def test_video_ratio_is_learned_against_the_unscaled_estimate(
 
 def test_on_demand_audio_route(client, url_enabled):
     r = client.post("/v1/audio/url-media/audio", json={"url": _URL, "progress_id": _PID})
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert len(body["media_id"]) == 32 and body["ext"] == "m4a"
     assert body["bytes"] == len(b"m4a-bytes" * 8) and body["expires_at"] > 0
     entry = url_media_store.resolve_entry(body["media_id"], user_id=None)
@@ -836,8 +835,7 @@ def test_subtitles_422_on_bad_ids(client, subs_enabled, tracks):
 def test_subtitles_happy_path_never_leaks_the_source(client, subs_enabled, caplog):
     r = client.post("/v1/audio/url-subtitles",
                     json={"url": _URL, "tracks": ["m-de", "m-de", "a-fr"]})
-    assert r.status_code == 200
-    body = r.json()
+    body = _ok_body(r)
     assert [(t["id"], t["lang"], t["kind"], t["ext"]) for t in body["tracks"]] == [
         ("m-de", "de", "manual", "vtt")]
     assert body["tracks"][0]["text"].startswith("WEBVTT")
@@ -931,8 +929,7 @@ def test_language_check_votes_and_keeps_the_audio(client, url_enabled, lang_chec
     lang_check.heard = [("de", 0.9), ("de", 0.8), ("en", 0.88)]
     r = client.post("/v1/audio/url-language",
                     json={"url": _URL, "model": "whisper-1", "progress_id": _PID})
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert (body["language"], body["verdict"], body["also"]) == ("de", "mixed", ["en"])
     assert [p["at"] for p in body["pieces"]] == [18.0, 45.0, 70.0]   # 90 s media
     assert [p["language"] for p in body["pieces"]] == ["de", "de", "en"]
@@ -1023,8 +1020,7 @@ def hls_link(url_enabled, lang_check, fake_capped_get, monkeypatch):
 def test_language_check_samples_only_the_segments(client, hls_link, caplog):
     caplog.set_level("INFO", logger="whisper-api")
     r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert [p["at"] for p in body["pieces"]] == [12.0, 30.0, 40.0]
     assert hls_link.heard == [20 * 16000] * 3            # three full 20 s pieces
     # No whole file: nothing retained for the run to reuse.
@@ -1140,8 +1136,7 @@ def test_media_id_dropped_during_the_run_is_not_advertised(
         return real(path, **kw)
     monkeypatch.setattr(fake_model, "transcribe", _evict_then_decode)
     r = _post_url(client, response_format=fmt)
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert "source_media_id" not in body
     assert "source_media_expires_at" not in body
     assert any(w.startswith("source_media:") for w in body["warnings"])
@@ -1167,8 +1162,7 @@ def test_video_id_dropped_during_the_run_is_not_advertised(
     monkeypatch.setattr(fake_model, "transcribe", _evict_video_then_decode)
     r = _post_url(client, keep_video="true", progress_id=_PID,
                   response_format=fmt)
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert "source_video_media_id" not in body
     assert "source_video_expires_at" not in body
     assert body["source_video_error"].startswith("the downloaded video left")

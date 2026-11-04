@@ -18,7 +18,7 @@ from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media import subtitle_mux as pk
 from tests.conftest import bearer, write_bytes
-from tests.media.test_routes_url import _assert_refused, _video_ids
+from tests.media.test_routes_url import _assert_refused, _ok_body, _video_ids
 from tests.media.test_subtitle_mux import TESTSRC_1S, run_ffmpeg
 
 _ID = "a" * 32
@@ -101,8 +101,7 @@ def _tracks():
 
 def test_upload_streams_to_the_store_and_is_fetchable(client, package_enabled):
     r = _upload(client)
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _ok_body(r)
     assert len(body["media_id"]) == 32 and body["bytes"] == len(b"video-bytes" * 16)
     assert body["expires_at"] > 0
     e = ums.resolve_entry(body["media_id"], user_id=None)
