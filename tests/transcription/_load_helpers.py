@@ -9,6 +9,7 @@ a contended one needs its own lock.
 """
 
 import sys
+import time
 import types
 
 from faster_whisper_backend.runtime import model_registry
@@ -44,6 +45,13 @@ def register_fake_model(name, leases=0):
     model_registry.register_loaded_model(name, 0, "cpu", "int8")
     if leases:
         tx_models._model_leases[name] = leases
+
+
+def register_stale_model(name, leases=0, idle_s=3600):
+    """register_fake_model, last used `idle_s` seconds ago."""
+    register_fake_model(name, leases)
+    model_registry._loaded_models[name]["last_used_monotonic"] = (
+        time.monotonic() - idle_s)
 
 
 def stub_hub_snapshot(monkeypatch, snapshot):

@@ -17,6 +17,7 @@ from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_fake_model as _register
+from tests.transcription._load_helpers import register_stale_model as _register_stale
 from tests.transcription._load_helpers import stub_hub_snapshot as _stub_hub
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 from tests._transcription_helpers import post_transcription as _post
@@ -371,10 +372,8 @@ def test_rejected_names_take_no_lease(monkeypatch):
 
 
 def test_release_restamps_last_used():
-    _register("a", leases=1)
-    info = model_registry._loaded_models["a"]
-    info["last_used_monotonic"] = time.monotonic() - 500
-    stale = info["last_used_monotonic"]
+    _register_stale("a", leases=1, idle_s=500)
+    stale = model_registry._loaded_models["a"]["last_used_monotonic"]
 
     tx_models._release_model_lease("a", tx_models._loaded_models["a"])
 
@@ -611,9 +610,7 @@ def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
 
 
 def test_idle_evictor_defers_then_evicts(monkeypatch):
-    _register("a", leases=1)
-    model_registry._loaded_models["a"]["last_used_monotonic"] = \
-        time.monotonic() - 500
+    _register_stale("a", leases=1, idle_s=500)
     monkeypatch.setattr(tx_models.cfg, "MODEL_IDLE_TIMEOUT_S", 1, raising=False)
 
     ticks = {"n": 0}

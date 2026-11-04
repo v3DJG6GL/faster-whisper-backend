@@ -8,7 +8,6 @@ the evictor must only claim an unload that actually happened.
 import asyncio
 import logging
 import sys
-import time
 import types
 
 import pytest
@@ -17,7 +16,7 @@ from faster_whisper_backend.runtime import model_registry
 from tests._transcription_helpers import blocked_register
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
-from tests.transcription._load_helpers import register_fake_model as _register
+from tests.transcription._load_helpers import register_stale_model as _register_stale
 from tests.transcription._load_helpers import stub_hub_snapshot as _stub_hub
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
@@ -335,12 +334,6 @@ def _run_one_evictor_tick(monkeypatch):
     monkeypatch.setattr(tx_models.cfg, "MODEL_IDLE_TIMEOUT_S", 1, raising=False)
     asyncio.run(tx_models._idle_evictor())
     return collected
-
-
-def _register_stale(name, leases=0):
-    _register(name, leases)
-    model_registry._loaded_models[name]["last_used_monotonic"] = (
-        time.monotonic() - 3600)
 
 
 def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
