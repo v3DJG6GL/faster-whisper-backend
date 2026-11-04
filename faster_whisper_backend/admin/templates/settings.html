@@ -830,9 +830,7 @@ async function api(method, path, body) {
   // Auth rides the HttpOnly session cookie (sent automatically). Mutations
   // also carry the double-submit CSRF token.
   const opts = { method, headers: {} };
-  if (method !== 'GET' && method !== 'HEAD') {
-    opts.headers['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
-  }
+  window._csrfStamp(method, opts.headers);
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);

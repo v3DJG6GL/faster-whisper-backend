@@ -481,9 +481,7 @@ let _saving = false;
 async function api(method, path, body) {
   // Session cookie sent automatically; mutations carry the CSRF token.
   const h = { 'Accept': 'application/json' };
-  if (method !== 'GET' && method !== 'HEAD') {
-    h['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
-  }
+  window._csrfStamp(method, h);
   const opts = { method, headers: h };
   if (body !== undefined) {
     h['Content-Type'] = 'application/json';

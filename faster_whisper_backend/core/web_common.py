@@ -187,6 +187,10 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #   8. window._segSelect(grp, btn), the click step of a .status-btn radio group:
 #      moves .active and aria-checked to `btn`; true when the selection changed,
 #      so the caller fires its callback only then.
+#   9. window._csrfStamp(method, h), adds the double-submit CSRF header to the
+#      headers object `h` on a mutation (not GET/HEAD). The token is looked up
+#      at call time; quick_config and settings define their api() before the
+#      chrome scripts, hence this home.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -216,6 +220,8 @@ SCALE_BOOTSTRAP_HEAD = (
     "grp.querySelectorAll('.status-btn').forEach(function(x){"
     "x.classList.remove('active');x.setAttribute('aria-checked','false');});"
     "btn.classList.add('active');btn.setAttribute('aria-checked','true');return true;};"
+    "window._csrfStamp=function(method,h){if(method!=='GET'&&method!=='HEAD')"
+    "h['X-CSRF-Token']=window._csrfToken?window._csrfToken():'';};"
     "(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"

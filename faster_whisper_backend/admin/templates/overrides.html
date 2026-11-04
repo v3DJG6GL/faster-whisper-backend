@@ -376,9 +376,7 @@ window._renderWaterfall = (function () {
 
   async function api(method, path, body) {
     var h = { Accept: 'application/json' };
-    if (method !== 'GET' && method !== 'HEAD') {
-      h['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
-    }
+    window._csrfStamp(method, h);
     var opts = { method: method, headers: h };
     if (body !== undefined) { h['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     return fetch(path, opts);

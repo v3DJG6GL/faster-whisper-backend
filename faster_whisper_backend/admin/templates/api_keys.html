@@ -498,9 +498,7 @@
     // The HttpOnly session cookie is sent automatically; mutations also
     // carry the double-submit CSRF token.
     var h = { Accept: 'application/json' };
-    if (method !== 'GET' && method !== 'HEAD') {
-      h['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
-    }
+    window._csrfStamp(method, h);
     var opts = { method: method, headers: h };
     if (body !== undefined) {
       h['Content-Type'] = 'application/json';

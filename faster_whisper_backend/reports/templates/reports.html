@@ -270,9 +270,7 @@
   async function api(method, url, body) {
     // Session cookie sent automatically; mutations carry the CSRF token.
     var headers = { 'Content-Type': 'application/json' };
-    if (method !== 'GET' && method !== 'HEAD') {
-      headers['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
-    }
+    window._csrfStamp(method, headers);
     var resp = await fetch(url, {
       method: method,
       headers: headers,
