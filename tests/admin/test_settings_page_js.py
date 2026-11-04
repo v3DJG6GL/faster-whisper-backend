@@ -117,7 +117,7 @@ def _captures_harness(html, body, real_list=False):
     `real_list` runs the page's own makeRuleListEditor on the fake DOM."""
     branch = _block(html, "  if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {")
     if real_list:
-        rle = _fns(html, "makeRuleListEditor", "_helpDiv", "_el", "_button", "_switch")
+        rle = _fns(html, "makeRuleListEditor", "_helpDiv", "_el", "_button", "_option", "_switch")
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
 function _lsGet() { return null; }
@@ -577,7 +577,7 @@ def test_pipeline_test_panel_sends_the_sample_language(client):
     html = _html(client, "/settings/pipeline")
     src = (_fns(html, "pipelineTestPanel")
            + _block(html, "async function _testOneRule(rule) {", "\n}\n")
-           + _fns(html, "_helpDiv", "_el", "_button"))
+           + _fns(html, "_helpDiv", "_el", "_button", "_option"))
     out = _node(_FAKE_DOM + """
 const TEST_PRESETS = { 'default': 'Hallo' };
 const WHISPER_LANGS = [{ code: 'de', name: 'German' }, { code: 'en', name: 'English' }];
@@ -797,7 +797,7 @@ def test_prompt_lab_empty_glossary_box_uses_the_glossary_setting(client):
     preview and the test run left out the TRANSLATION_GLOSSARY every real
     request inherits; a glossary edit on the page did not re-render either."""
     html = _html(client)
-    ed = _fns(html, "translationTemplateEditor", "_helpDiv", "_el", "_button")
+    ed = _fns(html, "translationTemplateEditor", "_helpDiv", "_el", "_button", "_option")
     out = _node(_FAKE_DOM + """
 const state = { TRANSLATION_PROMPT_FAMILY: 'hunyuan',
                 TRANSLATION_GLOSSARY: 'Niere = kidney',

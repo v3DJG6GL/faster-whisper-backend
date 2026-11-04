@@ -1087,6 +1087,13 @@ function _button(className, text, title) {
   return b;
 }
 
+function _option(value, text) {
+  const o = document.createElement('option');
+  o.value = value;
+  o.textContent = text;
+  return o;
+}
+
 function _switch(checked) {
   const cb = document.createElement('input');
   cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
@@ -1542,14 +1549,10 @@ function modelOverridesEditor(name, v) {
     const free = allowed.filter(m => !overrides[m]);
     if (free.length > 0) {
       const sel = document.createElement('select');
-      const ph = document.createElement('option');
-      ph.value = ''; ph.textContent = '+ add model override...';
+      const ph = _option('', '+ add model override...');
       ph.selected = true; ph.disabled = true;
       sel.appendChild(ph);
-      for (const m of free) {
-        const o = document.createElement('option'); o.value = m; o.textContent = m;
-        sel.appendChild(o);
-      }
+      for (const m of free) sel.appendChild(_option(m, m));
       sel.addEventListener('change', () => {
         if (!sel.value) return;
         overrides[sel.value] = {};
@@ -1736,8 +1739,7 @@ function modelOverridesEditor(name, v) {
       const sel = document.createElement('select');
       const opts = (fieldDef(field) && fieldDef(field).choices) || meta.opts || [];
       for (const o of opts) {
-        const opt = document.createElement('option');
-        opt.value = o; opt.textContent = o;
+        const opt = _option(o, o);
         if (o === currentVal) opt.selected = true;
         sel.appendChild(opt);
       }
@@ -1907,24 +1909,19 @@ function modelDropdownEditor(name, v, lists) {
     const sel = document.createElement('select');
     let curInList = false;
     if (!cur) {
-      const ph = document.createElement('option');
-      ph.value = ''; ph.textContent = '— select a model —';
+      const ph = _option('', '— select a model —');
       ph.selected = true; ph.disabled = true;
       sel.appendChild(ph);
     }
     for (const m of allowed) {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = preload.has(m) ? (m + '  (preloaded)') : m;
+      const opt = _option(m, preload.has(m) ? (m + '  (preloaded)') : m);
       if (m === cur) { opt.selected = true; curInList = true; }
       sel.appendChild(opt);
     }
     if (cur && !curInList) {
-      const opt = document.createElement('option');
-      opt.value = cur;
-      opt.textContent = lists.defaultAdmitted
+      const opt = _option(cur, lists.defaultAdmitted
         ? cur + '  (not in ' + lists.allowed + ' — admitted as the configured default)'
-        : cur + '  (NOT in ' + lists.allowed + ' — request will fail)';
+        : cur + '  (NOT in ' + lists.allowed + ' — request will fail)');
       opt.selected = true;
       sel.insertBefore(opt, sel.firstChild);
     }
@@ -2038,16 +2035,9 @@ function translationTemplateEditor(name, v) {
     });
     const prev = modelSel.value;
     modelSel.textContent = '';
-    if (!opts.length) {
-      const o = document.createElement('option');
-      o.value = ''; o.textContent = '(no model configured)';
-      modelSel.appendChild(o);
-    }
+    if (!opts.length) modelSel.appendChild(_option('', '(no model configured)'));
     opts.forEach((r, idx) => {
-      const o = document.createElement('option');
-      o.value = r;
-      o.textContent = r + (idx === 0 && r === def ? '  (default)' : '');
-      modelSel.appendChild(o);
+      modelSel.appendChild(_option(r, r + (idx === 0 && r === def ? '  (default)' : '')));
     });
     if (prev && opts.includes(prev)) modelSel.value = prev;
   }
@@ -3641,9 +3631,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     const typeSel = document.createElement('select');
     _PIPELINE_TYPES.filter(t => t.type !== 'terminal').forEach(t => {
-      const o = document.createElement('option');
-      o.value = t.type; o.textContent = t.type + '  (' + t.pill + ')';
-      typeSel.appendChild(o);
+      typeSel.appendChild(_option(t.type, t.type + '  (' + t.pill + ')'));
     });
     const labelInp = document.createElement('input');
     labelInp.type = 'text';
@@ -4475,11 +4463,7 @@ function pipelineTestPanel() {
   const presetWrap = _el('div', 'preset-select');
   presetWrap.innerHTML = '<span class="help" style="margin-right:0.375rem">preset:</span>';
   const sel = document.createElement('select');
-  for (const k of Object.keys(TEST_PRESETS)) {
-    const o = document.createElement('option');
-    o.value = k; o.textContent = k;
-    sel.appendChild(o);
-  }
+  for (const k of Object.keys(TEST_PRESETS)) sel.appendChild(_option(k, k));
   presetWrap.appendChild(sel);
   // The sample's language: the engine skips a rule whose `languages` leave
   // out the detected language, so the dry run must know it too. Defaults to
@@ -4491,14 +4475,8 @@ function pipelineTestPanel() {
   const langSel = document.createElement('select');
   langSel.id = 'pipeline-test-language';
   langSel.setAttribute('aria-label', 'test sample language');
-  const anyOpt = document.createElement('option');
-  anyOpt.value = ''; anyOpt.textContent = 'any / unknown';
-  langSel.appendChild(anyOpt);
-  for (const l of WHISPER_LANGS) {
-    const o = document.createElement('option');
-    o.value = l.code; o.textContent = l.code + ' — ' + l.name;
-    langSel.appendChild(o);
-  }
+  langSel.appendChild(_option('', 'any / unknown'));
+  for (const l of WHISPER_LANGS) langSel.appendChild(_option(l.code, l.code + ' — ' + l.name));
   const defLang = state.fields.DEFAULT_LANGUAGE
     ? (currentValue('DEFAULT_LANGUAGE') || '') : '';
   if (WHISPER_LANGS.some(l => l.code === defLang)) langSel.value = defLang;
@@ -4720,8 +4698,7 @@ function boolEditor(name, v) {
 function selectEditor(name, v, opts) {
   const s = document.createElement('select');
   for (const o of opts) {
-    const opt = document.createElement('option');
-    opt.value = o; opt.textContent = o;
+    const opt = _option(o, o);
     if (o === v) opt.selected = true;
     s.appendChild(opt);
   }
