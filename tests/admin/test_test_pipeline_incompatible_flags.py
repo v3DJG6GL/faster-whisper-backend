@@ -3,6 +3,8 @@ re.compile raises a plain ValueError (not re.error) for `(?a)(?u)`, so the dry
 run must catch it itself: a step error on a callback rule, a skipped entry in
 a regex list whose valid siblings still apply."""
 
+from tests.admin._pipeline_helpers import list_step
+
 _BAD_FLAGS = "(?a)(?u)bar"
 
 
@@ -19,15 +21,8 @@ def test_test_pipeline_incompatible_flags_is_a_step_error(client):
 
 
 def test_test_pipeline_regex_list_skips_incompatible_flags_entry(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "foo bar",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "foo", "replacement": "FOO"},
-            {"pattern": _BAD_FLAGS, "replacement": "x"},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = list_step(client, [{"pattern": "foo", "replacement": "FOO"},
+                              {"pattern": _BAD_FLAGS, "replacement": "x"}], sample="foo bar")
     assert step["after"] == "FOO bar"
     assert step["matches"] == 1
     assert "incompatible" in (step["error"] or "")

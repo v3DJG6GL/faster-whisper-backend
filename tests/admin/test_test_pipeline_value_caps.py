@@ -7,6 +7,7 @@ from typing import get_args
 from faster_whisper_backend.admin import routes as admin_routes
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import schema as settings_schema
+from tests.admin._pipeline_helpers import list_step
 
 
 def test_caps_are_read_off_the_schema():
@@ -39,14 +40,8 @@ def test_oversized_map_value_is_rejected(client):
 
 
 def test_replacement_at_the_cap_still_runs(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "foo",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "foo", "replacement": "y" * 512},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    assert r.json()["steps"][0]["after"] == "y" * 512
+    step = list_step(client, [{"pattern": "foo", "replacement": "y" * 512}], sample="foo")
+    assert step["after"] == "y" * 512
 
 
 def test_chained_entries_stop_before_passing_the_output_bound(client, monkeypatch):
@@ -70,15 +65,9 @@ def test_chained_entries_stop_before_passing_the_output_bound(client, monkeypatc
 def test_backref_template_counts_its_expansion_against_the_bound(client, monkeypatch):
     # A 510-char template of `\g<0>` copies the whole match 102 times.
     monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "a" * 8000,
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "(?s).+", "replacement": "\\g<0>" * 4},
-            {"pattern": "(?s).+", "replacement": "\\g<0>" * 102},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = list_step(client, [{"pattern": "(?s).+", "replacement": "\\g<0>" * 4},
+                              {"pattern": "(?s).+", "replacement": "\\g<0>" * 102}],
+                     sample="a" * 8000)
     assert step["capped"] is True
     assert step["after"] == "a" * 32000
 
@@ -139,14 +128,8 @@ def test_oversized_regex_list_pattern_is_rejected(client):
 
 
 def test_pattern_at_the_cap_still_runs(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "a" * 512,
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "a" * 512, "replacement": "b"},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    assert r.json()["steps"][0]["after"] == "b"
+    step = list_step(client, [{"pattern": "a" * 512, "replacement": "b"}], sample="a" * 512)
+    assert step["after"] == "b"
 
 
 def _no_screen(monkeypatch):
@@ -175,13 +158,6 @@ def test_non_string_callback_pattern_is_refused_before_the_screens(client, monke
 
 def test_non_string_regex_list_pattern_is_skipped_before_the_screens(client, monkeypatch):
     _no_screen(monkeypatch)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "w000001",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": _LIST_PATTERN, "replacement": "x"},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = list_step(client, [{"pattern": _LIST_PATTERN, "replacement": "x"}], sample="w000001")
     assert step["error"] == "pattern must be a string"
     assert step["after"] == "w000001"

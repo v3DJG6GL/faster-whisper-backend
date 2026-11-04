@@ -12,6 +12,7 @@ from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto
+from tests.admin._pipeline_helpers import list_step
 from tests.conftest import _repoint_path_default, bearer
 
 
@@ -670,20 +671,9 @@ def test_test_pipeline_fixed_count_nest_screened_not_run(client):
 def test_test_pipeline_regex_list_screen_message_beats_compile_error(client):
     """A regex-list step whose screened entry follows a bad-compile entry still
     explains why it is not_run, and keeps the valid entries' real output."""
-    r = client.post(
-        "/settings/test-pipeline",
-        json={
-            "sample": "abc",
-            "rules": [
-                {"name": "mixed", "type": "regex-list", "enabled": True,
-                 "entries": [{"pattern": "(", "replacement": ""},
-                             {"pattern": r"(\w+ )+$", "replacement": ""},
-                             {"pattern": "b", "replacement": "B"}]},
-            ],
-        },
-    )
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = list_step(client, [{"pattern": "(", "replacement": ""},
+                              {"pattern": r"(\w+ )+$", "replacement": ""},
+                              {"pattern": "b", "replacement": "B"}], sample="abc")
     assert step.get("not_run") is True
     assert "nested repetition" in (step["error"] or "")
     assert step["after"] == "aBc" and step["matches"] == 1

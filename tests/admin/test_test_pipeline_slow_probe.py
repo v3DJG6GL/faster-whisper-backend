@@ -11,6 +11,7 @@ import time
 import pytest
 
 from faster_whisper_backend.admin import routes as admin_routes
+from tests.admin._pipeline_helpers import list_step
 
 # Every probe round starts a `python -I` child inside its timeout. Sixty walks
 # against the 0.2 s rounds these tests need outlast it on a loaded Windows
@@ -24,20 +25,10 @@ _SIXTY_WALKS_OUTRUN_WINDOWS_STARTS = pytest.mark.skipif(
 _EMPTY_BACKTRACK = "(?:|){22}(?!)"
 
 
-def _list_step(client, entries):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "aaaa",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True,
-                   "entries": entries}],
-    })
-    assert r.status_code == 200, r.text
-    return r.json()["steps"][0]
-
-
 def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    step = _list_step(client, [{"pattern": "a", "replacement": "b"},
-                               {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
+    step = list_step(client, [{"pattern": "a", "replacement": "b"},
+                              {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
     assert step["not_run"] is True
     assert "killable probe" in step["error"]
     assert step["after"] == "bbbb"
@@ -85,16 +76,9 @@ def test_callback_pattern_slow_only_on_an_earlier_rules_output_is_not_run(client
 
 def test_regex_list_entry_slow_only_on_an_earlier_entrys_output_is_not_run(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "x",
-        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-            {"pattern": "x", "replacement": "a" * 100},
-            {"pattern": _GROWN_BACKTRACK, "replacement": "z"},
-            {"pattern": "a{100}", "replacement": "done"},
-        ]}],
-    })
-    assert r.status_code == 200, r.text
-    step = r.json()["steps"][0]
+    step = list_step(client, [{"pattern": "x", "replacement": "a" * 100},
+                              {"pattern": _GROWN_BACKTRACK, "replacement": "z"},
+                              {"pattern": "a{100}", "replacement": "done"}], sample="x")
     assert step.get("not_run") is True
     assert "killable probe" in step["error"]
     # The entries around the culprit still apply, in order.
@@ -475,8 +459,8 @@ def test_an_unprobed_entry_after_a_slow_one_does_not_hide_the_slow_verdict(clien
     # its "may be harmless" reason must not replace the card's slow verdict.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
-    step = _list_step(client, [{"pattern": _EMPTY_BACKTRACK, "replacement": "x"},
-                               {"pattern": "a", "replacement": "b"}])
+    step = list_step(client, [{"pattern": _EMPTY_BACKTRACK, "replacement": "x"},
+                              {"pattern": "a", "replacement": "b"}])
     assert step["not_run"] is True
     assert "killable probe" in step["error"] and "may be harmless" not in step["error"]
 
@@ -486,8 +470,8 @@ def test_an_unprobed_entry_after_a_screened_one_does_not_hide_the_screen_verdict
     # entry 0 is never probed (the save-time screen catches it) and its
     # nested-repetition verdict must stay the card's error.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_WALL", 0.0)
-    step = _list_step(client, [{"pattern": "(a+)+$", "replacement": "x"},
-                               {"pattern": "a", "replacement": "b"}])
+    step = list_step(client, [{"pattern": "(a+)+$", "replacement": "x"},
+                              {"pattern": "a", "replacement": "b"}])
     assert step["not_run"] is True
     assert step["error"].startswith("nested repetition")
     assert "may be harmless" not in step["error"]
@@ -500,8 +484,8 @@ def test_an_unprobed_entry_does_not_hide_an_earlier_entrys_compile_error(client,
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
     _scripted_rounds(monkeypatch, [(_mark(0), "1 0.0010\n2 0.1990\n"),
                                    (_mark(0), "1 0.0010\n2 0.3950\n")])
-    step = _list_step(client, [{"pattern": "(", "replacement": "x"},
-                               {"pattern": "a", "replacement": "b"}])
+    step = list_step(client, [{"pattern": "(", "replacement": "x"},
+                              {"pattern": "a", "replacement": "b"}])
     # The engine would give "bbbb": the card names the compile error AND says
     # the valid entry did not run here, not "0 matches" alone.
     assert (step["not_run"], step["after"]) == (True, "aaaa")
@@ -514,8 +498,8 @@ def test_a_rank_one_error_after_an_unprobed_entry_keeps_the_not_executed_caveat(
     # probed (not a string) and its rank-1 error outranks the hold — the
     # not_run step still says why.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_WALL", 0.0)
-    step = _list_step(client, [{"pattern": "a", "replacement": "b"},
-                               {"pattern": ["("], "replacement": "x"}])
+    step = list_step(client, [{"pattern": "a", "replacement": "b"},
+                              {"pattern": ["("], "replacement": "x"}])
     assert (step["not_run"], step["after"]) == (True, "aaaa")
     assert step["error"].startswith("pattern must be a string")
     assert "another entry is not executed here" in step["error"]
@@ -524,8 +508,8 @@ def test_a_rank_one_error_after_an_unprobed_entry_keeps_the_not_executed_caveat(
 def test_a_slow_entry_after_a_screened_one_does_not_hide_the_screen_verdict(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
-    step = _list_step(client, [{"pattern": "(a+)+$", "replacement": "x"},
-                               {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
+    step = list_step(client, [{"pattern": "(a+)+$", "replacement": "x"},
+                              {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
     assert step["not_run"] is True
     assert step["error"].startswith("nested repetition")
     assert "killable probe" not in step["error"]
