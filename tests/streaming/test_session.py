@@ -30,6 +30,22 @@ def _hold_trailing(word):
     return holdback
 
 
+def _counting_session(cfg):
+    """``(session, msgs, calls)``: fake decoders that tally each call in ``calls``."""
+    calls = {"partial": 0, "final": 0}
+
+    async def decode_partial(audio, prompt):
+        calls["partial"] += 1
+        return [(0.0, 0.2, " x")]
+
+    async def decode_final(audio, prompt):
+        calls["final"] += 1
+        return ("x.", [], False)
+
+    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
+    return s, msgs, calls
+
+
 def test_committed_is_append_only_and_document_equals_postprocess():
     """Across successive finalizes the committed prefix only ever grows (never
     rewrites earlier text), and committed+tail always equals the post-processed
@@ -226,16 +242,7 @@ def test_no_partial_decode_storm_during_trailing_silence():
         min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=2000,
         min_speech_ms=64, forced_commit_sec=100, rms_gate_dbfs=-60, preroll_keep_ms=100,
     )
-    calls = {"partial": 0}
-
-    async def decode_partial(audio, prompt):
-        calls["partial"] += 1
-        return [(0.0, 0.2, " x")]
-
-    async def decode_final(audio, prompt):
-        return ("x.", [], False)
-
-    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
+    s, msgs, calls = _counting_session(cfg)
 
     feed_levels(s, (8000, 300),   # 0.3 s speech
                 (0, 1000))    # 1.0 s silence (≈31 frames) → no finalize yet
@@ -246,20 +253,10 @@ def test_no_partial_decode_storm_during_trailing_silence():
 
 def test_silence_only_input_never_finalizes_or_hallucinates():
     cfg = StreamConfig(commit_silence_ms=192, min_speech_ms=64, rms_gate_dbfs=-50)
-    called = {"partial": 0, "final": 0}
-
-    async def decode_partial(audio, prompt):
-        called["partial"] += 1
-        return [(0.0, 0.2, " x")]
-
-    async def decode_final(audio, prompt):
-        called["final"] += 1
-        return ("x", [], False)
-
-    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
+    s, msgs, calls = _counting_session(cfg)
     asyncio.run(s.feed_pcm(_pcm(0, 1000)))   # 1 s of pure silence
-    assert called["partial"] == 0
-    assert called["final"] == 0
+    assert calls["partial"] == 0
+    assert calls["final"] == 0
     assert msgs == []
 
 
@@ -269,17 +266,7 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
     runs finals on silence — audio/VAD stay intact so we catch up without losing
     the utterance. Clearing the flag resumes partials."""
     cfg = fast_config()
-    calls = {"partial": 0, "final": 0}
-
-    async def decode_partial(audio, prompt):
-        calls["partial"] += 1
-        return [(0.0, 0.2, " x")]
-
-    async def decode_final(audio, prompt):
-        calls["final"] += 1
-        return ("x.", [], False)
-
-    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
+    s, msgs, calls = _counting_session(cfg)
 
     async def run():
         s._skip_partials = True
