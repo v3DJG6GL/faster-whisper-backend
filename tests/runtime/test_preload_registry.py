@@ -41,6 +41,19 @@ def _fits_raises(monkeypatch):
     monkeypatch.setattr(model_sizes, "fits", _boom)
 
 
+class _FakeQueue:
+    """A stand-in for preload._queue with no loop behind it."""
+
+    def __init__(self, depth=0):
+        self.depth = depth
+
+    def qsize(self):
+        return self.depth
+
+    def empty(self):
+        return self.depth == 0
+
+
 def _enable(monkeypatch, **over):
     from faster_whisper_backend.settings import config as cfg
     defaults = {
@@ -597,19 +610,11 @@ def test_a_full_queue_keeps_the_cursor_so_the_next_tick_retries(monkeypatch):
     preload.register_plan("u", [("separation", "UVR-A"),
                                 ("diarization", "p/x")], plan_id="2" * 8)
     plan = preload._plans["2" * 8]
-
-    class _Q:
-        def __init__(self, n):
-            self.n = n
-
-        def qsize(self):
-            return self.n
-
-    monkeypatch.setattr(preload, "_queue", _Q(preload._MAX_QUEUE))
+    monkeypatch.setattr(preload, "_queue", _FakeQueue(preload._MAX_QUEUE))
     preload.on_stage_start("2" * 8, "separating")
     assert plan.inflight == set()
     assert plan.cursor == -1
-    monkeypatch.setattr(preload, "_queue", _Q(0))
+    monkeypatch.setattr(preload, "_queue", _FakeQueue(0))
     # No loop behind the fake queue: a real _enqueue_threadsafe would drop
     # the item and (rightly) undo its inflight mark.
     enqueued = []
@@ -674,14 +679,7 @@ def test_a_dropped_enqueue_forgets_its_inflight_mark(monkeypatch):
     loading it."""
     _enable(monkeypatch)
     _fits(monkeypatch, (True, None))
-
-    class _Q:
-        def qsize(self):
-            return 0
-
-        def empty(self):
-            return True
-    monkeypatch.setattr(preload, "_queue", _Q())    # no _loop behind it
+    monkeypatch.setattr(preload, "_queue", _FakeQueue())  # no _loop behind it
     forgot = []
     real_forget = preload._forget_inflight
     monkeypatch.setattr(preload, "_forget_inflight",

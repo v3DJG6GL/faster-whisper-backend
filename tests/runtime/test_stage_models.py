@@ -17,6 +17,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose as _post
+from tests.runtime.test_preload_registry import _FakeQueue
 from tests.runtime.test_routes_preload import _enable as _routes_enable
 
 
@@ -367,14 +368,7 @@ def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
 
     enqueued = []
     monkeypatch.setattr(preload, "_enqueue_threadsafe", enqueued.append)
-
-    class _StubQueue:
-        def qsize(self):
-            return 0
-
-        def empty(self):
-            return True
-    monkeypatch.setattr(preload, "_queue", _StubQueue())
+    monkeypatch.setattr(preload, "_queue", _FakeQueue())
 
     plan = preload.register_plan("u", entries, plan_id=pid)
     enqueued.clear()          # registration's own admissions are not the test
