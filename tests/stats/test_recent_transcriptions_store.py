@@ -7,8 +7,8 @@ import time
 from faster_whisper_backend.stats import recent_transcriptions_store as rts
 
 
-def _trace(ts, request_id, **kw):
-    ts.record_trace(request_id=request_id, model="m", raw="x", final="y", **kw)
+def _trace(ts, request_id, raw="x", final="y", **kw):
+    ts.record_trace(request_id=request_id, model="m", raw=raw, final=final, **kw)
 
 
 def _timing(ts, request_id, audio_s, processing_s, status="ok", words=1, **kw):
@@ -106,8 +106,8 @@ def test_migration_adds_columns_to_old_db(tmp_path):
 
 def test_trace_then_timing_merges_one_row(tx_store):
     ts = tx_store
-    ts.record_trace(request_id="r1", model="m", raw="hallo welt", final="Hallo Welt",
-                    tokens=["Hallo", "Welt"], language="de", user_id="u")
+    _trace(ts, "r1", raw="hallo welt", final="Hallo Welt",
+           tokens=["Hallo", "Welt"], language="de", user_id="u")
     _timing(ts, "r1", 2.0, 1.0, words=2, user_id="u")
     assert ts.count() == 1
     row = ts.list_recent(limit=10)[0]
@@ -136,7 +136,7 @@ def test_falsy_request_id_skipped(tx_store):
 
 def test_trace_coalesce_preserves_user_on_timing(tx_store):
     ts = tx_store
-    ts.record_trace(request_id="r", model="m", raw="a", final="b", user_id="alice")
+    _trace(ts, "r", raw="a", final="b", user_id="alice")
     # timing with user_id None must not wipe the existing user: record_timing's
     # ON CONFLICT clause never assigns user_id.
     _timing(ts, "r", 1.0, 1.0, user_id=None)
@@ -182,12 +182,9 @@ def test_list_recent_user_filter(tx_store):
 
 def test_list_recent_query_matches_raw_or_final(tx_store):
     ts = tx_store
-    ts.record_trace(request_id="r1", model="m", raw="patient hat Fieber",
-                    final="Patient hat Fieber", created_ts=1.0)
-    ts.record_trace(request_id="r2", model="m", raw="kein treffer hier",
-                    final="Aspirin verordnet", created_ts=2.0)
-    ts.record_trace(request_id="r3", model="m", raw="nichts", final="nichts",
-                    created_ts=3.0)
+    _trace(ts, "r1", raw="patient hat Fieber", final="Patient hat Fieber", created_ts=1.0)
+    _trace(ts, "r2", raw="kein treffer hier", final="Aspirin verordnet", created_ts=2.0)
+    _trace(ts, "r3", raw="nichts", final="nichts", created_ts=3.0)
     # Matches raw of r1 and final of r2 (case-insensitive, ASCII).
     assert {r["request_id"] for r in ts.list_recent(query="fieber", limit=10)} == {"r1"}
     assert {r["request_id"] for r in ts.list_recent(query="ASPIRIN", limit=10)} == {"r2"}
@@ -196,22 +193,17 @@ def test_list_recent_query_matches_raw_or_final(tx_store):
 
 def test_list_recent_query_composes_with_user_and_cursor(tx_store):
     ts = tx_store
-    ts.record_trace(request_id="a", model="m", raw="alpha note", final="x",
-                    user_id="u1", created_ts=1.0)
-    ts.record_trace(request_id="b", model="m", raw="alpha note", final="x",
-                    user_id="u2", created_ts=2.0)
-    ts.record_trace(request_id="c", model="m", raw="alpha note", final="x",
-                    user_id="u1", created_ts=3.0)
+    _trace(ts, "a", raw="alpha note", final="x", user_id="u1", created_ts=1.0)
+    _trace(ts, "b", raw="alpha note", final="x", user_id="u2", created_ts=2.0)
+    _trace(ts, "c", raw="alpha note", final="x", user_id="u1", created_ts=3.0)
     rows = ts.list_recent(query="alpha", user_id_filter="u1", before_ts=3.0, limit=10)
     assert [r["request_id"] for r in rows] == ["a"]
 
 
 def test_list_recent_query_escapes_like_wildcards(tx_store):
     ts = tx_store
-    ts.record_trace(request_id="lit", model="m", raw="50% done", final="x",
-                    created_ts=1.0)
-    ts.record_trace(request_id="other", model="m", raw="50 percent", final="x",
-                    created_ts=2.0)
+    _trace(ts, "lit", raw="50% done", final="x", created_ts=1.0)
+    _trace(ts, "other", raw="50 percent", final="x", created_ts=2.0)
     assert {r["request_id"] for r in ts.list_recent(query="50%", limit=10)} == {"lit"}
 
 
