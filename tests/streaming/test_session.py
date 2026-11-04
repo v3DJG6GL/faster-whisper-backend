@@ -10,7 +10,7 @@ import asyncio
 import pytest
 
 from tests._streaming_helpers import (
-    const_final, const_partial, const_pcm, fast_config, inert_session)
+    const_final, const_partial, const_pcm, fast_config, inert_session, raising_decoder)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 
@@ -113,10 +113,7 @@ def test_close_falls_back_on_a_failed_final_decode_and_still_commits(caplog):
     The frames alone are identical either way, so the logs tell them apart."""
     import logging
 
-    async def _df(audio, prompt):
-        raise RuntimeError("CUDA out of memory")
-
-    s, msgs = _make_session(decode_final=_df,
+    s, msgs = _make_session(decode_final=raising_decoder(RuntimeError, "CUDA out of memory"),
                             cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
     async def run():
@@ -169,11 +166,9 @@ def test_close_abort_still_propagates_without_closing_document():
     close() re-raises and emits no closing document."""
     from faster_whisper_backend.streaming.session import CloseAbort
 
-    async def _df(audio, prompt):
-        raise CloseAbort("credential revoked mid-session")
-
-    s, msgs = _make_session(decode_final=_df,
-                            cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
+    s, msgs = _make_session(
+        decode_final=raising_decoder(CloseAbort, "credential revoked mid-session"),
+        cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
     async def run():
         s.raw_confirmed = "erster satz."

@@ -99,6 +99,14 @@ def const_partial(*words):
     return decode_partial
 
 
+def raising_decoder(exc_type: type[BaseException], message: str):
+    """Fake decode_partial / decode_final that raises ``exc_type(message)``
+    on every call."""
+    async def decode(audio, prompt):
+        raise exc_type(message)
+    return decode
+
+
 async def _no_partial(audio, prompt):
     return []
 

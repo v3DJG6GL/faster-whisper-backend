@@ -17,7 +17,7 @@ import pytest
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm as _pcm,
-    fast_config as _cfg, inert_session)
+    fast_config as _cfg, inert_session, raising_decoder)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import CloseAbort
 
@@ -195,11 +195,8 @@ def test_failed_final_decode_without_text_still_reaches_on_final():
     """on_final is the route's only hook: a dropped failed decode must still
     reach it (empty text, decode_failed) so the failure is recorded."""
     infos, _on_final = collector()
-
-    async def _df(audio, prompt):
-        raise RuntimeError("CUDA out of memory")
-
-    s, msgs = _session(decode_final=_df, on_final=_on_final)
+    s, msgs = _session(decode_final=raising_decoder(RuntimeError, "CUDA out of memory"),
+                       on_final=_on_final)
 
     feed_levels(s, (8000, 500), (0, 400))
     assert _utt(msgs) == [("open", 0), ("decoding", 0), ("dropped", 0)]
@@ -214,10 +211,7 @@ def test_failed_final_decode_does_not_lose_the_rest_of_the_chunk():
     """The raise used to abort feed_pcm's frame loop, so whatever followed the
     failing frame in the same chunk — here the start of the next utterance —
     was dropped on the floor."""
-    async def _df(audio, prompt):
-        raise RuntimeError("CUDA out of memory")
-
-    s, msgs = _session(decode_final=_df)
+    s, msgs = _session(decode_final=raising_decoder(RuntimeError, "CUDA out of memory"))
 
     async def run():
         await s.feed_pcm(_pcm(8000, 512) + _pcm(0, 384) + _pcm(8000, 512))
@@ -249,10 +243,8 @@ def test_failed_partial_decode_does_not_lose_the_rest_of_the_chunk():
 
 
 def test_close_abort_from_a_partial_decode_still_propagates():
-    async def _dp(audio, prompt):
-        raise CloseAbort("credential revoked mid-session")
-
-    s, _msgs = _session(decode_partial=_dp)
+    s, _msgs = _session(
+        decode_partial=raising_decoder(CloseAbort, "credential revoked mid-session"))
 
     async def run():
         with pytest.raises(CloseAbort):
@@ -297,10 +289,7 @@ def test_postprocess_failure_closes_the_cycle_with_dropped_error():
 
 
 def test_close_abort_emits_no_terminal_frame():
-    async def _df(audio, prompt):
-        raise CloseAbort("credential revoked mid-session")
-
-    s, msgs = _session(decode_final=_df)
+    s, msgs = _session(decode_final=raising_decoder(CloseAbort, "credential revoked mid-session"))
 
     async def run():
         await s.feed_pcm(_pcm(8000, 500))
