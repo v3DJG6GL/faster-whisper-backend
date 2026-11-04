@@ -37,6 +37,12 @@ function _unesc(s) {
   }
   return out;
 }
+function _reEl(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
 
 const _PIPELINE_TYPES = [
   { type: 'regex-list',                  pill: 'regex[]' },
@@ -163,10 +169,8 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   // locate the key/value inputs are unaffected. New rows (no ts yet) show "—"
   // until the next server save stamps map_meta.
   if (showDate) {
-    const td4 = document.createElement('td');
-    td4.className = 'map-date-cell';
-    const span = document.createElement('span');
-    span.className = 'map-date';
+    const td4 = _reEl('td', 'map-date-cell');
+    const span = _reEl('span', 'map-date');
     stampTs(span, ts);
     td4.appendChild(span);
     tr.appendChild(td4);
@@ -295,8 +299,7 @@ function _renumberEntries(parent) {
 
 function _makeEntryRow(rule, entry, commitData, onEnter) {
   entry = entry || {};
-  const row = document.createElement('div');
-  row.className = 'rl-entry';
+  const row = _reEl('div', 'rl-entry');
   function rebuild() {
     const parent = row.parentNode;
     if (!parent) return;
@@ -305,10 +308,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   }
   // rail: drag grip + ▲/ordinal/▼ stepper for one-position nudges; the ordinal
   // and end-stops are maintained by _renumberEntries.
-  const rail = document.createElement('div');
-  rail.className = 'rl-rail';
-  const grip = document.createElement('span');
-  grip.className = 'rl-grip'; grip.textContent = '⠿';
+  const rail = _reEl('div', 'rl-rail');
+  const grip = _reEl('span', 'rl-grip', '⠿');
   grip.title = 'drag to reorder'; grip.draggable = true;
   let dragOrigNext = null;   // the row's slot at dragstart, for a cancelled drag
   grip.addEventListener('dragstart', (e) => {
@@ -341,8 +342,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     // in-list drop, which already committed).
     rule.entries = _readEntries(parent); _renumberEntries(parent); commitData();
   });
-  const ord = document.createElement('span');
-  ord.className = 'rl-ord'; ord.textContent = '0';
+  const ord = _reEl('span', 'rl-ord', '0');
   // ↑/↓ move the NEIGHBOUR, not this row: reinserting the row would blur the
   // button the keyboard user just pressed, dropping focus to <body>. A move onto
   // an end-stop disables the pressed button (same focus loss), so hand focus to
@@ -364,8 +364,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     if (hadFocus && pressed.disabled) (pressed === upBtn ? dnBtn : upBtn).focus();
     commitData();
   }
-  const stepper = document.createElement('div');
-  stepper.className = 'rl-stepper';
+  const stepper = _reEl('div', 'rl-stepper');
   const upBtn = document.createElement('button');
   upBtn.type = 'button'; upBtn.className = 'rl-move rl-move-up';
   upBtn.innerHTML = MOVE_CHEV_UP; upBtn.title = 'Move up one position';
@@ -378,17 +377,13 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   dnBtn.addEventListener('click', () => { if (!dnBtn.disabled) _rlMove(1); });
   stepper.appendChild(upBtn); stepper.appendChild(ord); stepper.appendChild(dnBtn);
   rail.appendChild(grip); rail.appendChild(stepper);
-  const body = document.createElement('div');
-  body.className = 'rl-ebody';
-  const r1 = document.createElement('div');
-  r1.className = 'rl-erow1';
-  const lwrap = document.createElement('div');
-  lwrap.className = 'rl-elabelwrap';
+  const body = _reEl('div', 'rl-ebody');
+  const r1 = _reEl('div', 'rl-erow1');
+  const lwrap = _reEl('div', 'rl-elabelwrap');
   const li = _monoTextInput(_esc(entry.label || ''), rebuild, onEnter);
   li.className = 'e-label'; li.placeholder = 'label (optional)';
   lwrap.appendChild(li);
-  const noteWrap = document.createElement('div');
-  noteWrap.className = 'rl-enote';
+  const noteWrap = _reEl('div', 'rl-enote');
   const ni = document.createElement('textarea');
   ni.className = 'e-note'; ni.rows = 2; ni.spellcheck = false;
   ni.placeholder = 'note (optional)';
@@ -415,10 +410,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   });
   r1.appendChild(lwrap); r1.appendChild(noteBtn); r1.appendChild(del);
   function frRow(gut, cls, val, ph) {
-    const fr = document.createElement('div');
-    fr.className = 'rl-fr';
-    const g = document.createElement('span');
-    g.className = 'rl-gut'; g.textContent = gut;
+    const fr = _reEl('div', 'rl-fr');
+    const g = _reEl('span', 'rl-gut', gut);
     const inp = _monoTextInput(val, rebuild, onEnter);  // regex source: verbatim, no _esc (see _readEntries)
     inp.className = cls; inp.placeholder = ph;
     fr.appendChild(g); fr.appendChild(inp);
@@ -445,16 +438,14 @@ function renderTypeEditor(rule, commitData, opts) {
   //   showMapDates / collapseMapAfter — cb:map date column / fold older rows.
   opts = opts || {};
   const onEnter = opts.commitOnEnter;
-  const box = document.createElement('div');
-  box.className = 'rule-editor';
+  const box = _reEl('div', 'rule-editor');
 
   // Rule rationale / documentation. Only the admin /settings editor passes
   // `showNote` — /quick-config omits it (non-admin users cannot patch the
   // `note` field, see _PATCH_ALLOWED_FIELDS in quick_config/routes.py).
   if (opts.showNote) {
     box.appendChild(_helpDiv('note (rationale / documentation):'));
-    const noteTa = document.createElement('textarea');
-    noteTa.className = 'rule-note';
+    const noteTa = _reEl('textarea', 'rule-note');
     noteTa.rows = 2;
     noteTa.spellcheck = false;
     noteTa.style.width = '100%';
@@ -476,8 +467,7 @@ function renderTypeEditor(rule, commitData, opts) {
   // Off is deleted, never stored as false — the server dumps it absent, and
   // the editor's fingerprint of every rule without it must not move.
   if (opts.showRepeat) {
-    const repWrap = document.createElement('label');
-    repWrap.className = 'rule-repeat';
+    const repWrap = _reEl('label', 'rule-repeat');
     const repCb = document.createElement('input');
     repCb.type = 'checkbox';
     repCb.className = 'rule-repeat-cb';
@@ -488,8 +478,7 @@ function renderTypeEditor(rule, commitData, opts) {
       commitData();
     });
     repWrap.appendChild(repCb);
-    const repTxt = document.createElement('span');
-    repTxt.textContent = ' Repeat until nothing changes';
+    const repTxt = _reEl('span', '', ' Repeat until nothing changes');
     repWrap.appendChild(repTxt);
     box.appendChild(repWrap);
     box.appendChild(_helpDiv('Runs the rule again on its own output (a list: all its entries) '
@@ -516,8 +505,7 @@ function renderTypeEditor(rule, commitData, opts) {
   if (rule.type === 'regex-list') {
     box.appendChild(_helpDiv('Ordered find→replace list — entries run top-to-bottom '
       + '(drag ⠿ to reorder). An empty replacement deletes the match.'));
-    const entriesBox = document.createElement('div');
-    entriesBox.className = 'rl-entries';
+    const entriesBox = _reEl('div', 'rl-entries');
     (rule.entries || []).forEach((en) => {
       entriesBox.appendChild(_makeEntryRow(rule, en, commitData, onEnter));
     });
@@ -596,8 +584,7 @@ function renderTypeEditor(rule, commitData, opts) {
     const cnt = box.appendChild(_helpDiv());  // text painted by paintCount() once the table exists
     const showDate = !!opts.showMapDates;
     const meta = rule.map_meta || {};
-    const tbl = document.createElement('table');
-    tbl.className = 'map-table';
+    const tbl = _reEl('table', 'map-table');
     tbl.style.width = '100%';
     // Order by map_meta (added / last-updated), oldest first → newest last, so
     // the freshest entries sit next to the "+ add entry" bar. Un-stamped keys
