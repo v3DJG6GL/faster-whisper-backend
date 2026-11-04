@@ -14,7 +14,6 @@ from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import watch_progress as _watch_progress
@@ -80,11 +79,8 @@ def test_locked_diarization_model_ignores_client_param(client, app_module,
         "DIARIZATION_MODEL": "pyannote/speaker-diarization-community-1",
         "locks": ["DIARIZATION_MODEL"]})
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "diarize": "true",
-              "diarization_model": "pyannote/speaker-diarization-3.1"})
+    r = _post(client, bearer(raw_alice), diarize="true",
+              diarization_model="pyannote/speaker-diarization-3.1")
     assert r.status_code == 200, r.text
     assert calls[0]["model_id"] == "pyannote/speaker-diarization-community-1"
     assert "diarization_model" in r.json()["overrides_ignored"]
@@ -293,10 +289,7 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
     admin_h, raw_alice = _bind_profile(
         client, make_user_key, "pin-diar",
         {"DIARIZATION_MODEL": pinned, "locks": []})
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "diarize": "true", "diarization_model": pinned})
+    r = _post(client, bearer(raw_alice), diarize="true", diarization_model=pinned)
     assert r.status_code == 200, r.text
     assert calls[0]["model_id"] == pinned
     assert "warnings" not in r.json()
@@ -307,10 +300,7 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
                         "DIARIZATION_MODEL": pinned,
                         "locks": ["DIARIZATION_MODEL"]}}})
     assert r.status_code == 200, r.text
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "diarize": "true", "diarization_model": pinned})
+    r = _post(client, bearer(raw_alice), diarize="true", diarization_model=pinned)
     assert r.status_code == 200, r.text
     assert len(calls) == 2
     assert calls[1]["model_id"] == pinned
@@ -327,18 +317,13 @@ def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
         client, make_user_key, "pin-sep",
         {"BGM_SEPARATION_UVR_MODEL": "UVR-Pinned", "locks": []})
     # Absent field: the identity-pinned model runs.
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "separate_bgm": "true"})
+    r = _post(client, bearer(raw_alice), separate_bgm="true")
     assert r.status_code == 200, r.text
     assert len(calls) == 1
     assert calls[0]["model_filename"] == "UVR-Pinned"
     # Echoing that exact effective value must yield the same call.
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "separate_bgm": "true", "separation_model": "UVR-Pinned"})
+    r = _post(client, bearer(raw_alice), separate_bgm="true",
+              separation_model="UVR-Pinned")
     assert r.status_code == 200, r.text
     assert len(calls) == 2
     assert calls[1]["model_filename"] == "UVR-Pinned"
