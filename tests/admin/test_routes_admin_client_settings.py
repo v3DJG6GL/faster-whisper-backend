@@ -29,6 +29,10 @@ def _import(client, uid, key, blob):
                        json={"blob": blob}, headers=bearer(key))
 
 
+def _delete(client, uid, key):
+    return client.delete(f"{_API}/users/{uid}/client-settings", headers=bearer(key))
+
+
 def test_page_ships_sync_ui(client):
     """The served page must carry the sync surface: the import-preview
     modal, the drawer builder, and the header-chip class."""
@@ -244,14 +248,10 @@ def test_import_unknown_user_404(client):
 def test_delete_then_meta_empty(client, make_user_key):
     uid, key = make_user_key("gone", is_admin=True)
     _seed(client, {"n": 1}, headers=bearer(key))
-    r = client.delete(
-        f"{_API}/users/{uid}/client-settings", headers=bearer(key)
-    )
+    r = _delete(client, uid, key)
     assert r.status_code == 200
     assert r.json() == {"ok": True, "deleted": True}
-    r = client.delete(
-        f"{_API}/users/{uid}/client-settings", headers=bearer(key)
-    )
+    r = _delete(client, uid, key)
     assert r.json() == {"ok": True, "deleted": False}
     m = client.get(f"{_API}/client-settings", headers=bearer(key)).json()
     assert uid not in m["by_user"]
@@ -307,22 +307,9 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
         "max_bytes": client_settings_store._CAP_BLOB,
     }
 
-    assert (
-        client.get(f"{_API}/users/{uid}/client-settings/export", headers=h).status_code
-        == 503
-    )
-    assert (
-        client.post(
-            f"{_API}/users/{uid}/client-settings/import",
-            json={"blob": {"a": 1}},
-            headers=h,
-        ).status_code
-        == 503
-    )
-    assert (
-        client.delete(f"{_API}/users/{uid}/client-settings", headers=h).status_code
-        == 503
-    )
+    assert _export(client, uid, key).status_code == 503
+    assert _import(client, uid, key, {"a": 1}).status_code == 503
+    assert _delete(client, uid, key).status_code == 503
 
 
 @needs_node
