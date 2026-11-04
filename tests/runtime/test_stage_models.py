@@ -11,9 +11,11 @@ import time
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.pipeline import apply as pl_apply
+from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests.conftest import bearer
 from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import watch_progress as _watch_progress
@@ -73,7 +75,6 @@ def test_per_request_diarization_model_honored(client, app_module, monkeypatch):
 def test_locked_diarization_model_ignores_client_param(client, app_module,
                                                        make_user_key,
                                                        monkeypatch):
-    from tests.conftest import bearer
     calls = _stub_diarize(app_module, monkeypatch)
     _, raw_alice = _bind_profile(client, make_user_key, "pin-diar", {
         "DIARIZATION_MODEL": "pyannote/speaker-diarization-community-1",
@@ -282,7 +283,6 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
     """An identity/per-model pinned model outside the allowlist runs when the
     client sends nothing, so echoing that exact effective value must not be
     refused — the allowlist constrains only what the CLIENT adds."""
-    from tests.conftest import bearer
     calls = _stub_diarize(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[
         "pyannote/speaker-diarization-community-1"])
     pinned = "pyannote/speaker-diarization-3.1"
@@ -310,7 +310,6 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
 
 def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
         client, app_module, make_user_key, monkeypatch):
-    from tests.conftest import bearer
     calls = _stub_separate(app_module, monkeypatch,
                            BGM_SEPARATION_ALLOWED_MODELS=[])
     _, raw_alice = _bind_profile(
@@ -333,7 +332,6 @@ def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
 def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
     """Register a plan bound to `pid` with the enqueue path stubbed, so the
     test observes exactly what the cursor decided to warm."""
-    from faster_whisper_backend.runtime import preload
     # REGISTRATION must admit nothing, so what the CURSOR enqueues next is
     # unambiguous: on_stage_start does not consult the ladder (the worker
     # re-admits at dequeue), which is the split under test.
@@ -416,7 +414,6 @@ def test_stageless_progress_tick_restamps_the_plan_ttl(app_module, monkeypatch):
 
 
 def test_stage_ahead_is_a_no_op_without_a_bound_plan(app_module, monkeypatch):
-    from faster_whisper_backend.runtime import preload
     calls = []
     monkeypatch.setattr(preload, "on_stage_start",
                         lambda *a: calls.append(a))
