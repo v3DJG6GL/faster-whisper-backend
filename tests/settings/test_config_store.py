@@ -39,6 +39,12 @@ def _read_json(p):
     return json.loads(Path(p).read_text(encoding="utf-8"))
 
 
+def _seed_local(tmp_path, doc):
+    p = tmp_path / "config.local.json"
+    _write_json(p, doc)
+    return p
+
+
 def test_unknown_key_rejected():
     _bad(NOT_A_REAL_FIELD=1)
 
@@ -497,8 +503,7 @@ def test_pipeline_deeply_nested_regex_is_invalid_not_a_crash(tmp_path):
     deep = [_regex("deep", pattern="(" * 512), _terminal()]
     with pytest.raises(ValidationError, match="invalid regex"):
         _ok(PIPELINE_RULES=deep)
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"PIPELINE_RULES": deep})
+    p = _seed_local(tmp_path, {"PIPELINE_RULES": deep})
     assert cs.load_overrides(str(p)) == {}
     with pytest.raises(RuntimeError, match="invalid regex"):
         cs.load_factory_rules(str(p))
@@ -1043,8 +1048,7 @@ def test_stale_stored_slug_only_blocks_saves_of_its_own_key(tmp_path, monkeypatc
     # document, so a stale exclude stored under MODEL_OVERRIDES must not 422
     # an OVERRIDE_PROFILES / captures save.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"MODEL_OVERRIDES": {"m": {
+    p = _seed_local(tmp_path, {"MODEL_OVERRIDES": {"m": {
         "PIPELINE_RULES_EXCLUDE": ["gone"]}}})
     cs.save_overrides({"OVERRIDE_PROFILES": {"p": {"BEAM_SIZE": 2}}}, str(p))
     cs.save_overrides({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["known"]}, str(p))
@@ -1066,8 +1070,7 @@ def test_stale_stored_slug_only_blocks_saves_of_its_own_entry(tmp_path, monkeypa
     # dict, so checking every entry of a submitted key let one stale stored
     # exclude in profile b 422 every edit of profile a.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"OVERRIDE_PROFILES": {
+    p = _seed_local(tmp_path, {"OVERRIDE_PROFILES": {
         "a": {"BEAM_SIZE": 2},
         "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}}})
     cs.save_overrides({"OVERRIDE_PROFILES": {
@@ -1092,8 +1095,7 @@ def test_stale_stored_slug_does_not_block_edits_of_its_own_entry(tmp_path, monke
     # toggle in a captures list holding one) 422'd with no way to clear it.
     # Only the slugs a save adds are checked, as validate_binding does.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
-    p = tmp_path / "config.local.json"
-    _write_json(p, {
+    p = _seed_local(tmp_path, {
         "OVERRIDE_PROFILES": {"a": {"BEAM_SIZE": 3},
                               "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}},
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]})
@@ -1125,10 +1127,9 @@ def test_stored_top_level_guard_at_one_is_migrated_not_fatal(tmp_path, capsys):
     # The top-level segment guards started refusing 1 after releases that
     # stored it; one left in config.local.json dropped every override at boot
     # and 422'd every save, the failure the bundle migration already covers.
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"SERVER_PORT": 9000,
-                    "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1,
-                    "SEGMENT_HEAD_ECHO_MIN_WORDS": 1})
+    p = _seed_local(tmp_path, {"SERVER_PORT": 9000,
+                               "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1,
+                               "SEGMENT_HEAD_ECHO_MIN_WORDS": 1})
     out = cs.load_overrides(str(p))
     assert out["SERVER_PORT"] == 9000
     assert out["SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS"] == 0
@@ -1216,8 +1217,7 @@ def test_removing_a_local_copy_of_a_split_card_writes_its_refs_as_the_successors
     split = ["strip-trailing-period", "strip-auto-punctuation"]
     rules = [r for r in cs.load_factory_rules() if r["name"] not in split]
     rules.insert(-1, _old_strip_whisper_punctuation())
-    p = tmp_path / "config.local.json"
-    _write_json(p, {
+    p = _seed_local(tmp_path, {
         "PIPELINE_RULES": rules,
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
         "MODEL_OVERRIDES": {"large-v3": {
@@ -1398,8 +1398,7 @@ def test_save_overrides_stored_prefixed_cookie_blocks_only_cookie_saves(tmp_path
     must not 422 every unrelated save — only a save touching the cookie
     keys, as guard_regex is scoped to saves that submit rules."""
     monkeypatch.setattr(cs, "_env_effective_values", lambda: {})
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"SESSION_COOKIE_NAME": "__Host-s"})
+    p = _seed_local(tmp_path, {"SESSION_COOKIE_NAME": "__Host-s"})
     cs.save_overrides({"BEAM_SIZE": 3}, str(p))
     assert _read_json(p)["BEAM_SIZE"] == 3
     with pytest.raises(ValidationError):
@@ -1778,8 +1777,7 @@ def test_field_helper_rejects_unknown_evict_bucket():
 
 def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, capsys):
     # Values a later-tightened validator refuses must not make load drop every override.
-    p = tmp_path / "config.local.json"
-    _write_json(p, {
+    p = _seed_local(tmp_path, {
         "SERVER_PORT": 9000,
         "DEFAULT_LANGUAGE": "jp",
         "OVERRIDE_PROFILES": {"p": {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1,
@@ -1814,10 +1812,9 @@ def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, cap
 def test_stored_nul_in_a_path_or_token_is_dropped_not_fatal(tmp_path, capsys):
     # A file saved before the NUL rule must lose only those keys at boot,
     # not every override — and an unrelated save must not 422 on them.
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"URL_MEDIA_DIR": "data/x\x00y",
-                    "HF_TOKEN": "hf_secret\x00tail",
-                    "DEFAULT_MODEL": "small"})
+    p = _seed_local(tmp_path, {"URL_MEDIA_DIR": "data/x\x00y",
+                               "HF_TOKEN": "hf_secret\x00tail",
+                               "DEFAULT_MODEL": "small"})
     out = cs.load_overrides(str(p))
     assert out == {"DEFAULT_MODEL": "small"}
     err = capsys.readouterr().err
@@ -1830,8 +1827,7 @@ def test_stored_nul_in_a_path_or_token_is_dropped_not_fatal(tmp_path, capsys):
 def test_save_keeps_env_per_model_values_out_of_the_file(tmp_path, monkeypatch):
     monkeypatch.setattr(cs_config, "_ENV_OVERRIDE_VALUES",
                         {"x": {"BEAM_SIZE": 3}, "y": {"BEAM_SIZE": 4}}, raising=False)
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"MODEL_OVERRIDES": {"y": {"BEAM_SIZE": 2}}})
+    p = _seed_local(tmp_path, {"MODEL_OVERRIDES": {"y": {"BEAM_SIZE": 2}}})
     # The editor round-trips the live dict, env values included.
     cs.save_overrides({"MODEL_OVERRIDES": {
         "x": {"BEAM_SIZE": 3, "PATIENCE": 1.0},
