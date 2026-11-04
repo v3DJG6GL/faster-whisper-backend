@@ -19,16 +19,29 @@ from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose as _post
 
 
-def _stub_diarize(monkeypatch, calls):
+def _stub_diarize(app_module, monkeypatch, **cfg):
+    """Turn diarization on (plus any cfg pins) and stub diarize(); returns the
+    call log."""
+    for k, v in {"DIARIZATION_ENABLED": True, **cfg}.items():
+        monkeypatch.setattr(app_module.cfg, k, v, raising=False)
+    calls = []
+
     async def _fake(path, *, num_speakers=None, min_speakers=None,
                     max_speakers=None, model_id=None, progress_cb=None,
                     cancel_check=None):
         calls.append({"model_id": model_id})
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake)
+    return calls
 
 
-def _stub_separate(monkeypatch, calls):
+def _stub_separate(app_module, monkeypatch, **cfg):
+    """Turn BGM separation on (plus any cfg pins) and stub separate(); returns
+    the call log."""
+    for k, v in {"BGM_SEPARATION_ENABLED": True, **cfg}.items():
+        monkeypatch.setattr(app_module.cfg, k, v, raising=False)
+    calls = []
+
     async def _fake(path, *, model_filename=None, progress_cb=None,
                     cancel_check=None):
         calls.append({"model_filename": model_filename})
@@ -37,13 +50,11 @@ def _stub_separate(monkeypatch, calls):
             f.write(b"RIFFsepWAVE")
         return out
     monkeypatch.setattr(bgm_separation, "separate", _fake)
+    return calls
 
 
 def test_per_request_diarization_model_honored(client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
-                        raising=False)
-    calls = []
-    _stub_diarize(monkeypatch, calls)
+    calls = _stub_diarize(app_module, monkeypatch)
     # In the default DIARIZATION_ALLOWED_MODELS, differs from the config
     # default (community-1).
     r = _post(client, diarize="true",
@@ -61,10 +72,7 @@ def test_locked_diarization_model_ignores_client_param(client, app_module,
                                                        make_user_key,
                                                        monkeypatch):
     from tests.conftest import bearer
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
-                        raising=False)
-    calls = []
-    _stub_diarize(monkeypatch, calls)
+    calls = _stub_diarize(app_module, monkeypatch)
     _, raw_alice = _bind_profile(client, make_user_key, "pin-diar", {
         "DIARIZATION_MODEL": "pyannote/speaker-diarization-community-1",
         "locks": ["DIARIZATION_MODEL"]})
@@ -81,13 +89,8 @@ def test_locked_diarization_model_ignores_client_param(client, app_module,
 
 def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
                                                       monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ALLOWED_MODELS",
-                        ["pyannote/speaker-diarization-community-1"],
-                        raising=False)
-    calls = []
-    _stub_diarize(monkeypatch, calls)
+    calls = _stub_diarize(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[
+        "pyannote/speaker-diarization-community-1"])
     pid = "abcd" * 8
     seen = {}
     orig = tx_progress._progress_set
@@ -111,10 +114,7 @@ def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
 
 
 def test_per_request_separation_model_honored(client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
-                        raising=False)
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls = _stub_separate(app_module, monkeypatch)
     r = _post(client, separate_bgm="true",
               separation_model="UVR-MDX-NET-Inst_HQ_5")
     assert r.status_code == 200, r.text
@@ -130,10 +130,7 @@ def test_per_request_separation_model_honored(client, app_module, monkeypatch):
 
 def test_separation_model_allowlist_miss_skips_stage(client, app_module,
                                                      monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
-                        raising=False)
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls = _stub_separate(app_module, monkeypatch)
     r = _post(client, separate_bgm="true", separation_model="Evil-Model")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -263,12 +260,8 @@ def test_empty_bgm_allowlist_admits_only_the_configured_model(
         client, app_module, monkeypatch):
     """Empty allowlist = the configured model ONLY — clearing the list is a
     lockdown, never an open gate."""
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ALLOWED_MODELS", [],
-                        raising=False)
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls = _stub_separate(app_module, monkeypatch,
+                           BGM_SEPARATION_ALLOWED_MODELS=[])
     r = _post(client, separate_bgm="true",
               separation_model="Kim_Vocal_2.onnx")
     assert r.status_code == 200, r.text
@@ -285,13 +278,9 @@ def test_allowlist_never_blocks_the_config_inherited_default(
         client, app_module, monkeypatch):
     """A narrowed allowlist missing the configured default must not disable
     the stage for requests that named no model at all."""
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ALLOWED_MODELS",
-                        ["pyannote/speaker-diarization-3.1"], raising=False)
     # Config default stays community-1 — NOT in the allowlist.
-    calls = []
-    _stub_diarize(monkeypatch, calls)
+    calls = _stub_diarize(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[
+        "pyannote/speaker-diarization-3.1"])
     r = _post(client, diarize="true")
     assert r.status_code == 200, r.text
     assert len(calls) == 1
@@ -305,13 +294,8 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
     client sends nothing, so echoing that exact effective value must not be
     refused — the allowlist constrains only what the CLIENT adds."""
     from tests.conftest import bearer
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ALLOWED_MODELS",
-                        ["pyannote/speaker-diarization-community-1"],
-                        raising=False)
-    calls = []
-    _stub_diarize(monkeypatch, calls)
+    calls = _stub_diarize(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[
+        "pyannote/speaker-diarization-community-1"])
     pinned = "pyannote/speaker-diarization-3.1"
     admin_h, raw_alice = _bind_profile(
         client, make_user_key, "pin-diar",
@@ -344,12 +328,8 @@ def test_allowlist_admits_the_identity_effective_model_when_echoed(
 def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
         client, app_module, make_user_key, monkeypatch):
     from tests.conftest import bearer
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ALLOWED_MODELS", [],
-                        raising=False)
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls = _stub_separate(app_module, monkeypatch,
+                           BGM_SEPARATION_ALLOWED_MODELS=[])
     _, raw_alice = _bind_profile(
         client, make_user_key, "pin-sep",
         {"BGM_SEPARATION_UVR_MODEL": "UVR-Pinned", "locks": []})
