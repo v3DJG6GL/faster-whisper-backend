@@ -4,9 +4,12 @@ import contextlib
 import json
 import os
 import sqlite3
+import time
 
 import pytest
 
+from faster_whisper_backend.audio import transcode as audio_transcode
+from faster_whisper_backend.settings import config
 from tests.captures._store_helpers import create_stub_capture
 from tests.conftest import install_fake_wav_transcode, waits_on, write_bytes
 
@@ -55,7 +58,6 @@ def _audio_files(cs, suffix):
 
 def _caps(monkeypatch, rows, mb):
     """Set the store's CAPTURES_MAX row cap and CAPTURES_MAX_MB byte cap."""
-    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_MAX", rows, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", mb, raising=False)
 
@@ -183,7 +185,6 @@ def test_create_capture_truncates_text(captures_store_db, monkeypatch, tmp_path)
 
 def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend.audio import transcode as audio_transcode
 
     def _boom(src, dst):
         raise RuntimeError("ffmpeg exploded")
@@ -515,7 +516,6 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
     """The WAV lands before the INSERT takes _lock. A clear_all that wipes it
     in between must not leave a "new" row with no audio."""
     import threading
-    import time
 
     cs = captures_store_db
     # The cap probe up front reads under _lock too; this test is about the
@@ -539,7 +539,6 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
 
 def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
     _caps(monkeypatch, 5000, 5000)
     c_dismissed = _make(cs, monkeypatch, tmp_path)
     c_new = _make(cs, monkeypatch, tmp_path)
@@ -557,7 +556,6 @@ def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path
 def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     gs = groups_store_db
-    from faster_whisper_backend.settings import config
     _caps(monkeypatch, 5000, 5000)
     member = _make(cs, monkeypatch, tmp_path)
     other = _make(cs, monkeypatch, tmp_path)
@@ -587,7 +585,6 @@ def test_evicting_create_invalidates_every_proposer_key(
     deleted captures."""
     cs = captures_store_db
     from faster_whisper_backend.captures import merge_proposer
-    from faster_whisper_backend.settings import config
     _caps(monkeypatch, 5000, 5000)
     calls = []
     monkeypatch.setattr(merge_proposer, "invalidate", calls.append)
@@ -691,7 +688,6 @@ def test_a_store_full_of_ready_rows_records_nothing(
     row was the one evicted by its own insert: the caller still got its id and
     traced a capture link to a deleted row, after a wasted transcode."""
     cs = captures_store_db
-    from faster_whisper_backend.audio import transcode as audio_transcode
     _caps(monkeypatch, 10, 0)
     _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(10)], "ready")
     assert cs.ready_fills_cap() is True
@@ -726,7 +722,6 @@ def test_a_byte_cap_that_evicts_the_new_row_returns_none(
 def test_an_older_new_row_is_evicted_before_the_fresh_one(
         captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
     _caps(monkeypatch, 5000, 0)
     older = _make(cs, monkeypatch, tmp_path)
     cs._require_conn().execute(
@@ -851,16 +846,13 @@ def test_reconcile_restores_a_row_marked_before_the_column_to_new(
 
 def test_sweep_retention_disabled(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 0, raising=False)
     _make(cs, monkeypatch, tmp_path)
     assert cs.sweep_retention() == 0
 
 
 def test_sweep_retention_deletes_old(captures_store_db, monkeypatch, tmp_path):
-    import time
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     old = _make(cs, monkeypatch, tmp_path)
     _make(cs, monkeypatch, tmp_path)  # fresh
@@ -877,7 +869,6 @@ def test_sweep_retention_deletes_more_ids_than_one_in_list_chunk(
     swept: one unchunked IN-list raised "too many SQL variables" on every pass,
     so retention silently stopped deleting anything."""
     cs = captures_store_db
-    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     conn = cs._require_conn()
     _seed_rows(conn, [f"aged{i:07d}" for i in range(1100)])
@@ -912,10 +903,8 @@ def test_sweep_retention_protects_members_of_a_current_sample(
 ):
     """A member cannot be aged out on its own — it backs the sample's merged
     WAV, so retention only ever acts on the sample as a whole."""
-    import time
     cs = captures_store_db
     gs = groups_store_db
-    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     member = _make(cs, monkeypatch, tmp_path)
     _group_one(cs, gs, "gretention000000", member,
@@ -931,7 +920,6 @@ def test_count_evictable_ignores_grouped_members(
     bounded by retention, not the cap, so they must not count. No ingest gate
     reads it any more (a full store rotates in create_capture); the two "full
     store still records" route tests patch it so a revived count gate fails."""
-    import time
     cs = captures_store_db
     gs = groups_store_db
     member = _make(cs, monkeypatch, tmp_path)
@@ -952,10 +940,8 @@ def test_sweep_retention_expires_an_over_age_sample_and_its_members(
     """Grouping must not be a way to opt out of the retention policy: once the
     SAMPLE itself is past the cutoff it is dissolved and its members are swept
     like any other row."""
-    import time
     cs = captures_store_db
     gs = groups_store_db
-    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     member = _make(cs, monkeypatch, tmp_path)
     sid = "gretentionold000"
