@@ -42,6 +42,7 @@ import pytest
 
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.media import download as udl
+from tests.media._server_helpers import _stopping
 
 SECRET = b"INTERNAL-SECRET-" * 64
 PUBLIC_BODY = b"\xff\xfb\x90\x44" + b"\x00" * 4092  # plausible MPEG audio head
@@ -121,14 +122,9 @@ def servers():
     _Internal.hits = []
     _Public.redirect_to = f"http://127.0.0.1:{internal.server_port}/secret.mp3"
     public = _serve(_Public, "127.0.0.2")
-    try:
+    with _stopping(internal), _stopping(public):
         yield (f"http://127.0.0.2:{public.server_port}",
                f"http://127.0.0.1:{internal.server_port}/secret.mp3")
-    finally:
-        public.shutdown()
-        internal.shutdown()
-        public.server_close()
-        internal.server_close()
 
 
 @pytest.fixture
@@ -451,15 +447,12 @@ def test_probe_extraction_is_cut_at_its_wall_clock_deadline(
         return await asyncio.gather(
             *(udl.probe(url, timeout=3) for _ in range(4)),
             return_exceptions=True)
-    try:
+    with _stopping(srv):
         results = _run(_four())
         assert all(isinstance(r, udl.UrlTimeoutError) for r in results), results
         # Every worker is free again shortly after the deadline.
         futs = [udl._PROBE_POOL.submit(lambda: 1) for _ in range(4)]
         assert [f.result(timeout=5) for f in futs] == [1] * 4
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 
 @pytest.mark.parametrize("target", [

@@ -9,7 +9,6 @@ progress parsing, cancellation, timeouts, result validation — runs for real.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import socket
 import sys
@@ -19,6 +18,7 @@ import urllib.error
 import pytest
 
 from faster_whisper_backend.media import download as udl
+from tests.media._server_helpers import _stopping
 
 
 @pytest.mark.parametrize("url", [
@@ -1463,16 +1463,6 @@ def _ok_server(content_type, body, on_get=None):
     srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
-
-
-@contextlib.contextmanager
-def _stopping(srv):
-    """Stop a loopback HTTPServer (its serve_forever thread, then its socket) on exit."""
-    try:
-        yield srv
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 
 def _rebinding_server(monkeypatch, content_type):
