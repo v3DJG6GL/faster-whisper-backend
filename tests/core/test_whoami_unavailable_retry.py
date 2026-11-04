@@ -17,7 +17,7 @@ import pytest
 
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.paths import REPO_ROOT
-from tests._page_helpers import node_json
+from tests._page_helpers import node_json, script_src
 
 
 _CLOCK = r"""
@@ -78,8 +78,7 @@ realSetTimeout(() => {
 
 
 def _run_chrome(statuses: list) -> dict:
-    js = web_common.OPEN_MODE_BANNER_JS.strip()
-    js = js[len("<script>"):-len("</script>")]
+    js = script_src(web_common.OPEN_MODE_BANNER_JS)
     given = f"const STATUSES = {json.dumps(statuses)};\n"
     return node_json(given + _CHROME_STUB + _CLOCK + js + _CHROME_DRIVE)
 
@@ -220,8 +219,7 @@ realSetTimeout(() => {
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_chrome_announces_a_fresh_whoami():
-    js = web_common.OPEN_MODE_BANNER_JS.strip()
-    js = js[len("<script>"):-len("</script>")]
+    js = script_src(web_common.OPEN_MODE_BANNER_JS)
     events = (
         "const events = [];\n"
         "window.dispatchEvent = (e) => { events.push(e.type); };\n")

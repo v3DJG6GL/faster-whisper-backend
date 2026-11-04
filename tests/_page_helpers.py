@@ -31,6 +31,11 @@ def js_fn(html: str, start: str) -> str:
     return js_body(html, start) + "\n  }"
 
 
+def script_src(asset: str) -> str:
+    """The bare JS of a web_common ``<script>...</script>`` asset."""
+    return asset.strip()[len("<script>"):-len("</script>")]
+
+
 def node_stdout(script: str, timeout: float = 30) -> str:
     """Run ``script`` under ``node -`` over stdin; its stdout. A non-zero exit
     fails with node's stderr as the message."""

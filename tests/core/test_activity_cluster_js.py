@@ -10,7 +10,7 @@ import shutil
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json
+from tests._page_helpers import node_json, script_src
 
 
 _DOM_STUB = r"""
@@ -102,8 +102,7 @@ const openPop = () => btn.listeners.click[0]({ stopPropagation() {} });
 
 
 def _run(drive: str) -> dict:
-    js = web_common.ACTIVITY_CLUSTER_JS.strip()
-    js = js[len("<script>"):-len("</script>")]
+    js = script_src(web_common.ACTIVITY_CLUSTER_JS)
     return node_json(_DOM_STUB + js + "\n(async () => {" + drive + "})();")
 
 

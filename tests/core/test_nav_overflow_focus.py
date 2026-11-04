@@ -12,7 +12,7 @@ import shutil
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json
+from tests._page_helpers import node_json, script_src
 
 
 _DOM_STUB = r"""
@@ -95,8 +95,7 @@ const relayout = () => ros[0]();
 
 
 def _run(drive: str) -> dict:
-    js = web_common.NAV_OVERFLOW_JS.strip()
-    js = js[len("<script>"):-len("</script>")]
+    js = script_src(web_common.NAV_OVERFLOW_JS)
     return node_json(_DOM_STUB + js + drive)
 
 

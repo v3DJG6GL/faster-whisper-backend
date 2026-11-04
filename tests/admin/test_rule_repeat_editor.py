@@ -18,7 +18,7 @@ from faster_whisper_backend import paths
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests._page_helpers import js_fn, node_json
+from tests._page_helpers import js_fn, node_json, script_src
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
@@ -49,8 +49,7 @@ global.window = {};
 
 
 def _editor_js() -> str:
-    js = web_common.RULE_EDITOR_JS
-    return js[js.index("<script>") + len("<script>"):js.rindex("</script>")]
+    return script_src(web_common.RULE_EDITOR_JS)
 
 
 @needs_node

@@ -12,7 +12,7 @@ import shutil
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json
+from tests._page_helpers import node_json, script_src
 
 
 _STUB = r"""
@@ -48,8 +48,7 @@ setTimeout(() => {
 
 
 def _run(status: int, cached) -> dict:
-    js = web_common.OPEN_MODE_BANNER_JS.strip()
-    js = js[len("<script>"):-len("</script>")]
+    js = script_src(web_common.OPEN_MODE_BANNER_JS)
     given = f"const STATUS = {status}, CACHED = {json.dumps(cached)};\n"
     return node_json(given + _STUB + js + _DRIVE)
 

@@ -18,7 +18,7 @@ import shutil
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json
+from tests._page_helpers import node_json, script_src
 from tests.core.test_whoami_unavailable_retry import _CHROME_STUB
 
 
@@ -61,8 +61,7 @@ def _sign_out(logout: list, clicks: int = 1, gap_ms: int = 0,
               csrf_cookie: str | None = "whisper_csrf",
               whoami_extra: dict | None = None,
               rotate: bool = False) -> dict:
-    js = web_common.OPEN_MODE_BANNER_JS.strip()
-    js = js[len("<script>"):-len("</script>")]
+    js = script_src(web_common.OPEN_MODE_BANNER_JS)
     given = (f"const LOGOUT = {json.dumps(logout)};\n"
              f"const CLICKS = {clicks}, GAP_MS = {gap_ms};\n"
              f"const CSRF_COOKIE = {json.dumps(csrf_cookie)};\n"

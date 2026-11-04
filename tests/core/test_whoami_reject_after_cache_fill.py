@@ -13,7 +13,7 @@ import shutil
 import pytest
 
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import node_json
+from tests._page_helpers import node_json, script_src
 from tests.core.test_whoami_unavailable_retry import (
     _CHROME_DRIVE, _CHROME_STUB, _CLOCK,
 )
@@ -32,8 +32,7 @@ global.fetch = (url) => {
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_rejected_retry_reapplies_a_cache_filled_meanwhile():
-    js = web_common.OPEN_MODE_BANNER_JS.strip()
-    js = js[len("<script>"):-len("</script>")]
+    js = script_src(web_common.OPEN_MODE_BANNER_JS)
     given = f"const STATUSES = {json.dumps([503, 'reject', 200])};\n"
     res = node_json(given + _CHROME_STUB + _CLOCK + _FILL_CACHE_ON_RETRY + js
                     + _CHROME_DRIVE)
