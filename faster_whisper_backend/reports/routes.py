@@ -43,6 +43,7 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.reports import store as reports_store
+from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.core.web_common import require_user_webui_host
 from faster_whisper_backend.auth.dependencies import get_current_user, require_admin, require_page
@@ -176,10 +177,7 @@ def _trace_provenance(request_id: str, user_id: "str | None",
         return "", []
     if row is None:
         return "", []
-    try:
-        stages = json.loads(row["stages"] or "[]")
-    except (TypeError, ValueError):
-        stages = []
+    stages = store_common.json_column(row["stages"], "[]")
     if not isinstance(stages, list):
         stages = []
     # Same item ceiling as ReportSubmitIn.stages.
