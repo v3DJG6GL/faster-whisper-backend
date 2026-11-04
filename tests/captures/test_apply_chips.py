@@ -16,7 +16,7 @@ import pytest
 from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.pipeline import engine as pl_engine
-from tests._page_helpers import needs_node, node_json
+from tests._page_helpers import js_fn, needs_node, node_json
 
 _CASES = [
     # A chip on the second "the" leaves the first alone.
@@ -310,25 +310,15 @@ def test_default_transcript_skips_a_member_the_pipeline_blanked():
         [first, _BLANKED, _LEGACY], "space") == "Hallo Welt. Wie geht es?"
 
 
-def _js_function(src, name):
-    start = src.index("function " + name + "(")
-    depth = 0
-    for i in range(src.index("{", start), len(src)):
-        if src[i] == "{":
-            depth += 1
-        elif src[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return src[start:i + 1]
-    raise AssertionError(name + " has no closing brace")
+def _twin_fn():
+    src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
+           / "templates" / "captures.html").read_text(encoding="utf-8")
+    return js_fn(src, "function _applyChipsToText(")
 
 
 def _run_js_twin(cases):
     """_applyChipsToText(text, chips, words) for each [text, chips, words]."""
-    src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
-           / "templates" / "captures.html").read_text(encoding="utf-8")
-    fn = _js_function(src, "_applyChipsToText")
-    script = (fn + "\nprocess.stdout.write(JSON.stringify("
+    script = (_twin_fn() + "\nprocess.stdout.write(JSON.stringify("
               + json.dumps(cases, ensure_ascii=False)
               + ".map(function(c) { return _applyChipsToText(c[0], c[1], c[2]); })));")
     return node_json(script)
@@ -346,9 +336,7 @@ def test_js_twin_matches_server_chip_application():
 def test_js_twin_with_many_chips_on_a_long_spaced_text_stays_fast():
     # Timed inside node (its start-up does not count); the text is built
     # there too, as an argument this long would pass the OS limit.
-    src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
-           / "templates" / "captures.html").read_text(encoding="utf-8")
-    script = (_js_function(src, "_applyChipsToText")
+    script = (_twin_fn()
               + "\nvar toks = " + json.dumps(" ".join(_LONG_TOKS[:10]))
               + ".split(' '); toks = [].concat.apply([], Array(600).fill(toks));"
               + "\nvar words = toks.map(function(t) { return {word: ' ' + t}; });"
