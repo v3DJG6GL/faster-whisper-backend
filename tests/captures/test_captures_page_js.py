@@ -2549,8 +2549,11 @@ console.log(JSON.stringify([
                      ("你好", "「是」"))]
 
 
-# A word in the strip at content row `top`; `calls` logs its scrollIntoView.
+# A strip showing content rows 0..100 when scrollTop is 0, and a word in it at
+# content row `top`; `calls` logs its scrollIntoView.
 _STRIP_WORD_JS = r"""
+var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
+  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
 var calls = [];
 function word(top, i) {
   return { classList: { add: function() {}, remove: function() {} },
@@ -2569,9 +2572,6 @@ def test_karaoke_highlight_scrolls_only_the_word_strip(page, tmp_path):
     back to itself on every word."""
     fns = _js_functions(page, "_scrollStripTo", "_setActiveWord")
     out = _run_node(tmp_path, fns + _STRIP_WORD_JS + r"""
-// The strip shows content rows 0..100 when scrollTop is 0.
-var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
-  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
 var state = { stripEl: strip,
   wordEls: [word(510), word(560), word(650), word(505)] };
 var tops = [];
@@ -2593,8 +2593,6 @@ def test_keyboard_cursor_scrolls_only_the_word_strip(page, tmp_path):
     scrolled away from the card was pulled back to it."""
     fns = _js_functions(page, "_scrollStripTo", "_redrawCursor")
     out = _run_node(tmp_path, fns + _STRIP_WORD_JS + r"""
-var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
-  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
 var state = { stripEl: strip, cursorIdx: 1, wordEls: [word(510), word(650)] };
 _redrawCursor(state);
 console.log(JSON.stringify([calls.length, strip.scrollTop]));
@@ -2610,8 +2608,6 @@ def test_keyboard_cursor_move_scrolls_the_page_to_the_cursor(page, tmp_path):
     not follow."""
     fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor")
     out = _run_node(tmp_path, fns + _STRIP_WORD_JS + r"""
-var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
-  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
 var state = { stripEl: strip, cursorIdx: 0,
   wordEls: [word(510, 0), word(560, 1), word(650, 2)] };
 _moveCursor(state, 1);
@@ -2642,11 +2638,10 @@ def _strip_focus_harness(page, scroll_top=200):
                         "_bindStripKeyboard")
     return fns + _STRIP_WORD_JS + r"""
 var handlers = {};
-var strip = { scrollTop: """ + str(scroll_top) + r""", clientTop: 1, clientHeight: 100, parentNode: null,
+Object.assign(strip, { scrollTop: """ + str(scroll_top) + r""", parentNode: null,
   setAttribute: function() {},
   classList: { add: function() {}, remove: function() {} },
-  addEventListener: function(t, h) { handlers[t] = h; },
-  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
+  addEventListener: function(t, h) { handlers[t] = h; } });
 global.document = { createElement: function() {
   return { classList: { add: function() {}, remove: function() {} } }; } };
 var state = { stripEl: strip, words: ['a', 'b'], cursorIdx: -1,
