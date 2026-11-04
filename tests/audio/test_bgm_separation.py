@@ -9,7 +9,8 @@ import pytest
 
 from faster_whisper_backend.audio import bgm_separation
 from tests._transcription_helpers import (
-    bind_profile, blocked_register, cancel_with_register_queued)
+    bind_profile, blocked_register, cancel_while_register_held,
+    cancel_with_register_queued)
 from tests._transcription_helpers import post_verbose as _post
 
 
@@ -434,24 +435,13 @@ def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatc
     request is cancelled; the separator must be cached by then, or the row
     is a phantom _drop_locked (which returns early on no separator) never
     unregisters."""
-    import asyncio
     from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch)
     sep = object()
     monkeypatch.setattr(bgm_separation, "_load_blocking", lambda m, d: sep)
     entered, gate = blocked_register(monkeypatch)
-
-    async def _main():
-        task = asyncio.create_task(bgm_separation._get_separator("Foo", lease=True))
-        while not entered.is_set():
-            await asyncio.sleep(0.01)
-        task.cancel()
-        await asyncio.sleep(0.05)
-        assert not task.done()     # held until the register write lands
-        gate.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    asyncio.run(_main())
+    cancel_while_register_held(
+        lambda: bgm_separation._get_separator("Foo", lease=True), entered, gate)
     assert bgm_separation._separator is sep
     assert bgm_separation._leases == {}   # dropped for the caller, which never got it
     assert "uvr:Foo.onnx" in model_registry._loaded_models

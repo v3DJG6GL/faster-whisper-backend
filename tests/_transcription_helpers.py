@@ -2,7 +2,7 @@
 (the stub upload, a plain / verbose_json post, a profile-bound non-admin key,
 the record_transcription spy, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a gated model_registry write, a cancel while that
-write is queued).
+write is held or queued).
 Import as ``from tests._transcription_helpers import ...``."""
 
 import io
@@ -140,6 +140,30 @@ def cancel_with_register_queued(monkeypatch, loaded, make_coro):
             await task
         # One worker, FIFO: once this runs, anything queued before it has.
         await loop.run_in_executor(None, lambda: None)
+    try:
+        asyncio.run(_main())
+    finally:
+        gate.set()
+
+
+def cancel_while_register_held(make_coro, entered, gate):
+    """Cancel make_coro()'s task once its register write is held on `gate`
+    (see blocked_register; `entered` is set while it waits): the task must
+    stay pending until the gate opens, then end cancelled."""
+    import asyncio
+
+    import pytest
+
+    async def _main():
+        task = asyncio.create_task(make_coro())
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()     # held until the register write lands
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     try:
         asyncio.run(_main())
     finally:

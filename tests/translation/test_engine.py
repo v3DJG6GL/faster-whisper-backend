@@ -21,7 +21,8 @@ import pytest
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core import languages
-from tests._transcription_helpers import cancel_with_register_queued
+from tests._transcription_helpers import (
+    cancel_while_register_held, cancel_with_register_queued)
 
 
 # ---------------------------------------------------------------------------
@@ -2092,21 +2093,8 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
         stats["registered"].append((name, device, kind))
     monkeypatch.setattr(translation.model_registry, "register_loaded_model",
                         _slow_register)
-
-    async def run():
-        task = asyncio.create_task(translation._get_model("o/a", lease=True))
-        while not entered.is_set():
-            await asyncio.sleep(0.01)
-        task.cancel()
-        await asyncio.sleep(0.05)
-        assert not task.done()     # held until the register write lands
-        go.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    try:
-        asyncio.run(run())
-    finally:
-        go.set()
+    cancel_while_register_held(
+        lambda: translation._get_model("o/a", lease=True), entered, go)
     assert translation._models.get("o/a") is made["o/a"]
     assert stats["registered"] == [("gguf:o/a", "cpu", "gguf")]
     assert translation._active.get("o/a", 0) == 0

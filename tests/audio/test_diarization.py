@@ -13,6 +13,8 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import hf_cache
 from tests._transcription_helpers import blocked_register as _blocked_register
 from tests._transcription_helpers import (
+    cancel_while_register_held as _cancel_while_register_held)
+from tests._transcription_helpers import (
     cancel_with_register_queued as _cancel_with_register_queued)
 from tests._transcription_helpers import post_verbose as _post
 
@@ -533,24 +535,13 @@ def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch
     """The register thread writes "pyannote:<id>" even when the awaiting
     caller is cancelled; with no cached pipeline that row was a phantom
     _drop_locked (early return on no pipeline) never unregistered."""
-    import asyncio
     from faster_whisper_backend.runtime import model_registry
     _diar_model(monkeypatch)
     pipe = object()
     monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: pipe)
     entered, gate = _blocked_register(monkeypatch)
-
-    async def _main():
-        task = asyncio.create_task(diarization._get_pipeline(lease=True))
-        while not entered.is_set():
-            await asyncio.sleep(0.01)
-        task.cancel()
-        await asyncio.sleep(0.05)
-        assert not task.done()     # held until the register write lands
-        gate.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    asyncio.run(_main())
+    _cancel_while_register_held(
+        lambda: diarization._get_pipeline(lease=True), entered, gate)
     assert diarization._pipeline is pipe
     assert diarization._leases == {}   # the cancelled caller never releases
     assert "pyannote:A" in model_registry._loaded_models
