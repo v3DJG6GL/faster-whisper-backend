@@ -1065,6 +1065,9 @@ let xs = [];
 let cmpTotal = null;       // dashed compare line (sum of the compare lines)
 
 function visibleLines() { return curLines.filter(ln => !hidden.has(ln.id)); }
+// Visible lines in uPlot series order (top of the stack first when stacked):
+// the series spec, the tip rows and the cursor dots must index alike.
+function drawnLines() { const vis = visibleLines(); return stacked ? vis.slice().reverse() : vis; }
 
 function prepareLines() {
   const j = lastDoc;
@@ -1127,8 +1130,7 @@ function chartData() {
   return [xs].concat(series);
 }
 function seriesSpec() {
-  const vis = visibleLines();
-  const ordered = stacked ? vis.slice().reverse() : vis;
+  const ordered = drawnLines();
   const spec = [{ value: (u, ts) => ts == null ? '' : fmtDate(ts) }].concat(
     ordered.map(ln => stacked ? {
       label: ln.label, stroke: ln.color, fill: ln.color, width: 0,
@@ -1138,8 +1140,8 @@ function seriesSpec() {
       label: ln.label, stroke: ln.color,
       width: ln.others ? 1.25 : 1.5,
       dash: ln.others ? [4, 3] : undefined,
-      fill: vis.length === 1 ? ln.color + '22' : undefined,
-      points: { show: vis.length === 1, size: 4 }, spanGaps: true,
+      fill: ordered.length === 1 ? ln.color + '22' : undefined,
+      points: { show: ordered.length === 1, size: 4 }, spanGaps: true,
     }));
   if (cmpTotal) spec.push({ label: 'compare', stroke: '#8b949e', width: 1.25,
                             dash: [4, 3], points: { show: false }, spanGaps: true });
@@ -1148,11 +1150,10 @@ function seriesSpec() {
 function updateTip(u) {
   const idx = u.cursor.idx;
   if (idx == null || !curLines.length) { hideTip(); announce(''); return; }
-  const vis = visibleLines();
   let html = '<div class="tip-date">' + fmtDate(xs[idx])
     + (lastDoc.bucket !== 'day' ? ' · ' + lastDoc.bucket : '') + '</div>';
   let total = 0;
-  const rows = stacked ? vis.slice().reverse() : vis;
+  const rows = drawnLines();
   rows.forEach(ln => {
     const v = Number(ln.values[idx] || 0); total += v;
     html += tipRow(ln.color, ln.label, fmtMetric(docMetric(), v));
@@ -1241,7 +1242,7 @@ function renderChart() {
     cursor: {
       y: false, drag: { x: false, y: false }, move: snapToDataX,
       points: { size: remPx(0.6), width: remPx(0.13), stroke: '#0d1117',
-                fill: (u, si) => { const ordered = stacked ? visibleLines().slice().reverse() : visibleLines();
+                fill: (u, si) => { const ordered = drawnLines();
                                    return (ordered[si - 1] && ordered[si - 1].color) || '#8b949e'; } },
     },
     scales: { x: { time: true }, y: { range: { min: { pad: 0, mode: 1, hard: 0 }, max: { pad: 0.1, mode: 1 } } } },
