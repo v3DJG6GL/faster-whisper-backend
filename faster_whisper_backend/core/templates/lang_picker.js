@@ -1,6 +1,13 @@
 
 <script>(function(){
 
+  function _mk(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
   function _renderLanguagePicker(opts) {
     opts = opts || {};
     var codes = Array.isArray(opts.initial) ? opts.initial.slice() : [];
@@ -9,8 +16,7 @@
     var disabled = !!opts.disabled;
     var readOnly = !!opts.readOnly;
 
-    var el = document.createElement('div');
-    el.className = 'lang-picker' + (disabled ? ' disabled' : '');
+    var el = _mk('div', 'lang-picker' + (disabled ? ' disabled' : ''));
 
     var pillsWrap = document.createElement('span');
     pillsWrap.style.cssText = 'display:inline-flex;flex-wrap:wrap;gap:0.25rem;align-items:center;';
@@ -38,13 +44,11 @@
       });
       el.appendChild(addBtn);
 
-      dropEl = document.createElement('div');
-      dropEl.className = 'lang-picker-dropdown';
+      dropEl = _mk('div', 'lang-picker-dropdown');
       dropEl.setAttribute('popover', 'manual');
       el.appendChild(dropEl);
 
-      var searchWrap = document.createElement('div');
-      searchWrap.className = 'lang-picker-search';
+      var searchWrap = _mk('div', 'lang-picker-search');
       searchInp = document.createElement('input');
       searchInp.type = 'text';
       searchInp.placeholder = 'Search languages…';
@@ -94,16 +98,12 @@
     function _renderPills() {
       pillsWrap.innerHTML = '';
       if (!codes.length) {
-        var ghost = document.createElement('span');
-        ghost.className = 'lang-picker-ghost';
-        ghost.textContent = 'all languages';
+        var ghost = _mk('span', 'lang-picker-ghost', 'all languages');
         pillsWrap.appendChild(ghost);
         return;
       }
       codes.forEach(function(c) {
-        var pill = document.createElement('span');
-        pill.className = 'lang-pill';
-        pill.textContent = c;
+        var pill = _mk('span', 'lang-pill', c);
         if (!readOnly) {
           var x = document.createElement('button');
           x.type = 'button';
@@ -125,8 +125,7 @@
         return l.code.indexOf(q) >= 0 || l.name.toLowerCase().indexOf(q) >= 0;
       });
       filtered.forEach(function(l) {
-        var opt = document.createElement('div');
-        opt.className = 'lang-picker-opt' + (codes.indexOf(l.code) >= 0 ? ' selected' : '');
+        var opt = _mk('div', 'lang-picker-opt' + (codes.indexOf(l.code) >= 0 ? ' selected' : ''));
         opt.innerHTML = '<span class="lp-code">' + l.code + '</span>'
           + '<span class="lp-name">' + l.name + '</span>'
           + '<span class="lp-check">✓</span>';
@@ -138,15 +137,12 @@
         return !q || g.toLowerCase().indexOf(q) >= 0;
       });
       if (matchingGroups.length) {
-        var hdr = document.createElement('div');
-        hdr.className = 'lang-picker-group-hdr';
-        hdr.textContent = 'Add by family';
+        var hdr = _mk('div', 'lang-picker-group-hdr', 'Add by family');
         dropContent.appendChild(hdr);
         matchingGroups.forEach(function(g) {
           var gc = groups[g];
           var allIn = gc.every(function(c) { return codes.indexOf(c) >= 0; });
-          var opt = document.createElement('div');
-          opt.className = 'lang-picker-opt' + (allIn ? ' selected' : '');
+          var opt = _mk('div', 'lang-picker-opt' + (allIn ? ' selected' : ''));
           opt.innerHTML = '<span class="lp-name" style="color:var(--amber,#e0a040);font-weight:500">'
             + (allIn ? '✓ ' : '') + g + '</span>'
             + '<span class="lp-code">' + gc.join(', ') + '</span>';
