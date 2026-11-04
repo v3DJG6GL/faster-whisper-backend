@@ -55,7 +55,6 @@ CSRF middleware; this module never imports main.
 """
 
 import asyncio
-import json
 import logging
 import os
 import random
@@ -723,17 +722,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         conf = {}
         pending_audio: "bytes | None" = None
         if first.get("text") is not None:
-            try:
-                conf = json.loads(first["text"])
-            except (ValueError, TypeError, RecursionError):
-                # RecursionError is what json raises on a deeply nested
-                # document (a ~400 KB "[[[[..." frame fits ws_max_size), and it
-                # is a RuntimeError, not a ValueError: uncaught, the blanket
-                # except Exception logs a full traceback with absolute paths,
-                # unthrottled, at a rate the client picks.
-                conf = {}
-            if not isinstance(conf, dict):
-                conf = {}
+            conf = store_common.json_object(first["text"]) or {}
         elif first.get("bytes") is not None:
             pending_audio = first["bytes"]
 
@@ -1916,12 +1905,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                                                 "audio decoder stopped; closing")
                         break
                 elif msg.get("text") is not None:
-                    try:
-                        ctrl = json.loads(msg["text"])
-                    except (ValueError, TypeError, RecursionError):
-                        # Deep nesting raises RecursionError (see the handshake guard above).
-                        continue
-                    if not isinstance(ctrl, dict):
+                    ctrl = store_common.json_object(msg["text"])
+                    if ctrl is None:
                         continue
                     kind = ctrl.get("type")
                     if kind == "flush":

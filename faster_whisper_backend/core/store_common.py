@@ -14,6 +14,7 @@
 - `rename_columns()` / `add_missing_columns()`: the legacy column-rename and
   additive column migrations the stores run on init.
 - `json_column()`: the tolerant decode of a JSON-bearing column;
+  `json_object()`: the tolerant decode of client-sent JSON into a dict;
   `cfg_int()`: a live int knob read with a fallback.
 
 Every store creates its DB at the process umask (0644 file / 0755 dir on a
@@ -167,6 +168,21 @@ def json_column(raw: Any, empty: str) -> Any:
         return json.loads(raw or empty)
     except (TypeError, ValueError):
         return json.loads(empty)
+
+
+def json_object(text: Any) -> "dict | None":
+    """The dict client-sent `text` decodes to; None for malformed JSON or a
+    non-object. RecursionError is what json raises on a deeply nested document
+    (a ~400 KB "[[[[..." websocket frame fits ws_max_size), and it is a
+    RuntimeError, not a ValueError: uncaught, a stream's blanket except
+    Exception logs a full traceback with absolute paths, unthrottled, at a rate
+    the client picks, and a batch request becomes a logged 500 and an err_count
+    bump instead of "malformed → ignored"."""
+    try:
+        value = json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def cfg_int(name: str, default: int) -> int:

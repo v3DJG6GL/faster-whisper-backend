@@ -2255,17 +2255,8 @@ async def transcribe(
             # Matches the streaming twin.
             _overrides = {}
             if decode_overrides:
-                try:
-                    _parsed = json.loads(decode_overrides)
-                    if isinstance(_parsed, dict):
-                        _overrides = {k: (_LONE_SURROGATE_RE.sub("", v) if isinstance(v, str) else v)
-                                      for k, v in _parsed.items()}
-                except (ValueError, TypeError, RecursionError):
-                    # json.loads raises RecursionError (not a ValueError) on
-                    # deep nesting; uncaught it would become a logged 500 and an
-                    # err_count bump instead of "malformed → ignored". Matches
-                    # the streaming twin.
-                    _overrides = {}
+                _overrides = {k: (_LONE_SURROGATE_RE.sub("", v) if isinstance(v, str) else v)
+                              for k, v in (store_common.json_object(decode_overrides) or {}).items()}
             # Per-request decode keys dropped by a lock (assemble_transcribe_
             # kwargs enforces the drop; we record it here for the response).
             # Live-dictation keys are not batch knobs at all: a locked one was
