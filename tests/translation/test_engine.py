@@ -8,6 +8,7 @@ inside _load_blocking, and these tests stub either the module-level
 """
 
 import asyncio
+from asyncio import run as _run
 import contextlib
 import gc
 import logging
@@ -785,10 +786,6 @@ def _numbered_reply(payload, transform=_xlate):
     lines = payload.split("\n\n", 1)[1].splitlines()
     return "\n".join(f"{m.group(1)}. {transform(m.group(2))}"
                      for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
-
-
-def _run(coro):
-    return asyncio.run(coro)
 
 
 def _de_en(segs, mode="faithful", **kwargs):

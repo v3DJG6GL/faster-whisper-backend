@@ -28,6 +28,7 @@ is never patched.
 from __future__ import annotations
 
 import asyncio
+from asyncio import run as _run
 import http.server
 import json
 import os
@@ -49,10 +50,6 @@ SECRET = b"INTERNAL-SECRET-" * 64
 PUBLIC_BODY = b"\xff\xfb\x90\x44" + b"\x00" * 4092  # plausible MPEG audio head
 
 from faster_whisper_backend.paths import REPO_ROOT
-
-
-def _run(coro):
-    return asyncio.run(coro)
 
 
 class _Internal(_QuietHandler):

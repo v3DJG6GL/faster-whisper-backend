@@ -3,7 +3,7 @@ the ffmpeg argv, the runner against a fake ffmpeg, and the capability probe."""
 
 from __future__ import annotations
 
-import asyncio
+from asyncio import run as _run
 import contextlib
 import os
 import shutil
@@ -14,10 +14,6 @@ import tempfile
 import pytest
 
 from faster_whisper_backend.media import subtitle_mux as pk
-
-
-def _run(coro):
-    return asyncio.run(coro)
 
 
 @contextlib.contextmanager

@@ -9,6 +9,9 @@ progress parsing, cancellation, timeouts, result validation — runs for real.
 from __future__ import annotations
 
 import asyncio
+# asyncio.run (not a bare new_event_loop): the loop must be CLOSED after
+# each call or every test leaks an epoll fd + subprocess-watcher state.
+from asyncio import run as _run
 import os
 import socket
 import sys
@@ -118,12 +121,6 @@ def test_effective_max_bytes_is_media_cap(monkeypatch):
 
 # Extractor-policy tests monkeypatch match_extractor: the real registry
 # match is yt-dlp's own behavior, not ours to test.
-
-def _run(coro):
-    # asyncio.run (not a bare new_event_loop): the loop must be CLOSED after
-    # each call or every test leaks an epoll fd + subprocess-watcher state.
-    return asyncio.run(coro)
-
 
 def _fetch(fetch, dest, *, url="https://example.com/v", **kw):
     """`fetch` (udl.download / udl.download_video) of `url` (the stand-in link
