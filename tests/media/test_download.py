@@ -951,6 +951,13 @@ def _fake_argv(script: str) -> "list[str]":
     return [sys.executable, "-c", script]
 
 
+def _yt_dlp_script(file, *lines, size=64):
+    """A stand-in yt-dlp: print each of `lines`, then write `size` bytes to `file` in the job dir."""
+    prints = "".join(f'print("{ln}", flush=True)\n' for ln in lines)
+    return (f'import os\n{prints}'
+            f'open(os.path.join(r"__DEST__", "{file}"), "wb").write(b"x" * {size})\n')
+
+
 def _patch_argv(monkeypatch, script: str):
     monkeypatch.setattr(
         udl, "build_download_argv",
@@ -1038,10 +1045,7 @@ def test_probe_failure_log_masks_the_links_password(monkeypatch, caplog):
 
 def test_download_partial_only_is_size_limit(tmp_path, monkeypatch):
     # --max-filesize skip: clean exit, only a .part file left behind.
-    _patch_argv(monkeypatch, """
-import os
-open(os.path.join(r"__DEST__", "media.m4a.part"), "wb").write(b"x")
-""")
+    _patch_argv(monkeypatch, _yt_dlp_script("media.m4a.part", size=1))
     with pytest.raises(udl.UrlDownloadError, match="size limit"):
         _fetch(udl.download, tmp_path)
 
@@ -1058,10 +1062,7 @@ print("[download] t does not pass filter (extractor_key!=Generic), skipping ..",
 
 
 def test_download_oversize_result_rejected(tmp_path, monkeypatch):
-    _patch_argv(monkeypatch, """
-import os
-open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 2048)
-""")
+    _patch_argv(monkeypatch, _yt_dlp_script("media.m4a", size=2048))
     with pytest.raises(udl.UrlDownloadError, match="size limit"):
         _fetch(udl.download, tmp_path, max_bytes=1024)
 
@@ -1969,14 +1970,13 @@ def _patch_video_argv(monkeypatch, script: str):
             script.replace("__DEST__", dest_dir)))
 
 
-_TWO_STREAMS_SCRIPT = """
-import os, sys
-print("dl:500 1000 NA", flush=True)
-print("dl:1000 1000 NA", flush=True)
-print("dl:100 300 NA", flush=True)
-print("dl:300 300 NA", flush=True)
-open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
-"""
+_TWO_STREAMS_SCRIPT = _yt_dlp_script(
+    "media.mkv",
+    "dl:500 1000 NA",
+    "dl:1000 1000 NA",
+    "dl:100 300 NA",
+    "dl:300 300 NA",
+)
 
 
 def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeypatch):
@@ -1991,14 +1991,13 @@ def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeyp
     assert [d for _f, _t, d in seen] == [500, 1000, 1100, 1300], seen
 
 
-_TWO_LEGS_BY_ID_SCRIPT = """
-import os, sys
-print("dl:500 NA NA 616", flush=True)
-print("dl:1200 1200 NA 616", flush=True)
-print("dl:100 300 NA 140", flush=True)
-print("dl:300 300 NA 140", flush=True)
-open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
-"""
+_TWO_LEGS_BY_ID_SCRIPT = _yt_dlp_script(
+    "media.mkv",
+    "dl:500 NA NA 616",
+    "dl:1200 1200 NA 616",
+    "dl:100 300 NA 140",
+    "dl:300 300 NA 140",
+)
 
 
 def test_download_video_denominator_is_per_leg(tmp_path, monkeypatch):
@@ -2018,14 +2017,13 @@ def test_download_video_denominator_is_per_leg(tmp_path, monkeypatch):
     assert fracs == sorted(fracs), fracs
 
 
-_UNPRICED_AUDIO_LEG_SCRIPT = """
-import os, sys
-print("dl:500 1000 NA 616", flush=True)
-print("dl:1000 1000 NA 616", flush=True)
-print("dl:100 NA NA 140", flush=True)
-print("dl:300 300 NA 140", flush=True)
-open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
-"""
+_UNPRICED_AUDIO_LEG_SCRIPT = _yt_dlp_script(
+    "media.mkv",
+    "dl:500 1000 NA 616",
+    "dl:1000 1000 NA 616",
+    "dl:100 NA NA 140",
+    "dl:300 300 NA 140",
+)
 
 
 def test_download_video_never_reads_100_percent_while_a_leg_is_pending(tmp_path, monkeypatch):
@@ -2040,14 +2038,13 @@ def test_download_video_never_reads_100_percent_while_a_leg_is_pending(tmp_path,
     assert seen[-1] == (1.0, 1300, 1300)
 
 
-_OFF_RUNG_LEGS_SCRIPT = """
-import os, sys
-print("dl:500 1000 NA 299", flush=True)
-print("dl:1000 1000 NA 299", flush=True)
-print("dl:100 200 NA 251", flush=True)
-print("dl:200 200 NA 251", flush=True)
-open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
-"""
+_OFF_RUNG_LEGS_SCRIPT = _yt_dlp_script(
+    "media.mkv",
+    "dl:500 1000 NA 299",
+    "dl:1000 1000 NA 299",
+    "dl:100 200 NA 251",
+    "dl:200 200 NA 251",
+)
 
 
 def test_download_video_fallback_legs_drop_the_rung_estimates(tmp_path, monkeypatch):
@@ -2063,13 +2060,12 @@ def test_download_video_fallback_legs_drop_the_rung_estimates(tmp_path, monkeypa
     assert seen[-1] == (1.0, 1200, 1200)
 
 
-_DROP_INSIDE_ONE_LEG_SCRIPT = """
-import os, sys
-print("dl:500 1000 NA 616", flush=True)
-print("dl:200 1000 NA 616", flush=True)
-print("dl:1000 1000 NA 616", flush=True)
-open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
-"""
+_DROP_INSIDE_ONE_LEG_SCRIPT = _yt_dlp_script(
+    "media.mkv",
+    "dl:500 1000 NA 616",
+    "dl:200 1000 NA 616",
+    "dl:1000 1000 NA 616",
+)
 
 
 def test_download_video_counter_reset_inside_one_leg_is_not_a_new_file(tmp_path, monkeypatch):
@@ -2107,10 +2103,7 @@ def test_download_video_cap_is_cumulative(tmp_path, monkeypatch):
         _fetch(udl.download_video, tmp_path, max_bytes=1200)
 
 
-_INTERMEDIATE_ONLY_SCRIPT = """
-import os
-open(os.path.join(r"__DEST__", "media.f251.webm"), "wb").write(b"x" * 64)
-"""
+_INTERMEDIATE_ONLY_SCRIPT = _yt_dlp_script("media.f251.webm")
 
 
 def test_download_video_rejects_intermediate_only(tmp_path, monkeypatch):
@@ -2135,12 +2128,11 @@ def test_download_video_merge_leg_over_max_filesize_is_the_size_limit(tmp_path, 
         _fetch(udl.download_video, tmp_path)
 
 
-_OVER_CAP_PHRASE_IN_ID_SCRIPT = """
-import os
-print("[generic] larger than max-filesize: Downloading webpage", flush=True)
-print("[info] larger than max-filesize: Downloading 1 format(s): mp4", flush=True)
-open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
-"""
+_OVER_CAP_PHRASE_IN_ID_SCRIPT = _yt_dlp_script(
+    "media.mp4",
+    "[generic] larger than max-filesize: Downloading webpage",
+    "[info] larger than max-filesize: Downloading 1 format(s): mp4",
+)
 
 
 def test_download_video_over_cap_phrase_in_the_site_id_is_not_the_size_limit(tmp_path,
@@ -2153,13 +2145,12 @@ def test_download_video_over_cap_phrase_in_the_site_id_is_not_the_size_limit(tmp
     assert os.path.basename(out) == "media.mp4"
 
 
-_OVER_CAP_LINE_FORGED_BY_ID_SCRIPT = """
-import os
-print("[generic] a", flush=True)
-print("[download] File is larger than max-filesize (1 bytes > 2 bytes). Aborting.", flush=True)
-print("b: Downloading webpage", flush=True)
-open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
-"""
+_OVER_CAP_LINE_FORGED_BY_ID_SCRIPT = _yt_dlp_script(
+    "media.mp4",
+    "[generic] a",
+    "[download] File is larger than max-filesize (1 bytes > 2 bytes). Aborting.",
+    "b: Downloading webpage",
+)
 
 
 def test_download_video_forged_over_cap_line_does_not_refuse_a_finished_download(
@@ -2188,10 +2179,7 @@ def test_download_video_over_cap_phrase_in_a_filtered_title_is_the_handoff_refus
     assert str(ei.value) == udl._HANDOFF_REFUSED
 
 
-_SINGLE_MUXED_SCRIPT = """
-import os
-open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
-"""
+_SINGLE_MUXED_SCRIPT = _yt_dlp_script("media.mp4")
 
 
 def test_download_video_accepts_a_single_muxed_file(tmp_path, monkeypatch):
@@ -2223,10 +2211,7 @@ def test_find_result_file_accepts_the_extension_yt_dlp_kept(tmp_path, name):
         udl._find_video_result(str(tmp_path), "mkv")
 
 
-_UPPERCASE_EXT_SCRIPT = """
-import os
-open(os.path.join(r"__DEST__", "media.MP3"), "wb").write(b"x" * 64)
-"""
+_UPPERCASE_EXT_SCRIPT = _yt_dlp_script("media.MP3")
 
 
 def test_download_returns_an_uppercase_extension_file(tmp_path, monkeypatch):
