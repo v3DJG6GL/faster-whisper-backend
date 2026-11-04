@@ -263,6 +263,16 @@ const DRAG_AUTOSCROLL = makeDragAutoScroll();
 // to read light at rail size and sit consistently beside the inline-SVG lock.
 const MOVE_CHEV_UP = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 10.5 8 6l4.5 4.5"/></svg>';
 const MOVE_CHEV_DOWN = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 5.5 8 10l4.5-4.5"/></svg>';
+// One ↑ (delta < 0) or ↓ move button; click runs onMove(delta) unless disabled.
+function _moveBtn(cls, delta, onMove) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = cls;
+  b.innerHTML = delta < 0 ? MOVE_CHEV_UP : MOVE_CHEV_DOWN;
+  b.title = delta < 0 ? 'Move up one position' : 'Move down one position';
+  b.setAttribute('aria-label', b.title);
+  b.addEventListener('click', () => { if (!b.disabled) onMove(delta); });
+  return b;
+}
 
 function _readEntries(parent) {
   const out = [];
@@ -370,16 +380,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     commitData();
   }
   const stepper = _reEl('div', 'rl-stepper');
-  const upBtn = document.createElement('button');
-  upBtn.type = 'button'; upBtn.className = 'rl-move rl-move-up';
-  upBtn.innerHTML = MOVE_CHEV_UP; upBtn.title = 'Move up one position';
-  upBtn.setAttribute('aria-label', upBtn.title);
-  upBtn.addEventListener('click', () => { if (!upBtn.disabled) _rlMove(-1); });
-  const dnBtn = document.createElement('button');
-  dnBtn.type = 'button'; dnBtn.className = 'rl-move rl-move-down';
-  dnBtn.innerHTML = MOVE_CHEV_DOWN; dnBtn.title = 'Move down one position';
-  dnBtn.setAttribute('aria-label', dnBtn.title);
-  dnBtn.addEventListener('click', () => { if (!dnBtn.disabled) _rlMove(1); });
+  const upBtn = _moveBtn('rl-move rl-move-up', -1, _rlMove);
+  const dnBtn = _moveBtn('rl-move rl-move-down', 1, _rlMove);
   stepper.appendChild(upBtn); stepper.appendChild(ord); stepper.appendChild(dnBtn);
   rail.appendChild(grip); rail.appendChild(stepper);
   const body = _reEl('div', 'rl-ebody');

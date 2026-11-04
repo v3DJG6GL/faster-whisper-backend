@@ -3073,15 +3073,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       commitFull();
     }
     const rankStepper = _el('div', 'rank-stepper');
-    upBtn = _button('move-btn move-up', '', 'Move up one position');
-    upBtn.innerHTML = MOVE_CHEV_UP; upBtn.setAttribute('aria-label', upBtn.title);
+    upBtn = _moveBtn('move-btn move-up', -1, _moveRuleBy);
     if (rule.type === 'terminal' || idx <= 0) upBtn.disabled = true;
-    upBtn.addEventListener('click', () => { if (!upBtn.disabled) _moveRuleBy(-1); });
     const ord = _el('span', 'ordinal', String(idx + 1));
-    downBtn = _button('move-btn move-down', '', 'Move down one position');
-    downBtn.innerHTML = MOVE_CHEV_DOWN; downBtn.setAttribute('aria-label', downBtn.title);
+    downBtn = _moveBtn('move-btn move-down', 1, _moveRuleBy);
     if (rule.type === 'terminal' || idx >= _lastMovable) downBtn.disabled = true;
-    downBtn.addEventListener('click', () => { if (!downBtn.disabled) _moveRuleBy(1); });
     rankStepper.appendChild(upBtn);
     rankStepper.appendChild(ord);
     rankStepper.appendChild(downBtn);
