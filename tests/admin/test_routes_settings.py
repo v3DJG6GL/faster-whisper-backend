@@ -458,18 +458,10 @@ def test_clear_local_override_keeps_env_pinned_running_rules(
 
 
 def test_test_pipeline_dry_run(client):
-    r = client.post(
-        "/settings/test-pipeline",
-        json={
-            "sample": "  hallo welt  ",
-            "rules": [
-                {"name": "noop", "type": "regex-list", "enabled": True,
-                 "entries": [{"pattern": "welt", "replacement": "world"}]},
-            ],
-        },
-    )
-    assert r.status_code == 200
-    body = r.json()
+    body = dry_run(client, [
+        {"name": "noop", "type": "regex-list", "enabled": True,
+         "entries": [{"pattern": "welt", "replacement": "world"}]},
+    ], "  hallo welt  ")
     assert "steps" in body and "final" in body
     # The regex-list entry runs, then the implicit terminal trim strips edges.
     assert body["final"] == "hallo world"
@@ -512,25 +504,18 @@ def test_test_pipeline_regex_list_skips_bad_entry(client):
     # the engine (pl_engine.rebuild_caches) skips the bad entry per-entry and still
     # applies the valid ones. The dry-run mirrors that and reports the bad
     # pattern as an advisory rather than discarding every entry's effect.
-    r = client.post(
-        "/settings/test-pipeline",
-        json={
-            "sample": "foo bar",
-            "rules": [
-                {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-                    {"pattern": "foo", "replacement": "X"},
-                    {"pattern": "(", "replacement": "Y"},   # uncompilable
-                    {"pattern": "bar", "replacement": "Z"},
-                ]},
-            ],
-        },
-    )
-    assert r.status_code == 200
-    step = r.json()["steps"][0]
+    j = dry_run(client, [
+        {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+            {"pattern": "foo", "replacement": "X"},
+            {"pattern": "(", "replacement": "Y"},   # uncompilable
+            {"pattern": "bar", "replacement": "Z"},
+        ]},
+    ], "foo bar")
+    step = j["steps"][0]
     assert step["after"] == "X Z"
     assert step["matches"] == 2
     assert step["error"]
-    assert r.json()["final"] == "X Z"
+    assert j["final"] == "X Z"
 
 
 def test_test_pipeline_regex_list_skips_bad_replacement_template(client):
@@ -539,15 +524,10 @@ def test_test_pipeline_regex_list_skips_bad_replacement_template(client):
     # The dry run must flag it on a non-matching sample too, and skip only that
     # entry on a matching one instead of discarding the valid entries' output.
     def run(sample):
-        r = client.post("/settings/test-pipeline", json={
-            "sample": sample,
-            "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
-                {"pattern": "abc", "replacement": "Q"},
-                {"pattern": "(b)", "replacement": "\\2"},   # no group 2
-            ]}],
-        })
-        assert r.status_code == 200
-        return r.json()["steps"][0]
+        return list_step(client, [
+            {"pattern": "abc", "replacement": "Q"},
+            {"pattern": "(b)", "replacement": "\\2"},   # no group 2
+        ], sample=sample)
 
     step = run("xyz")
     assert step["after"] == "xyz"
@@ -637,21 +617,13 @@ def test_test_pipeline_fixed_count_nest_screened_not_run(client):
     import time as _time
     pat = r"(?:(?:a{0}){3000}){3000}"
     t0 = _time.monotonic()
-    r = client.post(
-        "/settings/test-pipeline",
-        json={
-            "sample": "abcd",
-            "rules": [
-                {"name": "fc-list", "type": "regex-list", "enabled": True,
-                 "entries": [{"pattern": pat, "replacement": ""}]},
-                {"name": "fc-single", "type": "callback:upper",
-                 "enabled": True, "pattern": pat},
-            ],
-        },
-    )
+    steps = dry_run(client, [
+        {"name": "fc-list", "type": "regex-list", "enabled": True,
+         "entries": [{"pattern": pat, "replacement": ""}]},
+        {"name": "fc-single", "type": "callback:upper",
+         "enabled": True, "pattern": pat},
+    ], "abcd")["steps"]
     assert _time.monotonic() - t0 < 1.0
-    assert r.status_code == 200, r.text
-    steps = r.json()["steps"]
     for step in steps[:2]:
         assert "nested fixed counts" in (step["error"] or "")
         assert step.get("not_run") is True
