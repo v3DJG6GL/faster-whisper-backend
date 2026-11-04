@@ -52,12 +52,10 @@ def _member(monkeypatch, final, training, *raw):
 
 
 def test_one_to_many_expansion_keeps_all_tokens(monkeypatch):
-    _install_word_map(monkeypatch, {"Nurtax": "nur tags"})
-    words = _words("Nurtax", "137", "Schrägstrich", "94")
     final = "nur tags 137 Schrägstrich 94"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {"Nurtax": "nur tags"}, final, "Nurtax", "137", "Schrägstrich", "94")
 
-    assert len(out) == len(words)              # one entry per raw word
+    assert len(out) == 4                       # one entry per raw word
     assert _join(out) == final                 # no token dropped
     # The expanded word carries the joined run and flags the raw form.
     assert out[0]["word"] == "nur tags"
@@ -257,16 +255,15 @@ def test_spaced_raw_word_glued_into_a_token_does_not_take_a_later_one(monkeypatc
     # a later repeat after a dictated line break is the standalone token. The
     # lead tie-break gave the token to the earlier word, so every word in
     # between was struck as removed by a rule.
-    _install_word_map(monkeypatch, {"换行": "\n"})
-    out = capture_samples._align_words_to_final(
-        _words(" 好", "的", "换行", "好", " 我", "知", "道"), "好的\n好 我知道")
+    line_break = {"换行": "\n"}
+    out = _align(monkeypatch, line_break, "好的\n好 我知道",
+                 " 好", "的", "换行", "好", " 我", "知", "道")
     assert [w["word"] for w in out] == ["好", "的", "换行", "好", "我", "知", "道"]
     assert [w.get("removed", False) for w in out] == [
         False, False, True, False, False, False, False]
 
-    out = capture_samples._align_words_to_final(
-        _words(" Python", "很", "好", "换行", "Python", " 很", "强"),
-        "Python很好\nPython 很强")
+    out = _align(monkeypatch, line_break, "Python很好\nPython 很强",
+                 " Python", "很", "好", "换行", "Python", " 很", "强")
     assert [w["word"] for w in out] == [
         "Python", "很", "好", "换行", "Python", "很", "强"]
     assert [w.get("removed", False) for w in out] == [
@@ -274,11 +271,9 @@ def test_spaced_raw_word_glued_into_a_token_does_not_take_a_later_one(monkeypatc
 
 
 def test_output_length_always_matches_raw_count(monkeypatch):
-    _install_word_map(monkeypatch, {"Nurtax": "nur tags", "äh": ""})
-    words = _words("äh", "Nurtax", "137")
     final = "nur tags 137"
-    out = capture_samples._align_words_to_final(words, final)
-    assert len(out) == len(words)   # chip word-indices depend on this
+    out = _align(monkeypatch, {"Nurtax": "nur tags", "äh": ""}, final, "äh", "Nurtax", "137")
+    assert len(out) == 3   # chip word-indices depend on this
     assert _join(out) == final
 
 
