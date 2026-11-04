@@ -1874,13 +1874,11 @@ async def translate_segments(
         except _ContextOverflow:
             return "", _CONTEXT_OVERFLOW
 
-    async def _retry_context_free(src: str,
-                                  target: str) -> "tuple[str, str | None]":
-        """The ONE guard-failure retry WITHOUT context (context echo is the
-        dominant failure mode — a context-free prompt is the highest-value
-        second attempt). Returns (output, guard_reason)."""
-        out, reason = await _translate_fit(src, target, "")
-        return out, reason or _guard(src, out, target)
+    async def _translate_guarded(text: str, target: str,
+                                 context: str) -> "tuple[str, str | None]":
+        """_translate_fit plus the output guard: (output, guard_reason)."""
+        out, reason = await _translate_fit(text, target, context)
+        return out, reason or _guard(text, out, target)
 
     def _keep_original(span: str, indices: "list[int]", target: str,
                        reason: str) -> None:
@@ -1894,18 +1892,18 @@ async def translate_segments(
 
     async def _guarded_single(text: str, target: str, context: str,
                               seg_idx: int) -> str:
-        """One translation + guard; on failure ONE context-free retry (see
-        _retry_context_free), then keep the original text + a warning.
-        Greedy families skip the retry when it would re-send an identical
-        prompt (see ``greedy`` / ``ctx_changes``)."""
+        """One translation + guard; on failure ONE retry WITHOUT context
+        (context echo is the dominant failure mode — a context-free prompt
+        is the highest-value second attempt), then keep the original text +
+        a warning. Greedy families skip the retry when it would re-send an
+        identical prompt (see ``greedy`` / ``ctx_changes``)."""
         nonlocal last_ok
-        out, reason = await _translate_fit(text, target, context)
-        reason = reason or _guard(text, out, target)
+        out, reason = await _translate_guarded(text, target, context)
         if reason is None:
             last_ok = out
             return out
         if (context and ctx_changes) or not greedy:
-            out, reason = await _retry_context_free(text, target)
+            out, reason = await _translate_guarded(text, target, "")
             if reason is None:
                 last_ok = out
                 return out
@@ -2008,8 +2006,8 @@ async def translate_segments(
                             # batched one, so the retry is never a no-op even
                             # for a greedy context-blind family), else keep
                             # original + warning.
-                            retried, reason = await _retry_context_free(
-                                src, target)
+                            retried, reason = await _translate_guarded(
+                                src, target, "")
                             if reason is None:
                                 results[j][target] = retried
                                 last_ok = retried
@@ -2052,14 +2050,13 @@ async def translate_segments(
                     _blank_progress(f"{target} {g_no}/{len(groups)}")
                     continue
                 context = _context_lines(segments, group[0], ctx_n)
-                translated, reason = await _translate_fit(
+                translated, reason = await _translate_guarded(
                     joined, target, context)
-                reason = reason or _guard(joined, translated, target)
                 if reason is not None and \
                         ((context and ctx_changes) or not greedy):
                     # ONE retry WITHOUT context (see _guarded_single).
-                    translated, reason = await _retry_context_free(
-                        joined, target)
+                    translated, reason = await _translate_guarded(
+                        joined, target, "")
                 pieces: "list[str]" = []
                 if reason is None:
                     pieces = _redistribute(src_texts, translated)
