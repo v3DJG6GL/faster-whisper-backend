@@ -8,9 +8,10 @@ source like test_routes_settings.py does."""
 
 import json
 import shutil
-import subprocess
 
 import pytest
+
+from tests._page_helpers import node_stdout
 
 _NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(_NODE is None, reason="node unavailable")
@@ -46,10 +47,7 @@ def _make_editor_src(html, *builders):
 
 def _node(script):
     """Run `script` under node; its last stdout line is JSON."""
-    p = subprocess.run([_NODE, "-"], input=script, capture_output=True,
-                       text=True, encoding="utf-8", timeout=60)
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout.strip().splitlines()[-1])
+    return json.loads(node_stdout(script, timeout=60).strip().splitlines()[-1])
 
 
 # Just enough DOM for the builders below: elements record children, classes,

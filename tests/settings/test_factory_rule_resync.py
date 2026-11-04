@@ -13,13 +13,12 @@ import copy
 import json
 import os
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend import paths
 from faster_whisper_backend.settings import config_store as cs
-from tests._page_helpers import js_fn
+from tests._page_helpers import js_fn, node_json
 from tests.settings._rules_helpers import factory_rules as _factory_rules
 from tests.settings._rules_helpers import load_saved
 
@@ -117,8 +116,6 @@ def test_the_rule_hash_is_the_editors():
     # The editor hashes the /settings/state copy: the schema dump.
     dumps = [cs._rule_adapter().validate_python(r).model_dump(exclude_none=True)
              for r in rules]
-    p = subprocess.run([_NODE, "-"], capture_output=True, text=True, encoding="utf-8",
-                       timeout=60, input=js + "\nconst rules = " + json.dumps(dumps)
-                       + ";\nconsole.log(JSON.stringify(rules.map(_ruleHash)));\n")
-    assert p.returncode == 0, p.stderr
-    assert json.loads(p.stdout.strip().splitlines()[-1]) == [_rev(r) for r in rules]
+    got = node_json(js + "\nconst rules = " + json.dumps(dumps)
+                    + ";\nconsole.log(JSON.stringify(rules.map(_ruleHash)));\n", timeout=60)
+    assert got == [_rev(r) for r in rules]

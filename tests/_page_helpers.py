@@ -33,9 +33,11 @@ def js_fn(html: str, start: str) -> str:
 
 def node_stdout(script: str, timeout: float = 30) -> str:
     """Run ``script`` under ``node -`` over stdin; its stdout. A non-zero exit
-    raises."""
-    return subprocess.run(["node", "-"], input=script, capture_output=True, text=True,
-                          encoding="utf-8", timeout=timeout, check=True).stdout
+    fails with node's stderr as the message."""
+    p = subprocess.run(["node", "-"], input=script, capture_output=True, text=True,
+                       encoding="utf-8", timeout=timeout)
+    assert p.returncode == 0, p.stderr
+    return p.stdout
 
 
 def node_json(script: str, timeout: float = 30):
