@@ -425,18 +425,20 @@
   .cc-actions .dirty { color: var(--yellow); font-size: var(--fs-sm); }
   .cc-actions .dirty.hidden { display: none; }
 
-  /* Clear-all confirm modal. Also the themed _confirm dialog, which opens
-     over the merge and propose modals (z-index 1000), so it sits above them. */
-  .modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.65);
-    display: none; align-items: center; justify-content: center; z-index: 1100;
+  /* The full-screen overlay chrome every modal on this page shares. */
+  .modal, #merge-modal, #propose-modal {
+    position: fixed; inset: 0;
+    display: none; align-items: center; justify-content: center;
   }
-  .modal.show { display: flex; }
-  .modal .box {
+  .modal.show, #merge-modal.show, #propose-modal.show { display: flex; }
+  .modal .box, #merge-modal .box, #propose-modal .box {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 1.25rem;
-    min-width: min(22rem, 92vw); max-width: min(32rem, 95vw);
   }
+  /* Clear-all confirm modal. Also the themed _confirm dialog, which opens
+     over the merge and propose modals (z-index 1000), so it sits above them. */
+  .modal { background: rgba(0,0,0,0.65); z-index: 1100; }
+  .modal .box { min-width: min(22rem, 92vw); max-width: min(32rem, 95vw); }
   .modal h3 { margin: 0 0 0.5rem; color: var(--bold); font-size: var(--fs-xl); }
   .modal p { margin: 0.25rem 0; font-size: var(--fs-md); }
   .modal input {
@@ -507,16 +509,9 @@
   #action-bar .summary { color: var(--help); font-size: var(--fs-sm); }
   #action-bar .spacer { flex: 1; }
 
-  #merge-modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-    z-index: 1000; align-items: center; justify-content: center;
-    display: none;
-  }
-  #merge-modal.show { display: flex; }
-  #merge-modal .box {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 6px; padding: 1.25rem; width: 48rem; max-width: 95vw;
-    max-height: 88vh; overflow: auto;
+  #merge-modal { background: rgba(0,0,0,0.6); z-index: 1000; }
+  #merge-modal .box, #propose-modal .box {
+    width: 48rem; max-width: 95vw; max-height: 88vh; overflow: auto;
   }
   #merge-modal h3 { margin: 0 0 0.5rem 0; color: var(--bold); }
   #merge-modal textarea {
@@ -547,17 +542,8 @@
     font-size: var(--fs-xs); margin-right: 0.4rem;
   }
 
-  #propose-modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-    z-index: 1000; align-items: center; justify-content: center;
-    display: none;
-  }
-  #propose-modal.show { display: flex; }
-  #propose-modal .box {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 6px; padding: 1.25rem; width: 52rem; max-width: 95vw;
-    max-height: 88vh; overflow: auto;
-  }
+  #propose-modal { background: rgba(0,0,0,0.6); z-index: 1000; }
+  #propose-modal .box { width: 52rem; }
   #propose-modal h3 { margin: 0; color: var(--bold); }
   #propose-modal .dim { color: var(--help); font-size: var(--fs-sm); margin: 0.25rem 0 0.5rem 0; }
   #propose-modal .propose-top {
