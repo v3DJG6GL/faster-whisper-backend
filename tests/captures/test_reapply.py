@@ -175,6 +175,18 @@ def _join_sample(conn, gs, sid, cid, *, locked=0):
                  " WHERE id = ?", (sid, cid))
 
 
+def _run_with_mid_pass_event(monkeypatch, event):
+    """Run the pass, firing event() as the pipeline reaches each capture."""
+    real = pl_engine._postprocess_text
+
+    def hooked(text, **kw):
+        event()
+        return real(text, **kw)
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", hooked)
+    captures_reapply._run()
+
+
 def test_run_passes_the_row_language_and_updates_the_capture(
         captures_store_db, fake_pipeline, monkeypatch, caplog):
     """The rows are sqlite3.Row, which has no .get(): `r.get("language")`
@@ -441,16 +453,10 @@ def test_run_leaves_a_sample_locked_mid_pass_alone(
     gs = groups_store_db
     _insert(conn, "reapplymid01", language="de", final="old")
     _join_sample(conn, gs, "reapplymidlock01", "reapplymid01")
-    real = pl_engine._postprocess_text
 
-    def lock_then_run(text, **kw):
-        # The owner clicks Lock while the pass is on this member.
-        gs.update_sample("reapplymidlock01", {"is_locked": 1})
-        return real(text, **kw)
-
-    monkeypatch.setattr(pl_engine, "_postprocess_text", lock_then_run)
-
-    captures_reapply._run()
+    # The owner clicks Lock while the pass is on this member.
+    _run_with_mid_pass_event(
+        monkeypatch, lambda: gs.update_sample("reapplymidlock01", {"is_locked": 1}))
 
     st = captures_reapply.status()
     assert st["processed"] == 1 and st["captures_updated"] == 0
@@ -469,17 +475,12 @@ def test_run_leaves_a_capture_merged_into_a_locked_sample_mid_pass_alone(
     conn = captures_store_db._require_conn()
     gs = groups_store_db
     _insert(conn, "reapplymrg01", language="de", final="old")
-    real = pl_engine._postprocess_text
 
-    def merge_lock_then_run(text, **kw):
-        # The admin merges this capture into a sample and locks it while the
-        # pass is on it.
-        _join_sample(conn, gs, "reapplymrglock1", "reapplymrg01", locked=1)
-        return real(text, **kw)
-
-    monkeypatch.setattr(pl_engine, "_postprocess_text", merge_lock_then_run)
-
-    captures_reapply._run()
+    # The admin merges this capture into a sample and locks it while the
+    # pass is on it.
+    _run_with_mid_pass_event(
+        monkeypatch,
+        lambda: _join_sample(conn, gs, "reapplymrglock1", "reapplymrg01", locked=1))
 
     st = captures_reapply.status()
     assert st["processed"] == 1 and st["captures_updated"] == 0
@@ -496,15 +497,9 @@ def test_run_rebuilds_a_sample_a_capture_joined_mid_pass(
     conn = captures_store_db._require_conn()
     gs = groups_store_db
     _insert(conn, "reapplyjoin1", language="de", final="old")
-    real = pl_engine._postprocess_text
 
-    def merge_then_run(text, **kw):
-        _join_sample(conn, gs, "reapplyjoinsid1", "reapplyjoin1")
-        return real(text, **kw)
-
-    monkeypatch.setattr(pl_engine, "_postprocess_text", merge_then_run)
-
-    captures_reapply._run()
+    _run_with_mid_pass_event(
+        monkeypatch, lambda: _join_sample(conn, gs, "reapplyjoinsid1", "reapplyjoin1"))
 
     assert captures_store_db.get_capture("reapplyjoin1")["final"] == \
         "HELLO [final]"
