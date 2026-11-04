@@ -19,8 +19,7 @@ from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_fake_model as _register
 from tests.transcription._load_helpers import stub_hub_snapshot as _stub_hub
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import post_transcription as _post
 
 
 def _hub_response(status, repo):
@@ -676,8 +675,7 @@ def test_transcribe_releases_the_lease_on_success(client, app_module,
     model = _SnapshotModel(app_module)
     monkeypatch.setattr(tx_models, "_get_or_load_model",
                         _leasing_loader(app_module, model, held))
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1"})
+    r = _post(client)
     assert r.status_code == 200
     assert held and model.leases_during == {held[0]: 1}
     assert tx_models._model_leases == {}
@@ -689,8 +687,7 @@ def test_transcribe_releases_the_lease_on_error(client, app_module,
     model = _SnapshotModel(app_module, boom=RuntimeError("decode blew up"))
     monkeypatch.setattr(tx_models, "_get_or_load_model",
                         _leasing_loader(app_module, model, held))
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1"})
+    r = _post(client)
     assert r.status_code == 500
     assert held and model.leases_during == {held[0]: 1}
     assert tx_models._model_leases == {}
