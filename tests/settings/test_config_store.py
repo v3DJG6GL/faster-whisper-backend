@@ -19,6 +19,7 @@ from faster_whisper_backend.core import atomic_json
 from tests.settings._rules_helpers import (
     load_saved,
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
+    regex_list_rules,
 )
 
 
@@ -500,7 +501,7 @@ def test_pipeline_deeply_nested_regex_is_invalid_not_a_crash(tmp_path):
     # sre's parser recurses per open group: '(' * 512 (within the pattern
     # cap) raised RecursionError out of model_validate — a bare 500 on a
     # save, and load_overrides raised instead of ignoring the file at boot.
-    deep = [_regex("deep", pattern="(" * 512), _terminal()]
+    deep = regex_list_rules("deep", "(" * 512, "y")
     with pytest.raises(ValidationError, match="invalid regex"):
         _ok(PIPELINE_RULES=deep)
     p = _seed_local(tmp_path, {"PIPELINE_RULES": deep})
@@ -517,8 +518,7 @@ def _ok_on_save(**fields):
 
 def test_pipeline_bad_backref_reported():
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=[_regex("b", pattern="(a)", replacement=r"\3"),
-                                    _terminal()])
+        _ok_on_save(PIPELINE_RULES=regex_list_rules("b", "(a)", r"\3"))
     assert "regex test failed" in str(ei.value)
 
 
@@ -528,8 +528,7 @@ def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
     from faster_whisper_backend.pipeline import regex_guard
     monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 0.5)
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=[
-            _regex("boom", pattern="(.*a)+$", replacement=""), _terminal()])
+        _ok_on_save(PIPELINE_RULES=regex_list_rules("boom", "(.*a)+$", ""))
     assert "catastrophic backtracking" in str(ei.value)
 
 
@@ -540,8 +539,7 @@ def test_pipeline_replacement_growth_rejected_when_fixture_never_matches():
     # then amplified a real transcript 512x per match on EVERY transcription
     # — two such entries allocate ~1 GB inside a single re.sub.
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=[
-            _regex("blow", pattern="n", replacement="n" * 512), _terminal()])
+        _ok_on_save(PIPELINE_RULES=regex_list_rules("blow", "n", "n" * 512))
     assert "regex test failed" in str(ei.value)
 
 
@@ -550,8 +548,7 @@ def test_pipeline_backref_only_replacement_rejected():
     # pattern can match: ("(n+)", r"\1" * 256) amplifies exactly as hard as
     # ("n", "n" * 256), which the sibling test above rejects.
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=[
-            _regex("blow", pattern="(n+)", replacement="\\1" * 256), _terminal()])
+        _ok_on_save(PIPELINE_RULES=regex_list_rules("blow", "(n+)", "\\1" * 256))
     assert "regex test failed" in str(ei.value)
 
 
@@ -560,8 +557,7 @@ def test_pipeline_prefix_ambiguous_alternation_rejected():
     # and backtracks exponentially. (The full _nested_repetition family is
     # unit-tested in tests/pipeline/test_regex_guard.py.)
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=[
-            _regex("boom", pattern="(n|d|nd)+#", replacement="X"), _terminal()])
+        _ok_on_save(PIPELINE_RULES=regex_list_rules("boom", "(n|d|nd)+#", "X"))
     assert "catastrophic backtracking" in str(ei.value)
 
 
@@ -577,9 +573,7 @@ def test_pipeline_backrefs_and_alternation_still_accepted():
 def test_pipeline_ordinary_expansion_still_accepted():
     # Counterpart to the replacement-growth rejections: a rule whose
     # replacement is longer than its match is normal and must keep validating.
-    _ok_on_save(PIPELINE_RULES=[
-        _regex("expand", pattern=r"z\.B\.", replacement="zum Beispiel"),
-        _terminal()])
+    _ok_on_save(PIPELINE_RULES=regex_list_rules("expand", r"z\.B\.", "zum Beispiel"))
 
 
 def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
@@ -594,7 +588,7 @@ def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
         calls["n"] += 1
 
     monkeypatch.setattr(regex_guard, "validate", _spy)
-    _ok(PIPELINE_RULES=[_regex("b", pattern="(.*a)+$", replacement="x"), _terminal()])
+    _ok(PIPELINE_RULES=regex_list_rules("b", "(.*a)+$", "x"))
     assert calls["n"] == 0
 
 
@@ -672,7 +666,7 @@ def test_pipeline_bad_backref_rejected_on_load_without_subprocess(monkeypatch):
 
     monkeypatch.setattr(regex_guard, "validate", _boom)
     with pytest.raises(ValidationError) as ei:
-        _ok(PIPELINE_RULES=[_regex("b", pattern="(a)", replacement=r"\3"), _terminal()])
+        _ok(PIPELINE_RULES=regex_list_rules("b", "(a)", r"\3"))
     assert "regex test failed" in str(ei.value)
 
 
