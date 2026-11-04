@@ -21,6 +21,7 @@ from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.transcription import models as tx_models
 
 _GB = 1024 * 1024 * 1024
+_ADMITTED = (("loading", None), ("queued", None))
 
 
 def _fits(monkeypatch, verdict=(True, None)):
@@ -186,8 +187,7 @@ def test_size_unknown_free_whisper_slot_is_not_a_displacement(monkeypatch):
     monkeypatch.setattr(tx_models, "_loaded_models", {"small": object()})
     monkeypatch.setattr(tx_models, "_model_leases", {})
     model_registry.set_warm_predicate(None)
-    assert preload._admit("whisper", "large-v3") in (("loading", None),
-                                                     ("queued", None))
+    assert preload._admit("whisper", "large-v3") in _ADMITTED
     # Cache full: the cold peer WOULD be displaced, so the bound holds.
     _enable(monkeypatch, MAX_LOADED_MODELS=1)
     assert preload._admit("whisper", "large-v3") == ("deferred", "size_unknown")
@@ -199,8 +199,7 @@ def test_size_unknown_free_translation_slot_is_not_a_displacement(monkeypatch):
     monkeypatch.setattr(translation, "_models", {"o/a:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
     model_registry.set_warm_predicate(None)
-    assert preload._admit("translation", "o/b:Q4") in (("loading", None),
-                                                       ("queued", None))
+    assert preload._admit("translation", "o/b:Q4") in _ADMITTED
     _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
     assert preload._admit("translation", "o/b:Q4") == ("deferred", "size_unknown")
 
@@ -780,8 +779,7 @@ def test_translation_defers_while_a_cold_load_is_in_flight(monkeypatch):
     assert preload._admit("translation", "o/b:Q4") == ("deferred",
                                                        "family_busy")
     monkeypatch.setattr(translation, "_loads_in_flight", 0)
-    assert preload._admit("translation", "o/b:Q4") in (("loading", None),
-                                                       ("queued", None))
+    assert preload._admit("translation", "o/b:Q4") in _ADMITTED
 
 
 def test_draining_orphan_singleton_is_family_busy_after_a_force_drop(

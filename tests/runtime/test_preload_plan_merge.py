@@ -21,7 +21,7 @@ from faster_whisper_backend.translation import engine as translation
 
 from tests.conftest import bearer
 from tests.runtime.test_preload_registry import _enable as _registry_enable
-from tests.runtime.test_preload_registry import _fits
+from tests.runtime.test_preload_registry import _ADMITTED, _fits
 from faster_whisper_backend.transcription import models as tx_models
 
 
@@ -284,8 +284,7 @@ def test_whisper_full_cache_with_only_a_warm_peer_is_family_busy(monkeypatch):
 
     # The same cache with a COLD peer: admitted (the worker drops the peer).
     model_registry.set_warm_predicate(None)
-    assert preload._admit("whisper", "large-v3") in (("loading", None),
-                                                     ("queued", None))
+    assert preload._admit("whisper", "large-v3") in _ADMITTED
 
     # A cold peer, but eviction switched off: refused rather than letting
     # the loader's LRU loop pick the victim.
@@ -330,8 +329,7 @@ def test_translation_full_cache_with_only_a_warm_peer_is_family_busy(
                                                          "family_busy")
 
     model_registry.set_warm_predicate(None)
-    assert preload._admit("translation", "o/new:Q4") in (("loading", None),
-                                                         ("queued", None))
+    assert preload._admit("translation", "o/new:Q4") in _ADMITTED
 
     _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1,
             MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
