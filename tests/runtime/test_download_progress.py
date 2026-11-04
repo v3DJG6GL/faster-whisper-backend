@@ -20,11 +20,17 @@ def _mk_bar(**kw):
     return dp.ReportingTqdm(**kw)
 
 
-def test_reporting_tqdm_counts_bytes_even_when_disabled(monkeypatch):
+def _recorder(monkeypatch):
+    """Unthrottle the progress callback; returns (calls, cb) logging every
+    (done, total)."""
     monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
     calls = []
-    with dp.capture("gguf:org/m", cb=lambda d, t: calls.append((d, t)),
-                    record=False):
+    return calls, lambda d, t: calls.append((d, t))
+
+
+def test_reporting_tqdm_counts_bytes_even_when_disabled(monkeypatch):
+    calls, cb = _recorder(monkeypatch)
+    with dp.capture("gguf:org/m", cb=cb, record=False):
         bar = _mk_bar()
         bar.update(30)
         bar.update(70)
@@ -34,18 +40,16 @@ def test_reporting_tqdm_counts_bytes_even_when_disabled(monkeypatch):
 
 
 def test_non_byte_bars_are_ignored(monkeypatch):
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
-    with dp.capture("x", cb=lambda d, t: calls.append((d, t)), record=False):
+    calls, cb = _recorder(monkeypatch)
+    with dp.capture("x", cb=cb, record=False):
         bar = _mk_bar(unit="it", total=5)     # snapshot's per-FILE bar
         bar.update(5)
     assert calls == []
 
 
 def test_capture_aggregates_multiple_bars(monkeypatch):
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
-    with dp.capture("x", cb=lambda d, t: calls.append((d, t)), record=False):
+    calls, cb = _recorder(monkeypatch)
+    with dp.capture("x", cb=cb, record=False):
         a = _mk_bar(total=100)
         b = _mk_bar(total=300)
         a.update(100)
@@ -74,10 +78,8 @@ def test_capture_reports_an_xet_bar_built_without_tqdm_class(monkeypatch):
     # file then goes through xet_get, whose reporter builds its bars from
     # the `tqdm` it bound at import — the capture must reach that one too.
     xet = pytest.importorskip("huggingface_hub.utils._xet_progress_reporting")
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
-    with dp.capture("pyannote:x", cb=lambda d, t: calls.append((d, t)),
-                    record=False) as cap:
+    calls, cb = _recorder(monkeypatch)
+    with dp.capture("pyannote:x", cb=cb, record=False) as cap:
         rep = xet.XetDownloadProgressReporter(
             reconstruction_desc="x", total=100, log_level=logging.INFO,
             name="huggingface_hub.xet_get")
@@ -130,9 +132,8 @@ def test_capture_logs_buckets_and_done(monkeypatch, caplog):
 def test_aggregate_survives_bar_id_reuse(monkeypatch):
     # A finished bar is freed and CPython hands its address to the next one;
     # keying on id(bar) would overwrite the done file's bytes.
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
-    with dp.capture("x", cb=lambda d, t: calls.append((d, t)), record=False):
+    calls, cb = _recorder(monkeypatch)
+    with dp.capture("x", cb=cb, record=False):
         a = _mk_bar(total=100)
         a.update(100)
         del a
@@ -162,10 +163,8 @@ def test_cb_failures_never_escape(monkeypatch):
 def test_snapshot_transfer_twin_bar_is_counted_once(monkeypatch):
     # snapshot_download drives TWO byte-unit aggregate bars from tqdm_class
     # over the same bytes (reconstruct + ".transfer"); only one may count.
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
-    with dp.capture("whisper:large-v3", cb=lambda d, t: calls.append((d, t)),
-                    record=False) as cap:
+    calls, cb = _recorder(monkeypatch)
+    with dp.capture("whisper:large-v3", cb=cb, record=False) as cap:
         rec = _mk_bar(total=1000, name="huggingface_hub.snapshot_download")
         xfer = _mk_bar(total=1000,
                        name="huggingface_hub.snapshot_download.transfer")
@@ -178,9 +177,8 @@ def test_snapshot_transfer_twin_bar_is_counted_once(monkeypatch):
 def test_callback_never_walks_backwards(monkeypatch):
     # An aggregate that regressed (a retry's update(-resume_size) rollback)
     # must be dropped, not delivered as a step backwards.
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
-    cap = dp._Capture("x", cb=lambda d, t: calls.append((d, t)))
+    calls, cb = _recorder(monkeypatch)
+    cap = dp._Capture("x", cb=cb)
     cap.add_bar(1, 1000)
     cap.bump(1, 800, 1000)
     cap.bump(1, 500, 1000)      # rolled back, smaller aggregate
@@ -195,11 +193,9 @@ def test_a_growing_snapshot_total_keeps_the_bucket_lines(monkeypatch, caplog):
     # file: config.json can register AND finish before model.bin's size
     # joins. That 100%-of-2-KB moment is neither a "started" size, a bucket
     # line nor a completion cb, and the real download keeps its 10% lines.
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
+    calls, cb = _recorder(monkeypatch)
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        with dp.capture("whisper:large-v3", record=False,
-                        cb=lambda d, t: calls.append((d, t))):
+        with dp.capture("whisper:large-v3", record=False, cb=cb):
             bar = _mk_bar(total=0, name="huggingface_hub.snapshot_download")
             bar.total += 2000
             bar.update(2000)
@@ -217,12 +213,10 @@ def test_a_growing_snapshot_total_keeps_the_bucket_lines(monkeypatch, caplog):
 
 
 def test_failed_download_gets_no_done_receipt(monkeypatch, caplog):
-    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
-    calls = []
+    calls, cb = _recorder(monkeypatch)
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         with pytest.raises(RuntimeError):
-            with dp.capture("x", cb=lambda d, t: calls.append((d, t)),
-                            record=False):
+            with dp.capture("x", cb=cb, record=False):
                 bar = _mk_bar(total=100)
                 bar.update(50)
                 raise RuntimeError("boom")
