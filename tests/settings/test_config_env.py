@@ -135,18 +135,15 @@ def test_per_model_env_scanner_end_to_end(monkeypatch, restore_config):
     # The encoded id is UPPERCASE on purpose: Windows upper-cases os.environ
     # keys, so only an uppercase id round-trips on every platform while still
     # exercising the right-to-left "__" boundary scanner + _decode_model_id.
-    monkeypatch.setenv(
-        "WHISPER_MODEL_OVERRIDE__ORG__SLASH__NAME__DOT__CT2__BEAM_SIZE", "7"
-    )
-    importlib.reload(config)
+    _reload_with_env(monkeypatch,
+                     WHISPER_MODEL_OVERRIDE__ORG__SLASH__NAME__DOT__CT2__BEAM_SIZE="7")
     assert config.MODEL_OVERRIDES.get("ORG/NAME.CT2", {}).get("BEAM_SIZE") == 7
 
 
 def test_env_value_is_stored_as_the_schema_normalizes_it(monkeypatch, restore_config):
     # The schema accepts Python's own spelling; the runtime value (and so the
     # /settings page) is the lowercase literal, not the raw env text.
-    monkeypatch.setenv("WHISPER_CONSOLE_LOG_LEVEL", "WARNING")
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_CONSOLE_LOG_LEVEL="WARNING")
     assert config.CONSOLE_LOG_LEVEL == "warning"
 
 

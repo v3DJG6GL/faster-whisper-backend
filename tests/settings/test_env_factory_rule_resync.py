@@ -8,11 +8,11 @@ config.local.json picked it up.
 """
 
 import copy
-import importlib
 import json
 
 from faster_whisper_backend.settings import config
 from faster_whisper_backend.settings import config_store as cs
+from tests.settings.test_config_env import _reload_with_env
 from tests.settings.test_factory_rule_resync import (
     _QUOTE_LABELS, _factory_rules, _older_tidy, _rev,
 )
@@ -21,8 +21,7 @@ _TIDY = "digit-and-whitespace-tidy"
 
 
 def _env_tidy(monkeypatch, rules):
-    monkeypatch.setenv("WHISPER_PIPELINE_RULES", json.dumps(rules))
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(rules))
     return next(r for r in config.PIPELINE_RULES if r["name"] == _TIDY)
 
 

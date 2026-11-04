@@ -5,20 +5,18 @@ so the default stripping "str" reader dropped it without a warning and a hard
 break in live dictation typed nothing between documents.
 """
 
-import importlib
-
 import pytest
 
 from faster_whisper_backend.settings import config
 from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.streaming import routes
+from tests.settings.test_config_env import _reload_with_env
 
 
 @pytest.mark.parametrize("raw", [" ", "\n", ""])
 def test_env_separator_kept_verbatim_and_pinned(monkeypatch, raw, restore_config):
-    monkeypatch.setenv("WHISPER_STREAMING_HARD_BREAK_SEPARATOR", raw)
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_STREAMING_HARD_BREAK_SEPARATOR=raw)
     assert config.STREAMING_HARD_BREAK_SEPARATOR == raw
     assert "STREAMING_HARD_BREAK_SEPARATOR" in config_store.env_pinned_fields()
 
@@ -31,8 +29,7 @@ def test_env_separator_kept_verbatim_and_pinned(monkeypatch, raw, restore_config
 @pytest.mark.parametrize("raw, want", [
     ("\\n", "\n"), ("\\r\\n", "\r\n"), (" \\n", " \n"), ("\\\\n", "\\n")])
 def test_env_separator_decodes_spelled_escapes(monkeypatch, raw, want, restore_config):
-    monkeypatch.setenv("WHISPER_STREAMING_HARD_BREAK_SEPARATOR", raw)
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_STREAMING_HARD_BREAK_SEPARATOR=raw)
     assert config.STREAMING_HARD_BREAK_SEPARATOR == raw
     assert "STREAMING_HARD_BREAK_SEPARATOR" in config_store.env_pinned_fields()
     sc = routes._stream_config(effective_config.cfg_for)
