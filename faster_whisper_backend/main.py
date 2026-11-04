@@ -3689,16 +3689,18 @@ async def translate_audio(
     )
 
 
-def _include_router(label: str, module: str, attr: str = "router") -> bool:
+def _include_router(label: str, module: str, *mounted_log, attr: str = "router") -> None:
     """Import `module` and mount its `attr` router. Fail-soft per router: an
     import error drops only this router, logged with its traceback, so the
-    rest of the app (and every other router) still comes up."""
+    rest of the app (and every other router) still comes up. `mounted_log`,
+    when given, is the logger.info(fmt, *args) line for a successful mount."""
     try:
         app.include_router(getattr(importlib.import_module(module), attr))
     except Exception:
         logger.exception("Failed to load %s router", label)
-        return False
-    return True
+        return
+    if mounted_log:
+        logger.info(*mounted_log)
 
 
 # POST /v1/text/translations (text→text; /v1/audio/translations stays above
@@ -3727,11 +3729,9 @@ app.include_router(auth_routes.router)
 # host gate reads cfg.USER_WEBUI_ALLOWED_HOSTS at request time, so the admin UI
 # can broaden/narrow access without a service restart. Loopback is always
 # allowed; the data endpoints require a "stats" key.
-if _include_router("stats", "faster_whisper_backend.stats.routes"):
-    logger.info(
-        "Stats dashboard at /stats (allowlist=%s; loopback always permitted)",
-        cfg.USER_WEBUI_ALLOWED_HOSTS,
-    )
+_include_router("stats", "faster_whisper_backend.stats.routes",
+                "Stats dashboard at /stats (allowlist=%s; loopback always permitted)",
+                cfg.USER_WEBUI_ALLOWED_HOSTS)
 
 
 # / landing hub (always on, user-tier allowlist-gated) — the WebUI's front
@@ -3739,11 +3739,9 @@ if _include_router("stats", "faster_whisper_backend.stats.routes"):
 # launcher filtered to the pages their key can reach (plus the admin section
 # for admins). Same host tier as the other user page shells; nothing sensitive
 # is rendered server-side. See core/home_routes.py.
-if _include_router("home", "faster_whisper_backend.core.home_routes"):
-    logger.info(
-        "Landing hub at / (allowlist=%s; loopback always permitted)",
-        cfg.USER_WEBUI_ALLOWED_HOSTS,
-    )
+_include_router("home", "faster_whisper_backend.core.home_routes",
+                "Landing hub at / (allowlist=%s; loopback always permitted)",
+                cfg.USER_WEBUI_ALLOWED_HOSTS)
 
 
 # /v1/audio/transcriptions/stream (live dictation WebSocket). Always
@@ -3751,13 +3749,11 @@ if _include_router("home", "faster_whisper_backend.core.home_routes"):
 # runtime) and resolves auth per connection (same user records as the batch
 # route). Reuses the model cache + pl_engine._postprocess_text; see
 # streaming/routes.py.
-if _include_router("streaming", "faster_whisper_backend.streaming.routes"):
-    logger.info(
-        "Streaming transcription at /v1/audio/transcriptions/stream "
-        "(enabled=%s, max_sessions=%s)",
-        getattr(cfg, "STREAMING_ENABLED", True),
-        getattr(cfg, "STREAMING_MAX_SESSIONS", 10),
-    )
+_include_router("streaming", "faster_whisper_backend.streaming.routes",
+                "Streaming transcription at /v1/audio/transcriptions/stream "
+                "(enabled=%s, max_sessions=%s)",
+                getattr(cfg, "STREAMING_ENABLED", True),
+                getattr(cfg, "STREAMING_MAX_SESSIONS", 10))
 
 
 # /v1/pipeline-rules, the desktop "Dictionary" editor's API. Always registered
@@ -3767,8 +3763,8 @@ if _include_router("streaming", "faster_whisper_backend.streaming.routes"):
 # but in the /v1 namespace with NO host allowlist — auth is the per-user API
 # key (bearer) plus the quick_config page permission. Lets the desktop client
 # view + edit the post-processing rules the caller is permitted to.
-if _include_router("pipeline-rules v1", "faster_whisper_backend.quick_config.routes", "v1_router"):
-    logger.info("Pipeline-rules client API at GET/PATCH /v1/pipeline-rules")
+_include_router("pipeline-rules v1", "faster_whisper_backend.quick_config.routes",
+                "Pipeline-rules client API at GET/PATCH /v1/pipeline-rules", attr="v1_router")
 
 
 # /v1/synced-client-settings: desktop-client settings sync (the old
@@ -3779,16 +3775,14 @@ if _include_router("pipeline-rules v1", "faster_whisper_backend.quick_config.rou
 # desktop clients (/v1/usage skips the host allowlist for the same reason, but
 # keeps its quick_config page gate). One opaque blob per account
 # with optimistic versioning; see client_settings/routes.py.
-if _include_router("client-settings", "faster_whisper_backend.client_settings.routes"):
-    logger.info(
-        "Client-settings sync at GET/PUT/DELETE /v1/synced-client-settings"
-    )
+_include_router("client-settings", "faster_whisper_backend.client_settings.routes",
+                "Client-settings sync at GET/PUT/DELETE /v1/synced-client-settings")
 
 # Dictation outcomes from the desktop app (activation / delivery / app /
 # translation per session). Same always-on, user-tier, no-host-gate stance
 # as the settings sync above; see usage_routes.py.
-if _include_router("usage", "faster_whisper_backend.stats.usage_routes"):
-    logger.info("Usage outcomes at POST /v1/usage/outcome")
+_include_router("usage", "faster_whisper_backend.stats.usage_routes",
+                "Usage outcomes at POST /v1/usage/outcome")
 
 
 # /v1/models/preload warms the models a job will need. Always registered, same
@@ -3798,8 +3792,8 @@ if _include_router("usage", "faster_whisper_backend.stats.usage_routes"):
 # User-tier bearer auth only (the tier /v1/models and /v1/me already use to
 # publish `loaded` flags for these exact models); no page gate, no host
 # allowlist. See preload_routes.py.
-if _include_router("preload", "faster_whisper_backend.runtime.preload_routes"):
-    logger.info("Model preloading at POST /v1/models/preload (enabled=%s)",
+_include_router("preload", "faster_whisper_backend.runtime.preload_routes",
+                "Model preloading at POST /v1/models/preload (enabled=%s)",
                 bool(getattr(cfg, "MODEL_PRELOAD_ENABLED", True)))
 
 
@@ -3810,11 +3804,9 @@ if _include_router("preload", "faster_whisper_backend.runtime.preload_routes"):
 # In OPEN mode (no admin key in DB) every caller is the synthetic admin so the
 # operator can bootstrap.
 if cfg.ADMIN_UI_ENABLED:
-    if _include_router("admin settings", "faster_whisper_backend.admin.routes"):
-        logger.info(
-            "Admin UI enabled at /settings (allowlist=%s; auth=API key)",
-            cfg.ADMIN_WEBUI_ALLOWED_HOSTS,
-        )
+    _include_router("admin settings", "faster_whisper_backend.admin.routes",
+                    "Admin UI enabled at /settings (allowlist=%s; auth=API key)",
+                    cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
     # /settings/api-keys — admin UI for per-user key management. Same
     # auth shape (admin host + admin key) as /settings.
     _include_router("api-keys", "faster_whisper_backend.admin.api_keys_routes")
@@ -3823,31 +3815,27 @@ if cfg.ADMIN_UI_ENABLED:
     _include_router("overrides", "faster_whisper_backend.admin.overrides_routes")
     # /quick-config is a user-tier page (USER_WEBUI_ALLOWED_HOSTS) with
     # per-user API key auth; it just rides the same ADMIN_UI_ENABLED switch.
-    if _include_router("quick-config", "faster_whisper_backend.quick_config.routes"):
-        logger.info("Quick-config UI enabled at /quick-config")
+    _include_router("quick-config", "faster_whisper_backend.quick_config.routes",
+                    "Quick-config UI enabled at /quick-config")
     # /reports: triage page for user-submitted transcription error reports,
     # gated on the "reports" page permission plus a per-row scope check;
     # only clear / export are admin-only. The submission endpoint
     # /quick-config/reports/api/submit lives on the same router and accepts
     # any active API key.
-    if _include_router("reports", "faster_whisper_backend.reports.routes"):
-        logger.info(
-            "Reports UI enabled at /reports (admin key required for triage; "
-            "user submissions %s)",
-            "enabled" if getattr(cfg, "REPORTS_ALLOW_USER_SUBMIT", True)
-            else "disabled",
-        )
+    _include_router("reports", "faster_whisper_backend.reports.routes",
+                    "Reports UI enabled at /reports (admin key required for triage; "
+                    "user submissions %s)",
+                    "enabled" if getattr(cfg, "REPORTS_ALLOW_USER_SUBMIT", True)
+                    else "disabled")
     # /captures: Whisper fine-tuning data capture + review, gated on the
     # "captures" page permission; clear / reprocess-all / export are
     # admin-only. cfg.CAPTURES_RECORDING_ENABLED gates only new capture,
     # so the page stays registered and existing rows stay browsable.
-    if _include_router("captures", "faster_whisper_backend.captures.routes"):
-        logger.info(
-            "Captures UI enabled at /captures (admin token required; "
-            "new capture %s)",
-            "enabled" if getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
-            else "disabled",
-        )
+    _include_router("captures", "faster_whisper_backend.captures.routes",
+                    "Captures UI enabled at /captures (admin token required; "
+                    "new capture %s)",
+                    "enabled" if getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
+                    else "disabled")
 
 def run() -> None:
     """Serve the app. Called by the root main.py shim, by `python -m
