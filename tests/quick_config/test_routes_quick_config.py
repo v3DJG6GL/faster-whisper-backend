@@ -10,6 +10,7 @@ from tests._page_helpers import js_upto
 from tests.conftest import bearer, fake_request, schema_map_cap
 from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
+from tests.quick_config._rules_helpers import locked_alice
 
 
 def _post_patch(client, rules_patch, **kw):
@@ -169,8 +170,7 @@ def test_stream_reauth_rechecks_an_expired_session_without_a_bump(
     from faster_whisper_backend.settings import config
     from faster_whisper_backend.settings import version as settings_version
 
-    make_user_key("root", is_admin=True)
-    uid, _raw = make_user_key("alice", pages={"quick_config": "all"})
+    uid, _raw = locked_alice(make_user_key, "all")
     token, _csrf = sessions_store.create_session(uid, 3600.0)
     req = fake_request(headers={"cookie": f"{config.SESSION_COOKIE_NAME}={token}"})
     seen = settings_version.config_version()
@@ -333,8 +333,7 @@ def test_state_carries_locked_and_role_for_nonadmin(client, app_module,
     rule and the caller's `role`."""
     slug = _expose_first(app_module, "regex-list", locked=True)
 
-    make_user_key("root", is_admin=True)  # flips lockdown
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_alice(make_user_key)
 
     body = client.get("/quick-config/state", headers=bearer(raw)).json()
     assert body["role"] == "user"
@@ -418,8 +417,7 @@ def test_hidden_rule_validation_error_is_fully_redacted(
                      "type": "callback:map", "map": {"böse<>#key": "x"}})
     app_module.cfg.PIPELINE_RULES = rules
 
-    make_user_key("root", is_admin=True)  # flips lockdown
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_alice(make_user_key)
 
     r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(raw))
     assert r.status_code == 422, r.text
@@ -446,8 +444,7 @@ def test_hidden_rule_guard_error_keeps_sentinel_for_page(
                      "entries": [{"pattern": "(unclosed", "replacement": ""}]})
     app_module.cfg.PIPELINE_RULES = rules
 
-    make_user_key("root", is_admin=True)  # flips lockdown
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_alice(make_user_key)
 
     r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(raw))
     assert r.status_code == 422, r.text
@@ -737,8 +734,7 @@ def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "all"})
+    uid, raw = locked_alice(make_user_key, "all")
 
     async def _receive():
         await asyncio.Event().wait()
@@ -781,8 +777,7 @@ def test_stream_recent_rechecks_the_caller_before_the_replay(
 
     from faster_whisper_backend.auth import api_keys_store
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "all"})
+    uid, raw = locked_alice(make_user_key, "all")
     _seed_recent(("foreign", "b", "b", "someone-else"), ("own", "a", "a", uid))
     req = fake_request(headers=bearer(raw))
 
@@ -859,8 +854,7 @@ def test_state_lists_the_callers_closed_reports(client, make_user_key):
     row."""
     from faster_whisper_backend.reports import store as reports_store
 
-    make_user_key("admin", is_admin=True)  # lock down: no open-mode user
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_alice(make_user_key)
     _uid_b, raw_b = make_user_key("bob", pages={"quick_config": "own"})
     h = bearer(raw)
     for rid in ("r1", "r2"):
@@ -879,7 +873,6 @@ def test_state_lists_the_callers_closed_reports(client, make_user_key):
 def test_state_carries_the_callers_user_id(client, make_user_key):
     """The page keys its localStorage "reported" hint on it, so one account
     on a shared browser never reads another's."""
-    make_user_key("admin", is_admin=True)  # lock down: no open-mode user
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_alice(make_user_key)
     body = client.get("/quick-config/state", headers=bearer(raw)).json()
     assert body["user_id"] == uid

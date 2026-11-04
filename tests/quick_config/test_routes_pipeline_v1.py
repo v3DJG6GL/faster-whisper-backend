@@ -14,6 +14,7 @@ from faster_whisper_backend.quick_config import routes as quick_config_routes
 from tests.conftest import bearer, schema_map_cap
 from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
+from tests.quick_config._rules_helpers import locked_alice
 
 
 def _patch_rules(client, rules_patch, **kw):
@@ -227,8 +228,7 @@ def test_v1_nonadmin_can_edit_exposed_regex_entries(client, app_module, make_use
     catastrophic-backtracking guard runs out-of-process (regex_guard) and does
     not block a valid pattern."""
     slug = _expose_first_regex_list_rule(app_module)
-    make_user_key("root", is_admin=True)  # flips lockdown
-    _uid, alice = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, alice = locked_alice(make_user_key)
     r = _patch_rules(client, {slug: {"entries": [
         {"pattern": "behaviour", "replacement": "behavior"}]}}, headers=bearer(alice))
     assert_saved(r, slug)
