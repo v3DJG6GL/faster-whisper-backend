@@ -121,7 +121,8 @@ async def _admit_sample(sid: str, user: dict[str, Any], kind: str) -> dict[str, 
 
 
 def _admit_capture(cid: str, user: dict[str, Any], kind: str) -> dict[str, Any]:
-    """_admit_row for capture `cid`. Blocking: call it from a to_thread worker."""
+    """_admit_row for capture `cid`. Blocking: call it from a to_thread
+    worker or via asyncio.to_thread."""
     return _admit_row(
         captures_store.get_capture(cid), user, kind, cid, "capture not found",
     )
@@ -595,10 +596,7 @@ async def get_capture_api(
     # connection that clear_all VACUUMs.
     # Scope guard. 404 (not 403) on cross-user access — a 403 would
     # confirm the row exists (OWASP IDOR cheatsheet).
-    row = _admit_row(
-        await asyncio.to_thread(captures_store.get_capture, cid),
-        user, "capture", cid, "capture not found",
-    )
+    row = await asyncio.to_thread(_admit_capture, cid, user, "capture")
 
     # OFF the loop, like list_samples_api. `_align_member_words` runs
     # `_align_words_to_final` once (twice when the training text differs from
@@ -713,10 +711,7 @@ async def get_audio_api(
     # Off the loop: this is the busiest captures endpoint (reviewers audition
     # card after card), and get_capture json.loads the words + segments blobs
     # on the shared connection that clear_all VACUUMs.
-    row = _admit_row(
-        await asyncio.to_thread(captures_store.get_capture, cid),
-        user, "audio", cid, "capture not found",
-    )
+    row = await asyncio.to_thread(_admit_capture, cid, user, "audio")
     abs_path, mime = await asyncio.to_thread(_capture_audio_file, row, original)
     # FileResponse handles Range automatically — seeking in the karaoke
     # player won't re-download the whole file.
