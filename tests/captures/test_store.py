@@ -50,6 +50,13 @@ def _seed_rows(conn, ids, status="new", ts=1.0, rel="x.wav"):
         "'[]',?,'bob')", [(i, ts, rel, status) for i in ids])
 
 
+def _set_ts(cs, stamps):
+    """Set created_ts on existing capture rows, from {id: created_ts}."""
+    cs._require_conn().executemany(
+        "UPDATE captures SET created_ts=? WHERE id=?",
+        [(ts, cid) for cid, ts in stamps.items()])
+
+
 def _audio_files(cs, suffix):
     """Every file under the audio tree with this suffix, as full paths."""
     return [os.path.join(r, f) for r, _d, fs in os.walk(cs._require_audio_dir())
@@ -248,9 +255,7 @@ def test_list_captures_before_ts_cursor(captures_store_db, monkeypatch, tmp_path
     cs = captures_store_db
     cid1 = _make(cs, monkeypatch, tmp_path)
     cid2 = _make(cs, monkeypatch, tmp_path)
-    conn = cs._require_conn()
-    conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (100.0, cid1))
-    conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (200.0, cid2))
+    _set_ts(cs, {cid1: 100.0, cid2: 200.0})
     page = cs.list_captures(before_ts=150.0)
     assert [r["id"] for r in page] == [cid1]
 
@@ -259,9 +264,7 @@ def test_iter_export_includes_words_oldest_first(captures_store_db, monkeypatch,
     cs = captures_store_db
     cid1 = _make(cs, monkeypatch, tmp_path)
     cid2 = _make(cs, monkeypatch, tmp_path)
-    conn = cs._require_conn()
-    conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (100.0, cid1))
-    conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (200.0, cid2))
+    _set_ts(cs, {cid1: 100.0, cid2: 200.0})
     rows = list(cs.iter_captures_for_export())
     assert [r["id"] for r in rows] == [cid1, cid2]
     assert "words" in rows[0]
@@ -544,9 +547,7 @@ def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path
     c_new = _make(cs, monkeypatch, tmp_path)
     cs.update_capture(c_dismissed, {"status": "dismissed"})
     # Make the dismissed row the oldest so ASC ordering picks it anyway.
-    conn = cs._require_conn()
-    conn.execute("UPDATE captures SET created_ts=1 WHERE id=?", (c_dismissed,))
-    conn.execute("UPDATE captures SET created_ts=2 WHERE id=?", (c_new,))
+    _set_ts(cs, {c_dismissed: 1, c_new: 2})
     monkeypatch.setattr(config, "CAPTURES_MAX", 2, raising=False)
     _make(cs, monkeypatch, tmp_path)
     assert cs.get_capture(c_dismissed) is None
@@ -563,7 +564,7 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     conn = cs._require_conn()
     # member is the oldest, but it's in a group → must be protected.
     _group_one(cs, gs, sid, member, member_ts=1)
-    conn.execute("UPDATE captures SET created_ts=2 WHERE id=?", (other,))
+    _set_ts(cs, {other: 2})
     # The cap governs the EVICTABLE population only: grouped rows are neither
     # counted nor dropped, because eviction could never reduce them anyway.
     # Two ungrouped rows against a cap of 1 leaves exactly one to drop.
@@ -724,8 +725,7 @@ def test_an_older_new_row_is_evicted_before_the_fresh_one(
     cs = captures_store_db
     _caps(monkeypatch, 5000, 0)
     older = _make(cs, monkeypatch, tmp_path)
-    cs._require_conn().execute(
-        "UPDATE captures SET created_ts=0.5 WHERE id=?", (older,))
+    _set_ts(cs, {older: 0.5})
     _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(9)], "ready")
     monkeypatch.setattr(config, "CAPTURES_MAX", 10, raising=False)
     assert cs.ready_fills_cap() is False
@@ -856,9 +856,7 @@ def test_sweep_retention_deletes_old(captures_store_db, monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     old = _make(cs, monkeypatch, tmp_path)
     _make(cs, monkeypatch, tmp_path)  # fresh
-    conn = cs._require_conn()
-    conn.execute("UPDATE captures SET created_ts=? WHERE id=?",
-                 (time.time() - 40 * 86400, old))
+    _set_ts(cs, {old: time.time() - 40 * 86400})
     assert cs.sweep_retention() == 1
     assert cs.get_capture(old) is None
 
