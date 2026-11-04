@@ -3,9 +3,9 @@
 //
 // Loaded as a classic script right after the grid markup and BEFORE the
 // page's inline dashboard IIFE, so the top-level declarations here
-// (GS_LAYOUT_KEY, grid, onSeg, restartClass, onResizeFrame, flashCtl) are
-// the globals that IIFE reads; the usage section is an IIFE of its own and
-// only touches its own elements.
+// (GS_LAYOUT_KEY, grid, onSeg, setSeg, restartClass, onResizeFrame,
+// flashCtl) are the globals that IIFE reads; the usage section is an IIFE
+// of its own and only touches its own elements.
 //
 // Cache-busting: the page links this file as /static/stats.js?v=<version>;
 // /static answers with ETag/Last-Modified and no no-store, so a new build
@@ -95,8 +95,7 @@ function setPreset(name, persist = true) {
     if (saved) grid.load(JSON.parse(saved), false);
   } catch (_) {}
   if (persist) { try { localStorage.setItem(GS_PRESET_KEY, name); } catch (_) {} }
-  const seg = document.getElementById('layout-preset');
-  if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === name));
+  setSeg('layout-preset', name);
 }
 window._fwSetPreset = setPreset;
 // Delegated click on #id: fn(match, event) for the nearest `sel` inside it.
@@ -109,6 +108,11 @@ function onPick(id, sel, fn) {
 }
 // Segmented control #id: a click on one of its buttons calls fn(value, button).
 function onSeg(id, fn) { onPick(id, 'button', (b) => fn(b.dataset.v, b)); }
+// Mark the button of segmented control #id whose data-v is val as active.
+function setSeg(id, val) {
+  const g = document.getElementById(id); if (!g) return;
+  g.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === String(val)));
+}
 // Re-run a one-shot CSS animation: the forced reflow makes the re-added class start it over.
 function restartClass(el, cls) { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
 // Observe el's size; coalesce a burst of resizes (a GridStack drag) into one fn() per frame.
@@ -422,11 +426,6 @@ function filterCount() {
 const kindsLabel = () => Q.kinds.map(k => KIND_LABEL[k] || k).join(' + ');
 const pickLabel = (dim, id) => pickLabels[dim][id] || id;
 
-function seg(id) { return $(id); }
-function setSeg(id, val) {
-  const g = seg(id); if (!g) return;
-  g.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === String(val)));
-}
 function renderChips() {
   const kinds = $('sb-kind');
   if (kinds) kinds.querySelectorAll('.chip').forEach(c => {

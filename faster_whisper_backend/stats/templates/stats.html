@@ -1220,8 +1220,7 @@ function loadRangeSparks() {
 }
 function setLiveMode(v) {
   liveMode = v;
-  const seg = $('live-range');
-  if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
+  setSeg('live-range', v);
   const sc = $('ring-scrub'); if (sc) { sc.value = '119'; }
   document.querySelectorAll('.spark-flag, .spark-vp').forEach(el => { el.hidden = true; });
   for (const k in rangeData) delete rangeData[k];
@@ -2129,8 +2128,7 @@ function renderJobs(snap) {
     viewCtl.addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (!b || b.classList.contains('active')) return;
-      viewCtl.querySelectorAll('button').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
+      setSeg('rj-view', b.dataset.v);
       rjResetPages();
       if (lastJobsSnap) renderJobs(lastJobsSnap);
     });
