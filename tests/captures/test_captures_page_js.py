@@ -1700,6 +1700,22 @@ global.document = { querySelector: function() { return null; } };
 """
 
 
+def _load_open_edits_harness(page):
+    """load() with the real open-edits helpers: `renders` counts its render()s,
+    `pending` holds its GETs' resolvers. A test's later declarations win."""
+    return _js_functions(page, "load", *_OPEN_EDITS_FNS, "markDirty") + r"""
+var _loadSeq = 0, _counts = {}, _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
+var _pendingModel = null, _speakerPicker = null, _openRows = {}, _openSamples = {};
+var renders = 0, pending = [];
+function api() { return new Promise(function(r) { pending.push(r); }); }
+function _listUrl() { return '/captures/api/list'; }
+function _speakerQs() { return ''; }
+function updateCaptureBadge() {} function rebuildModelFilter() {} function updateCounts() {}
+function _clearSelection() {} function render() { renders++; } function _syncUrl() {}
+function reloadStats() {} function toast() {}
+"""
+
+
 @needs_node
 @pytest.mark.parametrize("action, reply", [
     ("_bulkStatus('reviewed')", {"updated": [{"id": "a", "prev_status": "new"}], "skipped": []}),
@@ -1908,20 +1924,12 @@ def test_load_asks_before_rendering_over_edits_made_meanwhile(page, tmp_path):
     ran lost its chips / notes to the render() after them, with no prompt.
     On a Cancel the list on screen (and its group cursor) stays as it was;
     edits the caller already agreed to drop are not asked about again."""
-    fns = _js_functions(page, "load", *_OPEN_EDITS_FNS, "markDirty")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, _load_open_edits_harness(page) + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
-var _samplesNext, _samplesNextQs = '', _loadSeq = 0, _allSamples, _allCaptures;
-var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
-var _pendingModel = null, _speakerPicker = null, _openRows = {}, _openSamples = {};
-var renders = 0, asked = [], answers = [], toasts = [], pending = [];
+var _samplesNext, _samplesNextQs = '', _allSamples, _allCaptures;
+var asked = [], answers = [], toasts = [];
 async function _confirm(o) { asked.push(o.title); return answers.shift(); }
-function api() { return new Promise(function(r) { pending.push(r); }); }
-function _listUrl() { return '/captures/api/list'; }
-function _speakerQs() { return ''; }
-function updateCaptureBadge() {} function rebuildModelFilter() {} function updateCounts() {}
-function _clearSelection() {} function render() { renders++; } function _syncUrl() {}
-function reloadStats() {} function toast(m) { toasts.push(m); }
+function toast(m) { toasts.push(m); }
 var footer = { hidden: true };
 global.document = { getElementById: function() { return footer; },
                     body: { classList: { add: function() {} } } };
@@ -1971,21 +1979,15 @@ def test_cancelled_refresh_after_a_speaker_switch_keeps_the_shown_speakers(
     Cancel on "Show the refreshed list?" kept Alice's list under Bob's
     picker and URL, so the next render hid Alice's groups and the counts
     and Load more went by Bob."""
-    fns = _js_functions(page, "load", "_speakerQs", *_OPEN_EDITS_FNS, "markDirty")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, _load_open_edits_harness(page) + _js_function(page, "_speakerQs") + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
-var _samplesNext = cursor, _samplesNextQs = '&user_id=alice', _loadSeq = 0;
+var _samplesNext = cursor, _samplesNextQs = '&user_id=alice';
 var _allSamples = [{ id: 'alice0' }], _allCaptures = [{ id: 'c0' }];
-var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true;
 var _filtSpeakers = ['bob'], _shownSpeakers = ['alice'];   // picker: Alice -> Bob
-var _pendingModel = null, _openRows = {}, _openSamples = {};
-var picked = [], urls = [], pending = [];
+var picked = [], urls = [];
 var _speakerPicker = { setPicked: function(ids) { picked.push(ids.slice()); } };
 async function _confirm() { return false; }
-function api() { return new Promise(function(r) { pending.push(r); }); }
-function _listUrl() { return '/captures/api/list'; }
 function _syncUrl() { urls.push(_filtSpeakers.join(',')); }
-function render() {} function toast() {}
 var footer = { hidden: true };
 global.document = { getElementById: function() { return footer; } };
 (async function() {
@@ -2021,24 +2023,16 @@ def test_load_after_a_request_asks_about_edits_made_during_it(
     on a running rebuild) counted as agreed and the refreshed list dropped
     it with no prompt."""
     handler = _js_after(page, anchor)
-    fns = _js_functions(page, "load", *_OPEN_EDITS_FNS, "markDirty")
-    out = _run_node(tmp_path, fns + r"""
-var _samplesNext = null, _samplesNextQs = '', _loadSeq = 0, _allSamples = [], _allCaptures = [];
-var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
-var _shownSpeakers = [], _pendingModel = null, _speakerPicker = null;
-var _openRows = {}, _openSamples = {};
-var renders = 0, asked = [], pending = [];
+    out = _run_node(tmp_path, _load_open_edits_harness(page) + r"""
+var _samplesNext = null, _samplesNextQs = '', _allSamples = [], _allCaptures = [];
+var _shownSpeakers = [], asked = [];
 async function _confirm(o) { asked.push(o.title); return o.title !== 'Show the refreshed list?'; }
 function api(m, u) {
   if (m !== 'GET') return new Promise(function(r) { pending.push(r); });
   return Promise.resolve({ captures: [], samples: [], is_admin: true });
 }
-function _listUrl() { return '/captures/api/list'; }
-function _speakerQs() { return ''; }
-function updateCaptureBadge() {} function rebuildModelFilter() {} function updateCounts() {}
-function _clearSelection() {} function render() { renders++; } function _syncUrl() {}
-function reloadStats() {} function toast() {} function _stopAnyPreview() {}
-var g = { id: 'g1' }, rows = [{ id: 'c1' }], modal = { classList: { remove: function() {} } };
+function _stopAnyPreview() {}
+var g ={ id: 'g1' }, rows = [{ id: 'c1' }], modal = { classList: { remove: function() {} } };
 global.document = { getElementById: function() { return {}; },
                     body: { classList: { add: function() {} } } };
 (async function() {
