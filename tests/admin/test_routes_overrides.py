@@ -47,6 +47,10 @@ def _bind_key(client, h, uid, kid, **config):
     return r
 
 
+def _rename_profile(client, h, old, new):
+    return client.post(f"{OV}/profiles/rename", headers=h, json={"old": old, "new": new})
+
+
 def _alice_on_clinic_de(client, make_user_key, **fields):
     """Admin headers + non-admin alice bound to one "clinic-de" profile = fields; return (h, uid)."""
     _, _, h = _admin(make_user_key)
@@ -392,8 +396,7 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
     _bind_key(client, h, uid, kid, profiles=["clinic-de"])
 
-    r = client.post(f"{OV}/profiles/rename", headers=h,
-                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    r = _rename_profile(client, h, "clinic-de", "clinic-deutsch")
     assert r.status_code == 200, r.text
     assert r.json()["bindings_updated"] == 2          # user row + key row
 
@@ -431,8 +434,7 @@ def test_rename_profile_keeps_locks_while_the_cascade_commits(
         return n
 
     monkeypatch.setattr(api_keys_store, "rename_profile_refs", _cascade_then_resolve)
-    r = client.post(f"{OV}/profiles/rename", headers=h,
-                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    r = _rename_profile(client, h, "clinic-de", "clinic-deutsch")
     assert r.status_code == 200, r.text
     assert "DEFAULT_LANGUAGE" in seen["locked"]
     # The alias is gone once the hot-apply ran.
@@ -459,8 +461,7 @@ def test_rename_profile_failed_cascade_keeps_the_old_name(
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(api_keys_store, "rename_profile_refs", _locked)
-    r = client.post(f"{OV}/profiles/rename", headers=h,
-                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    r = _rename_profile(client, h, "clinic-de", "clinic-deutsch")
     assert r.status_code == 500, r.text
     assert set(cfg.OVERRIDE_PROFILES) == {"clinic-de"}
     on_disk = config_store.load_overrides()["OVERRIDE_PROFILES"]
@@ -541,8 +542,7 @@ def test_rename_profile_env_pinned_409(client, make_user_key, monkeypatch):
     calls = []
     monkeypatch.setattr(api_keys_store, "rename_profile_refs",
                         lambda old, new: calls.append((old, new)) or 0)
-    r = client.post(f"{OV}/profiles/rename", headers=h,
-                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    r = _rename_profile(client, h, "clinic-de", "clinic-deutsch")
     assert r.status_code == 409, r.text
     assert "WHISPER_OVERRIDE_PROFILES" in r.json()["detail"]
     assert cfg.OVERRIDE_PROFILES == before
@@ -581,8 +581,7 @@ def test_state_save_env_pinned_409(client, make_user_key, monkeypatch):
 
 def test_rename_profile_unknown_404(client, make_user_key):
     _, _, h = _admin(make_user_key)
-    r = client.post(f"{OV}/profiles/rename", headers=h,
-                    json={"old": "ghost", "new": "phantom"})
+    r = _rename_profile(client, h, "ghost", "phantom")
     assert r.status_code == 404
 
 
@@ -591,18 +590,15 @@ def test_rename_profile_collision_409(client, make_user_key):
     # Both profiles must coexist — the page always saves the full dict.
     client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": {
         "a-prof": {"BEAM_SIZE": 5}, "b-prof": {"BEAM_SIZE": 6}}})
-    r = client.post(f"{OV}/profiles/rename", headers=h,
-                    json={"old": "a-prof", "new": "b-prof"})
+    r = _rename_profile(client, h, "a-prof", "b-prof")
     assert r.status_code == 409
 
 
 def test_rename_profile_bad_name_and_noop_400(client, make_user_key):
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "good", BEAM_SIZE=5)
-    assert client.post(f"{OV}/profiles/rename", headers=h,
-                       json={"old": "good", "new": "Bad Name!"}).status_code == 400
-    assert client.post(f"{OV}/profiles/rename", headers=h,
-                       json={"old": "good", "new": "good"}).status_code == 400
+    assert _rename_profile(client, h, "good", "Bad Name!").status_code == 400
+    assert _rename_profile(client, h, "good", "good").status_code == 400
 
 
 def test_rename_profile_old_name_case_insensitive(client, make_user_key):
@@ -614,8 +610,7 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
     _bind_user(client, h, uid, profiles=["clinic-de"], allowed_override_profiles=[])
-    r = client.post(f"{OV}/profiles/rename", headers=h,
-                    json={"old": "CLINIC-DE", "new": "clinic-deutsch"})
+    r = _rename_profile(client, h, "CLINIC-DE", "clinic-deutsch")
     assert r.status_code == 200, r.text
     # The lowercased `old` also reached the cascade (the binding ref matched).
     assert r.json()["bindings_updated"] == 1
