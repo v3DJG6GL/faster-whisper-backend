@@ -15,8 +15,9 @@ import time
 import pytest
 
 from faster_whisper_backend.media import media_store as ums
+from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media import subtitle_mux as pk
-from tests.conftest import write_bytes
+from tests.conftest import bearer, write_bytes
 from tests.media.test_routes_url import _video_ids
 from tests.media.test_subtitle_mux import run_ffmpeg
 
@@ -156,7 +157,6 @@ def test_upload_over_the_retention_cap_is_an_early_413_naming_it(
 
 def test_upload_without_disk_space_is_507_and_leaves_no_file(
         client, package_enabled, monkeypatch):
-    from faster_whisper_backend.media import routes as media_routes
     real = shutil.disk_usage
 
     def _full(path):
@@ -173,7 +173,6 @@ def test_upload_hitting_a_full_disk_mid_stream_is_507(client, package_enabled,
     import errno
     import io
 
-    from faster_whisper_backend.media import routes as media_routes
     real_fdopen = os.fdopen
 
     class _Full(io.RawIOBase):
@@ -423,8 +422,6 @@ def test_package_body_cap_covers_every_limit_compliant_request(
 
 def test_upload_whose_spool_vanished_is_a_deliberate_500(
         client, package_enabled, monkeypatch):
-    from faster_whisper_backend.media import routes as media_routes
-
     def _gone(src, dst):
         raise FileNotFoundError(src)
     monkeypatch.setattr(media_routes.os, "replace", _gone)
@@ -513,7 +510,6 @@ def test_package_unknown_id_404_and_disabled_403_and_no_ffmpeg_503(
 
 
 def test_package_foreign_owner_404(client, package_enabled, make_user_key):
-    from tests.conftest import bearer
     _ua, key_a = make_user_key("alice", is_admin=True)
     _ub, key_b = make_user_key("bob", is_admin=True)
     mid = _upload(client, headers=bearer(key_a)).json()["media_id"]

@@ -230,7 +230,6 @@ def test_pipeline_copy_link_path_is_0600(tmp_path, monkeypatch):
 def test_register_refreshes_mtime_for_orphan_guard(tmp_path):
     # The move preserves the download's mtime; the orphan scan must see the
     # PLACEMENT time, or a slow cross-device move lands already "old".
-    import time
     src = _make_src(tmp_path)
     _age(src, 3600)
     mid = ums.register(src, user_id=None)
@@ -267,7 +266,6 @@ def test_pipeline_copy_is_independent(tmp_path, monkeypatch):
 def test_expires_at_unix(tmp_path):
     mid = ums.register(_make_src(tmp_path), user_id=None)
     exp = ums.expires_at_unix(mid)
-    import time
     assert exp is not None and exp > time.time()
     assert ums.expires_at_unix("f" * 32) is None
 

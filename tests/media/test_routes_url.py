@@ -20,7 +20,9 @@ from faster_whisper_backend.media.download import UrlDownloadError, UrlMediaInfo
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.media import video as media_video
+from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media.routes import _has_speech as _REAL_HAS_SPEECH
+from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -356,8 +358,6 @@ def test_preview_rate_limit_is_per_user(client, url_enabled, make_user_key):
     runs in OPEN mode as one synthetic admin, so a user-keyed limit would
     degrade to a single shared bucket there — real keys are needed (creating
     the first admin key also flips the app to locked-down)."""
-    from tests.conftest import bearer
-
     _uid_a, key_a = make_user_key("alice", is_admin=True)
     _uid_b, key_b = make_user_key("bob", is_admin=True)
 
@@ -880,7 +880,6 @@ def lang_check(url_enabled, monkeypatch, fake_model):
     silence, so the VAD gate is told they hold speech: `heard` decides."""
     import numpy as np
     from faster_whisper_backend.audio import transcode
-    from faster_whisper_backend.media import routes as media_routes
     monkeypatch.setattr(transcode, "decode_pieces_16k", lambda path, starts, s: [
         np.zeros(16000, dtype=np.float32) for _ in starts])
     monkeypatch.setattr(media_routes, "_has_speech", lambda audio: True)
@@ -979,7 +978,6 @@ def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
 
 
 def test_language_check_no_speech_is_unknown(client, url_enabled, lang_check, monkeypatch):
-    from faster_whisper_backend.media import routes as media_routes
     monkeypatch.setattr(media_routes, "_has_speech", lambda audio: False)
     lang_check.heard = [("en", 0.341)]   # faster-whisper 1.2 on padded silence
     body = client.post("/v1/audio/url-language", json={"url": _URL}).json()
@@ -995,7 +993,6 @@ def test_language_check_silent_pieces_never_reach_the_model(
     speech in instead of raising: a silent link must still read as no
     language, not English — through the REAL VAD gate."""
     pytest.importorskip("faster_whisper")
-    from faster_whisper_backend.media import routes as media_routes
     monkeypatch.setattr(media_routes, "_has_speech", _REAL_HAS_SPEECH)
     lang_check.heard = [("en", 0.341)]
     body = client.post("/v1/audio/url-language", json={"url": _URL}).json()
@@ -1268,7 +1265,6 @@ def test_prefetched_miss_downloads_quietly(client, url_enabled, downloads, tmp_p
 
 def test_prefetched_foreign_owner_downloads(client, url_enabled, downloads, tmp_path,
                                             make_user_key):
-    from tests.conftest import bearer
     _admin, admin_key = make_user_key("admin", is_admin=True)
     other, _k = make_user_key("bob")
     mid = _prefetched(tmp_path, user_id=other)
