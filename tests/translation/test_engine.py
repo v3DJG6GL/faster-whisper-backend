@@ -926,7 +926,6 @@ def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
     """One count mismatch on a batch that opens with blank cues halves the
     LIVE span only: the next batch starts at the blanks again, so k keeps
     them on top — otherwise every later batch of the target stays tiny."""
-    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
     # The first batch mismatches.
     _install_complete(monkeypatch, _numbered_fake(
@@ -948,7 +947,6 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
     """A halving gets past one failing position: once the halved batch went
     through, k grows back to TRANSLATION_BATCH_SEGMENTS instead of staying
     shrunk for every later cue of the target."""
-    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
 
     def fake(llm, family, prompt_or_msgs, max_tokens):
@@ -998,7 +996,6 @@ def test_faithful_batch_size_stops_growing_to_a_size_that_keeps_failing(
     """A model that mis-numbers every batch above 4 lines: once a grown 8
     failed twice, k stays at 4 instead of paying a failed 8-line decode
     before every 4-batch for the rest of the target."""
-    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
     _install_complete(monkeypatch, _numbered_fake(
         calls, lambda lines: len(lines) > 4))
@@ -1012,7 +1009,6 @@ def test_faithful_one_bad_cue_still_grows_back_to_the_full_batch(
         base_cfg, monkeypatch):
     """One cue that breaks every numbered batch holding it is no size the
     model cannot number: past it, k still grows back to the full size."""
-    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
     live = [f"Satz nummer {n}." for n in range(32)]
     _install_complete(monkeypatch, _numbered_fake(
@@ -1027,7 +1023,6 @@ def test_faithful_two_bad_cues_apart_still_grow_back_to_the_full_batch(
     """Two isolated bad cues with full batches numbered fine between them
     are no size failing twice IN A ROW: past the second one, k still grows
     back to the full size instead of decoding every later cue alone."""
-    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
     live = [f"Satz nummer {n}." for n in range(48)]
     bad = (live[5], live[29])
@@ -2764,15 +2759,9 @@ class TestComplete:
             {"text": "Salut", "finish_reason": "stop"}]})
         assert translation._complete(done, "seedx", "p", 8) == "Salut"
 
-    def test_truncated_reply_keeps_the_original(self, monkeypatch):
+    def test_truncated_reply_keeps_the_original(self, base_cfg, monkeypatch):
         """End to end through translate_segments with the real _complete:
         a truncated fluent reply is kept original, never redistributed."""
-        monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "org/model",
-                            raising=False)
-        monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_FAMILY", "auto",
-                            raising=False)
-        monkeypatch.setattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 0,
-                            raising=False)
         llm = self._Llm(chat_out={"choices": [
             {"message": {"content": "Nous avons répété la mesure"},
              "finish_reason": "length"}]})
