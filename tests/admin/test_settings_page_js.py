@@ -10,20 +10,13 @@ import json
 
 import pytest
 
-from tests._page_helpers import needs_node, node_stdout
+from tests._page_helpers import js_through as _block, needs_node, node_stdout
 
 
 def _html(client, url="/settings"):
     r = client.get(url)
     assert r.status_code == 200
     return r.text
-
-
-def _block(html, start, end="\n  }\n"):
-    """Source from `start` up to and including the first `end` after it."""
-    i = html.index(start)
-    j = html.index(end, i)
-    return html[i:j + len(end)]
 
 
 def _fns(html, *names):

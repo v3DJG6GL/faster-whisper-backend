@@ -24,6 +24,12 @@ def js_upto(html: str, start: str, end: str) -> str:
     return body[:body.index(end)]
 
 
+def js_through(html: str, start: str, end: str = "\n  }\n") -> str:
+    """Page-script source from ``start`` up to and including the first
+    ``end`` after it."""
+    return js_upto(html, start, end) + end
+
+
 def js_body(html: str, start: str) -> str:
     """Page-script source from ``start`` up to (not including) the first
     two-space-indented closing brace: a top-level script function's body."""

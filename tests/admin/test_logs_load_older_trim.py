@@ -9,13 +9,10 @@ import subprocess
 
 import pytest
 
+from tests._page_helpers import js_through as _block
+
 _NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
-
-
-def _block(html, start, end="\n  }\n"):
-    i = html.index(start)
-    return html[i:html.index(end, i) + len(end)]
 
 
 _HARNESS = r"""

@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from tests._page_helpers import js_fn
+from tests._page_helpers import js_fn, js_through as _between
 
 _NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
@@ -327,12 +327,6 @@ var u = { id: 'u1', username: 'alice' };
 """
     out = _run(js, tmp_path)
     assert out == {"reopened_go_disabled": True, "after_settle_go_disabled": False, "posts": 1}
-
-
-def _between(html, start, end):
-    """Source from `start` up to and including `end`."""
-    i = html.index(start)
-    return html[i:html.index(end, i) + len(end)]
 
 
 @pytest.mark.parametrize("scope", ["user", "key"])
