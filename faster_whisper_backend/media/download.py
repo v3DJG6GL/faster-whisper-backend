@@ -840,8 +840,7 @@ def _direct_media_probe_sync(url: str, *, timeout: float,
         if isinstance(e, urllib.error.HTTPError) and e.code >= 400:
             raise UrlDownloadError(
                 f"the site refused the request (HTTP {e.code})") from None
-        raise UrlDownloadError(
-            "the site could not be reached from the server") from None
+        raise UrlDownloadError(_UNREACHABLE_MSG) from None
     except Exception:  # noqa: BLE001 — an odd answer ⇒ not direct media
         return False
     return ctype.startswith(_DIRECT_MEDIA_TYPES) or (
@@ -1364,7 +1363,7 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
     parts = urllib.parse.urlsplit(url)
     if (parts.scheme.lower() not in ("http", "https") or not parts.hostname
             or _host_is_forbidden(parts.hostname)):
-        raise UrlDownloadError("the site could not be reached from the server")
+        raise UrlDownloadError(_UNREACHABLE_MSG)
     req = urllib.request.Request(
         _wire_url(url), headers={"User-Agent": "faster-whisper-backend", **(headers or {})})
     with _WallClockCutoff(timeout) as cutoff, \
@@ -1439,6 +1438,7 @@ async def fetch_thumbnail_data_uri(
 _HANDOFF_REFUSED = "this link leads to a site the server's URL policy doesn't allow"
 _OVER_CAP_MSG = "this media exceeds the server's size limit"
 _TOO_SLOW_MSG = "the site took too long to answer"
+_UNREACHABLE_MSG = "the site could not be reached from the server"
 _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     # The two guard refusals with their own needle, ABOVE the bare marker
     # they contain: neither is the site being unreachable.
@@ -1453,8 +1453,7 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     # like the transport rows: an optional fetch's refusal must not relabel
     # the run's real error (no message quotes tool output, so a fall-through
     # leaks nothing).
-    ((GUARD_MARKER,),
-     "the site could not be reached from the server"),
+    ((GUARD_MARKER,), _UNREACHABLE_MSG),
     # Age before bot: both messages start "Sign in to confirm …", so the
     # broader sign-in needle must not shadow the age variant.
     (("confirm your age", "age-restricted", "age restricted"),
@@ -1495,7 +1494,7 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     # From here down the transport / HTTP-status rows read only the
     # non-WARNING lines (see classify_error).
     (("failed to resolve", "getaddrinfo", "timed out", "connection refused"),
-     "the site could not be reached from the server"),
+     _UNREACHABLE_MSG),
     # The site answered with an HTTP error status: a page / metadata fetch
     # raises "Unable to download webpage: HTTP Error 404: Not Found (caused
     # by <HTTPError 404: Not Found>)". Matched on the cause's repr, so the
@@ -1504,8 +1503,7 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     (("<httperror 404:", "<httperror 410:"),
      "this media is unavailable or has been removed"),
     (("<httperror 4",), "the site refused the request"),
-    (("unable to download webpage",),
-     "the site could not be reached from the server"),
+    (("unable to download webpage",), _UNREACHABLE_MSG),
 )
 # The first needle of each row classify_error matches against the
 # non-WARNING lines only.
