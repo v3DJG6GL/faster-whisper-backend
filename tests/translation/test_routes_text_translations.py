@@ -13,7 +13,7 @@ from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.transcription import receipt_hold
-from tests._transcription_helpers import bind_profile
+from tests._transcription_helpers import bind_profile, record_runs
 from tests._translation_helpers import (
     enable_translation as _enable,
     stub_translate as _stub_translate,
@@ -243,7 +243,7 @@ def test_inflight_slot_is_released_on_cancellation(client, app_module,
     still recorded (as cancelled), like the batch handler's aborted runs."""
     _enable(app_module, monkeypatch)
     seen = {}
-    recorded = []
+    recorded = record_runs(app_module, monkeypatch)
 
     async def _cancelled(*args, **kwargs):
         # Proves the slot was really taken: a stub never reached would leave
@@ -251,8 +251,6 @@ def test_inflight_slot_is_released_on_cancellation(client, app_module,
         seen["n"] = tr_routes._translate_inflight.count(_open_key())
         raise asyncio.CancelledError()
     monkeypatch.setattr(translation, "translate_segments", _cancelled)
-    monkeypatch.setattr(tr_routes.metrics, "record_transcription",
-                        lambda **kw: recorded.append(kw))
 
     # TestClient surfaces the cancellation as RuntimeError, not as
     # asyncio.CancelledError — do not narrow this.
@@ -630,9 +628,7 @@ def test_kept_original_reaches_the_usage_stage(client, app_module,
         ], {"model": "org/d:Q4", "source": "de", "mode": "fluent",
             "kept": {0: ["en"], 1: []}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
-    recorded = []
-    monkeypatch.setattr(tr_routes.metrics, "record_transcription",
-                        lambda **kw: recorded.append(kw))
+    recorded = record_runs(app_module, monkeypatch)
     r = client.post(URL, json=_body())
     assert r.status_code == 200, r.text
     assert [kw["stages"][0]["kept_original"] for kw in recorded] == [1]
@@ -866,13 +862,7 @@ def test_translation_error_records_status_error(client, app_module,
     # recent_transcriptions.status column rendered verbatim by /stats.
     _enable(app_module, monkeypatch)
     _stub_raising(monkeypatch, translation.TranslationError("nope"))
-    recorded = []
-    _orig = app_module.metrics.record_transcription
-
-    def _spy(**kw):
-        recorded.append(kw)
-        return _orig(**kw)
-    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    recorded = record_runs(app_module, monkeypatch)
     from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)            # lock the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
