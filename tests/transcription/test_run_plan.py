@@ -34,9 +34,11 @@ def clock():
     return Clock()
 
 
-def _plan(clock, kind="file", stages=("transcribing",)):
+def _plan(clock, kind="file", stages=("transcribing",), audio_s=None):
     p = run_plan.RunPlan(kind=kind, now=clock)
     p.set_stages(list(stages))
+    if audio_s is not None:
+        p.set_audio_seconds(audio_s, src="decoder")
     return p
 
 
@@ -53,8 +55,7 @@ def _stage(snap, name):
 
 
 def test_seed_estimates_use_seed_rates(ledger, clock):
-    p = _plan(clock, stages=["separating", "transcribing", "diarizing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["separating", "transcribing", "diarizing"], audio_s=600.0)
     snap = p.snapshot()
     assert _stage(snap, "separating")["est_s"] == pytest.approx(600 / 8, abs=0.06)
     assert _stage(snap, "transcribing")["est_s"] == pytest.approx(600 / 6, abs=0.06)
@@ -85,15 +86,13 @@ def test_duration_sources_refine_but_never_regress(ledger, clock):
 
 
 def test_vad_retained_scales_the_transcribe_estimate(ledger, clock):
-    p = _plan(clock)
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, audio_s=600.0)
     p.set_vad_retained(0.5)
     assert _stage(p.snapshot(), "transcribing")["est_s"] == pytest.approx(300 / 6, abs=0.06)
 
 
 def test_translation_units_scale_with_targets_and_skip_instant(ledger, clock):
-    p = _plan(clock, stages=["transcribing", "translating"])
-    p.set_audio_seconds(700.0, src="decoder")
+    p = _plan(clock, stages=["transcribing", "translating"], audio_s=700.0)
     p.set_translation(["en", "fr", "de"], model="org/m:Q4", device="cuda",
                       mode="fluent", source_lang="de")
     # 700 s / 7 s per segment = 100 segments; seed 1.6 units/s → 62.5 s each
@@ -219,8 +218,8 @@ def test_a_download_without_a_fraction_fills_by_work_time_only(ledger, clock):
 
 
 def test_took_replaces_est_and_overall_is_monotone(ledger, clock):
-    p = _plan(clock, stages=["transcribing", "translating"])
-    p.set_audio_seconds(600.0, src="decoder")           # transcribe est 100 s
+    p = _plan(clock, stages=["transcribing", "translating"],
+              audio_s=600.0)           # transcribe est 100 s
     p.set_translation(["fr"], model="m", device="cuda", mode="fluent")
     p.set_segments(160)                                 # translate est 100 s
     p.tick(stage="transcribing", progress=0.0)
@@ -247,8 +246,7 @@ def test_took_replaces_est_and_overall_is_monotone(ledger, clock):
 
 
 def test_subphase_ticks_do_not_transition(ledger, clock):
-    p = _plan(clock, stages=["separating", "transcribing", "translating"])
-    p.set_audio_seconds(60.0, src="decoder")
+    p = _plan(clock, stages=["separating", "transcribing", "translating"], audio_s=60.0)
     # The handler's entry seed: "waiting" while separation is still pending.
     p.tick(stage="waiting")
     snap = p.snapshot()
@@ -280,8 +278,7 @@ def test_eta_holds_through_a_wait_in_progress(ledger, clock):
     """wait_s grows only when a wait ENDS, and _fraction freezes the bar in
     a warm-up phase: the ETA must not count the estimate down meanwhile and
     snap back once the phase moves on."""
-    p = _plan(clock)
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, audio_s=600.0)
     p.tick(stage="waiting")
     est = p.snapshot()["eta_s"]
     assert est == pytest.approx(_stage(p.snapshot(), "transcribing")["est_s"])
@@ -305,8 +302,7 @@ def test_eta_holds_the_unit_sum_through_a_cold_model_fetch(ledger, clock):
 
 
 def test_waiting_time_is_billed_apart_from_the_stage(ledger, clock):
-    p = _plan(clock)
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, audio_s=600.0)
     p.tick(stage="waiting")            # queue + model load
     clock.advance(40)
     p.tick(stage="transcribing", progress=0.0)
@@ -323,8 +319,7 @@ def test_separation_queue_is_wait_not_work(ledger, clock):
     """Separation has no "waiting" sub-phase of its own: its queue for the
     inference slot rides as step="waiting". It is queue time — the bar holds
     and the learned rate is over the demix alone."""
-    p = _plan(clock, stages=["separating", "transcribing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["separating", "transcribing"], audio_s=600.0)
     p.tick(stage="separating", progress=None)
     p.tick(stage="separating", step="waiting")
     held = p.snapshot()["overall"]
@@ -409,8 +404,7 @@ def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
         return real(*a, **kw)
     monkeypatch.setattr(atomic_json, "atomic_write_json", counting)
     p = _plan(clock, kind="url", stages=["downloading", "transcribing",
-                                         "diarizing", "translating"])
-    p.set_audio_seconds(600.0, src="decoder")
+                                         "diarizing", "translating"], audio_s=600.0)
     p.set_segments(80)
     p.set_translation(["fr", "fi", "sv"], model="m", device="cuda",
                       mode="fluent")
@@ -448,8 +442,8 @@ def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
 
 def test_eta_projects_from_rate_and_goes_null_on_unevidenced_overrun(
         ledger, clock):
-    p = _plan(clock, stages=["transcribing", "diarizing"])
-    p.set_audio_seconds(600.0, src="decoder")   # transcribe 100 s, diarize ~45.4 s
+    p = _plan(clock, stages=["transcribing", "diarizing"],
+              audio_s=600.0)   # transcribe 100 s, diarize ~45.4 s
     _DIAR = 600 / 600 + 600 / 14 + 600 / 400
     p.tick(stage="transcribing", progress=0.0)
     clock.advance(20)
@@ -473,8 +467,7 @@ def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
     """The diarizing stage carries one unit per pyannote step; the hook's
     target ticks move them, a unit closes on its own 100 % tick, and a
     clean run teaches the ledger one rate per step."""
-    p = _plan(clock, stages=["diarizing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["diarizing"], audio_s=600.0)
     p.set_stage_model("diarizing", model="community-1", device="cuda")
     units = _stage(p.snapshot(), "diarizing")["units"]
     assert [u["target"] for u in units] == ["segmentation", "embeddings", "clustering"]
@@ -518,8 +511,7 @@ def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
 def test_unit_stage_falls_back_to_the_stage_fraction(ledger, clock):
     """A hook whose steps map to no unit reports only a stage fraction
     (target=None): it stands in until a unit moves, not thrown away."""
-    p = _plan(clock, stages=["diarizing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["diarizing"], audio_s=600.0)
     p.tick(stage="diarizing")
     assert p.snapshot()["overall"] == 0.0
     p.tick(stage="diarizing", progress=0.6)
@@ -532,8 +524,7 @@ def test_unit_stage_falls_back_to_the_stage_fraction(ledger, clock):
 def test_stage_fraction_stand_in_moves_the_eta_too(ledger, clock):
     """While only the stage fraction moves the bar, the ETA follows it
     instead of staying the sum of the still-queued units."""
-    p = _plan(clock, stages=["diarizing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["diarizing"], audio_s=600.0)
     p.tick(stage="diarizing")
     clock.advance(10)
     p.tick(stage="diarizing", progress=0.2)
@@ -560,8 +551,8 @@ def test_warmup_phases_do_not_fill_by_the_clock(ledger, clock):
     of creeping with elapsed time. The plain stage tick without a fraction
     still fills by time (the decoder reports position only later on some
     paths), and separation's `preparing` step counts as warm-up too."""
-    p = _plan(clock, stages=["downloading", "separating", "transcribing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["downloading", "separating", "transcribing"],
+              audio_s=600.0)
     p.tick(stage="downloading", progress=1.0)
     clock.advance(7)
     p.stage_done("downloading")
@@ -590,8 +581,7 @@ def test_eta_projection_leaves_the_warm_up_out(ledger, clock):
     """Once the decoder reports, the ETA projects from decode time only: a
     40 s VAD pass spread over the first 10 % decoded would read as a decode
     ten times slower than it is."""
-    p = _plan(clock)
-    p.set_audio_seconds(3600.0, src="decoder")
+    p = _plan(clock, audio_s=3600.0)
     p.tick(stage="waiting")
     clock.advance(5)
     p.tick(stage="analyzing")
@@ -608,8 +598,7 @@ def test_eta_projection_leaves_the_warm_up_out(ledger, clock):
 
 
 def test_skipped_and_failed_stages(ledger, clock):
-    p = _plan(clock, stages=["separating", "transcribing", "diarizing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["separating", "transcribing", "diarizing"], audio_s=600.0)
     p.skip("separating")
     p.tick(stage="transcribing", progress=1.0)
     clock.advance(100)
@@ -635,8 +624,7 @@ def test_skipped_and_failed_stages(ledger, clock):
 
 
 def test_finish_run_records_nothing_unless_ok(ledger, clock):
-    p = _plan(clock)
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, audio_s=600.0)
     p.tick(stage="transcribing", progress=0.0)
     clock.advance(60)
     p.stage_done("transcribing")
@@ -647,8 +635,7 @@ def test_finish_run_records_nothing_unless_ok(ledger, clock):
 def test_stage_ticks_infer_skipped_predecessors(ledger, clock):
     # The server jumped straight from separating to diarizing? Then the
     # transcribe stage was never run: it leaves the denominator.
-    p = _plan(clock, stages=["separating", "transcribing", "diarizing"])
-    p.set_audio_seconds(60.0, src="decoder")
+    p = _plan(clock, stages=["separating", "transcribing", "diarizing"], audio_s=60.0)
     p.tick(stage="separating")
     p.stage_done("separating", took_s=3.0)
     p.tick(stage="diarizing")
@@ -661,8 +648,7 @@ def test_a_stage_inserted_before_the_active_one_reverts_it(ledger, clock):
     """The provisional list had no separation, the entry seed activated
     transcribing, then the final list put separating ahead of it: the
     transcribe stage goes back to pending, it is not "done" after 0 s."""
-    p = _plan(clock, stages=["transcribing"])
-    p.set_audio_seconds(600.0, src="decoder")
+    p = _plan(clock, stages=["transcribing"], audio_s=600.0)
     p.tick(stage="waiting")
     clock.advance(2)
     p.set_stages(["separating", "transcribing"])
