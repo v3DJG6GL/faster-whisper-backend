@@ -1108,12 +1108,7 @@
       var rendered = await _renderAdminOnlyIfNonAdmin();
       if (rendered) throw new Error('not-admin');
     }
-    if (!resp.ok) {
-      var msg = 'HTTP ' + resp.status;
-      try { msg = _detailMsg(await resp.json(), msg); }
-      catch(_) {}
-      throw new Error(msg);
-    }
+    if (!resp.ok) throw new Error(await _respErrMsg(resp, 'HTTP ' + resp.status));
     return await resp.json();
   }
 
@@ -1126,6 +1121,10 @@
 
   // _detailMsg(j, fallback), an error body's toast text (a 422's `detail`
   // list included), is the shared window helper from the head bootstrap.
+  // A non-ok reply's toast text: its JSON body's detail, else the fallback.
+  async function _respErrMsg(resp, fallback) {
+    try { return _detailMsg(await resp.json(), fallback); } catch (_) { return fallback; }
+  }
 
   {{NOT_ADMIN_LANDING_JS}}
 
@@ -4194,16 +4193,8 @@
           fetch('/captures/api/samples/preview-audio', { method:'POST', headers:headers, body:body }),
           fetch('/captures/api/samples/preview-words', { method:'POST', headers:headers, body:body }),
         ]);
-        if (!audioResp.ok) {
-          var amsg = 'preview failed (' + audioResp.status + ')';
-          try { amsg = _detailMsg(await audioResp.json(), amsg); } catch (_) {}
-          throw new Error(amsg);
-        }
-        if (!wordsResp.ok) {
-          var wmsg = 'word-preview failed (' + wordsResp.status + ')';
-          try { wmsg = _detailMsg(await wordsResp.json(), wmsg); } catch (_) {}
-          throw new Error(wmsg);
-        }
+        if (!audioResp.ok) throw new Error(await _respErrMsg(audioResp, 'preview failed (' + audioResp.status + ')'));
+        if (!wordsResp.ok) throw new Error(await _respErrMsg(wordsResp, 'word-preview failed (' + wordsResp.status + ')'));
         var blob = await audioResp.blob();
         var wordsJ = await wordsResp.json();
         if (gen !== _previewGen) {
@@ -4312,11 +4303,7 @@
         member_ids: memberIds, corrections: chips,
       }),
     });
-    if (!resp.ok) {
-      var msg = 'chip save failed (' + resp.status + ')';
-      try { msg = _detailMsg(await resp.json(), msg); } catch (_) {}
-      throw new Error(msg);
-    }
+    if (!resp.ok) throw new Error(await _respErrMsg(resp, 'chip save failed (' + resp.status + ')'));
     state.baselineCorrections = JSON.parse(JSON.stringify(state.corrections));
     // The route REPLACED each member's chips: put them on the list rows and
     // redraw those cards' previews, so the list and the merge modal's
