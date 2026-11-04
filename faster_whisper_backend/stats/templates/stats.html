@@ -2123,16 +2123,12 @@ function renderJobs(snap) {
 }
 
 (() => {
-  const viewCtl = $('rj-view');
-  if (viewCtl) {
-    viewCtl.addEventListener('click', (e) => {
-      const b = e.target.closest('button');
-      if (!b || b.classList.contains('active')) return;
-      setSeg('rj-view', b.dataset.v);
-      rjResetPages();
-      if (lastJobsSnap) renderJobs(lastJobsSnap);
-    });
-  }
+  onPick('rj-view', 'button', (b) => {
+    if (b.classList.contains('active')) return;
+    setSeg('rj-view', b.dataset.v);
+    rjResetPages();
+    if (lastJobsSnap) renderJobs(lastJobsSnap);
+  });
   const moreBtn = $('rj-more');
   if (moreBtn) moreBtn.addEventListener('click', rjLoadMore);
   // Called by static/stats.js when the sub-bar's filters change.

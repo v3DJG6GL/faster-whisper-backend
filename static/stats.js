@@ -3,7 +3,7 @@
 //
 // Loaded as a classic script right after the grid markup and BEFORE the
 // page's inline dashboard IIFE, so the top-level declarations here
-// (GS_LAYOUT_KEY, grid, onSeg, setSeg, restartClass, onResizeFrame,
+// (GS_LAYOUT_KEY, grid, onPick, onSeg, setSeg, restartClass, onResizeFrame,
 // flashCtl) are the globals that IIFE reads; the usage section is an IIFE
 // of its own and only touches its own elements.
 //
@@ -584,21 +584,17 @@ function wireScopeBar() {
     }
     load();
   });
-  const pop = $('sb-custom');
-  if (pop) {
-    pop.addEventListener('click', (e) => {
-      const b = e.target.closest('button'); if (!b) return;
-      if (b.dataset.span) { const [f0, t0] = spanPreset(b.dataset.span); $('sb-from').value = isoOfDay(f0); $('sb-to').value = isoOfDay(t0); validateCustom(); }
-      else if (b.id === 'sb-custom-cancel') closeCustom();
-      else if (b.id === 'sb-custom-apply') {
-        const f0 = dayOfIso($('sb-from').value), t0 = dayOfIso($('sb-to').value);
-        if (!spanOk(f0, t0)) return;
-        Q.range = 'custom'; Q.from = f0; Q.to = t0; setSeg('sb-range', 'custom');
-        closeCustom(); load();
-      }
-    });
-    ['sb-from', 'sb-to'].forEach(id => $(id).addEventListener('input', validateCustom));
-  }
+  onPick('sb-custom', 'button', (b) => {
+    if (b.dataset.span) { const [f0, t0] = spanPreset(b.dataset.span); $('sb-from').value = isoOfDay(f0); $('sb-to').value = isoOfDay(t0); validateCustom(); }
+    else if (b.id === 'sb-custom-cancel') closeCustom();
+    else if (b.id === 'sb-custom-apply') {
+      const f0 = dayOfIso($('sb-from').value), t0 = dayOfIso($('sb-to').value);
+      if (!spanOk(f0, t0)) return;
+      Q.range = 'custom'; Q.from = f0; Q.to = t0; setSeg('sb-range', 'custom');
+      closeCustom(); load();
+    }
+  });
+  if ($('sb-custom')) ['sb-from', 'sb-to'].forEach(id => $(id).addEventListener('input', validateCustom));
 }
 function spanPreset(name) {
   const d = new Date(); const y = d.getFullYear(), m = d.getMonth();
@@ -1401,8 +1397,7 @@ function renderBoard() {
     + lab + (boardSort.key === k ? (boardSort.dir < 0 ? ' ▾' : ' ▴') : '') + '</th>').join('') + '</tr>';
   if (head && !head._sortWired) {
     head._sortWired = true;
-    head.addEventListener('click', (e) => {
-      const th = e.target.closest('th[data-k]'); if (!th) return;
+    onPick('usage-board-head', 'th[data-k]', (th) => {
       const k = th.getAttribute('data-k');
       boardSort = boardSort.key === k ? { key: k, dir: -boardSort.dir } : { key: k, dir: k === 'label' ? 1 : -1 };
       renderBoard();
