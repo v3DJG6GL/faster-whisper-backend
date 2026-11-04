@@ -13,6 +13,7 @@ import pytest
 
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.settings import config as cfg
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +52,6 @@ def test_snapshot_host_fields():
 
 
 def test_snapshot_process_fields():
-    import os
     proc = system_stats.system_snapshot()["process"]
     assert proc["pid"] == os.getpid()
     assert proc["uptime_sec"] >= 0
@@ -135,7 +135,6 @@ def test_fit_check_reads_the_target_card(two_gpus, model_sizes_ledger,
 
 def test_preload_sizes_whisper_on_its_device_index(monkeypatch):
     from faster_whisper_backend.runtime import preload
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "DEVICE_INDEX", 0, raising=False)
     monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
                         {"tiny": {"DEVICE_INDEX": 1}}, raising=False)
@@ -164,7 +163,6 @@ def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
     cache is <DOWNLOAD_ROOT>/hf/hub, not the OS drive's ~/.cache/huggingface —
     and a not-yet-created hf/hub (or hf/) dir still resolves to the nearest
     existing ancestor's drive."""
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     seen = []
@@ -192,7 +190,6 @@ def test_disk_free_walks_a_relative_download_root_up_to_cwd(monkeypatch,
                                                             tmp_path):
     """A relative DOWNLOAD_ROOT whose dir does not exist yet still reads the
     drive it will land on (the cwd's), not None."""
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "models", raising=False)
