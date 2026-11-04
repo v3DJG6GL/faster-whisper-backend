@@ -1362,6 +1362,8 @@ _KATZE_ALIGNED = ([{"word": "äh", "removed": True}] * 4
 # _buildDefaultTranscript and the helpers it calls, sliced together.
 _TRANSCRIPT_FNS = ("_endsSentence", "_applyChipsToText", "_cjkEdge", "_trainingBase",
                    "_buildDefaultTranscript")
+# _capturePreviewText and the helpers it calls.
+_CARD_PREVIEW_FNS = ("_capturePreviewText", "_trainingBase", "_applyChipsToText", "_cjkEdge")
 
 
 @needs_node
@@ -1416,7 +1418,7 @@ def test_card_preview_keeps_a_pipeline_blanked_capture_empty(page, tmp_path):
     the chips-applied result was empty, so a hallucination a removal rule
     blanked showed as the card's label while the merge preview and the
     export left it out. A legacy row (NULL columns) still previews raw."""
-    fns = _js_functions(page, "_applyChipsToText", "_cjkEdge", "_trainingBase", "_capturePreviewText")
+    fns = _js_functions(page, *_CARD_PREVIEW_FNS)
     out = _run_node(tmp_path, fns + r"""
 console.log(JSON.stringify([
   _capturePreviewText({ text_for_training: '', final: '',
@@ -1573,8 +1575,7 @@ def test_capture_save_and_reprocess_redraw_the_card_preview(page, tmp_path):
     after a chip Save or a Reprocess it kept the old text until the next
     full render(). The PATCH reply's raw words also replaced the row's
     aligned ones, which mis-placed the chip in the next preview."""
-    fns = _js_functions(page, "onSave", "onReprocess", "_syncCapturePreview", "_capturePreviewText",
-                        "_trainingBase", "_applyChipsToText")
+    fns = _js_functions(page, "onSave", "onReprocess", "_syncCapturePreview", *_CARD_PREVIEW_FNS)
     out = _run_node(tmp_path, fns + r"""
 var preview = { textContent: 'die Katze die Maus' }, asked = [];
 global.document = { querySelector: function(s) { asked.push(s); return preview; } };
@@ -1792,8 +1793,7 @@ def test_capture_status_click_keeps_the_aligned_words(page, tmp_path):
     removed fillers on another copy of its word."""
     build = _js_function(page, "buildBody")
     handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
-    fns = _js_functions(page, "_syncCapturePreview", "_capturePreviewText", "_trainingBase",
-                        "_applyChipsToText")
+    fns = _js_functions(page, "_syncCapturePreview", *_CARD_PREVIEW_FNS)
     out = _run_node(tmp_path, fns + r"""
 var preview = { textContent: '' };
 global.document = { querySelector: function() { return preview; } };
@@ -2332,8 +2332,7 @@ def test_proposal_chip_save_updates_the_list_rows(page, tmp_path):
     """A chip typed in a proposal / merge preview auto-saved to the member
     captures, but their list rows kept the old chips: the collapsed cards
     and a reopened merge modal showed the uncorrected text until Refresh."""
-    fns = _js_functions(page, "_saveProposalChips", "_capturePreviewText", "_trainingBase",
-                        "_applyChipsToText")
+    fns = _js_functions(page, "_saveProposalChips", *_CARD_PREVIEW_FNS)
     chip = {"wrong": "die", "correct": "Die", "idx": 4}
     out = _run_node(tmp_path, fns + r"""
 var previews = {};
