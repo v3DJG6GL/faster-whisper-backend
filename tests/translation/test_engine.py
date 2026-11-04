@@ -21,6 +21,7 @@ import pytest
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core import languages
+from tests._transcription_helpers import cancel_with_register_queued
 
 
 # ---------------------------------------------------------------------------
@@ -2117,37 +2118,9 @@ def test_cancel_while_register_is_queued_still_lists_the_model(
     still queued when the cancel lands, and a plain cancelled to_thread
     future drops the queued item. The cached model must still get its
     "gguf:" row."""
-    import concurrent.futures
     made, stats = lru_env
-    queued, gate = [], threading.Event()
-
-    def _vram(*a):
-        # The post-load sample runs on the loop right before the register
-        # is submitted: occupy the only worker so the register is queued.
-        if made and not queued:
-            asyncio.get_running_loop().run_in_executor(None, gate.wait, 5)
-            queued.append(True)
-        return None
-    monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes", _vram)
-
-    async def run():
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(
-            concurrent.futures.ThreadPoolExecutor(max_workers=1))
-        task = asyncio.create_task(translation._get_model("o/a", lease=True))
-        while not queued:
-            await asyncio.sleep(0.01)
-        task.cancel()
-        await asyncio.sleep(0.05)
-        gate.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        # One worker, FIFO: once this runs, anything queued before it has.
-        await loop.run_in_executor(None, lambda: None)
-    try:
-        asyncio.run(run())
-    finally:
-        gate.set()
+    cancel_with_register_queued(
+        monkeypatch, made, lambda: translation._get_model("o/a", lease=True))
     assert translation._models.get("o/a") is made["o/a"]
     assert stats["registered"] == [("gguf:o/a", "cpu", "gguf")]
     assert translation._active.get("o/a", 0) == 0

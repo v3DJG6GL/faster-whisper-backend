@@ -1,7 +1,8 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
 (the stub upload, a plain / verbose_json post, a profile-bound non-admin key,
 the record_transcription spy, a fixed / failing model loader, a constant-tone WAV, the
-receipt's guard line, a gated model_registry write).
+receipt's guard line, a gated model_registry write, a cancel while that
+write is queued).
 Import as ``from tests._transcription_helpers import ...``."""
 
 import io
@@ -101,3 +102,45 @@ def blocked_register(monkeypatch):
         return real_register(*a, **kw)
     monkeypatch.setattr(model_registry, "register_loaded_model", _slow)
     return entered, gate
+
+
+def cancel_with_register_queued(monkeypatch, loaded, make_coro):
+    """Cancel make_coro()'s task while its register write sits queued behind
+    a busy one-worker default executor; `loaded` turns truthy once the
+    stubbed load ran. Returns after the queue drained."""
+    import asyncio
+    import concurrent.futures
+    import threading
+
+    import pytest
+
+    from faster_whisper_backend.runtime import system_stats
+    queued, gate = [], threading.Event()
+
+    def _vram(*a):
+        # The post-load sample runs on the loop right before the register
+        # is submitted: occupy the only worker so the register is queued.
+        if loaded and not queued:
+            asyncio.get_running_loop().run_in_executor(None, gate.wait, 5)
+            queued.append(True)
+        return None
+    monkeypatch.setattr(system_stats, "gpu_mem_used_bytes", _vram)
+
+    async def _main():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        task = asyncio.create_task(make_coro())
+        while not queued:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # One worker, FIFO: once this runs, anything queued before it has.
+        await loop.run_in_executor(None, lambda: None)
+    try:
+        asyncio.run(_main())
+    finally:
+        gate.set()
