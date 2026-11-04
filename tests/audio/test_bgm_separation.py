@@ -21,6 +21,8 @@ from tests._transcription_helpers import (
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests.conftest import bearer
 
+_M4A_UPLOAD = {"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")}
+
 
 @pytest.fixture
 def bgm_on(app_module, monkeypatch):
@@ -88,12 +90,7 @@ def test_separate_transcodes_non_libsndfile_container(
 
     monkeypatch.setattr(audio_transcode, "transcode_to_wav",
                         _fake_transcode)
-    r = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "separate_bgm": "true"})
-    assert r.status_code == 200, r.text
+    _post_ok(client, files=_M4A_UPLOAD, separate_bgm="true")
     assert len(transcoded) == 1
     _src, _dst, _rate, _layout = transcoded[0]
     assert (_rate, _layout) == (44100, "stereo")
@@ -111,17 +108,12 @@ def test_separate_transcode_failure_falls_back_to_original(
         raise RuntimeError("no decoder")
 
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
-    r = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
-        data={"model": "whisper-1", "separate_bgm": "true",
-              "response_format": "verbose_json"})
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, files=_M4A_UPLOAD, separate_bgm="true")
     # Separation still ran — on the original file (soft-fail, no warning
     # surfaced to the client for a transcode hiccup). The refusal arm
     # (a ValueError from _open_audio) is pinned in
     # tests/main/test_routes_transcription.py.
-    assert "warnings" not in r.json()
+    assert "warnings" not in body
     assert len(calls) == 1 and calls[0].endswith(".m4a")
 
 
