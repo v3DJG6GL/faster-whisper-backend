@@ -12,7 +12,9 @@ from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.core import jobs, web_common
 from faster_whisper_backend.paths import REPO_ROOT
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.stats import recent_transcriptions_store as rts
 from faster_whisper_backend.stats import routes as stats_routes
 from faster_whisper_backend.stats import usage_store as us
 from faster_whisper_backend.translation import engine as translation
@@ -76,7 +78,6 @@ def test_stats_usage_ok(client):
 # list to loopback so a non-loopback host exercises the host gate (403 before
 # the page-permission check).
 def test_stats_snapshot_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )
@@ -332,7 +333,6 @@ def test_translate_run_registers_a_job(client, app_module, monkeypatch):
 
 
 def test_stats_page_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )
@@ -585,20 +585,19 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
     from fastapi import HTTPException
 
     from faster_whisper_backend.auth import sessions_store
-    from faster_whisper_backend.settings import config
     from faster_whisper_backend.settings import version as settings_version
 
     make_user_key("root", is_admin=True)
     uid, _raw = make_user_key("alice", pages={"stats": "all"})
     token, _csrf = sessions_store.create_session(uid, 3600.0)
-    req = fake_request(headers={"cookie": f"{config.SESSION_COOKIE_NAME}={token}"})
+    req = fake_request(headers={"cookie": f"{cfg.SESSION_COOKIE_NAME}={token}"})
     seen = settings_version.config_version()
     fresh = time.monotonic()
     # Live session, stale timestamp: re-resolves, passes, timestamp moves.
     res = stats_routes._rescope_on_version_change(req, seen, fresh - 3600)
     assert res is not None and res[1] == seen and res[2] >= fresh
     at = res[2]
-    monkeypatch.setattr(config, "SESSION_TTL_S", 1e-6)
+    monkeypatch.setattr(cfg, "SESSION_TTL_S", 1e-6)
     assert settings_version.config_version() == seen
     # Within the interval the check stays cheap (no re-resolve) ...
     assert stats_routes._rescope_on_version_change(req, seen, at) is None
@@ -897,15 +896,13 @@ def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
 def test_transcription_records_the_gate_wait(client):
     """A real request through the handler goes through the timed gate and
     lands a wait_s on its ledger rows (0 with a free slot, never None)."""
-    from faster_whisper_backend.stats import recent_transcriptions_store
-    from faster_whisper_backend.stats import usage_store
     r = client.post("/v1/audio/transcriptions",
                     files={"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")},
                     data={"model": "whisper-1"})
     assert r.status_code == 200, r.text
-    row = recent_transcriptions_store.list_recent(limit=1)[0]
+    row = rts.list_recent(limit=1)[0]
     assert row["wait_s"] is not None and row["wait_s"] >= 0.0
-    job = usage_store._require_conn().execute(
+    job = us._require_conn().execute(
         "SELECT wait_s FROM usage_jobs ORDER BY created_ts DESC LIMIT 1").fetchone()
     assert job is not None and job["wait_s"] >= 0.0
     assert metrics.gpu_gate is not None and metrics.gpu_gate.held == 0
@@ -974,9 +971,8 @@ def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
 
 
 def _seed_jobs_pages(n, user_id="ua", **kw):
-    from faster_whisper_backend.stats import recent_transcriptions_store
     for i in range(n):
-        recent_transcriptions_store.record_timing(
+        rts.record_timing(
             request_id=f"{user_id}-{i}", model="m", audio_s=10.0,
             processing_s=(9.0 if i % 5 == 0 else 1.0), user_id=user_id,
             status=("error" if i % 4 == 0 else "ok"), words=1,
@@ -1399,7 +1395,6 @@ def test_stats_jobs_kind_accepts_the_chips_comma_list(client):
     download, which always show), so the load-older page must take the set:
     `kind=a,b` keeps any of them, one unknown member is a 422, and the page
     sends every mapped job kind."""
-    from faster_whisper_backend.stats import recent_transcriptions_store as rts
     rts.record_timing(request_id="t1", model="m", audio_s=10.0, processing_s=1.0,
                       status="ok", words=1, kind="transcribe", created_ts=3001.0)
     rts.record_timing(request_id="dl", model="m", audio_s=None, processing_s=2.0,
