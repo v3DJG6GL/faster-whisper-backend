@@ -39,7 +39,7 @@ def _make_editor_src(html, *builders):
     return "\n".join([
         _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
         _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
-        _block(html, "function makeEditor(name) {", "\n}\n"),
+        _fns(html, "makeEditor"),
         _fns(html, "_el", *builders),
     ])
 
@@ -213,7 +213,7 @@ def test_model_overrides_rerender_keeps_env_pinned_editor_disabled(client):
     click, a model-list change or a PIPELINE_RULES edit rebuilt enabled
     controls whose edits setDirty() then dropped without a word."""
     html = _html(client)
-    mo = _block(html, "function modelOverridesEditor(name, v) {", "\n}\n")
+    mo = _fns(html, "modelOverridesEditor")
     assert "if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);" in mo
     for fn in ("function renderSidebar() {", "function renderMain() {",
                "function refreshPipelineSection() {"):
@@ -483,8 +483,7 @@ fire(resetOrderBtn, 'click').then(() => {
 def test_unique_slug_suffix_stays_within_64_chars(client):
     """_slugify caps at 64 chars, then the '-2' suffix pushed a second rule
     with the same long label past RuleSlug's max_length (422 on save)."""
-    fn = _block(_html(client, "/settings/pipeline"),
-                "function _ensureUniqueSlug(slug, existing) {", "\n}\n")
+    fn = _fns(_html(client, "/settings/pipeline"), "_ensureUniqueSlug")
     out = _node(fn + """
 const base = 'a'.repeat(64);
 const two = _ensureUniqueSlug(base, new Set([base]));
@@ -847,7 +846,7 @@ def test_view_link_on_settings_opens_the_pipeline_page(client):
     PIPELINE_RULES editor since it moved to /settings/pipeline: '↑ view'
     found no row and did nothing."""
     html = _html(client)
-    fn = _block(html, "function jumpToGlobalRule(ruleName) {", "\n}\n")
+    fn = _fns(html, "jumpToGlobalRule")
     out = _node("""
 const document = { querySelector: () => null };   // /settings: no editor row
 const opened = [];
@@ -959,7 +958,7 @@ def test_view_link_expands_the_rule_card_on_the_pipeline_page(client):
     assert "head.appendChild(headLine1);" in html
     assert "headLine1.appendChild(headActions);" in html
     assert "headActions.appendChild(expandBtn);" in html
-    fn = _block(html, "function jumpToGlobalRule(ruleName) {", "\n}\n")
+    fn = _fns(html, "jumpToGlobalRule")
     out = _node(_SELECTOR_DOM + """
 const btn = new Node('.expand-btn');
 const row = new Node('.rule-row.rule-card', [
@@ -1053,7 +1052,7 @@ def test_env_pinned_rule_list_repaint_stays_read_only(client):
     html = _html(client, "/settings/pipeline")
     src = "\n".join([
         _block(html, "  function paintAll() {"),
-        _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
+        _fns(html, "disableEnvPinnedEditor"),
     ])
     out = _node(_FAKE_DOM + """
 const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
@@ -1103,7 +1102,7 @@ def test_env_pinned_rule_list_cards_still_open_for_reading(client):
     src = "\n".join([
         _block(html, "    const expandBtn = document.createElement('button');",
                "\n    });\n"),
-        _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
+        _fns(html, "disableEnvPinnedEditor"),
     ])
     out = _node(_FAKE_DOM + _CONTROL_QSA + """
 const rule = { name: 'a', type: 'regex' };
@@ -1210,7 +1209,7 @@ def test_env_pinned_editor_keeps_its_view_only_controls_live(client):
     them too, so a pinned field could not even be inspected."""
     html = _html(client)
     out = _node(_captures_harness(html, _CONTROL_QSA
-                                  + _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n") + """
+                                  + _fns(html, "disableEnvPinnedEditor") + """
 state.PIPELINE_RULES = [{ name: 'a', type: 'regex', enabled: true }];
 state.CAPTURES_PIPELINE_RULES_EXCLUDE = [];
 const wrap = makeEditor('CAPTURES_PIPELINE_RULES_EXCLUDE');
