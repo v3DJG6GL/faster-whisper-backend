@@ -7,8 +7,10 @@ application/json body far below MAX_REQUEST_BYTES; multipart audio uploads must
 keep the full ceiling.
 """
 
+import inspect
 import json
 
+from faster_whisper_backend.auth import dependencies as auth
 from tests._transcription_helpers import post_transcription
 
 _JSON = {"Content-Type": "application/json"}
@@ -61,7 +63,6 @@ def test_oversize_json_body_is_413(client):
 def test_oversize_json_is_rejected_before_the_route_runs(client, app_module):
     # A body this size would otherwise be json.loads-expanded (~24x RSS) before
     # any dependency — including auth — got to run.
-    from faster_whisper_backend.auth import dependencies as auth
     seen = []
 
     def _spy():
@@ -110,7 +111,6 @@ def test_chunked_oversize_json_is_cut_off(client, app_module):
     # The counter turns the stream into a ClientDisconnect, which FastAPI
     # reports as a 400 parse error; a 413 here would mean the ROUTE
     # (client-settings' own blob cap), not the counter, rejected the body.
-    from faster_whisper_backend.auth import dependencies as auth
     seen = []
 
     def _spy():
@@ -204,7 +204,6 @@ def test_chunked_non_json_body_to_a_self_parsing_route_is_cut_off(
 def test_every_self_parsing_post_route_is_held_to_the_json_cap(app_module):
     # A new route that parses its own JSON must join the path set, or a
     # non-JSON Content-Type hands it the 256 MiB backstop again.
-    import inspect
 
     def _walk(routes):
         # FastAPI 0.141 wraps each include_router in an _IncludedRouter.
@@ -249,7 +248,6 @@ def test_multipart_upload_route_is_not_held_to_the_backstop(
 def test_every_multipart_route_is_an_upload_path(app_module):
     # A new route taking File()/Form() must join the path set, or its
     # uploads are clamped to the non-upload backstop.
-    import inspect
     import re
 
     def _walk(routes):
