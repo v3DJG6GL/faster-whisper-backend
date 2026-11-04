@@ -6,6 +6,7 @@ plugin is required.
 """
 
 import asyncio
+import logging
 
 import pytest
 
@@ -111,8 +112,6 @@ def test_close_falls_back_on_a_failed_final_decode_and_still_commits(caplog):
     the confirmed text. close()'s own tolerance is pinned by
     test_close_survives_failing_on_final_and_still_commits.
     The frames alone are identical either way, so the logs tell them apart."""
-    import logging
-
     s, msgs = _make_session(decode_final=raising_decoder(RuntimeError, "CUDA out of memory"),
                             cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
@@ -137,8 +136,6 @@ def test_close_survives_failing_on_final_and_still_commits(caplog):
     during the drain finalize. Logged, not raised — the closing document
     still commits the confirmed text. (A raising postprocess is not among
     them: the closing commit re-runs it over the same text.)"""
-    import logging
-
     s, msgs = _make_session(cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
 
     async def _boom(info):
@@ -532,8 +529,6 @@ def test_seam_divergence_reanchors_logs_and_sticks(caplog):
     """When a new document would rewrite sent text anyway, the sent text stays
     as typed: a WARNING names the culprit, and the rest of the document is
     formatted on its own — also for later utterances (sticky)."""
-    import logging
-
     def pp(raw):                                    # 'a b' → 'X' (looks ahead)
         return raw.replace("a b", "X").strip()
 
@@ -556,8 +551,6 @@ def test_seam_divergence_reanchors_logs_and_sticks(caplog):
 
 
 def test_language_change_reanchors_without_rewriting_sent_text(caplog):
-    import logging
-
     lang = ["de"]
 
     def pp(raw):
