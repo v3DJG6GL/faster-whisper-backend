@@ -25,8 +25,9 @@ from tests.runtime.test_preload_registry import _fits
 from faster_whisper_backend.transcription import models as tx_models
 
 
-def _record_evict_and_load(monkeypatch):
-    """Stub the worker's _evict/_load with recorders; returns (evicted, loaded)."""
+def _handle_recording(monkeypatch, family, mid, pid):
+    """Stub the worker's _evict/_load with recorders, then register and handle
+    one entry under plan `pid`; returns (evicted, loaded)."""
     evicted, loaded = [], []
 
     async def _evict(family, peer):
@@ -36,6 +37,8 @@ def _record_evict_and_load(monkeypatch):
     async def _load(family, mid):
         loaded.append((family, mid))
     monkeypatch.setattr(preload, "_load", _load)
+    preload.register_plan("u", [(family, mid)], plan_id=pid)
+    asyncio.run(preload._handle((pid, family, mid)))
     return evicted, loaded
 
 
@@ -297,11 +300,7 @@ def test_worker_evicts_the_cold_whisper_peer_it_chose_even_when_it_fits(
     _fits(monkeypatch, (True, None))
     monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
     monkeypatch.setattr(tx_models, "_model_leases", {})
-    evicted, loaded = _record_evict_and_load(monkeypatch)
-
-    preload.register_plan("u", [("whisper", "large-v3")], plan_id="7" * 8)
-
-    asyncio.run(preload._handle(("7" * 8, "whisper", "large-v3")))
+    evicted, loaded = _handle_recording(monkeypatch, "whisper", "large-v3", "7" * 8)
     assert evicted == [("whisper", "peer")]
     assert loaded == [("whisper", "large-v3")]
 
@@ -312,11 +311,7 @@ def test_worker_keeps_the_cold_peer_when_an_unmeasured_model_has_a_free_slot(
     _fits(monkeypatch, (None, "size_unknown"))
     monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
     monkeypatch.setattr(tx_models, "_model_leases", {})
-    evicted, loaded = _record_evict_and_load(monkeypatch)
-
-    preload.register_plan("u", [("whisper", "large-v3")], plan_id="8" * 8)
-
-    asyncio.run(preload._handle(("8" * 8, "whisper", "large-v3")))
+    evicted, loaded = _handle_recording(monkeypatch, "whisper", "large-v3", "8" * 8)
     assert evicted == []
     assert loaded == [("whisper", "large-v3")]
 
@@ -352,11 +347,8 @@ def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
     model_registry.set_warm_predicate(None)
-    evicted, loaded = _record_evict_and_load(monkeypatch)
-
-    preload.register_plan("u", [("translation", "o/new:Q4")], plan_id="9" * 8)
-
-    asyncio.run(preload._handle(("9" * 8, "translation", "o/new:Q4")))
+    evicted, loaded = _handle_recording(monkeypatch, "translation", "o/new:Q4",
+                                        "9" * 8)
     assert evicted == [("translation", "o/peer:Q4")]
     assert loaded == [("translation", "o/new:Q4")]
 
