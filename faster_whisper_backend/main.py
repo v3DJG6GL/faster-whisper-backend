@@ -51,6 +51,7 @@ from faster_whisper_backend.media import media_store as url_media_store
 # ring) — see core/log_setup.py. Installed here, before the heavy imports below,
 # so their import-time log lines already reach the file.
 from faster_whisper_backend.core import log_setup
+from faster_whisper_backend.core import loop_lock
 from faster_whisper_backend.paths import REPO_ROOT
 
 log_setup.install()
@@ -654,14 +655,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    async def _cancel(task) -> None:
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+    _cancel = loop_lock.cancel_and_wait
 
     # Before EVERY model drop below: stop() cancels the worker, so a queued
     # stage-ahead item cannot reload a model after its cache was emptied

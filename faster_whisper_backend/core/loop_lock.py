@@ -19,7 +19,9 @@ built on ``asyncio.Lock`` can; with one loop it is exactly an
 ``CancelLatch`` and ``release_count`` are the model caches' other shared
 primitives: the latch finishes an un-stoppable load / registry write under
 such a lock and defers the caller's cancellation until it has landed;
-``release_count`` drops a lease / in-flight count.
+``release_count`` drops a lease / in-flight count. ``cancel_and_wait`` is the
+teardown of a background task (lifespan loops, the preload worker, a stream's
+consumer).
 """
 
 from __future__ import annotations
@@ -95,6 +97,18 @@ class CancelLatch:
                 if fut.cancelled():
                     raise
                 self.cancelled = self.cancelled or c
+
+
+async def cancel_and_wait(task: asyncio.Task | None) -> None:
+    """Cancel ``task`` (None is a no-op) and wait for it to unwind,
+    swallowing its ``CancelledError`` or any exception it ends with."""
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 def release_count(counts: dict, key) -> int:

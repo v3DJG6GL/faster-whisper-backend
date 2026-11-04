@@ -79,6 +79,7 @@ from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.transcription import decode_trace
 from faster_whisper_backend.core import jobs
+from faster_whisper_backend.core import loop_lock
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.transcription import receipt_hold
@@ -2026,11 +2027,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Stop the consumer before closing the session so the two never touch the
         # session concurrently (normally it already finished, awaited above).
         if consumer_task is not None and not consumer_task.done():
-            consumer_task.cancel()
-            try:
-                await consumer_task
-            except (Exception, asyncio.CancelledError):  # noqa: BLE001
-                pass
+            await loop_lock.cancel_and_wait(consumer_task)
         if session is not None:
             try:
                 await session.close()

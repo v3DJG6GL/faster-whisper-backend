@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core import jobs
+from faster_whisper_backend.core import loop_lock
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
@@ -1023,12 +1024,7 @@ async def stop() -> None:
     global _worker
     model_registry.set_warm_predicate(None)
     task, _worker = _worker, None
-    if task is not None:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+    await loop_lock.cancel_and_wait(task)
 
 
 async def sweeper_loop() -> None:
