@@ -258,15 +258,6 @@ def _invalidate_proposals(*uids: str | None) -> None:
         pass
 
 
-def _json_column(raw: Any, empty: str) -> Any:
-    """json.loads(raw or empty); a malformed or non-text value decodes as
-    `empty` (a fresh container each call)."""
-    try:
-        return json.loads(raw or empty)
-    except (TypeError, ValueError):
-        return json.loads(empty)
-
-
 def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. With
     include_words=False the heavy fields (words, segments)
@@ -278,16 +269,16 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
         d["raw"] = d.pop("raw_text")
     if "final_text" in d:
         d["final"] = d.pop("final_text")
-    d["corrections"] = _json_column(d.get("corrections"), "[]")
+    d["corrections"] = store_common.json_column(d.get("corrections"), "[]")
     if include_words:
-        d["words"] = _json_column(d.get("words"), "[]")
-        d["segments"] = _json_column(d.get("segments"), "[]")
+        d["words"] = store_common.json_column(d.get("words"), "[]")
+        d["segments"] = store_common.json_column(d.get("segments"), "[]")
     else:
         d.pop("words", None)
         d.pop("segments", None)
     # Per-language translations. A JSON column needs an explicit decode here
     # or it reaches the UI as a raw string; absent on pre-migration rows.
-    translations = _json_column(d.get("translations"), "{}")
+    translations = store_common.json_column(d.get("translations"), "{}")
     d["translations"] = translations if isinstance(translations, dict) else {}
     # reconcile_on_startup's own bookkeeping, not part of the capture.
     d.pop("status_before_missing", None)

@@ -171,14 +171,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["raw"] = d.pop("raw_text")
     if "final_text" in d:
         d["final"] = d.pop("final_text")
-    try:
-        d["steps"] = json.loads(d.get("steps") or "[]")
-    except (TypeError, ValueError):
-        d["steps"] = []
-    try:
-        d["corrections"] = json.loads(d.get("corrections") or "[]")
-    except (TypeError, ValueError):
-        d["corrections"] = []
+    d["steps"] = store_common.json_column(d.get("steps"), "[]")
+    d["corrections"] = store_common.json_column(d.get("corrections"), "[]")
     # Absent on rows written before the provenance migration. A row stored
     # before upsert_report refused non-finite floats may hold a bare
     # Infinity/NaN: reject it here (-> []) like a legacy trace_ts, or the

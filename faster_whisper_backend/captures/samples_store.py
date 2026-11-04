@@ -221,7 +221,6 @@ def get_members(sid: str) -> list[dict[str, Any]]:
     Carries `word_count` (JSON1 json_array_length of the words column, 0 on
     malformed JSON — same fallback as store._row_to_dict) so chip projection
     can compute global offsets without hydrating words."""
-    from faster_whisper_backend.captures import store as captures_store
     conn = _require_conn()
     rows = conn.execute(
         "SELECT id, created_ts, audio_s, raw_text AS raw, final_text AS final,"
@@ -237,7 +236,7 @@ def get_members(sid: str) -> list[dict[str, Any]]:
     for r in rows:
         d = dict(r)
         d["word_count"] = int(d.get("word_count") or 0)
-        corrections = captures_store._json_column(d.get("corrections"), "[]")
+        corrections = store_common.json_column(d.get("corrections"), "[]")
         d["corrections"] = corrections if isinstance(corrections, list) else []
         out.append(d)
     return out

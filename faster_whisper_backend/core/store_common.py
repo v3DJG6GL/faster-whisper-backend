@@ -13,6 +13,7 @@
   by usage_jobs and recent_transcriptions.
 - `rename_columns()` / `add_missing_columns()`: the legacy column-rename and
   additive column migrations the stores run on init.
+- `json_column()`: the tolerant decode of a JSON-bearing column.
 
 Every store creates its DB at the process umask (0644 file / 0755 dir on a
 typical Linux box) and nothing narrows it afterwards, yet those files hold
@@ -27,6 +28,7 @@ store must never fail to open over a file mode. OSError is swallowed.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sqlite3
@@ -155,6 +157,15 @@ def add_missing_columns(conn: sqlite3.Connection, table: str,
     for col, ddl in columns:
         if col not in have:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+
+def json_column(raw: Any, empty: str) -> Any:
+    """json.loads(raw or empty); a malformed or non-text value decodes as
+    `empty` (a fresh container each call)."""
+    try:
+        return json.loads(raw or empty)
+    except (TypeError, ValueError):
+        return json.loads(empty)
 
 
 def open_wal_db(path: str) -> sqlite3.Connection:
