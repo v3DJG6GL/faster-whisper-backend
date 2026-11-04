@@ -25,6 +25,11 @@ from tests._page_helpers import js_body, js_upto
 from tests.conftest import bearer, install_fake_wav_transcode, write_bytes, write_wav
 
 
+@pytest.fixture
+def html(client):
+    return client.get("/captures").text
+
+
 def test_captures_page(client):
     r = client.get("/captures")
     assert r.status_code == 200
@@ -35,13 +40,12 @@ def test_captures_page(client):
     assert "Whisper’s" in html and "\\u2019" not in html
 
 
-def test_captures_page_403_landing_short_circuits_for_admin(client):
+def test_captures_page_403_landing_short_circuits_for_admin(html):
     """Admins are stored with permissions '{}' so whoami returns pages = {},
     which is truthy in JS and has no `captures` key. The landing gate must
     bail on is_admin before it looks at the pages map, and treat an EMPTY
     map as "permissions absent" rather than "no scope" — otherwise any 403
     (stale CSRF token) wipes <main> for the admin."""
-    html = client.get("/captures").text
     gate = js_upto(html, "async function _renderAdminOnlyIfNonAdmin()",
                    "_renderNoAccessLanding({ page: 'captures' })")
     assert "if (j && j.is_admin) return false;" in gate
@@ -1264,13 +1268,12 @@ def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
     assert g["member_request_ids"] == ["req-a"]
 
 
-def test_page_search_matches_ids_and_filters_groups(client):
+def test_page_search_matches_ids_and_filters_groups(html):
     """Source pins: the search matches the capture id and request id (what
     the log block prints as `captured=` / `req=`) by PREFIX, kept out of the
     text haystack — a substring match on 32-hex ids let any hex-only word hit
     random rows — and group cards go through the model + search filters like
     capture cards do."""
-    html = client.get("/captures").text
     assert "_idPrefix(q, [r.id, r.request_id])" in html
     assert "_idPrefix(q, [g.id].concat(g.member_ids || [], g.member_request_ids || []))" in html
     assert "String(ids[i]).toLowerCase().indexOf(q) === 0" in html
@@ -1301,18 +1304,16 @@ def test_audio_original_switch_serves_the_untrimmed_file(client):
     assert r.headers["cache-control"] == "no-store"
 
 
-def test_capture_card_offers_both_audio_downloads(client):
-    html = client.get("/captures").text
+def test_capture_card_offers_both_audio_downloads(html):
     assert "compact-player-btn compact-player-dl" in html
     assert "audioUrl + '?original=1'" in html
     assert "a.compact-player-dl {" in html
 
 
-def test_page_merge_gate_cancels_a_stale_trim_estimate(client):
+def test_page_merge_gate_cancels_a_stale_trim_estimate(html):
     """A pending merge-estimate timer / in-flight POST from an earlier valid
     selection must not re-enable Merge once the selection turns invalid (too
     many rows, mixed speakers, in-sample) or empty: both paths cancel it."""
-    html = client.get("/captures").text
     bar = js_upto(
         html, "function _updateActionBar()", "function _cancelTrimEstimate()")
     assert "if (n === 0) { _cancelTrimEstimate(); return; }" in bar
@@ -1323,10 +1324,9 @@ def test_page_merge_gate_cancels_a_stale_trim_estimate(client):
     assert "_meterEstimateToken++;" in cancel and "clearTimeout(_meterEstimateTimer)" in cancel
 
 
-def test_page_translation_eligibility_mirrors_the_exporter(client):
+def test_page_translation_eligibility_mirrors_the_exporter(html):
     """The exporter skips the en track of an English-source capture and of a
     translate-task row; the card must not tag either as training data."""
-    html = client.get("/captures").text
     assert ("var eligible = enKey && !srcIsEn && !isTr && trs[enKey]"
             " && String(trs[enKey]).trim();") in html
     assert "var srcIsEn = String(r.language || '')" in html
@@ -1334,20 +1334,18 @@ def test_page_translation_eligibility_mirrors_the_exporter(client):
     assert "(eligible && lg === enKey ? ' cc-tr-eligible' : '')" in html
 
 
-def test_page_merge_gate_mirrors_the_language_and_task_partition(client):
-    html = client.get("/captures").text
+def test_page_merge_gate_mirrors_the_language_and_task_partition(html):
     bar = js_upto(
         html, "function _updateActionBar()", "function _cancelTrimEstimate()")
     assert "var mixedLangTask = langs.size > 1 || tasks.size > 1;" in bar
     assert "&& !mixedLangTask;" in bar
 
 
-def test_page_unsaved_edits_guard_covers_groups_and_bulk_actions(client):
+def test_page_unsaved_edits_guard_covers_groups_and_bulk_actions(html):
     """Every render() rebuilds open capture cards from the server and
     collapses open group cards. The "Load more groups" guard only saw capture
     cards, and the bulk Mark / Undo / Delete paths had no guard at all, so
     unsaved chip / notes edits vanished without a confirm."""
-    html = client.get("/captures").text
     guard = js_upto(
         html, "function _anyOpenDirty()", "async function _okToDropOpenEdits(")
     assert "_openRows[id]" in guard and "st.dirty" in guard
@@ -1361,14 +1359,13 @@ def test_page_unsaved_edits_guard_covers_groups_and_bulk_actions(client):
         assert "_okToDropOpenEdits(" in body, fn
 
 
-def test_page_filters_and_background_reloads_ask_before_dropping_edits(client):
+def test_page_filters_and_background_reloads_ask_before_dropping_edits(html):
     """The filter controls (status, speaker, model, search, Refresh) end in
     render() / load(), which rebuild open capture cards from a fresh GET and
     collapse group cards: they ask first and revert on a cancel. A finished
     background job or modal action skips its reload while a card is dirty,
     and loadMoreSamples renders only through that dirty-card check, never in
     `finally`."""
-    html = client.get("/captures").text
     helper = js_upto(html, "async function _filterChange(apply, revert)",
                      "function _loadUnlessDirty(msg, err)")
     assert "await _okToDropOpenEdits(" in helper
@@ -1403,20 +1400,18 @@ def test_page_filters_and_background_reloads_ask_before_dropping_edits(client):
     assert "await _renderUnlessKeptOpenEdits(agreed, 'Show the loaded groups?'" in tail
 
 
-def test_page_render_drops_hidden_rows_from_the_selection(client):
+def test_page_render_drops_hidden_rows_from_the_selection(html):
     """A filter or search change kept hidden ids selected, so a bulk Dismiss /
     Delete reached rows no longer on screen."""
-    html = client.get("/captures").text
     r = js_upto(html, "render = function() {", "list.innerHTML = '';")
     assert "_selection.delete(id)" in r
     assert "if (!r.sample_id) selectable[r.id] = true;" in r
     assert "_updateActionBar();" in r
 
 
-def test_page_error_toasts_read_a_422_detail_list(client):
+def test_page_error_toasts_read_a_422_detail_list(html):
     """FastAPI's 422 `detail` is a list of {msg, ...}; assigning it to the
     toast text printed "[object Object]"."""
-    html = client.get("/captures").text
     helper = html[html.index("window._detailMsg=function(j,fallback){"):]
     assert "typeof d==='string'" in helper
     assert "Array.isArray(d)" in helper and "d[0].msg" in helper
@@ -1426,10 +1421,9 @@ def test_page_error_toasts_read_a_422_detail_list(client):
     assert "function _detailMsg(" not in html
 
 
-def test_page_load_drops_a_superseded_filter_response(client):
+def test_page_load_drops_a_superseded_filter_response(html):
     """Out-of-order /list responses for two quick speaker-picker ticks must
     not leave the older filter's rows on screen."""
-    html = client.get("/captures").text
     load = js_upto(html, "async function load(", "async function loadMoreSamples()")
     assert "var seq = ++_loadSeq;" in load
     assert load.count("if (seq !== _loadSeq) return;") >= 3
@@ -1443,12 +1437,11 @@ def test_page_load_drops_a_superseded_filter_response(client):
     assert "if (typeof j.total_count === 'number') _totalCount = j.total_count;" in counts
 
 
-def test_page_group_autoload_skips_open_capture_cards(client):
+def test_page_group_autoload_skips_open_capture_cards(html):
     """loadMoreSamples ends in a full render(), which rebuilds every open
     capture card from the server: the scroll auto-trigger must hold off
     while one is open, and a manual load asks before dropping unsaved
     edits. Under audio_missing (no group has it) there is no footer."""
-    html = client.get("/captures").text
     foot = js_upto(html, "function appendMoreFooter(list) {", "io.observe(more);")
     assert "_filtStatus === 'audio_missing') return;" in foot
     assert "|| Object.keys(_openRows).length !== 0) return;" in foot
@@ -1459,10 +1452,9 @@ def test_page_group_autoload_skips_open_capture_cards(client):
             < more.index("await _renderUnlessKeptOpenEdits(agreed"))
 
 
-def test_sample_save_does_not_resend_status(client):
+def test_sample_save_does_not_resend_status(html):
     """The group's status buttons auto-save a narrow PATCH; Save resending
     the status loaded with the view reverted another tab's change."""
-    html = client.get("/captures").text
     save = js_upto(
         html, "saveTBtn.onclick = function() {", "saveTBtn.disabled = true;")
     assert "payload.admin_notes = sampleState.adminNotes;" in save
