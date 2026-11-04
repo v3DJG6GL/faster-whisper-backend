@@ -11,14 +11,15 @@ unsafe-method origin guard (for a reverse proxy that rewrites Host).
 import importlib
 
 import pytest
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
+from faster_whisper_backend.settings.schema import AdminConfig
 from tests.conftest import close_app_stores, isolate_app_env
 
 
 def test_cors_origin_validator_accepts_origins_and_star():
-    from faster_whisper_backend.settings.schema import AdminConfig
-    m = AdminConfig.model_validate({
+    m =AdminConfig.model_validate({
         "CORS_ALLOW_ORIGINS": ["https://app.example.com", "http://192.168.1.50:8000", "*"]})
     assert m.CORS_ALLOW_ORIGINS == ["https://app.example.com", "http://192.168.1.50:8000", "*"]
 
@@ -31,14 +32,11 @@ def test_cors_origin_validator_accepts_origins_and_star():
     "https://a b",                     # space
 ])
 def test_cors_origin_validator_rejects_bad(bad):
-    from pydantic import ValidationError
-    from faster_whisper_backend.settings.schema import AdminConfig
     with pytest.raises(ValidationError):
         AdminConfig.model_validate({"CORS_ALLOW_ORIGINS": [bad]})
 
 
 def test_trusted_origins_validator_accepts_origins():
-    from faster_whisper_backend.settings.schema import AdminConfig
     m = AdminConfig.model_validate({
         "TRUSTED_ORIGINS": ["https://whisper.example.com", "http://192.168.1.50:8000"]})
     assert m.TRUSTED_ORIGINS == ["https://whisper.example.com",
@@ -53,8 +51,6 @@ def test_trusted_origins_validator_accepts_origins():
     "https://a b",                     # space
 ])
 def test_trusted_origins_validator_rejects_bad(bad):
-    from pydantic import ValidationError
-    from faster_whisper_backend.settings.schema import AdminConfig
     with pytest.raises(ValidationError):
         AdminConfig.model_validate({"TRUSTED_ORIGINS": [bad]})
 
