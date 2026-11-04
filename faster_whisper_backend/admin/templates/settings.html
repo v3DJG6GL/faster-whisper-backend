@@ -868,13 +868,11 @@ function renderServerIdent(ident) {
     ['Boot', ident.boot, ''],
   ];
   for (const [label, value, cls] of rows) {
-    const dt = document.createElement('dt');
-    dt.textContent = label;
+    const dt = _el('dt', '', label);
     dl.appendChild(dt);
     dl.appendChild(_el('dd', cls, value || ''));
   }
-  const pathsDt = document.createElement('dt');
-  pathsDt.textContent = 'Data / models';
+  const pathsDt = _el('dt', '', 'Data / models');
   dl.appendChild(pathsDt);
   const pathsDd = document.createElement('dd');
   pathsDd.textContent = (ident.data_dir || '') + ' ';
@@ -1630,8 +1628,7 @@ function modelOverridesEditor(name, v) {
 
   function renderSection(sec) {
     const secEl = _el('div', 'mo-section');
-    const h4 = document.createElement('h4');
-    h4.textContent = sec.title;
+    const h4 = _el('h4', '', sec.title);
     if (sec.id === 'hardware') {
       const reload = _el('span', 'badge restart', 'drain-then-evict on edit');
       reload.style.marginLeft = '0.5rem';
@@ -1810,8 +1807,7 @@ function modelOverridesEditor(name, v) {
 
   function renderPipelineSection() {
     const secEl = _el('div', 'mo-section');
-    const h4 = document.createElement('h4');
-    h4.textContent = 'Pipeline rules (scoping only)';
+    const h4 = _el('h4', '', 'Pipeline rules (scoping only)');
     secEl.appendChild(h4);
     const note = _helpDiv('Per-model pipeline scoping. Rule bodies are edited globally — '
       + 'the checkbox here decides whether each rule runs in THIS model\'s pipeline. '
@@ -1997,11 +1993,9 @@ function modelMultiSelectEditor(name, v, lists) {
         setDirty(name, [...next]);
       });
       lbl.appendChild(cb);
-      const txt = document.createElement('span');
-      txt.textContent = m;
+      const txt = _el('span', '', m);
       if (!allowed.includes(m)) {
-        const warn = document.createElement('em');
-        warn.textContent = '  (not in ' + lists.allowed + ')';
+        const warn = _el('em', '', '  (not in ' + lists.allowed + ')');
         warn.style.color = 'var(--yellow)';
         warn.style.fontStyle = 'normal';
         txt.appendChild(warn);
@@ -2036,8 +2030,7 @@ function translationTemplateEditor(name, v) {
   const left = _el('div', 'lab-col');
   const mkRow = (labelText, ctrl) => {
     const row = _el('div', 'lab-row');
-    const l = document.createElement('label');
-    l.textContent = labelText;
+    const l = _el('label', '', labelText);
     row.appendChild(l); row.appendChild(ctrl);
     left.appendChild(row);
     return row;
@@ -2077,8 +2070,7 @@ function translationTemplateEditor(name, v) {
   const tgtIn = document.createElement('input');
   tgtIn.size = 4; tgtIn.value = 'en'; tgtIn.setAttribute('aria-label', 'target language code');
   const langRow = mkRow('from', srcIn);
-  const tl = document.createElement('label');
-  tl.textContent = 'to';
+  const tl = _el('label', '', 'to');
   langRow.appendChild(tl); langRow.appendChild(tgtIn);
 
   const sample = document.createElement('textarea');
@@ -2140,8 +2132,7 @@ function translationTemplateEditor(name, v) {
     'chatml': 'Translate the following text from {source_language} into {target_language}. Reply with ONLY the translation.\n\n{text}',
   };
   const rawDetails = document.createElement('details');
-  const rawSum = document.createElement('summary');
-  rawSum.textContent = 'View template (built-in · read-only)';
+  const rawSum = _el('summary', '', 'View template (built-in · read-only)');
   rawDetails.appendChild(rawSum);
   const rawPre = _el('pre', 'tpl-preview');
   rawPre.style.whiteSpace = 'pre-wrap';
@@ -2301,15 +2292,13 @@ function translationTemplateEditor(name, v) {
         testBtn.dataset.cold = '';
         const warned = j.warnings && j.warnings.length;
         card.className = 'lab-result' + (warned ? ' warned' : '');
-        const out = document.createElement('div');
-        out.textContent = j.output;
+        const out = _el('div', '', j.output);
         card.appendChild(out);
         card.appendChild(_helpDiv((warned ? '⚠ ' + j.warnings.join(' · ') + ' · ' : 'ok · ')
           + j.model + ' · ' + j.ms + ' ms' + (j.cold ? ' (incl. model load)' : '')));
         if (j.prompt) {
           const dbg = document.createElement('details');
-          const dsum = document.createElement('summary');
-          dsum.textContent = 'Final prompt (debug)';
+          const dsum = _el('summary', '', 'Final prompt (debug)');
           dbg.appendChild(dsum);
           const dpre = _el('pre', 'tpl-preview');
           dpre.style.whiteSpace = 'pre-wrap';
@@ -2986,8 +2975,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         if (opts.onChange) opts.onChange(cb.checked);
       });
       wrap.appendChild(cb);
-      const lbl = document.createElement('span');
-      lbl.textContent = text;
+      const lbl = _el('span', '', text);
       wrap.appendChild(lbl);
       return wrap;
     }
@@ -3662,8 +3650,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     syncNotice.hidden = missing.length === 0;
     if (!missing.length) return;
     const txt = _el('div', 'sync-notice-text');
-    const b = document.createElement('b');
-    b.textContent = 'config.json has ' + _count(missing.length, 'rule') + ' this server does not have yet.';
+    const b = _el('b', '', 'config.json has ' + _count(missing.length, 'rule') + ' this server does not have yet.');
     const names = _el('div', 'sync-notice-names', missing.map(m => m.label || m.name).join(', '));
     txt.appendChild(b); txt.appendChild(names);
     const btn = _button('sync-btn down', '↓ Review and add');
@@ -3874,8 +3861,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const t = _el('table', 'rv-table');
     const hr = document.createElement('tr');
     [['Field', ''], left, right].forEach(h => {
-      const th = document.createElement('th');
-      th.textContent = h[0];
+      const th = _el('th', '', h[0]);
       if (h[1]) { const sm = document.createElement('small'); sm.textContent = h[1]; th.appendChild(sm); }
       hr.appendChild(th);
     });
@@ -4151,8 +4137,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       d.textContent = 'Pipeline order unchanged';
       return d;
     }
-    const line1 = document.createElement('div');
-    line1.textContent = moved.length + ' rule(s) moved: ' + moved.join(', ');
+    const line1 = _el('div', '', moved.length + ' rule(s) moved: ' + moved.join(', '));
     const line2 = _helpDiv('New order: '
       + rules.filter(r => r.type !== 'terminal').map(r => r.label || r.name).join(' → '));
     d.appendChild(line1);
@@ -4653,11 +4638,9 @@ function pipelineTestPanel() {
           outCell.appendChild(warn);
         }
       }
-      const ordCell = document.createElement('td');
-      ordCell.textContent = step.ordinal;
+      const ordCell = _el('td', '', step.ordinal);
       tr.appendChild(ordCell);
-      const labelCell = document.createElement('td');
-      labelCell.textContent = step.label || '?';
+      const labelCell = _el('td', '', step.label || '?');
       if (badge) {
         labelCell.appendChild(document.createTextNode(' '));
         labelCell.appendChild(badge);
@@ -4959,8 +4942,7 @@ function render() {
       refreshSectionToggleAllLabel();
     });
     const secSum = _el('summary', 'section-summary');
-    const h = document.createElement('h2');
-    h.textContent = g.title;
+    const h = _el('h2', '', g.title);
     secSum.appendChild(h);
     secDet.appendChild(secSum);
     const body = _el('div', 'section-body');
@@ -5076,8 +5058,7 @@ function showRestartModal(fields, opts) {
   if (fields && fields.length) {
     ul.style.display = '';
     for (const f of fields) {
-      const li = document.createElement('li');
-      li.textContent = f;
+      const li = _el('li', '', f);
       ul.appendChild(li);
     }
   } else {
