@@ -1338,14 +1338,9 @@
     grp.setAttribute('role', 'radiogroup');
     options.forEach(function (o) {
       var val = o[0], label = o[1], tone = o[2];
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'status-btn' + (val === current ? ' active' : '');
+      var btn = window._segBtn(label, val === current);
       btn.dataset.val = val;
       if (tone) btn.dataset.tone = tone;
-      btn.textContent = label;
-      btn.setAttribute('role', 'radio');
-      btn.setAttribute('aria-checked', val === current ? 'true' : 'false');
       btn.onclick = function () { if (window._segSelect(grp, btn)) onpick(val); };
       grp.appendChild(btn);
     });

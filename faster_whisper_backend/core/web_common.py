@@ -194,6 +194,9 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #  10. window._apiFetch(method, path, body), the raw-Response fetch behind the
 #      overrides, api_keys and quick_config pages' api(): Accept JSON, the CSRF
 #      stamp, and a JSON body only when one is given. No status handling.
+#  11. window._segBtn(label, on), one fresh .status-btn radio button with the
+#      initial .active / aria-checked state _segSelect later moves. Its dataset,
+#      tone, children and click wiring stay at the call site.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -223,6 +226,9 @@ SCALE_BOOTSTRAP_HEAD = (
     "grp.querySelectorAll('.status-btn').forEach(function(x){"
     "x.classList.remove('active');x.setAttribute('aria-checked','false');});"
     "btn.classList.add('active');btn.setAttribute('aria-checked','true');return true;};"
+    "window._segBtn=function(label,on){var b=document.createElement('button');b.type='button';"
+    "b.className='status-btn'+(on?' active':'');b.textContent=label;"
+    "b.setAttribute('role','radio');b.setAttribute('aria-checked',on?'true':'false');return b;};"
     "window._csrfStamp=function(method,h){if(method!=='GET'&&method!=='HEAD')"
     "h['X-CSRF-Token']=window._csrfToken?window._csrfToken():'';};"
     "window._apiFetch=function(method,path,body){var h={Accept:'application/json'};"

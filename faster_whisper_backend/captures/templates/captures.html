@@ -1143,15 +1143,9 @@
     root.setAttribute('role', 'radiogroup');
     var buttons = new Map();
     options.forEach(function(opt) {
-      var b = _el('button', 'status-btn', opt.label);
-      b.type = 'button';
+      var b = window._segBtn(opt.label, opt.value === current);
       b.dataset.value = opt.value;
-      var cnt = _el('span', 'cnt');
-      b.appendChild(cnt);
-      b.setAttribute('role', 'radio');
-      var on = (opt.value === current);
-      b.setAttribute('aria-checked', String(on));
-      if (on) b.classList.add('active');
+      b.appendChild(_el('span', 'cnt'));
       b.addEventListener('click', function() {
         if (!window._segSelect(root, b)) return;
         try { onChange(opt.value); } catch (e) { /* swallow handler errors */ }

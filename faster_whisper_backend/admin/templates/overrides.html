@@ -836,11 +836,8 @@ window._renderWaterfall = (function () {
       grp.setAttribute('role', 'radiogroup');
       [['inherit', 'Inherit (' + (r.enabled ? 'on' : 'off') + ')', 'inherit'],
        ['on', 'On', 'allow'], ['off', 'Off', 'deny']].forEach(function (o) {
-        var btn = document.createElement('button'); btn.type = 'button';
-        btn.className = 'status-btn' + (o[0] === state ? ' active' : '');
-        btn.dataset.val = o[0]; btn.dataset.tone = o[2]; btn.textContent = o[1];
-        btn.setAttribute('role', 'radio');
-        btn.setAttribute('aria-checked', o[0] === state ? 'true' : 'false');
+        var btn = window._segBtn(o[1], o[0] === state);
+        btn.dataset.val = o[0]; btn.dataset.tone = o[2];
         btn.onclick = function () { if (window._segSelect(grp, btn)) setRule(p, r.name, o[0]); };
         grp.appendChild(btn);
       });
