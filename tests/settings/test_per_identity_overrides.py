@@ -9,6 +9,7 @@ round-trip (the request-gate keys survive validate_binding/_parse_binding).
 
 from faster_whisper_backend.core import languages
 from tests._transcription_helpers import bind_profile
+from tests._translation_helpers import enable_translation
 from tests.conftest import bearer
 
 OV = "/settings/overrides"
@@ -78,7 +79,7 @@ def test_me_translation_flag_present_details_gated(client, app_module, monkeypat
     for k in ("translation_models", "translation_languages",
               "translate_to_default", "llama_cpp_version"):
         assert k not in j
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
+    enable_translation(app_module, monkeypatch)
     j = client.get("/v1/me").json()
     assert j["translation_enabled"] is True
     for k in ("translation_models", "translation_languages",
@@ -89,10 +90,10 @@ def test_me_translation_flag_present_details_gated(client, app_module, monkeypat
 def test_me_translation_models_default_first_with_loaded_flags(
         client, app_module, monkeypatch):
     from faster_whisper_backend.translation import engine as translation
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL", "org/default-GGUF:Q4")
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", {
-        "org/zeta-GGUF:Q4", "org/alpha-GGUF:Q4", "org/default-GGUF:Q4"})
+    enable_translation(
+        app_module, monkeypatch, TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4",
+        TRANSLATION_ALLOWED_MODELS={
+            "org/zeta-GGUF:Q4", "org/alpha-GGUF:Q4", "org/default-GGUF:Q4"})
     # A loaded model OUTSIDE the allowlist (loaded before the admin tightened
     # it) is NOT offered — every request naming it would be refused; the list
     # is the stage's own admission rule (allowlist ∪ configured default),
@@ -118,9 +119,8 @@ def test_me_translation_models_empty_default_still_answers(
         client, app_module, monkeypatch):
     # No default configured: no crash, no phantom "" entry, and the language
     # list still answers via the chatml fallback family.
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL", "")
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", {"org/only-GGUF:Q4"})
+    enable_translation(app_module, monkeypatch, TRANSLATION_DEFAULT_MODEL="",
+                       TRANSLATION_ALLOWED_MODELS={"org/only-GGUF:Q4"})
     j = client.get("/v1/me").json()
     assert j["translation_models"] == [
         {"id": "org/only-GGUF:Q4", "loaded": False, "languages": None}]
@@ -130,11 +130,9 @@ def test_me_translation_models_empty_default_still_answers(
 def test_me_translation_models_carry_their_languages(
         client, app_module, monkeypatch):
     from faster_whisper_backend.translation import engine as translation
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
-                        "tencent/HY-MT1.5-7B-GGUF:Q4_K_M")
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
-                        {"org/other-GGUF:Q4"})
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_DEFAULT_MODEL="tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
+                       TRANSLATION_ALLOWED_MODELS={"org/other-GGUF:Q4"})
     j = client.get("/v1/me").json()
     hy, other = j["translation_models"]
     assert hy["languages"] == sorted(translation._FAMILIES["hunyuan"].languages)
@@ -144,8 +142,7 @@ def test_me_translation_models_carry_their_languages(
 
 def test_me_translate_to_default_respects_identity_override(
         client, app_module, make_user_key, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATE_TO", "en")
+    enable_translation(app_module, monkeypatch, TRANSLATE_TO="en")
     h, raw_alice = bind_profile(client, make_user_key, "de-fr", {"TRANSLATE_TO": "de,fr-CA"})
     # Alice sees HER effective default (profile layer), parsed csv → list.
     j = client.get("/v1/me", headers=bearer(raw_alice)).json()

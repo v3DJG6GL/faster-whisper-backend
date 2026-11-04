@@ -8,6 +8,7 @@ import json
 
 from faster_whisper_backend.settings import effective_config as ec
 from tests._transcription_helpers import bind_profile, post_verbose_ok
+from tests._translation_helpers import enable_translation, stub_translate
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -139,26 +140,19 @@ def test_empty_language_form_field_is_explicit_auto_detect(client, make_user_key
 
 def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
         client, app_module, make_user_key, monkeypatch):
-    from faster_whisper_backend.translation import engine as translation
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
-    calls = []
-
-    async def _fake(segments, targets, *, source_lang=None, model_ref=None,
-                    mode="fluent", glossary="", context_segments=None,
-                    progress_cb=None, cancel_check=None, download_cb=None):
-        calls.append({"targets": list(targets), "glossary": glossary})
-        return ([{t: "x" for t in targets} for _ in segments], [],
-                {"model": "org/m-GGUF:Q4", "source": "", "mode": mode})
-    monkeypatch.setattr(translation, "translate_segments", _fake)
+    enable_translation(app_module, monkeypatch)
+    calls = stub_translate(monkeypatch)
 
     _, raw = bind_profile(client, make_user_key, "p", {
         "TRANSLATE_TO": "en", "TRANSLATION_GLOSSARY": "Messung = measurement"})
     # absent → both inherited from the profile
     post_verbose_ok(client, bearer(raw))
-    assert calls[-1] == {"targets": ["en"], "glossary": "Messung = measurement"}
+    assert calls[-1]["targets"] == ["en"]
+    assert calls[-1]["glossary"] == "Messung = measurement"
     # "" glossary → explicitly none, targets still inherited
     post_verbose_ok(client, bearer(raw), translation_glossary="")
-    assert calls[-1] == {"targets": ["en"], "glossary": ""}
+    assert calls[-1]["targets"] == ["en"]
+    assert calls[-1]["glossary"] == ""
     # "" translate_to → explicitly no targets: the stage does not run at all
     n = len(calls)
     body = post_verbose_ok(client, bearer(raw), translate_to="")
