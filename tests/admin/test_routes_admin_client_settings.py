@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from tests._page_helpers import js_body, js_fn
+from tests._page_helpers import js_body, js_fn, js_upto
 from tests.conftest import bearer
 
 _API = "/settings/api-keys/api"
@@ -90,8 +90,7 @@ def test_page_delete_handles_401_and_detail(client):
     """Delete showed a bare "HTTP NNN": no login gate on 401, and the route's
     503/404 detail was dropped (Import and Export handle both)."""
     html = client.get("/settings/api-keys").text
-    d = html[html.index("api('DELETE', csApiBase(u.id))"):]
-    d = d[:d.index("showToast('Server copy deleted'")]
+    d = js_upto(html, "api('DELETE', csApiBase(u.id))", "showToast('Server copy deleted'")
     assert "r.status === 401" in d and "window._showLoginGate()" in d
     assert "JSON.parse(t).detail" in d
     assert "throw new Error('HTTP ' + r.status);" not in d

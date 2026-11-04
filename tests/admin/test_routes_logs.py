@@ -4,7 +4,7 @@ it), plus direct drives of logs_routes' stream generator and its re-auth."""
 import asyncio
 
 from faster_whisper_backend.admin import logs_routes
-from tests._page_helpers import js_body
+from tests._page_helpers import js_body, js_upto
 
 
 def test_logs_page_search_skips_fold_controls_and_button_labels(client):
@@ -36,10 +36,8 @@ def test_logs_page_resets_render_state_when_the_log_is_emptied(client):
     """Clear and the reconnect replay empty #log; a stale inSeg/pipe state
     would fold the next rows with no control in the DOM to reveal them."""
     html = client.get("/logs").text
-    clear = html[html.index("clearBtn.addEventListener('click'"):]
-    assert "_resetLiveDim();" in clear[:clear.index("});")]
-    reopen = html[html.index("function openLogStream()"):]
-    reopen = reopen[:reopen.index("es = new EventSource")]
+    assert "_resetLiveDim();" in js_upto(html, "clearBtn.addEventListener('click'", "});")
+    reopen = js_upto(html, "function openLogStream()", "es = new EventSource")
     assert "log.innerHTML = '';" in reopen and "_resetLiveDim();" in reopen
     assert "_liveStarted" not in html
 
@@ -50,8 +48,8 @@ def test_logs_page_trimmed_fold_control_ends_the_live_block(client):
     pipe, so decorate() folded every later row of the block behind a control
     no longer in the DOM."""
     html = client.get("/logs").text
-    trim = html[html.index("while (log.childElementCount > _LOG_DOM_MAX + _olderInDom)"):]
-    trim = trim[:trim.index("_unfold(first, 1e9);")]
+    trim = js_upto(html, "while (log.childElementCount > _LOG_DOM_MAX + _olderInDom)",
+                   "_unfold(first, 1e9);")
     assert "if (first === _liveDim.ctl) {" in trim
     for reset in ("_liveDim.ctl = null;", "_liveDim.inSeg = false;",
                   "_liveDim.pipe = false;"):
@@ -74,10 +72,8 @@ def test_logs_page_load_older_batch_survives_the_live_trim(client):
     assert "_olderInDom += added;" in older
     assert "_olderInDom += lines.length;" not in older
     assert "_logsSkip += lines.length;" in older     # the cursor counts lines
-    clear = html[html.index("clearBtn.addEventListener('click'"):]
-    assert "_olderInDom = 0;" in clear[:clear.index("});")]
-    reopen = html[html.index("function openLogStream()"):]
-    assert "_olderInDom = 0;" in reopen[:reopen.index("es = new EventSource")]
+    assert "_olderInDom = 0;" in js_upto(html, "clearBtn.addEventListener('click'", "});")
+    assert "_olderInDom = 0;" in js_upto(html, "function openLogStream()", "es = new EventSource")
 
 
 def test_logs_page_load_older_drops_a_batch_from_before_a_reconnect(client):
@@ -85,8 +81,7 @@ def test_logs_page_load_older_drops_a_batch_from_before_a_reconnect(client):
     DOM and cursors landed its old-offset batch above the replayed backlog
     and added its length to the fresh counters."""
     html = client.get("/logs").text
-    reopen = html[html.index("function openLogStream()"):]
-    assert "_logsGen++;" in reopen[:reopen.index("es = new EventSource")]
+    assert "_logsGen++;" in js_upto(html, "function openLogStream()", "es = new EventSource")
     click = html[html.index("loadOlderBtn.addEventListener('click'"):]
     assert "const gen = _logsGen;" in click[:click.index("await fetch(url)")]
     after = click[click.index("await r.json();"):]
@@ -98,10 +93,8 @@ def test_logs_page_search_counter_follows_load_older_and_clear(client):
     """Load older and Clear changed the DOM without refreshing the n/m
     counter; Clear also left matchCurEl on a detached node."""
     html = client.get("/logs").text
-    older = html[html.index("log.insertBefore(frag, log.firstChild);"):]
-    assert "queueNav();" in older[:older.index("next_skip")]
-    clear = html[html.index("clearBtn.addEventListener('click'"):]
-    clear = clear[:clear.index("});")]
+    assert "queueNav();" in js_upto(html, "log.insertBefore(frag, log.firstChild);", "next_skip")
+    clear = js_upto(html, "clearBtn.addEventListener('click'", "});")
     assert "matchCurEl = null;" in clear and "updateNav();" in clear
 
 
@@ -109,8 +102,7 @@ def test_logs_page_reconnect_while_paused_shows_paused(client):
     """onerror sets "reconnecting…" regardless; onopen restored the pill only
     when not paused, so a paused tab kept "reconnecting…" on a live stream."""
     html = client.get("/logs").text
-    onopen = html[html.index("es.onopen = () => {"):]
-    onopen = onopen[:onopen.index("\n    };")]
+    onopen = js_upto(html, "es.onopen = () => {", "\n    };")
     assert "_setPill(paused ? 'paused' : 'live');" in onopen
     assert "if (!paused) {" not in onopen
 
@@ -316,12 +308,10 @@ def test_logs_page_recovery_probe_carries_the_stream_gate(client):
     removed reopened a 403ing stream every 3 s. It now probes a logs-gated
     route and stops on 401 (login gate) / 403 (no access)."""
     html = client.get("/logs").text
-    on = html[html.index("es.onerror = () => {"):]
-    on = on[:on.index("es.onopen = () => {")]
+    on = js_upto(html, "es.onerror = () => {", "es.onopen = () => {")
     assert "fetch('/v1/models'" not in on
     assert "fetch('/logs/older?skip=999999999999&limit=1'" in on
-    branch = on[on.index("if (r.status === 401 || r.status === 403) {"):]
-    branch = branch[:branch.index("return;")]
+    branch = js_upto(on, "if (r.status === 401 || r.status === 403) {", "return;")
     assert "_logRecoveryTimer = null;" in branch
     assert "window._showLoginGate()" in branch
     # The probe URL is answered as chain-end, with no disk I/O.

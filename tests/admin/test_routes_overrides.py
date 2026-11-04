@@ -14,7 +14,7 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store, effective_config
-from tests._page_helpers import js_body, js_fn
+from tests._page_helpers import js_body, js_fn, js_upto
 from tests.conftest import bearer
 
 PERMS = "/settings/api-keys/api/users"
@@ -545,8 +545,7 @@ def test_page_rename_409_shows_the_server_detail(client):
     'already exists'."""
     html = client.get(OV).text
     body = js_body(html, "async function doRename(oldName, newName) {")
-    branch = body[body.index("if (r.status === 409) {"):]
-    branch = branch[:branch.index("return;")]
+    branch = js_upto(body, "if (r.status === 409) {", "return;")
     assert "r.json()" in branch
     assert "setStatus(_detailMsg(jc, " in branch
 
@@ -630,8 +629,7 @@ def test_page_save_409_keeps_the_working_copy(client):
     drop every other unsaved edit: the branch refreshes only the server state S
     and leaves the working copy dirty."""
     body = _page_save_body(client)
-    branch = body[body.index("if (r.status === 409) {"):]
-    branch = branch[:branch.index("return;")]
+    branch = js_upto(body, "if (r.status === 409) {", "return;")
     assert "loadState(" not in branch
     assert "profiles =" not in branch and "snapshot =" not in branch
     assert "await refreshServerState();" in branch
@@ -645,8 +643,7 @@ def test_page_save_keeps_edits_made_while_in_flight(client):
     assert "if (saving) return;" in body
     assert "var sent = JSON.stringify(profiles);" in body
     assert "{ OVERRIDE_PROFILES: JSON.parse(sent) }" in body
-    late = body[body.index("if (JSON.stringify(profiles) !== sent) {"):]
-    late = late[:late.index("return;")]
+    late = js_upto(body, "if (JSON.stringify(profiles) !== sent) {", "return;")
     assert "loadState(" not in late and "adoptServerProfiles(" not in late
     assert "saving = false; refreshButtons();" in body[body.index("} finally {"):]
     # The edited-while-saving check runs AFTER the awaited state GET: an edit

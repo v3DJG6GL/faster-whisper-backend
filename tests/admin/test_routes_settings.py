@@ -961,10 +961,9 @@ def test_off_list_default_is_not_called_failing_where_the_gate_admits_it(client)
     default, so an off-allowlist default there is labelled "admitted", not
     "request will fail" (which stays for the whisper DEFAULT_MODEL)."""
     text = client.get("/settings").text
-    tr = text[text.index("const TR_LISTS = {"):]
-    assert "defaultAdmitted: true" in tr[:tr.index("};")]
-    bgm = text[text.index("{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS',"):]
-    assert "defaultAdmitted: true" in bgm[:bgm.index("}")]
+    assert "defaultAdmitted: true" in js_upto(text, "const TR_LISTS = {", "};")
+    assert "defaultAdmitted: true" in js_upto(
+        text, "{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS',", "}")
     ed = js_upto(text, "function modelDropdownEditor(", TOP_CLOSE)
     assert "lists.defaultAdmitted" in ed
     assert "admitted as the configured default" in ed
@@ -1323,11 +1322,10 @@ def test_prompt_lab_family_widgets_follow_a_failed_preview(client):
     html = _settings_html(client)
     assert "function showFamily(fam) {" in html
     assert "rawDetails.style.display = (c || !RAW_TPL[fam]) ? 'none' : '';" in html
-    fail = html[html.index("if (r.ok && j.prompt) renderPrompt(j.prompt);"):]
-    fail = fail[:fail.index("readout.textContent = r.status === 403")]
+    fail = js_upto(html, "if (r.ok && j.prompt) renderPrompt(j.prompt);",
+                   "readout.textContent = r.status === 403")
     assert "showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));" in fail
-    lst = html[html.index("_registerAdminListener('admin:dirty', 'translationLab'"):]
-    lst = lst[:lst.index("\n  });\n")]
+    lst = js_upto(html, "_registerAdminListener('admin:dirty', 'translationLab'", "\n  });\n")
     assert "showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));" in lst
     assert "showFamily(p.family);" in js_body(html, "function renderPrompt(p) {")
 
@@ -1344,8 +1342,7 @@ def test_prompt_lab_late_progress_tick_cannot_repaint_the_stage(client):
     """clearInterval does not stop a tick whose fetch is in flight; it wrote
     "Translating… 100%" back under the finished result."""
     html = _settings_html(client)
-    body = html[html.index("let done = false;"):]
-    body = body[:body.index("testBtn.disabled = false;")]
+    body = js_upto(html, "let done = false;", "testBtn.disabled = false;")
     assert "if (done || !pr.ok) return;" in body
     assert "if (done) return;" in body
     assert body.count("done = true;") == 2
@@ -1363,8 +1360,7 @@ def test_header_reload_asks_before_dropping_unsaved_edits(client):
     asking; the Restart button next to it asks."""
     html = _settings_html(client)
     assert "window._pageReload = loadState;" not in html
-    rl = html[html.index("window._pageReload = () => {"):]
-    rl = rl[:rl.index("};")]
+    rl = js_upto(html, "window._pageReload = () => {", "};")
     assert "Object.keys(dirty).length > 0" in rl and "confirm(" in rl
     assert "return loadState();" in rl
 
@@ -1462,8 +1458,7 @@ def test_rule_lock_leaves_the_sync_slot_buttons_live(client):
     rule config.json moved past but rendered disabled. The lock scopes to the
     language picker itself."""
     html = _settings_html(client)
-    lock = html[html.index("function _applyLockState() {"):]
-    lock = lock[:lock.index("\n    }\n")]
+    lock = js_upto(html, "function _applyLockState() {", "\n    }\n")
     assert "closest('.row-header-line2')" not in lock
     assert ("if (_langPicker) _langPicker.el.querySelectorAll('input, button')"
             in lock)
@@ -1482,8 +1477,8 @@ def test_pipeline_test_panel_badges_a_step_that_hit_the_output_limit(client):
     output bound (and on a regex-list whose entry walk stopped there); only a
     skipped step's `capped` was read, so that step looked like a full run."""
     html = _settings_html(client)
-    rows = html[html.index("(j.steps || []).forEach(step => {"):]
-    rows = rows[:rows.index("const changed = step.before !== step.after;")]
+    rows = js_upto(html, "(j.steps || []).forEach(step => {",
+                   "const changed = step.before !== step.after;")
     assert "else if (step.capped) badge = testBadge('warn'," in rows
     assert rows.index("else if (step.capped)") \
         < rows.index("else if (step.matches) badge")

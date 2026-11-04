@@ -136,8 +136,7 @@ def test_language_picker_change_never_rebuilds_the_rows(client):
     language picker and its open multi-select dropdown on the first pick
     (and leaked the popover's scroll/resize listeners)."""
     html = _html(client)
-    body = html[html.index("_renderLanguagePicker({"):]
-    body = body[:body.index("});")]
+    body = js_upto(html, "_renderLanguagePicker({", "});")
     assert "commitData();" in body
     assert "commitFull();" not in body
 
@@ -166,8 +165,7 @@ def test_promote_keeps_an_absent_config_json_rule_in_place(client):
     assert "at = out.findIndex(o => o.name === n);" in body
     assert "out.splice(at, 0, JSON.parse(JSON.stringify(b)));" in body
     # _addFromConfig's nextLocal mirrors it (insert position + dialog meta).
-    nl = html[html.index("const nextLocal = (b) => {"):]
-    nl = nl[:nl.index("\n    };\n")]
+    nl = js_upto(html, "const nextLocal = (b) => {", "\n    };\n")
     assert "after.indexOf(r.name) !== -1" not in nl
     assert "for (const n of after) {" in nl
 
@@ -275,8 +273,7 @@ def test_rule_comparisons_fill_in_schema_defaults(client):
     for key in ("languages: []", "exposed: false", "tags: []", "note: ''",
                 "color: ''", "label: ''"):
         assert key in fill, key
-    add = html[html.index("const newRule = {"):]
-    add = add[:add.index("};")]
+    add = js_upto(html, "const newRule = {", "};")
     for key in ("languages: []", "exposed: false", "tags: []", "note: ''",
                 "color: ''"):
         assert key in add, key
