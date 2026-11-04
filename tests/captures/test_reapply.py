@@ -168,6 +168,13 @@ def _insert_sample(conn, gs, sid, *, locked=0):
         "'de','{}')", (sid, gs._relpath_for(sid), locked))
 
 
+def _join_sample(conn, gs, sid, cid, *, locked=0):
+    """Insert sample `sid` and make capture `cid` its first member."""
+    _insert_sample(conn, gs, sid, locked=locked)
+    conn.execute("UPDATE captures SET sample_id = ?, sample_order = 0"
+                 " WHERE id = ?", (sid, cid))
+
+
 def test_run_passes_the_row_language_and_updates_the_capture(
         captures_store_db, fake_pipeline, monkeypatch, caplog):
     """The rows are sqlite3.Row, which has no .get(): `r.get("language")`
@@ -369,10 +376,8 @@ def test_run_leaves_the_members_of_a_locked_sample_alone(
     sample anyway (the self-heal on a page view already skips them)."""
     conn = captures_store_db._require_conn()
     gs = groups_store_db
-    _insert_sample(conn, gs, "reapplylocked001", locked=1)
     _insert(conn, "reapplylock1", language="de", final="old")
-    conn.execute("UPDATE captures SET sample_id = 'reapplylocked001',"
-                 " sample_order = 0 WHERE id = 'reapplylock1'")
+    _join_sample(conn, gs, "reapplylocked001", "reapplylock1", locked=1)
     _insert(conn, "reapplyfree1", language="de")
 
     captures_reapply._run()
@@ -411,10 +416,8 @@ def test_run_reads_the_shared_connection_under_the_store_locks(
     result or raise and fail the whole job."""
     cs, gs = captures_store_db, groups_store_db
     conn = cs._require_conn()
-    _insert_sample(gs._require_conn(), gs, "reapplysidlock01")
     _insert(conn, "reapplyread1", language="de")
-    conn.execute("UPDATE captures SET sample_id = 'reapplysidlock01',"
-                 " sample_order = 0 WHERE id = 'reapplyread1'")
+    _join_sample(conn, gs, "reapplysidlock01", "reapplyread1")
     checking = _LockCheckingConn(conn, cs, gs)
     monkeypatch.setattr(cs, "_require_conn", lambda: checking)
 
@@ -436,10 +439,8 @@ def test_run_leaves_a_sample_locked_mid_pass_alone(
     training text rewritten."""
     conn = captures_store_db._require_conn()
     gs = groups_store_db
-    _insert_sample(conn, gs, "reapplymidlock01")
     _insert(conn, "reapplymid01", language="de", final="old")
-    conn.execute("UPDATE captures SET sample_id = 'reapplymidlock01',"
-                 " sample_order = 0 WHERE id = 'reapplymid01'")
+    _join_sample(conn, gs, "reapplymidlock01", "reapplymid01")
     real = pl_engine._postprocess_text
 
     def lock_then_run(text, **kw):
@@ -473,9 +474,7 @@ def test_run_leaves_a_capture_merged_into_a_locked_sample_mid_pass_alone(
     def merge_lock_then_run(text, **kw):
         # The admin merges this capture into a sample and locks it while the
         # pass is on it.
-        _insert_sample(conn, gs, "reapplymrglock1", locked=1)
-        conn.execute("UPDATE captures SET sample_id = 'reapplymrglock1',"
-                     " sample_order = 0 WHERE id = 'reapplymrg01'")
+        _join_sample(conn, gs, "reapplymrglock1", "reapplymrg01", locked=1)
         return real(text, **kw)
 
     monkeypatch.setattr(pl_engine, "_postprocess_text", merge_lock_then_run)
@@ -500,9 +499,7 @@ def test_run_rebuilds_a_sample_a_capture_joined_mid_pass(
     real = pl_engine._postprocess_text
 
     def merge_then_run(text, **kw):
-        _insert_sample(conn, gs, "reapplyjoinsid1")
-        conn.execute("UPDATE captures SET sample_id = 'reapplyjoinsid1',"
-                     " sample_order = 0 WHERE id = 'reapplyjoin1'")
+        _join_sample(conn, gs, "reapplyjoinsid1", "reapplyjoin1")
         return real(text, **kw)
 
     monkeypatch.setattr(pl_engine, "_postprocess_text", merge_then_run)
