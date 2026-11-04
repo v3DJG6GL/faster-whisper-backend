@@ -12,7 +12,7 @@ from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto
-from tests._translation_helpers import enable_translation
+from tests._translation_helpers import enable_translation, lab_run
 from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
 from tests.conftest import _repoint_path_default, bearer
 
@@ -980,12 +980,9 @@ def test_translation_test_endpoint_threads_template_override(
     enable_translation(app_module, monkeypatch)
     seen = _fake_translate(monkeypatch, "We repeated the measurement yesterday.",
                            "org/model-GGUF:Q4", [_GUARD_WARNING])
-    r = client.post("/settings/translation-test", json={
-        "text": "Wir haben die Messung gestern wiederholt.",
-        "target": "en", "source": "de", "family": "custom",
-        "template": "X {text} -> {target_language}"})
-    assert r.status_code == 200, r.text
-    j = r.json()
+    j = lab_run(client, text="Wir haben die Messung gestern wiederholt.",
+                target="en", source="de", family="custom",
+                template="X {text} -> {target_language}")
     assert j["output"] == "We repeated the measurement yesterday."
     assert j["model"] == "org/model-GGUF:Q4"
     assert isinstance(j["ms"], int) and j["ms"] >= 0
@@ -1013,12 +1010,9 @@ def test_translation_test_family_auto_drops_template_for_builtin_family(
             "model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
             "template": "X {text} -> {target_language}"}
     # Preview: the rendered family follows the model, not the stale template.
-    r = client.post("/settings/translation-test", json={**body, "preview": True})
-    assert r.status_code == 200, r.text
-    assert r.json()["prompt"]["family"] == "hunyuan"
+    assert lab_run(client, **body, preview=True)["prompt"]["family"] == "hunyuan"
     # Real run: no template_override reaches translate_segments.
-    r = client.post("/settings/translation-test", json=body)
-    assert r.status_code == 200, r.text
+    lab_run(client, **body)
     assert seen["kwargs"]["template_override"] is None
     assert seen["kwargs"]["family_override"] is None
 
@@ -1033,11 +1027,9 @@ def test_translation_test_explicit_auto_detects_instead_of_the_saved_pin(
                        TRANSLATION_PROMPT_FAMILY="gemma-translate")
     ref = "org/qwen2.5-7b-instruct-GGUF:Q4_K_M"
     assert translation.detect_family(ref) == "chatml"
-    r = client.post("/settings/translation-test", json={
-        "text": "Hallo", "target": "en", "source": "de", "model": ref,
-        "family": "auto", "preview": True})
-    assert r.status_code == 200, r.text
-    assert r.json()["prompt"]["family"] == translation.detect_family(ref)
+    j = lab_run(client, text="Hallo", target="en", source="de", model=ref,
+                family="auto", preview=True)
+    assert j["prompt"]["family"] == translation.detect_family(ref)
     text = client.get("/settings").text
     body = js_body(text, "function labBody(preview) {")
     assert "family: currentValue('TRANSLATION_PROMPT_FAMILY') || 'auto'," in body
@@ -1050,11 +1042,8 @@ def test_translation_test_cleared_custom_template_is_not_the_saved_one(
     show text the editor no longer holds."""
     enable_translation(app_module, monkeypatch,
                        TRANSLATION_PROMPT_TEMPLATE="SAVED-SENTINEL {text} -> {target_language}")
-    r = client.post("/settings/translation-test", json={
-        "text": "Hallo", "target": "en", "source": "de",
-        "family": "custom", "template": "", "preview": True})
-    assert r.status_code == 200, r.text
-    prompt = r.json()["prompt"]
+    prompt = lab_run(client, text="Hallo", target="en", source="de",
+                     family="custom", template="", preview=True)["prompt"]
     assert prompt["family"] == "custom"
     assert "SAVED-SENTINEL" not in json.dumps(prompt)
     text = client.get("/settings").text
@@ -1128,11 +1117,8 @@ def test_translation_test_preview_renders_without_model(
         raise AssertionError("translate_segments called on a preview")
 
     monkeypatch.setattr(translation, "translate_segments", boom)
-    r = client.post("/settings/translation-test", json={
-        "text": "Hallo Welt", "target": "en", "source": "de",
-        "family": "milmmt", "preview": True})
-    assert r.status_code == 200, r.text
-    j = r.json()
+    j = lab_run(client, text="Hallo Welt", target="en", source="de",
+                family="milmmt", preview=True)
     assert j["warnings"] == []
     p = j["prompt"]
     assert p["family"] == "milmmt"
@@ -1144,11 +1130,9 @@ def test_translation_test_preview_renders_without_model(
 def test_translation_test_preview_family_auto_follows_model(
         client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set())
-    r = client.post("/settings/translation-test", json={
-        "text": "Hallo", "target": "en",
-        "model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M", "preview": True})
-    assert r.status_code == 200, r.text
-    assert r.json()["prompt"]["family"] == "hunyuan"
+    j = lab_run(client, text="Hallo", target="en",
+                model="tencent/HY-MT1.5-7B-GGUF:Q4_K_M", preview=True)
+    assert j["prompt"]["family"] == "hunyuan"
 
 
 def test_translation_test_progress_id_seeds_registry(
@@ -1172,9 +1156,7 @@ def test_translation_test_progress_id_seeds_registry(
                                      "mode": "faithful"})
 
     monkeypatch.setattr(translation, "translate_segments", fake_translate)
-    r = client.post("/settings/translation-test", json={
-        "text": "hallo", "target": "en", "progress_id": pid})
-    assert r.status_code == 200, r.text
+    lab_run(client, text="hallo", target="en", progress_id=pid)
     assert seen["at_start"].get("stage") == "starting"
     assert seen["downloading"].get("stage") == "downloading"
     assert seen["downloading"].get("progress") == 0.5
@@ -1187,10 +1169,8 @@ def test_translation_test_progress_id_seeds_registry(
     # Checked while the request runs — the route's finally would pop a wrongly
     # seeded entry before the test could look afterwards.
     seen.clear()
-    r = client.post("/settings/translation-test", json={
-        "text": "hallo", "target": "en", "progress_id": "NOT-HEX"})
-    assert r.status_code == 200, r.text
-    assert "registry_ids" in seen                        # the fake ran
+    lab_run(client, text="hallo", target="en", progress_id="NOT-HEX")
+    assert "registry_ids" in seen                       # the fake ran
     assert "NOT-HEX" not in seen["registry_ids"]
     assert "not-hex" not in seen["registry_ids"]
 
@@ -1211,10 +1191,7 @@ def test_translation_test_progress_entry_is_owner_stamped(
                 {"model": "org/m", "source": "de", "mode": "faithful"})
 
     monkeypatch.setattr(translation, "translate_segments", fake_translate)
-    r = client.post("/settings/translation-test",
-                    json={"text": "hallo", "target": "en", "progress_id": pid},
-                    headers=bearer(raw))
-    assert r.status_code == 200, r.text
+    lab_run(client, text="hallo", target="en", progress_id=pid, headers=bearer(raw))
     assert seen["owner"] == uid
 
 
@@ -1228,10 +1205,7 @@ def test_translation_test_model_allowlist_gate(client, app_module, monkeypatch):
     assert r.status_code == 400
     assert "TRANSLATION_ALLOWED_MODELS" in r.json()["error"]
     # The configured default is exempt, like the request path.
-    r = client.post("/settings/translation-test", json={
-        "text": "hi", "target": "en", "model": "org/default-GGUF:Q4",
-        "preview": True})
-    assert r.status_code == 200, r.text
+    lab_run(client, text="hi", target="en", model="org/default-GGUF:Q4", preview=True)
 
 
 def test_translation_test_unknown_family_400(client, app_module, monkeypatch):
@@ -1246,13 +1220,10 @@ def test_translation_test_threads_model_family_glossary(
         client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set())
     seen = _fake_translate(monkeypatch, "ok", "org/m-GGUF:Q4")
-    r = client.post("/settings/translation-test", json={
-        "text": "Hallo", "target": "en", "source": "de",
-        "model": "org/m-GGUF:Q4", "family": "hunyuan",
-        "glossary": "Messung = measurement",
-        "template": "stale {text} {target_language}"})
-    assert r.status_code == 200, r.text
-    j = r.json()
+    j = lab_run(client, text="Hallo", target="en", source="de",
+                model="org/m-GGUF:Q4", family="hunyuan",
+                glossary="Messung = measurement",
+                template="stale {text} {target_language}")
     assert j["prompt"]["family"] == "hunyuan"
     assert isinstance(j["cold"], bool)
     assert seen["kwargs"]["model_ref"] == "org/m-GGUF:Q4"

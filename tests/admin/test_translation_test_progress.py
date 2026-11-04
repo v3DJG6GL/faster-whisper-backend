@@ -1,7 +1,7 @@
 """Progress registry handling of the /settings translation prompt lab."""
 
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._translation_helpers import enable_translation
+from tests._translation_helpers import enable_translation, lab_run
 
 
 def test_translation_test_straggler_tick_cannot_resurrect_the_entry(
@@ -22,9 +22,7 @@ def test_translation_test_straggler_tick_cannot_resurrect_the_entry(
                                      "mode": "faithful"})
 
     monkeypatch.setattr(translation, "translate_segments", fake_translate)
-    r = client.post("/settings/translation-test", json={
-        "text": "hallo", "target": "en", "progress_id": pid})
-    assert r.status_code == 200, r.text
+    lab_run(client, text="hallo", target="en", progress_id=pid)
     assert pid in tx_progress._PROGRESS_CLOSED
     held["download_cb"](512, 1024)          # the straggling load-thread tick
     assert pid not in tx_progress._BATCH_PROGRESS
@@ -49,8 +47,6 @@ def test_translation_test_forwards_target_progress(
                                      "mode": "faithful"})
 
     monkeypatch.setattr(translation, "translate_segments", fake_translate)
-    r = client.post("/settings/translation-test", json={
-        "text": "hallo", "target": "en", "progress_id": pid})
-    assert r.status_code == 200, r.text
+    lab_run(client, text="hallo", target="en", progress_id=pid)
     assert seen.get("target") == "en"
     assert seen.get("target_progress") == 0.5

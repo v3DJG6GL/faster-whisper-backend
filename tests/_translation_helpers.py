@@ -32,6 +32,13 @@ def enable_translation(app_module, monkeypatch, **cfg_fields):
         monkeypatch.setattr(app_module.cfg, name, value, raising=False)
 
 
+def lab_run(client, *, headers=None, **body):
+    """POST `body` to the /settings translation lab; return the 200 response's JSON."""
+    r = client.post("/settings/translation-test", json=body, headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def text_translation_body(**overrides):
     body = {"segments": [{"id": 7, "text": "eins", "speaker": "SPEAKER_00"},
                          {"id": 3, "text": "zwei"}],
