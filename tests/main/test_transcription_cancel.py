@@ -2,10 +2,16 @@
 endpoint flags a progress id, and the handler's stage checks abort the
 request with 499 instead of soft-failing onward."""
 
+import asyncio
+
+import pytest
+
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.core import jobs
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests.conftest import bearer
 from tests._transcription_helpers import (
     get_progress, post_cancel, post_verbose as _post, post_verbose_ok as _post_ok, record_runs)
 from tests._translation_helpers import enable_translation, stub_translate
@@ -93,7 +99,6 @@ def test_validation_reject_leaves_no_progress_entry(client, app_module):
 
 def test_progress_and_cancel_are_owner_bound(client, app_module,
                                              make_user_key):
-    from tests.conftest import bearer
     uid_alice, raw_alice = make_user_key("alice")
     _, raw_bob = make_user_key("bob")
     _, raw_admin = make_user_key("root", is_admin=True)
@@ -119,7 +124,6 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
 
 
 def test_stage_transition_clears_mirrored_progress(app_module):
-    from faster_whisper_backend.core import jobs
     pid = "feedf00d" * 4
     jobs.job_start("transcribe", id="job-mirror-test", model="m")
     tx_progress._JOB_BY_PID[pid] = "job-mirror-test"
@@ -230,7 +234,6 @@ def test_text_translations_in_flight_progress_id_is_treated_as_absent(
 
 def test_recreated_progress_entry_keeps_its_owner(client, app_module,
                                                   make_user_key):
-    from tests.conftest import bearer
     uid_alice, _ = make_user_key("alice")
     _, raw_bob = make_user_key("bob")
     make_user_key("root", is_admin=True)  # locks the app down: bob is bob
@@ -260,7 +263,6 @@ def test_owner_map_survives_the_stale_sweep(app_module):
 
 
 def test_first_seed_keeps_job_start_model(app_module):
-    from faster_whisper_backend.core import jobs
     pid = "f00dfeed" * 4
     jobs.job_start("transcribe", id="job-seed-test", model="large-v3")
     tx_progress._JOB_BY_PID[pid] = "job-seed-test"
@@ -280,7 +282,6 @@ def test_first_seed_keeps_job_start_model(app_module):
 
 
 def test_stage_transition_clears_mirrored_total_bytes(app_module):
-    from faster_whisper_backend.core import jobs
     pid = "ba5eba11" * 4
     jobs.job_start("transcribe", id="job-bytes-test", model="m")
     tx_progress._JOB_BY_PID[pid] = "job-bytes-test"
@@ -300,9 +301,6 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
     # asyncio.CancelledError — a BaseException that skips every
     # `except Exception` arm. The finally still records the run, and it must
     # say "cancelled", not the seeded "ok" with zero words.
-    import asyncio
-
-    import pytest
 
     async def _cancelled_loader(name, *, lease=False):
         raise asyncio.CancelledError()
@@ -329,9 +327,6 @@ def test_cancel_landing_on_the_job_write_still_records_the_run(client, app_modul
     # The outer finally's awaits sit AFTER the usage/metrics row: a second
     # cancellation delivered while the handler is parked on the job write
     # escapes the finally, and must not take the run's record with it.
-    import asyncio
-
-    import pytest
 
     async def _cancelled_finish(pid, **kw):
         raise asyncio.CancelledError()
