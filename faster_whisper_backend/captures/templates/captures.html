@@ -2689,10 +2689,7 @@
       // Prefer the training-text token (CAPTURES_PIPELINE_RULES_EXCLUDE
       // respected) so the Final result matches the export; fall back to the
       // runtime `word` when no distinct training token was attached.
-      var hasTrain = (w && w.train_word !== undefined);
-      var removed = hasTrain ? !!w.train_removed : !!(w && w.removed);
-      var txt = removed ? ''
-        : (hasTrain ? (w.train_word || '') : ((w && w.word) || '')).trim();
+      var txt = _dispRemoved(w) ? '' : _dispWord(w).trim();
       if (!txt) { state.wordToGround[i] = null; i++; continue; }
       items.push({ from: i, to: i, txt: txt, member: hm });
       memberHead[hm] = (memberHead[hm] || '') + txt;
@@ -2703,7 +2700,7 @@
     var prevText = '', prevMember, memberText = '';
     function sep(w, txt) {
       if (first) return '';
-      var tok = (w && (w.train_word !== undefined ? w.train_word : w.word)) || '';
+      var tok = _dispWord(w);
       var member = w ? w.member_idx : undefined;
       if (member !== prevMember) {
         return _cjkEdge(memberText, true) && _cjkEdge(memberHead[member], false) ? '' : ' ';

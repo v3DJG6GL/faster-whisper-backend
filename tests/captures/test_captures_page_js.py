@@ -2451,7 +2451,7 @@ def test_blank_chip_correction_leaves_the_final_result_preview_alone(page, tmp_p
     """Save drops a chip whose correction is only spaces (as does the
     server), but the Final-result preview applied it: "um" vanished from
     the preview while the export kept it."""
-    fns = _js_functions(page, "_applyChipsToText", "_renderGroundSpans")
+    fns = _js_functions(page, "_applyChipsToText", "_renderGroundSpans", "_dispWord", "_dispRemoved")
     out = _run_node(tmp_path, fns + r"""
 global.document = { createElement: function() { return {}; } };
 var spans = [];
@@ -2471,7 +2471,7 @@ console.log(JSON.stringify([
 def _ground_spans_harness(page):
     """_renderGroundSpans on a stand-in area: `render(words, corrections)`
     returns the joined span text."""
-    return _js_functions(page, "_cjkEdge", "_renderGroundSpans") + r"""
+    return _js_functions(page, "_cjkEdge", "_renderGroundSpans", "_dispWord", "_dispRemoved") + r"""
 global.document = { createElement: function() { return {}; } };
 function render(words, corrections) {
   var spans = [];
