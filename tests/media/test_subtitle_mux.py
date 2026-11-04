@@ -82,6 +82,10 @@ def _disp(argv):
     return [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
 
 
+def audio_meta(argv):
+    return [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
+
+
 def test_build_package_argv_mkv():
     argv = argv_for(_tracks(), default_track=0)
     # Every input runs under the file-only protocol whitelist.
@@ -102,13 +106,11 @@ def test_build_package_argv_original_flag_and_audio_language():
     argv = argv_for(_tracks(), default_track=0, original_track=0, audio_lang="de",
                     audio_label="German")
     assert _disp(argv) == ["default+original", "0"]
-    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
-    assert a == ["language=deu", "title=German"]
+    assert audio_meta(argv) == ["language=deu", "title=German"]
     # original without default; audio label defaults to the language name.
     argv = argv_for(_tracks(), default_track=1, original_track=0, audio_lang="pt-BR")
     assert _disp(argv) == ["original", "default"]
-    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
-    assert a == ["language=por", "title=Portuguese (BR)"]
+    assert audio_meta(argv) == ["language=por", "title=Portuguese (BR)"]
     # No audio language → no audio metadata at all.
     argv = argv_for()
     assert not any(x.startswith("-metadata:s:a") for x in argv)
