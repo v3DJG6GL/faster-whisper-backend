@@ -567,6 +567,16 @@ def _run_olist_js(client, tmp_path, body):
     return _run_js(client, tmp_path, _olist_consts(page) + body, funcs=_OLIST_FUNCS)
 
 
+_ENTRIES_MERGE_JS = r"""
+      // [clash keys, "pattern>replacement" list] of mine's edits merged onto theirs.
+      const merge = (base, mine, theirs) => {
+        const clashes = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
+      };
+"""
+
+
 def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_path):
     # A regex-list rule's `entries` diffed as a scalar, so a conflict re-merge
     # put back the user's whole load-time list plus their edit and the other
@@ -735,13 +745,8 @@ def test_conflict_merge_keeps_one_entry_when_both_writers_made_the_same_pattern_
     # Both writers fixed x's pattern to y and one also changed the
     # replacement: the other writer's entry went back in under its own id as
     # well, so the list held y twice and theirs, first, shadowed the user's.
-    res = _run_olist_js(client, tmp_path, r"""
+    res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
-      };
       out({
         mineRepl: merge([e('x', '1'), e('a', '2')], [e('y', 'U'), e('a', '2')],
                         [e('y', '1'), e('a', '2')]),
@@ -757,13 +762,8 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_the_user_also_adde
     # The other writer's pattern fix x -> y went back in under its own id,
     # but the user had added a y entry of their own: theirs was skipped with
     # no clash, so the next save overwrote it under an "Auto-merged" toast.
-    res = _run_olist_js(client, tmp_path, r"""
+    res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
-      };
       out({
         // the user edited x's replacement and appended y.
         edited: merge([e('a', '1'), e('x', '1')], [e('a', '1'), e('x', 'U'), e('y', '5')],
@@ -783,13 +783,8 @@ def test_conflict_merge_reports_the_users_new_entry_shadowed_by_the_other_writer
     # fixed x's pattern to y: the merge put their fix in x's place, ahead of
     # the user's y, so the user's entry never matched (or sat there twice)
     # under a clean "Auto-merged" toast.
-    res = _run_olist_js(client, tmp_path, r"""
+    res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
-      };
       const base = [e('a', 'A'), e('x', 'X'), e('z', 'Z')];
       const theirs = [e('a', 'A'), e('y', 'X'), e('z', 'Z')];
       out({
@@ -806,13 +801,8 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_to_an_entry_the_us
     # The user deleted b while the other writer only fixed b's pattern: the
     # entry came back under a clean "Auto-merged" toast, though a deleted
     # entry the other writer changed the replacement of stays deleted.
-    res = _run_olist_js(client, tmp_path, r"""
+    res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
       const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
-      const merge = (base, mine, theirs) => {
-        const clashes = [];
-        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
-        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
-      };
       out({
         fixed: merge([e('x'), e('b'), e('y')], [e('x'), e('y')], [e('x'), e('b2', 'B'), e('y')]),
         // ... and the user appended an entry with the fixed pattern.
