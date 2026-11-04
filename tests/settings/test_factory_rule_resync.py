@@ -47,7 +47,7 @@ def _load(tmp_path, rules):
 
 
 def test_an_untouched_older_factory_copy_becomes_the_current_rule(tmp_path):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     _older_tidy(rules)
     out = _load(tmp_path, rules)
     tidy = next(r for r in out if r["name"] == "digit-and-whitespace-tidy")
@@ -57,7 +57,7 @@ def test_an_untouched_older_factory_copy_becomes_the_current_rule(tmp_path):
 
 def test_an_old_entry_text_in_an_untouched_copy_is_replaced_with_the_rule(tmp_path):
     """The entry upgrade alone would leave the quote entries out."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     tidy = _older_tidy(rules)
     e = next(e for e in tidy["entries"] if e["label"] == "tighten-digit-separators")
     e["pattern"] = "(\\d)\\s*([/,\\-])\\s*(\\d)"
@@ -70,7 +70,7 @@ def test_an_old_entry_text_in_an_untouched_copy_is_replaced_with_the_rule(tmp_pa
 
 
 def test_an_edited_copy_is_left_as_it_is(tmp_path):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     tidy = _older_tidy(rules)
     tidy["entries"][-1]["note"] = "mine"
     edited = copy.deepcopy(tidy)
@@ -81,7 +81,7 @@ def test_an_edited_copy_is_left_as_it_is(tmp_path):
 
 
 def test_a_copy_without_a_sync_record_is_left_as_it_is(tmp_path):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     del _older_tidy(rules)["config_rev"]
     out = _load(tmp_path, rules)
     got = next(r for r in out if r["name"] == "digit-and-whitespace-tidy")

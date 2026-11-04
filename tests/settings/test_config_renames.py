@@ -60,13 +60,13 @@ def test_stored_hyphen_rule_without_languages_becomes_german_only(stored_languag
 
 
 def test_edited_hyphen_rule_keeps_its_own_scope_and_pattern():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     scoped = _rule(rules, "capitalize-letter-after-hyphen")
     scoped["languages"] = ["de", "en"]
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == []
     assert scoped["languages"] == ["de", "en"]
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     edited = _rule(rules, "capitalize-letter-after-hyphen")
     edited["languages"] = []
     edited["pattern"] = "(-)([a-z])"
@@ -188,7 +188,7 @@ _DE_SCOPED_IN_C4FEFE2 = ("de-strip-and-lowercase-non-noun",
 
 
 def test_rules_scoped_to_german_in_c4fefe2_upgrade_a_stored_copy(tmp_path):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     for name in _DE_SCOPED_IN_C4FEFE2:
         r = _rule(rules, name)
         del r["languages"]
@@ -225,7 +225,7 @@ def test_copy_saved_before_097c9b4_renames_is_migrated_and_scoped(tmp_path):
 
 
 def test_copy_holding_both_097c9b4_names_keeps_one_rule_per_name():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     for old, new in _RENAMED_IN_097C9B4.items():
         rules.append(dict(copy.deepcopy(_rule(rules, new)), name=old))
     raw = {"PIPELINE_RULES": rules}
@@ -235,7 +235,7 @@ def test_copy_holding_both_097c9b4_names_keeps_one_rule_per_name():
 
 
 def test_edited_wordlist_rule_pattern_keeps_every_language():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     r = _rule(rules, "de-strip-and-lowercase-non-noun")
     r["languages"] = []
     r["pattern"] = "[.?!](\\s*)([A-Z])(\\w*)"
@@ -251,7 +251,7 @@ def test_edited_entries_or_map_keep_the_admins_language_scope(name):
     """Only their content tells a pre-c4fefe2 factory copy from one the admin
     rewrote (an English-extended dictation map, own symbol entries, own
     function words under the factory pattern) and set to every language."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     r = _rule(rules, name)
     r["languages"] = []
     if name == "de-dictation-map":
@@ -268,7 +268,7 @@ def test_edited_entries_or_map_keep_the_admins_language_scope(name):
 def test_relabelled_factory_entries_still_count_as_the_factory_copy():
     """Labels and notes changed across releases; only what the rule does is
     compared."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     r = _rule(rules, "ch-symbol-cleanup")
     r["languages"] = []
     for e in r["entries"]:
@@ -281,7 +281,7 @@ def test_copy_saved_before_f940127_rename_is_migrated_and_scoped(tmp_path):
     """f940127 renamed split-dictation-keywords (entries unchanged); a copy
     saved June 15-17 kept the old slug, and the c4fefe2 scope is keyed by the
     new one, so the rule ran on every language."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     r = _rule(rules, "de-split-punctuation-keywords")
     r["name"] = "split-dictation-keywords"
     del r["languages"]
@@ -295,7 +295,7 @@ def test_copy_saved_before_f940127_rename_is_migrated_and_scoped(tmp_path):
 def test_entry_saved_under_its_old_label_is_upgraded_and_relabelled(old_label, label):
     """A copy saved before the relabel holds the old factory text under the
     old label ("vom 3.-10 Oktober" still became "vom 310 Oktober")."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     (old_pat, old_rep), _new = renames.UPGRADED_RULE_ENTRIES[label]
     rule = next(r for r in rules
                 if any(e.get("label") == label for e in r.get("entries") or []))
@@ -305,7 +305,7 @@ def test_entry_saved_under_its_old_label_is_upgraded_and_relabelled(old_label, l
 
 
 def test_edited_entry_under_an_old_label_stays_the_admins():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     e = _entry(rules, "delete-punct-before-hyphen")
     e["label"], e["pattern"], e["replacement"] = "replace-and", "(?:,)(-)", ""
     assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == []
@@ -335,7 +335,7 @@ def test_old_factory_copy_beside_its_renamed_rule_is_dropped_with_its_excludes(t
 
 
 def test_edited_old_copy_beside_its_renamed_rule_is_kept():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     rules.append(dict(copy.deepcopy(_rule(rules, "capitalize-letter-after-hyphen")),
                       name="2-2-capitalize-the-letter-after-a-hyphen",
                       languages=[], pattern="(-)([a-z])"))
@@ -478,7 +478,7 @@ def test_switched_off_renamed_rule_the_admin_edited_keeps_the_edits_and_runs(tmp
     card is still factory content: an edited one keeps the admin's words and
     note, and runs in place of the dropped copy."""
     old, new = "strip-and-lowercase-non-noun", "de-strip-and-lowercase-non-noun"
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     edited = _rule(rules, new)
     rules.insert(-1, dict(copy.deepcopy(edited), name=old, languages=[], enabled=True))
     edited.update(enabled=False, note="mine", wordlist=[*edited["wordlist"], "zzzadminword"])
@@ -493,7 +493,7 @@ def test_stored_single_regex_rule_becomes_a_one_entry_regex_list(tmp_path):
     before it (May 21 - June 15) failed validation and took EVERY override
     with it; its rules are one-entry lists now, labelled with their slug, so
     the factory text fixes keyed by those old labels reach them too."""
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     rules.insert(-1, {"name": "replace-szet-lc", "label": "Replace ß → ss",
                       "enabled": True, "seeded": True, "note": "why",
                       "type": "regex", "pattern": "ß", "replacement": "ss"})

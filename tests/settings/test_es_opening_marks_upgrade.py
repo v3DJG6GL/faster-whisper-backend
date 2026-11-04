@@ -7,7 +7,6 @@ one of those releases kept that forever, because only UPGRADED_RULE_ENTRIES
 carries a factory regex fix into a saved PIPELINE_RULES copy.
 """
 
-import copy
 import re
 
 import pytest
@@ -28,7 +27,7 @@ _OLD = {
 
 
 def test_stored_old_es_entries_are_upgraded_once():
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     for label, (pat, rep) in _OLD.items():
         e = _entry(rules, label)
         e["pattern"], e["replacement"] = pat, rep

@@ -27,7 +27,7 @@ def _env_tidy(monkeypatch, rules):
 
 def test_an_untouched_older_factory_copy_in_the_env_becomes_the_current_rule(
         monkeypatch, restore_config):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     _older_tidy(rules)
     got = _env_tidy(monkeypatch, rules)
     want = next(r for r in cs.load_factory_rules() if r["name"] == _TIDY)
@@ -36,7 +36,7 @@ def test_an_untouched_older_factory_copy_in_the_env_becomes_the_current_rule(
 
 
 def test_edited_and_unrecorded_env_copies_stay_as_written(monkeypatch, restore_config):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _factory_rules()
     edited = _older_tidy(rules)
     edited["entries"][-1]["note"] = "mine"           # rev no longer matches
     unrecorded = copy.deepcopy(rules)
