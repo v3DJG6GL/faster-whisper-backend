@@ -11,6 +11,7 @@ import pytest
 
 
 def _drive(monkeypatch, loop_fn, store_mod):
+    """Run `loop_fn` for one tick; the sweep must run once, off the loop thread."""
     calls = []
     ticks = {"n": 0}
     intervals = []
@@ -35,26 +36,22 @@ def _drive(monkeypatch, loop_fn, store_mod):
             await loop_fn()
     asyncio.run(_run())
     assert intervals and intervals[0] == 3600
-    return calls
+    assert calls == [False]
 
 
 def test_captures_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     from faster_whisper_backend.captures import store as captures_store
-    calls = _drive(monkeypatch, app_module._captures_retention_loop, captures_store)
-    assert calls == [False]
+    _drive(monkeypatch, app_module._captures_retention_loop, captures_store)
 
 
 def test_reports_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     from faster_whisper_backend.reports import store as reports_store
-    calls = _drive(monkeypatch, app_module._reports_retention_loop, reports_store)
-    assert calls == [False]
+    _drive(monkeypatch, app_module._reports_retention_loop, reports_store)
 
 
 def test_recent_tx_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     from faster_whisper_backend.stats import recent_transcriptions_store
-    calls = _drive(monkeypatch, app_module._recent_tx_retention_loop,
-                   recent_transcriptions_store)
-    assert calls == [False]
+    _drive(monkeypatch, app_module._recent_tx_retention_loop, recent_transcriptions_store)
 
 
 def test_startup_ages_out_recent_rows_past_retention(app_module, monkeypatch):

@@ -405,8 +405,7 @@ def test_closed_progress_id_is_not_resurrected_by_a_late_tick(app_module):
 
 def test_jobs_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     from tests.main.test_retention_loops import _drive
-    calls = _drive(monkeypatch, app_module._jobs_retention_loop, js)
-    assert calls == [False]
+    _drive(monkeypatch, app_module._jobs_retention_loop, js)
 
 
 def test_foreign_progress_id_never_replaces_the_owners_row(client, make_user_key):
