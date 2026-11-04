@@ -199,6 +199,8 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #      tone, children and click wiring stay at the call site.
 #  12. window._switchInput(checked), one on/off switch: a role=switch checkbox
 #      with class .switch. Its id and change wiring stay at the call site.
+#  13. window._fmtCount(n) and window._fmtDur(sec), the compact usage numbers
+#      ("1.2k", "3.5h") of the api_keys, quick_config and stats pages.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -233,6 +235,16 @@ SCALE_BOOTSTRAP_HEAD = (
     "b.setAttribute('role','radio');b.setAttribute('aria-checked',on?'true':'false');return b;};"
     "window._switchInput=function(on){var c=document.createElement('input');c.type='checkbox';"
     "c.className='switch';c.setAttribute('role','switch');c.checked=on;return c;};"
+    "window._fmtCount=function(n){n=Number(n||0);"
+    "if(n>=1e9)return(n/1e9).toFixed(1).replace(/\\.0$/,'')+'B';"
+    "if(n>=1e6)return(n/1e6).toFixed(1).replace(/\\.0$/,'')+'M';"
+    "if(n>=1e3)return(n/1e3).toFixed(1).replace(/\\.0$/,'')+'k';"
+    "return String(Math.round(n));};"
+    "window._fmtDur=function(sec){sec=Number(sec||0);"
+    "if(sec<60)return sec.toFixed(sec<10?1:0)+'s';"
+    "if(sec<3600)return(sec/60).toFixed(1).replace(/\\.0$/,'')+'m';"
+    "if(sec<86400)return(sec/3600).toFixed(1).replace(/\\.0$/,'')+'h';"
+    "return(sec/86400).toFixed(1).replace(/\\.0$/,'')+'d';};"
     "window._csrfStamp=function(method,h){if(method!=='GET'&&method!=='HEAD')"
     "h['X-CSRF-Token']=window._csrfToken?window._csrfToken():'';};"
     "window._apiFetch=function(method,path,body){var h={Accept:'application/json'};"

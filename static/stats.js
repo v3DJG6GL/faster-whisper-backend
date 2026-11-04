@@ -224,6 +224,7 @@ if (resetLayoutBtn) {
 // which is meaningless for a whole-day bucket.
 (() => {
 'use strict';
+const fmtCount = window._fmtCount, fmtDur = window._fmtDur;
 const $ = id => document.getElementById(id);
 const chartEl = $('usage-plot');
 const tipEl = $('usage-tip');
@@ -293,20 +294,6 @@ function remPx(n) {
 }
 const MONO = 'Consolas, "Cascadia Code", "JetBrains Mono", Menlo, ui-monospace, monospace';
 
-function fmtCount(n) {
-  n = Number(n || 0);
-  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(Math.round(n));
-}
-function fmtDur(sec) {
-  sec = Number(sec || 0);
-  if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + 's';
-  if (sec < 3600) return (sec / 60).toFixed(1).replace(/\.0$/, '') + 'm';
-  if (sec < 86400) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
-  return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
-}
 function fmtMetric(metric, v) {
   return (metric === 'audio_s' || metric === 'processing_s') ? fmtDur(v) : fmtCount(v);
 }

@@ -1190,6 +1190,7 @@
   }
 
   var escapeHtml = window._escHtml;
+  var fmtCount = window._fmtCount, fmtDuration = window._fmtDur;
 
   function _el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -1198,20 +1199,6 @@
     return e;
   }
 
-  function fmtCount(n) {
-    n = Number(n || 0);
-    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
-    return String(n);
-  }
-  function fmtDuration(sec) {
-    sec = Number(sec || 0);
-    if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + 's';
-    if (sec < 3600) return (sec / 60).toFixed(1).replace(/\.0$/, '') + 'm';
-    if (sec < 86400) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
-    return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
-  }
   function fmtErrRate(reqs, errs) {
     reqs = Number(reqs || 0); errs = Number(errs || 0);
     if (!reqs) return '0%';

@@ -2223,20 +2223,7 @@ function applyState(j) {
   loadMyUsage();   // fire-and-forget; populates the subbar self-usage banner
 }
 
-function _uCount(n) {
-  n = Number(n || 0);
-  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(Math.round(n));
-}
-function _uDur(sec) {
-  sec = Number(sec || 0);
-  if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + 's';
-  if (sec < 3600) return (sec / 60).toFixed(1).replace(/\.0$/, '') + 'm';
-  if (sec < 86400) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
-  return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
-}
+var _uCount = window._fmtCount, _uDur = window._fmtDur;
 var _uEsc = window._escHtml;
 async function loadMyUsage() {
   const el = document.getElementById('qc-usage');
