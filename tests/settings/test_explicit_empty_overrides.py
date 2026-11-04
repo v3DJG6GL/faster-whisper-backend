@@ -168,7 +168,7 @@ def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
 
 def _stream_decode_languages(client, app_module, fake_model, monkeypatch, **conf):
     """Run one dictation utterance and return the language= of every decode."""
-    from tests._streaming_helpers import const_pcm, ws_drain
+    from tests._streaming_helpers import dictate_session
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     seen = []
     orig = fake_model.transcribe
@@ -177,15 +177,7 @@ def _stream_decode_languages(client, app_module, fake_model, monkeypatch, **conf
         seen.append(kwargs.get("language"))
         return orig(path, **kwargs)
     monkeypatch.setattr(fake_model, "transcribe", _transcribe)
-    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-        ws.send_json({"type": "config", "model": "whisper-1",
-                      "audio": {"format": "pcm_s16le", "sample_rate": 16000},
-                      **conf})
-        assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(const_pcm(8000, 2500))
-        ws.send_bytes(const_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs, _code = ws_drain(ws)
+    msgs = dictate_session(client, **conf)
     assert any(m["type"] == "final" for m in msgs), msgs
     assert seen, "no decode ran"
     return seen
