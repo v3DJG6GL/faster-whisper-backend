@@ -26,16 +26,15 @@ from faster_whisper_backend.transcription import models as tx_models
 _pcm = const_pcm
 
 
-def test_stream_happy_path_partials_then_final(app_module, monkeypatch, energy_vad):
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ready = _handshake(ws, response_format="json")
-            assert ready["type"] == "ready"
-            assert ready["sample_rate"] == 16000
+def test_stream_happy_path_partials_then_final(client, energy_vad):
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ready = _handshake(ws, response_format="json")
+        assert ready["type"] == "ready"
+        assert ready["sample_rate"] == 16000
 
-            # ~2.5 s speech → ≥2 partials; the silence finalizes (held, no
-            # terminator) and the stop's close flushes the held final.
-            msgs = speak_and_stop(ws)[0]
+        # ~2.5 s speech → ≥2 partials; the silence finalizes (held, no
+        # terminator) and the stop's close flushes the held final.
+        msgs = speak_and_stop(ws)[0]
 
     partials = [m for m in msgs if m["type"] == "partial"]
     finals = [m for m in msgs if m["type"] == "final"]
@@ -47,18 +46,17 @@ def test_stream_happy_path_partials_then_final(app_module, monkeypatch, energy_v
     assert finals[-1].get("last") is True
 
 
-def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch, energy_vad):
+def test_stream_announces_the_utterance_lifecycle(client, energy_vad):
     """Over the real socket: ``ready`` advertises the frames, and the one
     utterance is announced, marked as decoding, and closed by its final — in
     that order, all on one ordinal. A client paints "the server is working"
     between ``open`` and the terminal frame, so the order IS the contract."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ready = _handshake(ws, response_format="json")
-            assert ready["type"] == "ready"
-            assert ready["utterance_frames"] is True
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ready = _handshake(ws, response_format="json")
+        assert ready["type"] == "ready"
+        assert ready["utterance_frames"] is True
 
-            msgs = speak_and_stop(ws)[0]
+        msgs = speak_and_stop(ws)[0]
 
     seen = []
     for m in msgs:
@@ -95,7 +93,7 @@ def test_stream_rejects_unsupported_audio_format(client):
 
 
 @pytest.mark.parametrize("fmt", [["x"], {"a": 1}])
-def test_stream_rejects_a_non_string_audio_format(app_module, monkeypatch, caplog, fmt):
+def test_stream_rejects_a_non_string_audio_format(client, monkeypatch, caplog, fmt):
     """An unhashable audio.format used to raise TypeError at the set-membership
     test and reach the handler's blanket except: a full traceback, an error
     usage row, and a generic error frame instead of unsupported_format."""
@@ -105,11 +103,10 @@ def test_stream_rejects_a_non_string_audio_format(app_module, monkeypatch, caplo
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
     caplog.set_level(logging.ERROR, logger="faster_whisper_backend.streaming.routes")
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({"type": "config", "model": ["whisper-1"],
-                          "audio": {"format": fmt}})
-            msg = ws.receive_json()
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ws.send_json({"type": "config", "model": ["whisper-1"],
+                      "audio": {"format": fmt}})
+        msg = ws.receive_json()
     assert msg["type"] == "error"
     assert msg["code"] == "unsupported_format"
     assert not [r for r in caplog.records if r.getMessage().startswith("[stream")]
@@ -239,7 +236,7 @@ def test_dictate_page_stop_flow_guards(client):
 
 
 @pytest.mark.parametrize("exc", [OSError("gone"), ValueError("CR line endings")])
-def test_dictate_page_unreadable_template_is_a_named_500(app_module, monkeypatch, exc):
+def test_dictate_page_unreadable_template_is_a_named_500(client, monkeypatch, exc):
     """The template is read per request: a missing file, or one an editor
     saved with CRLF, answers the page's own 500, not a bare traceback."""
     from faster_whisper_backend.core import templates
@@ -247,8 +244,7 @@ def test_dictate_page_unreadable_template_is_a_named_500(app_module, monkeypatch
     def _boom(*a, **kw):
         raise exc
     monkeypatch.setattr(templates, "load", _boom)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        r = client.get("/dictate")
+    r = client.get("/dictate")
     assert r.status_code == 500 and "dictate unavailable" in r.text
 
 
@@ -367,29 +363,27 @@ def test_ws_open_mode_remote_rejected(app_module):
     assert ei.value.code == _WS_UNAUTH
 
 
-def test_stream_disabled_closes_connection(app_module, monkeypatch):
+def test_stream_disabled_closes_connection(client, app_module, monkeypatch):
     from faster_whisper_backend.streaming.routes import _WS_DISABLED
     monkeypatch.setattr(app_module.cfg, "STREAMING_ENABLED", False, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        # _refuse always accepts first, so the refusal is a post-accept close
-        # carrying the application code — not a 4401 or a crash.
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            with pytest.raises(WebSocketDisconnect) as ei:
-                ws.receive_json()
+    # _refuse always accepts first, so the refusal is a post-accept close
+    # carrying the application code — not a 4401 or a crash.
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_json()
     assert ei.value.code == _WS_DISABLED
 
 
-def test_stream_records_trace_text_per_utterance(app_module, monkeypatch, energy_vad):
+def test_stream_records_trace_text_per_utterance(client, energy_vad):
     """Each finalized utterance writes a recent-transcriptions row with non-empty
     raw/final text (drives /quick-config + /reports), not just numeric metrics."""
     from faster_whisper_backend.stats import recent_transcriptions_store
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        before = recent_transcriptions_store.count()
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert _handshake(ws)["type"] == "ready"
-            speak_and_stop(ws)
-        rows = recent_transcriptions_store.list_recent(limit=10)
-        after = recent_transcriptions_store.count()
+    before = recent_transcriptions_store.count()
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert _handshake(ws)["type"] == "ready"
+        speak_and_stop(ws)
+    rows = recent_transcriptions_store.list_recent(limit=10)
+    after = recent_transcriptions_store.count()
     assert after > before, "no recent-transcription row recorded for the utterance"
     assert any((r.get("raw") or "").strip() and (r.get("final") or "").strip() for r in rows), \
         "recorded trace rows have empty raw/final (the /quick-config bug)"
@@ -415,7 +409,7 @@ def test_stream_records_the_key_label_on_the_trace_row(
     assert rows[0]["key_label"] == "alice-laptop"
 
 
-def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch, energy_vad):
+def test_flush_after_new_audio_is_not_coalesced(client, monkeypatch, energy_vad):
     """Flush coalescing must only collapse flushes with NO audio in between:
     `flush A → audio → flush B` has to deliver BOTH flushes to the pump (new
     audio makes the queued flush no longer authoritative), instead of silently
@@ -435,14 +429,13 @@ def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch, energy_
         await orig_flush(self)
 
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert _handshake(ws)["type"] == "ready"
-            ws.send_bytes(_pcm(8000, 1000))   # utterance A
-            ws.send_json({"type": "flush"})   # flush A (pump held for 0.4 s)
-            ws.send_bytes(_pcm(8000, 1000))   # utterance B — new audio after A's flush
-            ws.send_json({"type": "flush"})   # flush B: must NOT coalesce into A
-            stop_and_drain(ws)
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert _handshake(ws)["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 1000))   # utterance A
+        ws.send_json({"type": "flush"})   # flush A (pump held for 0.4 s)
+        ws.send_bytes(_pcm(8000, 1000))   # utterance B — new audio after A's flush
+        ws.send_json({"type": "flush"})   # flush B: must NOT coalesce into A
+        stop_and_drain(ws)
     assert len(flushes) == 2, (
         f"flush after new audio was coalesced away ({len(flushes)} reached the pump)")
 
@@ -473,17 +466,16 @@ def test_safe_ws_send_swallows_dead_socket():
     assert live.sent == [{"type": "final"}]
 
 
-def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
+def test_stream_handshake_idle_timeout_frees_slot(client, app_module, monkeypatch):
     # A client that connects + passes auth but never sends its config handshake
     # must not hold a session slot forever: the server abandons the wait after
     # STREAMING_IDLE_TIMEOUT_S and closes with the idle close code (4408).
     from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming.routes import _WS_IDLE_TIMEOUT
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            with pytest.raises(WebSocketDisconnect) as ei:
-                ws.receive_json()   # send nothing → idle close
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_json()   # send nothing → idle close
     assert ei.value.code == _WS_IDLE_TIMEOUT
     # The close code alone would pass with a leaked slot: both the per-user
     # count and the active-session set must be empty again.
@@ -491,29 +483,29 @@ def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
     assert streaming_routes._active_sessions == set()
 
 
-def test_stream_session_idle_timeout_closes_and_notifies(app_module, monkeypatch, energy_vad):
+def test_stream_session_idle_timeout_closes_and_notifies(
+        client, app_module, monkeypatch, energy_vad):
     # After a successful handshake, a connection that goes silent mid-session is
     # closed once the idle timeout elapses, with an idle_timeout notice first.
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert _handshake(ws, response_format="json")["type"] == "ready"
-            msgs = _drain(ws)   # send nothing further → idle close
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert _handshake(ws, response_format="json")["type"] == "ready"
+        msgs = _drain(ws)   # send nothing further → idle close
     assert any(m.get("code") == "idle_timeout" for m in msgs)
 
 
-def test_stream_idle_timeout_zero_disables(app_module, monkeypatch, energy_vad):
+def test_stream_idle_timeout_zero_disables(client, app_module, monkeypatch, energy_vad):
     # 0 disables the idle timeout: the normal stop/close flow still works and no
     # idle_timeout notice is emitted (the receive falls through to a plain await).
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.0, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert _handshake(ws, response_format="json")["type"] == "ready"
-            msgs = stop_and_drain(ws)[0]
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert _handshake(ws, response_format="json")["type"] == "ready"
+        msgs = stop_and_drain(ws)[0]
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
 
-def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkeypatch, energy_vad):
+def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(
+        client, app_module, monkeypatch, energy_vad):
     """The idle deadline is anchored to the last AUDIO byte, not the last frame.
 
     A client alternating an unrecognised control JSON with an empty binary
@@ -526,24 +518,24 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkey
     Here the socket must already be closed by the time we stop sending.
     """
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.5, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert _handshake(ws, response_format="json")["type"] == "ready"
-            for _ in range(3):            # 0.9 s of keepalive-ish traffic, no audio
-                time.sleep(0.3)
-                try:
-                    ws.send_json({"type": "noop"})   # parses, matches no branch
-                    ws.send_bytes(b"")               # empty audio payload
-                except Exception:                    # noqa: BLE001 — already closed
-                    break
-            t0 = time.monotonic()
-            msgs = _drain(ws)
-            drained_in = time.monotonic() - t0
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert _handshake(ws, response_format="json")["type"] == "ready"
+        for _ in range(3):            # 0.9 s of keepalive-ish traffic, no audio
+            time.sleep(0.3)
+            try:
+                ws.send_json({"type": "noop"})   # parses, matches no branch
+                ws.send_bytes(b"")               # empty audio payload
+            except Exception:                    # noqa: BLE001 — already closed
+                break
+        t0 = time.monotonic()
+        msgs = _drain(ws)
+        drained_in = time.monotonic() - t0
     assert any(m.get("code") == "idle_timeout" for m in msgs)
     assert drained_in < 0.25, f"socket was still armed when we stopped sending ({drained_in:.2f}s)"
 
 
-def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypatch, energy_vad):
+def test_stream_idle_timeout_not_tripped_while_audio_flows(
+        client, app_module, monkeypatch, energy_vad):
     """Real audio DOES re-arm the idle deadline, so a live mic (which streams
     PCM continuously, even through silence) is never cut short even though the
     session runs far longer than one idle timeout."""
@@ -551,13 +543,12 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
     # stalled sleep on a loaded CI runner cannot turn into a spurious idle
     # close (a 0.5 s timeout with 0.25 s frames flaked in CI).
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 2.0, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert _handshake(ws, response_format="json")["type"] == "ready"
-            for _ in range(12):           # 3 s of streaming: 1.5x the idle timeout
-                time.sleep(0.25)
-                ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
-            msgs = stop_and_drain(ws)[0]
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert _handshake(ws, response_format="json")["type"] == "ready"
+        for _ in range(12):           # 3 s of streaming: 1.5x the idle timeout
+            time.sleep(0.25)
+            ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
+        msgs = stop_and_drain(ws)[0]
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
 
@@ -769,23 +760,21 @@ def _dictate_one_utterance(client, conf_extra):
         speak_and_stop(ws)
 
 
-def test_stream_client_job_names_the_usage_job(app_module, monkeypatch, energy_vad):
+def test_stream_client_job_names_the_usage_job(client, energy_vad):
     """The handshake's `client_job` becomes the usage job id, so the outcome
     the client posts afterwards lands on the session's own utterances."""
     from faster_whisper_backend.stats import usage_store
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        _dictate_one_utterance(client, {"client_job": "ab" * 16})
-        rows = usage_store._require_conn().execute(
-            "SELECT job_id, kind, utterances FROM usage_jobs").fetchall()
+    _dictate_one_utterance(client, {"client_job": "ab" * 16})
+    rows = usage_store._require_conn().execute(
+        "SELECT job_id, kind, utterances FROM usage_jobs").fetchall()
     assert [tuple(r) for r in rows] == [("ab" * 16, "dictation", 1)]
 
 
-def test_stream_malformed_client_job_falls_back_to_session_id(app_module, monkeypatch, energy_vad):
+def test_stream_malformed_client_job_falls_back_to_session_id(client, energy_vad):
     from faster_whisper_backend.stats import usage_store
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        _dictate_one_utterance(client, {"client_job": "../not-hex"})
-        rows = usage_store._require_conn().execute(
-            "SELECT job_id, kind FROM usage_jobs").fetchall()
+    _dictate_one_utterance(client, {"client_job": "../not-hex"})
+    rows = usage_store._require_conn().execute(
+        "SELECT job_id, kind FROM usage_jobs").fetchall()
     assert len(rows) == 1 and rows[0]["kind"] == "dictation"
     assert len(rows[0]["job_id"]) == 32 and rows[0]["job_id"] != "../not-hex"
 
@@ -814,7 +803,7 @@ def test_dictate_page_resampler_seam_uses_a_real_neighbour(client):
 
 
 def test_stream_final_arms_the_residual_stop_and_reports_it(
-        app_module, monkeypatch, caplog, energy_vad):
+        client, app_module, monkeypatch, caplog, energy_vad):
     """The FINAL decode resolves DECODE_SKIP_RESIDUAL_WINDOWS through cfg_for,
     hands it to the trace capture, and the receipt's guards block shows the
     value (with the non-default marker once it is switched off)."""
@@ -830,17 +819,15 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(
         return real(kwargs, skip_residual=skip_residual, **kw)
     monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
 
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-            _dictate_one_utterance(client, {})
+    with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+        _dictate_one_utterance(client, {})
     assert seen == [True], "one final decode, stop rule armed"
     assert guard_line(caplog, "skip_residual_windows").endswith("true")
 
     seen.clear(); caplog.clear()
     monkeypatch.setattr(app_module.cfg, "DECODE_SKIP_RESIDUAL_WINDOWS", False, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-            _dictate_one_utterance(client, {})
+    with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+        _dictate_one_utterance(client, {})
     assert seen == [False]
     assert guard_line(caplog, "skip_residual_windows").endswith("false *")
 
@@ -863,7 +850,7 @@ def _is_final(kw):
 
 
 def test_stream_final_caps_tokens_and_samples_one_candidate(
-        app_module, fake_model, monkeypatch, caplog, energy_vad):
+        client, app_module, fake_model, monkeypatch, caplog, energy_vad):
     """A looping rung once ran to 224 tokens (18.6 s), then a sampled rung's
     17-token answer waited 13.9 s for a looping sibling. The FINAL
     decode gets the token cap (through the trace capture) and
@@ -881,9 +868,8 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
     calls = _final_and_partial_kwargs(fake_model)
 
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-            _dictate_one_utterance(client, {})
+    with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+        _dictate_one_utterance(client, {})
     assert caps == [10.0]
     finals = [kw for kw in calls if _is_final(kw)]
     assert len(finals) == 1 and finals[0]["best_of"] == 1
@@ -894,31 +880,27 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     caps.clear(); calls.clear()
     monkeypatch.setattr(app_module.cfg, "DECODE_TOKEN_CAP_PER_SECOND", 0.0, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 3, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        _dictate_one_utterance(client, {})
+    _dictate_one_utterance(client, {})
     assert caps == [0.0]
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [3]
 
 
-def test_stream_final_best_of_yields_to_a_client_override(
-        app_module, fake_model, monkeypatch, energy_vad):
+def test_stream_final_best_of_yields_to_a_client_override(client, fake_model, energy_vad):
     calls = _final_and_partial_kwargs(fake_model)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        _dictate_one_utterance(client, {"decode_overrides": {"best_of": 4}})
+    _dictate_one_utterance(client, {"decode_overrides": {"best_of": 4}})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [4]
 
 
 @pytest.mark.parametrize("value", [None, "abc"])
 def test_stream_final_best_of_pins_when_the_client_value_does_not_apply(
-        app_module, fake_model, monkeypatch, value, energy_vad):
+        client, app_module, fake_model, monkeypatch, value, energy_vad):
     """A null / unparseable best_of is dropped by the assembler (the batch
     BEST_OF stays in kwargs), so the key's mere presence must not skip the
     STREAMING_FINAL_BEST_OF pin."""
     monkeypatch.setattr(app_module.cfg, "BEST_OF", 5, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 1, raising=False)
     calls = _final_and_partial_kwargs(fake_model)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        _dictate_one_utterance(client, {"decode_overrides": {"best_of": value}})
+    _dictate_one_utterance(client, {"decode_overrides": {"best_of": value}})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [1]
 
 
@@ -936,20 +918,19 @@ def _loop_segment():
     return FakeSegment("".join(w.word for w in ws), 0.32, 2.4, words=ws)
 
 
-def _stream_once(app_module, monkeypatch):
+def _stream_once(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert _handshake(ws)["type"] == "ready"
-            return speak_and_stop(ws)[0]
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert _handshake(ws)["type"] == "ready"
+        return speak_and_stop(ws)[0]
 
 
-def test_stream_final_and_previews_cut_the_made_up_tail(app_module, fake_model,
+def test_stream_final_and_previews_cut_the_made_up_tail(client, app_module, fake_model,
                                                         monkeypatch, caplog):
     from faster_whisper_backend.stats import metrics
     fake_model._segments = [_loop_segment()]
     with caplog.at_level("INFO"):
-        msgs = _stream_once(app_module, monkeypatch)
+        msgs = _stream_once(client, app_module, monkeypatch)
     finals = [m for m in msgs if m["type"] == "final"]
     partials = [m for m in msgs if m["type"] == "partial"]
     text = "".join(m["committed"] + m.get("tail", "") for m in finals[-1:])
@@ -963,7 +944,7 @@ def test_stream_final_and_previews_cut_the_made_up_tail(app_module, fake_model,
     assert "tail_cut" in caplog.text
 
 
-def test_stream_preview_drops_a_segment_cut_to_nothing(app_module, fake_model,
+def test_stream_preview_drops_a_segment_cut_to_nothing(client, app_module, fake_model,
                                                        monkeypatch):
     """A preview whose only segment is one zero-length pile: handed on as
     (start, made-up end, "") two previews agree on "" and LocalAgreement
@@ -982,23 +963,23 @@ def test_stream_preview_drops_a_segment_cut_to_nothing(app_module, fake_model,
         return orig(self, words, offset)
 
     monkeypatch.setattr(localagreement.LocalAgreementProcessor, "insert_hypothesis", spy)
-    msgs = _stream_once(app_module, monkeypatch)
+    msgs = _stream_once(client, app_module, monkeypatch)
     assert seen, "no preview was decoded"
     assert all(h == [] for h in seen)
     assert all(m["committed"] == "" for m in msgs if m["type"] == "partial")
 
 
-def test_stream_tail_cuts_off_keep_the_tail(app_module, fake_model, monkeypatch):
+def test_stream_tail_cuts_off_keep_the_tail(client, app_module, fake_model, monkeypatch):
     for name in ("SEGMENT_MAX_WORD_BURST_PER_S", "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
                  "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", "SEGMENT_MAX_WORDS_PER_S"):
         monkeypatch.setattr(app_module.cfg, name, 0, raising=False)
     fake_model._segments = [_loop_segment()]
-    msgs = _stream_once(app_module, monkeypatch)
+    msgs = _stream_once(client, app_module, monkeypatch)
     finals = [m for m in msgs if m["type"] == "final"]
     assert "abzuschliessen" in "".join(m["committed"] + m.get("tail", "") for m in finals)
 
 
-def test_stream_formats_the_first_final_in_the_detected_language(app_module, fake_model,
+def test_stream_formats_the_first_final_in_the_detected_language(client, app_module, fake_model,
                                                                  monkeypatch):
     """Auto language: the utterance's own final is formatted in the language
     its decode detected, not with every language's rules (a German question
@@ -1018,7 +999,7 @@ def test_stream_formats_the_first_final_in_the_detected_language(app_module, fak
         seen["preview"] += 1
         return segs, FakeInfo(language="es")
     monkeypatch.setattr(fake_model, "transcribe", transcribe)
-    msgs = _stream_once(app_module, monkeypatch)
+    msgs = _stream_once(client, app_module, monkeypatch)
     assert seen["preview"] and seen["final"]
     docs = [m["committed"] + m.get("tail", "") for m in msgs if m["type"] == "final"]
     assert len(docs) >= 2                                # the utterance's final + the close
@@ -1028,7 +1009,7 @@ def test_stream_formats_the_first_final_in_the_detected_language(app_module, fak
         assert b.startswith(a)
 
 
-def test_stream_unknown_language_skips_language_tagged_rules(app_module, fake_model,
+def test_stream_unknown_language_skips_language_tagged_rules(client, app_module, fake_model,
                                                              monkeypatch):
     """No language requested, none detected: "und" — every language-tagged rule
     is skipped (the German map and the Spanish marks alike) instead of all of
@@ -1036,19 +1017,19 @@ def test_stream_unknown_language_skips_language_tagged_rules(app_module, fake_mo
     from tests.conftest import FakeInfo, FakeSegment
     fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
     fake_model._info = FakeInfo(language=None)
-    msgs = _stream_once(app_module, monkeypatch)
+    msgs = _stream_once(client, app_module, monkeypatch)
     docs = [m["committed"] + m.get("tail", "") for m in msgs if m["type"] == "final"]
     assert docs and all("¿" not in d for d in docs)
     assert "Fragezeichen" in docs[-1]
 
 
-def test_stream_holds_a_split_dictation_phrase_until_the_close(app_module, fake_model,
+def test_stream_holds_a_split_dictation_phrase_until_the_close(client, app_module, fake_model,
                                                                 monkeypatch):
     """The route wires the real hold-back: the trailing 'neue' of a final is
     held back (the rest is sent) until the close releases it."""
     from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment(" Befund unauffällig Punkt neue", 0.0, 1.0)]
-    msgs = _stream_once(app_module, monkeypatch)
+    msgs = _stream_once(client, app_module, monkeypatch)
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals[0]["committed"] + finals[0]["tail"] == "Befund unauffällig."
     assert finals[-1].get("last") is True

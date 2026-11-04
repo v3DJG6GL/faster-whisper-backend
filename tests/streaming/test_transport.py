@@ -10,7 +10,6 @@ import logging
 import subprocess
 
 import pytest
-from starlette.testclient import TestClient
 
 from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
 from faster_whisper_backend.streaming.transport import (
@@ -190,21 +189,20 @@ def test_ffmpeg_transport_reader_join_timeout_still_returns(monkeypatch):
     assert asyncio.run(run()) == (True, True)
 
 
-def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch, energy_vad):
+def test_stream_route_accepts_webm_via_ffmpeg(client, energy_vad):
     webm = _gen_webm(2.0)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ready = handshake(ws, audio={"format": "webm"})
-            assert ready["type"] == "ready"
-            assert ready["audio_format"] == "webm"
-            ws.send_bytes(webm)
-            msgs = stop_and_drain(ws)[0]
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ready = handshake(ws, audio={"format": "webm"})
+        assert ready["type"] == "ready"
+        assert ready["audio_format"] == "webm"
+        ws.send_bytes(webm)
+        msgs = stop_and_drain(ws)[0]
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals, "expected a final from the decoded WebM"
     assert "welt" in "".join(m["committed"] + m.get("tail", "") for m in finals)
 
 
-def test_stream_route_ends_the_session_when_the_decoder_dies(app_module, monkeypatch, energy_vad):
+def test_stream_route_ends_the_session_when_the_decoder_dies(client, monkeypatch, energy_vad):
     """A dead ffmpeg discards every later frame while the audio keeps re-arming
     the idle deadline — the producer must say so and end the session instead
     of holding a STREAMING_MAX_SESSIONS slot until the client gives up."""
@@ -229,11 +227,10 @@ def test_stream_route_ends_the_session_when_the_decoder_dies(app_module, monkeyp
 
     monkeypatch.setattr(stream_routes, "make_transport",
                         lambda fmt, sink, **kw: _DyingTransport(sink, **kw))
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            assert handshake(ws, audio={"format": "webm"})["type"] == "ready"
-            ws.send_bytes(b"\x1a\x45\xdf\xa3 corrupt")
-            msgs = drain_frames(ws, 50)
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        assert handshake(ws, audio={"format": "webm"})["type"] == "ready"
+        ws.send_bytes(b"\x1a\x45\xdf\xa3 corrupt")
+        msgs = drain_frames(ws, 50)
     errors = [m for m in msgs if m.get("type") == "error"]
     assert [m["code"] for m in errors] == ["decoder_failed"], msgs
     assert len(feeds) == 1
