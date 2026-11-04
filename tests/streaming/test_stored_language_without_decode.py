@@ -4,7 +4,7 @@ language makes a captures re-apply run every language's rules on it."""
 
 import time
 
-from tests._streaming_helpers import const_pcm as _pcm, handshake, ws_drain as _drain
+from tests._streaming_helpers import const_pcm as _pcm, handshake, stop_and_drain
 from tests.conftest import FakeInfo
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
@@ -33,8 +33,7 @@ def _gate_skipped_utterance(client, app_module, monkeypatch):
         monkeypatch.setattr(streaming_session, "rms_dbfs", lambda a: -999.0)
         ws.send_bytes(_pcm(0, 1500))
         time.sleep(0.5)
-        ws.send_json({"type": "stop"})
-        msgs, _code = _drain(ws)
+        msgs, _code = stop_and_drain(ws)
     assert any(m["type"] == "final" for m in msgs), msgs
     rows = [r for r in recent_transcriptions_store.list_recent(limit=10)
             if r.get("source") == "stream"]

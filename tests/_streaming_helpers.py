@@ -50,6 +50,12 @@ def drain_frames(ws, limit: int = 200) -> list[dict]:
     return ws_drain(ws, limit)[0]
 
 
+def stop_and_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
+    """Send the stop frame and return ``ws_drain``'s ``(msgs, close_code)``."""
+    ws.send_json({"type": "stop"})
+    return ws_drain(ws, limit)
+
+
 def stream_ws(client, raw_key):
     """Open the streaming socket with ``raw_key``'s bearer header (use as ``with``)."""
     return client.websocket_connect(
@@ -69,8 +75,7 @@ def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     returns ``ws_drain``'s ``(msgs, close_code)``."""
     ws.send_bytes(const_pcm(8000, 2500))
     ws.send_bytes(const_pcm(0, 1500))
-    ws.send_json({"type": "stop"})
-    return ws_drain(ws, limit)
+    return stop_and_drain(ws, limit)
 
 
 class AlwaysSpeech:

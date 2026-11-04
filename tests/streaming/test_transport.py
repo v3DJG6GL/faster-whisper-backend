@@ -18,7 +18,7 @@ from faster_whisper_backend.streaming.transport import (
     RawPcmTransport,
     make_transport,
 )
-from tests._streaming_helpers import drain_frames, handshake, ws_drain
+from tests._streaming_helpers import drain_frames, handshake, stop_and_drain
 
 
 def test_ffmpeg_exe_resolves_to_runnable_binary():
@@ -198,8 +198,7 @@ def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch, energy_va
             assert ready["type"] == "ready"
             assert ready["audio_format"] == "webm"
             ws.send_bytes(webm)
-            ws.send_json({"type": "stop"})
-            msgs = ws_drain(ws)[0]
+            msgs = stop_and_drain(ws)[0]
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals, "expected a final from the decoded WebM"
     assert "welt" in "".join(m["committed"] + m.get("tail", "") for m in finals)

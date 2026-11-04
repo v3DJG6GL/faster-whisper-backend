@@ -10,8 +10,8 @@ import pytest
 
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
-    config_drain, config_frame, const_pcm, drain_frames as _drain, handshake, speak_and_stop,
-    stream_ws, ws_drain)
+    config_drain, config_frame, const_pcm, handshake, speak_and_stop, stop_and_drain, stream_ws,
+    ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -457,7 +457,7 @@ def test_handshake_language_reaches_the_model_as_a_whisper_code(
 # mid-connection: with only the handshake's authenticate_ws, a revoked key would
 # keep decoding and writing captures/trace/usage rows.
 
-_drain_with_code = ws_drain   # _drain, but also returns the server's close code
+_drain_with_code = ws_drain   # the frames and the server's close code
 
 
 def test_stream_closes_when_key_is_revoked_mid_session(
@@ -576,8 +576,7 @@ def test_stream_survives_an_unrelated_config_bump(
         _profile(client, h, "p", BEAM_SIZE=7)   # unrelated bump, alice untouched
         ws.send_bytes(_pcm(8000, 1500))
         ws.send_bytes(_pcm(0, 1500))            # silence → finalize
-        ws.send_json({"type": "stop"})
-        msgs, code = _drain_with_code(ws)
+        msgs, code = stop_and_drain(ws)
 
     assert not any(m.get("code") == "unauthorized" for m in msgs), msgs
     assert any(m.get("type") == "final" for m in msgs), msgs
@@ -665,8 +664,7 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
         ws.send_bytes(_pcm(8000, 2500))        # speech, utterance stays open
         time.sleep(0.5)                        # pump has drained the queue
         api_keys_store.revoke_user(uid)        # bumps the config version
-        ws.send_json({"type": "stop"})         # no further decode until the drain
-        msgs, code = _drain_with_code(ws)
+        msgs, code = stop_and_drain(ws)        # no further decode until the drain
 
     assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
     assert not any(m.get("code") == "internal" for m in msgs), msgs
@@ -695,8 +693,7 @@ def _knobs_handshake(client, monkeypatch, overrides, headers=None):
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=headers or {}) as ws:
         ready = handshake(ws, decode_overrides=overrides)
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        stop_and_drain(ws)
     return ready, seen
 
 

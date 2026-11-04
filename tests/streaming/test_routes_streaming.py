@@ -17,7 +17,8 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    const_pcm, drain_frames as _drain, handshake as _handshake, speak_and_stop, stream_ws)
+    const_pcm, drain_frames as _drain, handshake as _handshake, speak_and_stop, stop_and_drain,
+    stream_ws)
 from tests._transcription_helpers import guard_line
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -124,8 +125,7 @@ def test_stream_treats_a_non_string_model_as_absent(client):
         ready = ws.receive_json()
         assert ready["type"] == "ready"
         assert ready["model"] == tx_models._resolve_model_name("whisper-1")
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        stop_and_drain(ws)
 
 
 def test_dictate_page_served(client):
@@ -442,8 +442,7 @@ def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch, energy_
             ws.send_json({"type": "flush"})   # flush A (pump held for 0.4 s)
             ws.send_bytes(_pcm(8000, 1000))   # utterance B — new audio after A's flush
             ws.send_json({"type": "flush"})   # flush B: must NOT coalesce into A
-            ws.send_json({"type": "stop"})
-            _drain(ws)
+            stop_and_drain(ws)
     assert len(flushes) == 2, (
         f"flush after new audio was coalesced away ({len(flushes)} reached the pump)")
 
@@ -510,8 +509,7 @@ def test_stream_idle_timeout_zero_disables(app_module, monkeypatch, energy_vad):
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             assert _handshake(ws, response_format="json")["type"] == "ready"
-            ws.send_json({"type": "stop"})
-            msgs = _drain(ws)
+            msgs = stop_and_drain(ws)[0]
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
 
@@ -559,8 +557,7 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
             for _ in range(12):           # 3 s of streaming: 1.5x the idle timeout
                 time.sleep(0.25)
                 ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
-            ws.send_json({"type": "stop"})
-            msgs = _drain(ws)
+            msgs = stop_and_drain(ws)[0]
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
 
