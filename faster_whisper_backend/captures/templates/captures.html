@@ -4686,9 +4686,8 @@
       + '</span> accepted · <span class="count">' + _batchDismissed
       + '</span> dismissed</div>';
     var acts = _el('div', 'actions');
-    var refreshBtn = document.createElement('button');
-    refreshBtn.type = 'button'; refreshBtn.className = 'primary';
-    refreshBtn.textContent = 'Refresh batch';
+    var refreshBtn = _el('button', 'primary', 'Refresh batch');
+    refreshBtn.type = 'button';
     refreshBtn.addEventListener('click', function() {
       // _loadProposals renders the next card itself.
       _batchAccepted = 0; _batchDismissed = 0;
@@ -5171,17 +5170,13 @@
         sampleState.dirtyEl = dirtyEl;
         var spc = _el('span', 'spacer');
         actions.appendChild(spc);
-        var saveTBtn = document.createElement('button');
-        saveTBtn.textContent = 'Save';
-        saveTBtn.className = 'primary';
+        var saveTBtn = _el('button', 'primary', 'Save');
         actions.appendChild(saveTBtn);
         var regenBtn = document.createElement('button');
         actions.appendChild(regenBtn);
         var lockBtn = document.createElement('button');
         actions.appendChild(lockBtn);
-        var dissolveBtn = document.createElement('button');
-        dissolveBtn.textContent = 'Dissolve sample';
-        dissolveBtn.className = 'danger';
+        var dissolveBtn = _el('button', 'danger', 'Dissolve sample');
         actions.appendChild(dissolveBtn);
         body.appendChild(actions);
 
@@ -5219,8 +5214,7 @@
             .catch(function(err) {
               if (stale()) return;
               audioSlot.innerHTML = '';
-              var banner = document.createElement('div');
-              banner.className = 'cc-section';
+              var banner = _el('div', 'cc-section');
               banner.style.cssText = 'background:#3a2424;border:1px solid '
                 + 'var(--border);border-radius:4px;padding:0.5rem 0.75rem;'
                 + 'margin-top:0.5rem;display:flex;align-items:center;'
@@ -5229,9 +5223,7 @@
                 + '⚠ Audio unavailable for this sample ('
                 + escapeHtml(err && err.message || 'fetch failed') + ').'
                 + '</span>';
-              var fixBtn = document.createElement('button');
-              fixBtn.textContent = 'Regenerate audio';
-              fixBtn.className = 'primary';
+              var fixBtn = _el('button', 'primary', 'Regenerate audio');
               fixBtn.onclick = async function() {
                 if (!(await okToRegenerate())) return;
                 fixBtn.disabled = true;
@@ -5319,8 +5311,7 @@
           strip.innerHTML = '';
           var prevMember = -1;
           sampleState.words.forEach(function(w, i) {
-            var sp = document.createElement('span');
-            sp.className = 'word ' + ((w.member_idx % 2 === 0) ? 'mem-even' : 'mem-odd');
+            var sp = _el('span', 'word ' + ((w.member_idx % 2 === 0) ? 'mem-even' : 'mem-odd'));
             if (w.member_idx !== prevMember && prevMember !== -1) {
               sp.style.marginLeft = '0.4rem';
             }
