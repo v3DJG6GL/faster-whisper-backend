@@ -139,6 +139,20 @@ async def _past_backlog(gen):
     assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
 
 
+def _drive_tail(body):
+    """Open the log stream, pass its backlog, await `body(gen)`, close the
+    stream; return the body's result."""
+    async def drive():
+        gen = logs_routes._stream_log_lines(None)
+        try:
+            await _past_backlog(gen)
+            return await body(gen)
+        finally:
+            await gen.aclose()
+
+    return asyncio.run(drive())
+
+
 def test_logs_stream_delivers_a_line_logged_during_the_backlog(
         app_module, monkeypatch, tmp_path):
     """A line logged after the backlog read but before the tail took its
@@ -149,18 +163,13 @@ def test_logs_stream_delivers_a_line_logged_during_the_backlog(
 
     _tail_rig(app_module, monkeypatch, tmp_path, _log_during)
 
-    async def drive():
-        gen = logs_routes._stream_log_lines(None)
-        try:
-            await _past_backlog(gen)
-            # Bounded: on a regression "during" is in neither the backlog
-            # nor the tail and the generator polls forever — fail, not hang.
-            assert await asyncio.wait_for(gen.__anext__(), timeout=5) \
-                == "data: during\n\n"
-        finally:
-            await gen.aclose()
+    async def body(gen):
+        # Bounded: on a regression "during" is in neither the backlog
+        # nor the tail and the generator polls forever — fail, not hang.
+        assert await asyncio.wait_for(gen.__anext__(), timeout=5) \
+            == "data: during\n\n"
 
-    asyncio.run(drive())
+    _drive_tail(body)
 
 
 def test_logs_stream_holds_back_a_half_written_line(app_module, monkeypatch, tmp_path):
@@ -176,28 +185,23 @@ def test_logs_stream_holds_back_a_half_written_line(app_module, monkeypatch, tmp
 
     log = _tail_rig(app_module, monkeypatch, tmp_path, _log_half)
 
-    async def drive():
-        gen = logs_routes._stream_log_lines(None)
+    async def body(gen):
         got = []
-        try:
-            await _past_backlog(gen)
-            # First poll sees only the unterminated half.
+        # First poll sees only the unterminated half.
+        msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+        if msg.startswith("data: "):
+            got.append(msg)
+        with open(log, "ab") as f:
+            f.write(whole[cut:] + b"\n")
+        for _ in range(20):             # bounded: keepalives never end
+            if got and got[-1].endswith("line\n\n"):
+                break
             msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
             if msg.startswith("data: "):
                 got.append(msg)
-            with open(log, "ab") as f:
-                f.write(whole[cut:] + b"\n")
-            for _ in range(20):             # bounded: keepalives never end
-                if got and got[-1].endswith("line\n\n"):
-                    break
-                msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
-                if msg.startswith("data: "):
-                    got.append(msg)
-        finally:
-            await gen.aclose()
         return got
 
-    assert asyncio.run(drive()) == ["data: half of a läng line\n\n"]
+    assert _drive_tail(body) == ["data: half of a läng line\n\n"]
 
 
 def test_logs_stream_keeps_lines_logged_just_before_a_rotation(
@@ -213,16 +217,11 @@ def test_logs_stream_keeps_lines_logged_just_before_a_rotation(
 
     _tail_rig(app_module, monkeypatch, tmp_path, _rotate)
 
-    async def drive():
-        gen = logs_routes._stream_log_lines(None)
-        try:
-            await _past_backlog(gen)
-            return [await asyncio.wait_for(gen.__anext__(), timeout=5)
-                    for _ in range(2)]
-        finally:
-            await gen.aclose()
+    async def body(gen):
+        return [await asyncio.wait_for(gen.__anext__(), timeout=5)
+                for _ in range(2)]
 
-    assert asyncio.run(drive()) == ["data: before rollover\n\n", "data: new\n\n"]
+    assert _drive_tail(body) == ["data: before rollover\n\n", "data: new\n\n"]
 
 
 def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
