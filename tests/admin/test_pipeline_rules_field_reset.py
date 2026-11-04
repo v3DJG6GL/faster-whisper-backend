@@ -8,7 +8,7 @@ instead of "config.json is newer". The rule editor has its own reset flows."""
 
 import pytest
 
-from tests.admin.test_settings_page_js import _FAKE_DOM, _block, _html, _node, needs_node
+from tests.admin.test_settings_page_js import _FAKE_DOM, _fns, _html, _node, needs_node
 
 
 @needs_node
@@ -18,9 +18,7 @@ from tests.admin.test_settings_page_js import _FAKE_DOM, _block, _html, _node, n
 ])
 def test_field_row_reset_link_skips_pipeline_rules(client, name, want_link):
     html = _html(client)
-    row_fn = (_block(html, "function _el(", "\n}\n")
-              + _block(html, "function _button(", "\n}\n")
-              + _block(html, "function fieldRow(name) {", "\n}\n"))
+    row_fn = _fns(html, "_el", "_button", "fieldRow")
     out = _node(_FAKE_DOM + """
 const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
 const DEFAULTS = { PIPELINE_RULES: [{ name: 'a' }], BEAM_SIZE: 5 };

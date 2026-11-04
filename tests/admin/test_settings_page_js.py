@@ -29,13 +29,18 @@ def _block(html, start, end="\n  }\n"):
     return html[i:j + len(end)]
 
 
+def _fns(html, *names):
+    """The named top-level (non-async) page functions, in order."""
+    return "".join(_block(html, f"function {n}(", "\n}\n") for n in names)
+
+
 def _make_editor_src(html, *builders):
     """makeEditor() with its field tables, plus the named top-level builders."""
     return "\n".join([
         _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
         _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
         _block(html, "function makeEditor(name) {", "\n}\n"),
-        *(_block(html, f"function {b}(", "\n}\n") for b in ("_el", *builders)),
+        _fns(html, "_el", *builders),
     ])
 
 
@@ -114,10 +119,7 @@ def _captures_harness(html, body, real_list=False):
     `real_list` runs the page's own makeRuleListEditor on the fake DOM."""
     branch = _block(html, "  if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {")
     if real_list:
-        rle = (_block(html, "function makeRuleListEditor(", "\n}\n")
-               + _block(html, "function _helpDiv(text) {", "\n}\n")
-               + _block(html, "function _el(", "\n}\n")
-               + _block(html, "function _button(", "\n}\n"))
+        rle = _fns(html, "makeRuleListEditor", "_helpDiv", "_el", "_button")
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
 function _lsGet() { return null; }
@@ -223,8 +225,7 @@ def test_model_override_seeds_from_the_current_global_value(client):
     """'+ override' seeded the global value captured when the row was built;
     an unsaved global edit later only refreshed the 'inherits' hint."""
     html = _html(client)
-    row_fn = (_block(html, "function _el(", "\n}\n")
-              + _block(html, "function _button(", "\n}\n")
+    row_fn = (_fns(html, "_el", "_button")
               + _block(html, "  function paintDot(")
               + _block(html, "  function renderFieldRow(field) {"))
     out = _node(_FAKE_DOM + """
@@ -255,8 +256,7 @@ fire(find(row, e => e.textContent === '+ override'), 'click').then(() => {
 def _model_pipeline_harness(html, body):
     """The MODEL_OVERRIDES per-model pipeline checklist with
     makeRuleListEditor stubbed out: `editor.opts` is what the rows call."""
-    section = (_block(html, "function _helpDiv(text) {", "\n}\n")
-               + _block(html, "function _el(", "\n}\n")
+    section = (_fns(html, "_helpDiv", "_el")
                + _block(html, "  function renderPipelineSection() {"))
     return _FAKE_DOM + """
 const state = {};
@@ -416,10 +416,7 @@ def _label_editor_harness(html, body):
     _ensureUniqueSlug, spliced into `body` at {editor}."""
     editor = _block(html, "    // Membership in config.json — not the seeded flag",
                     "      body.appendChild(labelWrap);\n    }\n")
-    helpers = (_block(html, "function _slugify(s) {", "\n}\n")
-               + _block(html, "function _ensureUniqueSlug(slug, existing) {", "\n}\n")
-               + _block(html, "function _helpDiv(text) {", "\n}\n")
-               + _block(html, "function _el(", "\n}\n"))
+    helpers = _fns(html, "_slugify", "_ensureUniqueSlug", "_helpDiv", "_el")
     return _FAKE_DOM + helpers + """
 const name = 'PIPELINE_RULES';
 const saved = [{ name: 'my-rule', label: 'My rule', type: 'regex' }];
@@ -523,7 +520,7 @@ def test_add_rule_label_input_is_capped(client):
 def _test_panel_harness(html, body):
     """The pipeline test panel's run() (plus the helpers declared beside it)
     against a hand-driven api()."""
-    panel = (_block(html, "function _el(", "\n}\n")
+    panel = (_fns(html, "_el")
              + _block(html, "  function testBadge(kind, text) {",
                       "  runBtn.addEventListener('click', run);\n"))
     return _FAKE_DOM + """
@@ -581,13 +578,9 @@ def test_pipeline_test_panel_sends_the_sample_language(client):
     each card's status ran German-only rules on every sample. The panel now
     starts at DEFAULT_LANGUAGE and says which steps the language skipped."""
     html = _html(client, "/settings/pipeline")
-    src = "\n".join([
-        _block(html, "function pipelineTestPanel() {", "\n}\n"),
-        _block(html, "async function _testOneRule(rule) {", "\n}\n"),
-        _block(html, "function _helpDiv(text) {", "\n}\n"),
-        _block(html, "function _el(", "\n}\n"),
-        _block(html, "function _button(", "\n}\n"),
-    ])
+    src = (_fns(html, "pipelineTestPanel")
+           + _block(html, "async function _testOneRule(rule) {", "\n}\n")
+           + _fns(html, "_helpDiv", "_el", "_button"))
     out = _node(_FAKE_DOM + """
 const TEST_PRESETS = { 'default': 'Hallo' };
 const WHISPER_LANGS = [{ code: 'de', name: 'German' }, { code: 'en', name: 'English' }];
@@ -643,8 +636,7 @@ def test_nullable_number_survives_a_partial_number(client):
     always negative) or is cleared to retype; that nulled the field and
     disabled the input under the cursor."""
     html = _html(client)
-    fn = (_block(html, "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n")
-          + _block(html, "function _el(", "\n}\n"))
+    fn = _fns(html, "nullableNumberEditor", "_el")
     out = _node(_FAKE_DOM + """
 const state = { LOG_PROB_THRESHOLD: -1.0 };
 function currentValue(n) { return state[n]; }
@@ -808,10 +800,7 @@ def test_prompt_lab_empty_glossary_box_uses_the_glossary_setting(client):
     preview and the test run left out the TRANSLATION_GLOSSARY every real
     request inherits; a glossary edit on the page did not re-render either."""
     html = _html(client)
-    ed = (_block(html, "function translationTemplateEditor(name, v) {", "\n}\n")
-          + _block(html, "function _helpDiv(text) {", "\n}\n")
-          + _block(html, "function _el(", "\n}\n")
-          + _block(html, "function _button(", "\n}\n"))
+    ed = _fns(html, "translationTemplateEditor", "_helpDiv", "_el", "_button")
     out = _node(_FAKE_DOM + """
 const state = { TRANSLATION_PROMPT_FAMILY: 'hunyuan',
                 TRANSLATION_GLOSSARY: 'Niere = kidney',
@@ -1156,14 +1145,8 @@ def test_env_pinned_full_row_field_says_why_it_is_read_only(client):
     skipped the env badge and the "Set by …" note every other pinned field
     gets, so the whole editor just went dead with no reason given."""
     html = _html(client)
-    src = "\n".join([
-        _block(html, "const FULLROW_FIELDS = ", ";\n"),
-        _block(html, "function makeBadges(name) {", "\n}\n"),
-        _block(html, "function envPinnedNote(name) {", "\n}\n"),
-        _block(html, "function _el(", "\n}\n"),
-        _block(html, "function _button(", "\n}\n"),
-        _block(html, "function fieldRow(name) {", "\n}\n"),
-    ])
+    src = (_block(html, "const FULLROW_FIELDS = ", ";\n")
+           + _fns(html, "makeBadges", "envPinnedNote", "_el", "_button", "fieldRow"))
     out = _node(_FAKE_DOM + """
 const pinned = new Set();
 function isEnvPinned(n) { return pinned.has(n); }
@@ -1196,14 +1179,8 @@ def test_env_pinned_field_offers_no_reset_to_default(client):
     disableEnvPinnedEditor() locks, so on an env-pinned field it stayed
     clickable and only repainted the row (setDirty() drops the reset)."""
     html = _html(client)
-    src = "\n".join([
-        _block(html, "const FULLROW_FIELDS = ", ";\n"),
-        _block(html, "function makeBadges(name) {", "\n}\n"),
-        _block(html, "function envPinnedNote(name) {", "\n}\n"),
-        _block(html, "function _el(", "\n}\n"),
-        _block(html, "function _button(", "\n}\n"),
-        _block(html, "function fieldRow(name) {", "\n}\n"),
-    ])
+    src = (_block(html, "const FULLROW_FIELDS = ", ";\n")
+           + _fns(html, "makeBadges", "envPinnedNote", "_el", "_button", "fieldRow"))
     out = _node(_FAKE_DOM + """
 const pinned = new Set();
 function isEnvPinned(n) { return pinned.has(n); }
