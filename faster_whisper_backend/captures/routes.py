@@ -1351,6 +1351,17 @@ def _validate_merge_payload(
     return captures, owner_user_id, member_paths, total_trimmed_ms
 
 
+async def _validate_merge_off_loop(
+    member_ids: list[str], user: dict[str, Any], **kw: Any,
+) -> tuple[list[dict[str, Any]], str, list[str], int]:
+    """_validate_merge_payload at the global join silence, off the loop (a VAD
+    pass per member)."""
+    return await asyncio.to_thread(functools.partial(
+        _validate_merge_payload, member_ids, capture_samples._global_silence_ms(),
+        user, **kw,
+    ))
+
+
 def _preview_member_trims(
     member_ids: list[str], member_paths: list[str],
 ) -> dict[str, Any]:
@@ -1413,8 +1424,7 @@ async def create_sample_api(
     # and _build_merged_wav runs another plus a WAV write with fsync — up to 30
     # members per call, with no rate limit.
     captures, owner_user_id, member_paths, _total_audio_ms = (
-        await asyncio.to_thread(
-            _validate_merge_payload, member_ids, capture_samples._global_silence_ms(), user)
+        await _validate_merge_off_loop(member_ids, user)
     )
 
     # sid up front: the merged WAV is written at the sid path before the DB insert.
@@ -1499,9 +1509,7 @@ async def preview_merge_audio_api(
     _audio_rate.hit(rate_limit.identity_key(user, request))
 
     _captures, _owner, member_paths, _total_audio_ms = (
-        await asyncio.to_thread(
-            _validate_merge_payload, payload.member_ids,
-            capture_samples._global_silence_ms(), user)
+        await _validate_merge_off_loop(payload.member_ids, user)
     )
 
     # mkstemp + close so FileResponse can stream the closed file.
@@ -1553,9 +1561,7 @@ async def preview_merge_words_api(
     alignment run off the event loop. Same validation gates as the
     audio endpoint."""
     captures, _owner, member_paths, _total_audio_ms = (
-        await asyncio.to_thread(
-            _validate_merge_payload, payload.member_ids,
-            capture_samples._global_silence_ms(), user)
+        await _validate_merge_off_loop(payload.member_ids, user)
     )
     # `_preview_member_trims` must run INSIDE the thread (a functools.partial
     # argument is evaluated eagerly, on the loop): a blocking PCM read +
@@ -1596,11 +1602,8 @@ async def merge_estimate_api(
     as the other merge endpoints; reuses the proposer's cached per-capture
     trim."""
     # Off the loop with its siblings: a VAD pass per member, no rate limit.
-    captures, _owner, _paths, trimmed_ms = await asyncio.to_thread(
-        functools.partial(
-            _validate_merge_payload,
-            payload.member_ids, capture_samples._global_silence_ms(), user, enforce_cap=False,
-        )
+    captures, _owner, _paths, trimmed_ms = await _validate_merge_off_loop(
+        payload.member_ids, user, enforce_cap=False,
     )
     raw_ms = sum(
         int(round(float(c.get("audio_s") or 0.0) * 1000))
@@ -1638,9 +1641,7 @@ async def preview_save_chips_api(
     `members_corrections`, so the client can update those capture cards
     without a Refresh."""
     captures, owner_user_id, _member_paths, _total_audio_ms = (
-        await asyncio.to_thread(
-            _validate_merge_payload, payload.member_ids,
-            capture_samples._global_silence_ms(), user)
+        await _validate_merge_off_loop(payload.member_ids, user)
     )
     chips_in = [c.model_dump(exclude_none=True) for c in payload.corrections]
     stored = {c["id"]: c.get("corrections") for c in captures}
