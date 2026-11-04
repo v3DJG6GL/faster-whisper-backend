@@ -113,13 +113,15 @@ const document = {
 };
 const _body = new El('body');
 document.querySelectorAll = (sel) => _body.querySelectorAll(sel);
-function _traceItem(entry, form) {
-  // A rendered trace row as syncReportedBadges / submitReport see it.
+function _traceItem(final) {
+  // A rendered rid1 trace row with its report form, as syncReportedBadges / submitReport see it.
+  const entry = { request_id: 'rid1', final };
+  const form = _buildReportForm(entry);
   const item = new El('div'); item.className = 'trace-item';
   item.dataset.entry = JSON.stringify(entry);
   const badge = new El('span'); badge.className = 'trace-reported-badge';
   item.appendChild(badge); item.appendChild(form); _body.appendChild(item);
-  return { item, badge };
+  return { form, item, badge };
 }
 const _ls = {};
 const localStorage = {
@@ -227,9 +229,7 @@ def test_remove_report_404_clears_stale_local_hint(client, tmp_path):
         ok: false, status: 404, json: async () => ({ detail: 'no report to delete' }),
       });
       markReported('rid1');
-      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
-      const form = _buildReportForm(entry);
-      const { badge } = _traceItem(entry, form);
+      const { form, badge } = _traceItem('Alpha Beta');
       badge.style.display = 'inline-flex';
       await removeReport(form);
       out({
@@ -258,9 +258,7 @@ def test_remove_report_404_does_not_claim_it_removed_a_triaged_report(client, tm
         ok: false, status: 404, json: async () => ({ detail: 'no report to delete' }),
       });
       markReported('rid1');
-      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
-      const form = _buildReportForm(entry);
-      _traceItem(entry, form);
+      const { form } = _traceItem('Alpha Beta');
       await removeReport(form);
       out({ reported: isReported('rid1'), toasts: _toasts });
     """, funcs=_REPORT_FUNCS + (
@@ -311,9 +309,7 @@ def test_state_load_keeps_hint_ids_the_server_set_misses(client, tmp_path, serve
     # it lost "✓ reported" and its Remove button for good.
     res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
       markReported('rid1');
-      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
-      const form = _buildReportForm(entry);
-      const { badge } = _traceItem(entry, form);
+      const { form, badge } = _traceItem('Alpha Beta');
       applyState({ rules: [], user_id: 'u1', reported_chips: %s });
       out({
         rid1: isReported('rid1'),
@@ -334,9 +330,7 @@ def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path)
       _reportedOwner = 'uA';
       markReported('rid1');
       _ls[_REPORTED_KEY] = JSON.stringify(['rid9']);
-      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
-      const form = _buildReportForm(entry);
-      const { badge } = _traceItem(entry, form);
+      const { form, badge } = _traceItem('Alpha Beta');
       badge.style.display = 'inline-flex';
       applyState({ rules: [], user_id: 'uB', reported_chips: {} });
       const asB = {
@@ -363,9 +357,7 @@ def test_state_load_drops_hint_ids_of_reports_an_admin_closed(client, tmp_path):
     # kept "✓ reported", and Remove deleted the triaged row.
     res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
       markReported('rid1'); markReported('rid2'); markReported('rid3');
-      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
-      const form = _buildReportForm(entry);
-      const { badge } = _traceItem(entry, form);
+      const { form, badge } = _traceItem('Alpha Beta');
       badge.style.display = 'inline-flex';
       // rid3 was closed, then reported again: its open row wins.
       applyState({ rules: [], user_id: 'u1', closed_report_ids: ['rid1', 'rid3'],
@@ -391,9 +383,7 @@ def test_first_submit_reveals_remove_button(client, tmp_path):
       globalThis.api = async () => ({
         ok: true, status: 200, json: async () => ({ was_updated: false }),
       });
-      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
-      const form = _buildReportForm(entry);
-      _traceItem(entry, form);
+      const { form } = _traceItem('Alpha Beta');
       const removeBtn = form.querySelector('.rep-remove');
       const before = removeBtn.style.display;
       form.querySelector('.rep-comment').value = 'wrong name';
@@ -468,9 +458,7 @@ def test_resubmit_sends_seeded_chips_as_baseline(client, tmp_path):
         { wrong: 'Beta', correct: 'Bet', idx: 1 },
         { wrong: 'Delta', correct: 'Del', idx: 3 },
       ] } };
-      const entry = { request_id: 'rid1', final: 'Alpha Beta Gamma Delta' };
-      const form = _buildReportForm(entry);
-      _traceItem(entry, form);
+      const { form } = _traceItem('Alpha Beta Gamma Delta');
       _removeChip(form, 1);
       await submitReport(form);
       await submitReport(form);
@@ -493,9 +481,7 @@ def test_reopened_form_keeps_the_stored_comment(client, tmp_path):
         return { ok: true, status: 200, json: async () => ({ was_updated: true }) };
       };
       _serverReportedChips = { rid1: { corrections: [], user_comment: 'speaker said X' } };
-      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
-      const form = _buildReportForm(entry);
-      _traceItem(entry, form);
+      const { form } = _traceItem('Alpha Beta');
       const seeded = form.querySelector('.rep-comment').value;
       form.querySelector('.rep-comment').value = 'speaker said Y';
       await submitReport(form);
@@ -517,9 +503,7 @@ def test_edit_made_while_the_report_posts_keeps_the_form_open(client, tmp_path):
       globalThis.api = (_m, _u, body) => new Promise((res) => {
         release = () => res({ ok: true, status: 200, json: async () => ({ was_updated: false }) });
       });
-      const entry = { request_id: 'rid1', final: 'Alpha Beta Gamma' };
-      const form = _buildReportForm(entry);
-      _traceItem(entry, form);
+      const { form } = _traceItem('Alpha Beta Gamma');
       form.classList.add('open');
       toggleCorrection(form, 1, 'Beta', false);
       form._corrections[0].correct = 'Bet';
