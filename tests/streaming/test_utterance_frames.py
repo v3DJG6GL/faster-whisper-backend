@@ -16,7 +16,8 @@ import asyncio
 import pytest
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config as _cfg, inert_session)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_pcm as _pcm, fast_config as _cfg,
+    inert_session)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import CloseAbort
 
@@ -157,7 +158,7 @@ def test_close_on_an_empty_document_never_emits_dropped():
 
 def test_failed_final_decode_falls_back_to_the_partial_transcript():
     calls = []
-    infos = []
+    infos, _on_final = collector()
 
     async def _dp(audio, prompt):
         return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
@@ -165,9 +166,6 @@ def test_failed_final_decode_falls_back_to_the_partial_transcript():
     async def _df(audio, prompt):
         calls.append(1)
         raise RuntimeError("CUDA out of memory")
-
-    async def _on_final(info):
-        infos.append(info)
 
     s, msgs = _session(decode_partial=_dp, decode_final=_df, on_final=_on_final)
 
@@ -203,13 +201,10 @@ def test_failed_final_decode_without_text_drops_and_is_not_retried():
 def test_failed_final_decode_without_text_still_reaches_on_final():
     """on_final is the route's only hook: a dropped failed decode must still
     reach it (empty text, decode_failed) so the failure is recorded."""
-    infos = []
+    infos, _on_final = collector()
 
     async def _df(audio, prompt):
         raise RuntimeError("CUDA out of memory")
-
-    async def _on_final(info):
-        infos.append(info)
 
     s, msgs = _session(decode_final=_df, on_final=_on_final)
 

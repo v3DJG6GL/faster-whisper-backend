@@ -22,7 +22,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config, handshake as _config,
+    AlwaysSpeech as _AlwaysSpeech, collector, const_pcm as _pcm, fast_config, handshake as _config,
     speak_and_stop, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
 from tests.conftest import bearer
@@ -72,11 +72,8 @@ def _run_gate_path():
     near-silence: the gate skips the decode, on_final still fires."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
                       rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
-    finals_meta: list[dict] = []
+    finals_meta, on_final = collector()
     final_decodes: list[float] = []
-
-    async def on_final(info):
-        finals_meta.append(info)
 
     async def decode_final(audio, prompt):
         final_decodes.append(audio.shape[0] / SR)
@@ -123,11 +120,8 @@ def test_decoded_path_flags_decode_and_rebases_words():
     """The ordinary path keeps its contract: decoded=True and the final
     decode's buffer-relative words re-based behind the banked prefix."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
-    finals_meta: list[dict] = []
+    finals_meta, on_final = collector()
     box: list[StreamSession] = []
-
-    async def on_final(info):
-        finals_meta.append(info)
 
     async def decode_final(audio, prompt):
         off = box[0]._buffer_offset
@@ -157,10 +151,7 @@ def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
     for the text AND the words (not the decode's empty list, nor only the
     trim-banked prefix), so the captured text and words match."""
     cfg = fast_config(buffer_trim_sec=2.0 if trim else 100.0, buffer_trim_keep_sec=1.0)
-    finals_meta: list[dict] = []
-
-    async def on_final(info):
-        finals_meta.append(info)
+    finals_meta, on_final = collector()
 
     async def decode_final(audio, prompt):
         return ("", [], False)

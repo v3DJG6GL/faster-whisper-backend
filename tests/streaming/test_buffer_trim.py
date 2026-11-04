@@ -16,7 +16,8 @@ import asyncio
 import numpy as np
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, const_pcm, fast_config, handshake, inert_session, ws_drain)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_pcm, fast_config, handshake, inert_session,
+    ws_drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
@@ -66,16 +67,8 @@ def _run_long_utterance(speech_ms: int):
     exactly the buffer they receive (like the real model: they cannot re-hear
     trimmed audio)."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
-    finals_meta: list[dict] = []
-
-    async def on_final(info):
-        finals_meta.append(info)
-
-    msgs: list[dict] = []
-
-    async def emit(m):
-        msgs.append(m)
-
+    finals_meta, on_final = collector()
+    msgs, emit = collector()
     session_box: list[StreamSession] = []
 
     async def decode_final(audio, prompt):
@@ -202,11 +195,8 @@ def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = 
     only those entered before close(), whose own forced finalize would make
     ``forced`` non-empty anyway), and the duration of each buffer that
     reached the final decode."""
-    msgs: list[dict] = []
+    msgs, emit = collector()
     decoded: list[float] = []
-
-    async def emit(m):
-        msgs.append(m)
 
     async def decode_partial(audio, prompt):
         return []
@@ -295,15 +285,9 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
     emitted, not silently discarded with the quiet tail."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
                       rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
-    msgs: list[dict] = []
-    finals_meta: list[dict] = []
+    msgs, emit = collector()
+    finals_meta, on_final = collector()
     final_decodes: list[float] = []
-
-    async def emit(m):
-        msgs.append(m)
-
-    async def on_final(info):
-        finals_meta.append(info)
 
     async def decode_final(audio, prompt):
         final_decodes.append(audio.shape[0] / SR)

@@ -74,6 +74,16 @@ class AlwaysSpeech:
         pass
 
 
+def collector():
+    """``(items, sink)``: an async one-argument callback (emit / on_final)
+    that appends each call's argument to ``items``."""
+    items: list = []
+
+    async def sink(x):
+        items.append(x)
+    return items, sink
+
+
 async def _no_partial(audio, prompt):
     return []
 
