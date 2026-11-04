@@ -142,6 +142,14 @@ def _require_conn() -> sqlite3.Connection:
     return store_common.require_init(_conn, "jobs_store")
 
 
+def _fetchone(sql: str, params: Any = ()) -> sqlite3.Row | None:
+    """Run one read statement under _lock (the shared connection's cached
+    statements must not interleave); _require_conn() runs first, unlocked."""
+    conn = _require_conn()
+    with _lock:
+        return conn.execute(sql, params).fetchone()
+
+
 def _reset_for_tests() -> None:
     """Drop the module connection (tests re-init onto a fresh temp file)."""
     global _conn, _insert_counter
@@ -327,10 +335,8 @@ def patch_result(job_id: str, patch: Callable[[dict], bool]) -> bool:
     re-reads and patches again."""
     conn = _require_conn()
     for _ in range(3):
-        with _lock:
-            row = conn.execute(
-                "SELECT state, result_json FROM jobs WHERE job_id = ?",
-                (job_id,)).fetchone()
+        row = _fetchone(
+            "SELECT state, result_json FROM jobs WHERE job_id = ?", (job_id,))
         if row is None or row["state"] != "done" or not row["result_json"]:
             return False
         old_blob = row["result_json"]
@@ -354,23 +360,17 @@ def patch_result(job_id: str, patch: Callable[[dict], bool]) -> bool:
 def get(job_id: str, *, side_blobs: bool = False) -> dict[str, Any] | None:
     """Every column except the result blob (polls must not load MBs); the
     stages / plan side blobs only with `side_blobs`."""
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            f"SELECT {_META_COLS if side_blobs else _LIST_COLS} FROM jobs "
-            "WHERE job_id = ?", (job_id,)
-        ).fetchone()
+    row = _fetchone(
+        f"SELECT {_META_COLS if side_blobs else _LIST_COLS} FROM jobs "
+        "WHERE job_id = ?", (job_id,))
     return _row_to_dict(row) if row else None
 
 
 def get_result(job_id: str) -> Any:
     """The decoded result payload (dict or str), or None when absent."""
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT result_json FROM jobs WHERE job_id = ? AND state = 'done'",
-            (job_id,),
-        ).fetchone()
+    row = _fetchone(
+        "SELECT result_json FROM jobs WHERE job_id = ? AND state = 'done'",
+        (job_id,))
     if not row:
         return None
     return store_common.json_column(row["result_json"], "null")
@@ -475,17 +475,12 @@ def mark_running_as_failed(error: str) -> int:
 
 
 def count() -> int:
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()
+    row = _fetchone("SELECT COUNT(*) AS n FROM jobs")
     return int(row["n"]) if row else 0
 
 
 def total_result_bytes() -> int:
-    conn = _require_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(result_bytes), 0) AS n FROM jobs").fetchone()
+    row = _fetchone("SELECT COALESCE(SUM(result_bytes), 0) AS n FROM jobs")
     return int(row["n"]) if row else 0
 
 
