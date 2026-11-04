@@ -178,8 +178,7 @@ def test_file_upload_regression_unchanged(client, url_enabled):
     # The classic upload path must be byte-identical with the feature on.
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1"})
-    assert r.status_code == 200
-    assert r.json() == {"text": "hallo welt"}
+    assert _ok_body(r) == {"text": "hallo welt"}
 
 
 # --- happy path --------------------------------------------------------------
@@ -286,8 +285,7 @@ def test_malformed_url_is_400(client, url_enabled):
 def test_translations_twin_accepts_source_url(client, url_enabled):
     r = client.post("/v1/audio/translations",
                     data={"model": "whisper-1", "source_url": _URL})
-    assert r.status_code == 200
-    assert r.json()["text"] == "hallo welt"
+    assert _ok_body(r)["text"] == "hallo welt"
 
 
 # --- preview endpoint --------------------------------------------------------
@@ -477,8 +475,7 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
     release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200, r.text
-    assert r.json().get("source_video_pending") is True
+    assert _ok_body(r).get("source_video_pending") is True
     entry = tx_progress._BATCH_PROGRESS.get(_PID)
     assert entry is not None, "the handler must leave the entry to the video task"
     assert entry["video"]["state"] == "downloading"
@@ -504,7 +501,7 @@ def test_keep_video_finishing_late_lands_in_the_stored_job_result(
     release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200 and r.json().get("source_video_pending") is True
+    assert _ok_body(r).get("source_video_pending") is True
     release.set()
     # Re-attaching after the fetch ended: the stored result names the video
     # (the progress entry that reported it is gone by then).
@@ -531,7 +528,7 @@ def test_keep_video_attach_runs_while_the_progress_entry_is_open(
     release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200 and r.json().get("source_video_pending") is True
+    assert _ok_body(r).get("source_video_pending") is True
     release.set()
     _poll(lambda: _PID not in tx_progress._BATCH_PROGRESS and open_at_attach)
     assert open_at_attach == [True]
@@ -578,7 +575,7 @@ def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
 
     try:
         r = _post_url(client, keep_video="true", progress_id=_PID)
-        assert r.status_code == 200 and r.json().get("source_video_pending") is True
+        assert _ok_body(r).get("source_video_pending") is True
         assert calls[:1] == [_PID]
         assert open_after_give_up == [(True, True)]
     finally:
@@ -619,9 +616,9 @@ def test_keep_video_no_video_track_is_a_soft_error(client, url_enabled, monkeypa
     # url_enabled's probe returns an empty ladder: the transcript still
     # succeeds and the response says why there is no video.
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200, r.text
-    assert r.json()["source_video_error"] == "this link has no video track"
-    assert "source_video_media_id" not in r.json()
+    body = _ok_body(r)
+    assert body["source_video_error"] == "this link has no video track"
+    assert "source_video_media_id" not in body
 
 
 def test_keep_video_falls_back_to_the_best_rung_under_the_size_cap(
@@ -632,8 +629,7 @@ def test_keep_video_falls_back_to_the_best_rung_under_the_size_cap(
     ladder = [dict(_LADDER[0], over_cap=True), dict(_LADDER[1]), dict(_LADDER[2])]
     _stub_probe(monkeypatch, video_ladder=ladder)
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200, r.text
-    assert "source_video_error" not in r.json()
+    assert "source_video_error" not in _ok_body(r)
     _poll(lambda: video_enabled._video_calls)
     assert video_enabled._video_calls[-1]["max_height"] == 720
     assert video_enabled._video_calls[-1]["container"] == "mp4"
@@ -663,8 +659,7 @@ def test_on_demand_video_falls_back_to_the_best_rung_under_the_size_cap(
               dict(_LADDER[1]), dict(_LADDER[2])]
     _stub_probe(monkeypatch, video_ladder=ladder)
     r = client.post("/v1/audio/url-media/video", json={"url": _URL})
-    assert r.status_code == 200, r.text
-    assert r.json()["height"] == 720
+    assert _ok_body(r)["height"] == 720
     assert video_enabled._video_calls[-1]["max_height"] == 720
     r = client.post("/v1/audio/url-media/video",
                     json={"url": _URL, "format_id": "137+140"})
@@ -954,8 +949,7 @@ def test_language_check_places_pieces_by_the_downloaded_files_length(
         duration=90.0, mp4_ok=True, mp4_reason=None))
     lang_check.heard = [("de", 0.9)] * 3
     r = client.post("/v1/audio/url-language", json={"url": _URL})
-    assert r.status_code == 200, r.text
-    assert [p["at"] for p in r.json()["pieces"]] == [18.0, 45.0, 70.0]
+    assert [p["at"] for p in _ok_body(r)["pieces"]] == [18.0, 45.0, 70.0]
 
 def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
                                               monkeypatch):
@@ -1040,8 +1034,7 @@ def test_language_check_places_segmented_pieces_by_the_playlist_length(
     _stub_probe(monkeypatch, duration=None, segmented={
         "protocol": "hls", "url": _HLS, "headers": {}})
     r = client.post("/v1/audio/url-language", json={"url": _URL})
-    assert r.status_code == 200, r.text
-    assert [p["at"] for p in r.json()["pieces"]] == [12.0, 30.0, 40.0]
+    assert [p["at"] for p in _ok_body(r)["pieces"]] == [12.0, 30.0, 40.0]
     assert hls_link.heard == [20 * 16000] * 3 and hls_link.downloads == []
 
 
@@ -1229,8 +1222,8 @@ def test_prefetched_reuse_restarts_the_ttl(client, url_enabled, downloads,
     url_media_store._REG[mid]["created"] -= 3000          # an old check
     before = url_media_store._REG[mid]["created"]
     r = _post_url(client, prefetched_media_id=mid)
-    assert r.status_code == 200, r.text
-    assert downloads == [] and r.json()["source_media_id"] == mid
+    body = _ok_body(r)
+    assert downloads == [] and body["source_media_id"] == mid
     assert url_media_store._REG[mid]["created"] > before + 2900
 
 
@@ -1257,5 +1250,5 @@ def test_prefetched_foreign_owner_downloads(client, url_enabled, downloads, tmp_
     r = client.post("/v1/audio/transcriptions", headers=bearer(admin_key), data={
         "model": "whisper-1", "source_url": _URL, "response_format": "verbose_json",
         "prefetched_media_id": mid})
-    assert r.status_code == 200, r.text
-    assert downloads == [_URL] and r.json()["source_media_id"] != mid
+    body = _ok_body(r)
+    assert downloads == [_URL] and body["source_media_id"] != mid

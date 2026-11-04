@@ -215,8 +215,7 @@ def test_upload_is_exempt_from_the_request_body_cap(client, package_enabled, mon
 def test_streams_reports_the_probe_and_caches_it(client, package_enabled):
     mid = _upload(client).json()["media_id"]
     r = client.get(f"/v1/audio/media/{mid}/streams")
-    assert r.status_code == 200
-    assert r.json() == _streams().as_dict()
+    assert _ok_body(r) == _streams().as_dict()
     client.get(f"/v1/audio/media/{mid}/streams")
     assert len(package_enabled._probe_calls) == 1
     assert client.get(f"/v1/audio/media/{'f' * 32}/streams").status_code == 404
@@ -240,7 +239,7 @@ def test_ffconcat_upload_naming_a_retained_video_is_unreadable(
     playlist = ("ffconcat version 1.0\n" + f"file '{id_a}.mkv'\n" * 50).encode()
     id_b = _upload(client, data=playlist, ext="mp4").json()["media_id"]
     r = client.get(f"/v1/audio/media/{id_b}/streams")
-    assert r.status_code == 200 and r.json()["unreadable"] is True, r.text
+    assert _ok_body(r)["unreadable"] is True
     r = _package(client, id_b, {"container": "mkv", "subtitles": _tracks()})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "unreadable"
 
@@ -590,9 +589,9 @@ def _transcribe_mp4(client, **data):
 
 def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enabled):
     r = _transcribe_mp4(client, retain_media="true")
-    assert r.status_code == 200, r.text
-    mid = r.json()["source_media_id"]
-    assert len(mid) == 32 and r.json()["source_media_expires_at"] > 0
+    body = _ok_body(r)
+    mid = body["source_media_id"]
+    assert len(mid) == 32 and body["source_media_expires_at"] > 0
     e = ums.resolve_entry(mid, user_id=None)
     assert e["kind"] == "video" and e["ext"] == "mp4"
     assert client.get(f"/v1/audio/url-media/{mid}").content.startswith(b"RIFF")
@@ -618,6 +617,5 @@ def test_retain_media_refused_by_the_store_leaves_no_copy(client, package_enable
     # disk: the handler must still unlink it.
     monkeypatch.setattr(ums, "register", lambda *a, **kw: None)
     r = _transcribe_mp4(client, retain_media="true")
-    assert r.status_code == 200, r.text
-    assert "source_media_id" not in r.json()
+    assert "source_media_id" not in _ok_body(r)
     assert not _recent_spools()
