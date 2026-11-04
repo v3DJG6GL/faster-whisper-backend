@@ -17,6 +17,7 @@ from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_fake_model as _register
+from tests.transcription._load_helpers import stub_hub_snapshot as _stub_hub
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
 
@@ -252,11 +253,8 @@ def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
     import contextlib
     import threading
 
-    import huggingface_hub
     from faster_whisper_backend.runtime import download_progress
     _stub_load(monkeypatch, max_loaded=4)
-    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
-                        raising=False)
     seen = {}
 
     @contextlib.contextmanager
@@ -271,7 +269,7 @@ def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
     def _fake_snapshot(**kw):
         seen["snapshot"] = threading.get_ident()
         seen["kwargs"] = kw
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake_snapshot)
+    _stub_hub(monkeypatch, _fake_snapshot)
 
     async def run():
         seen["loop"] = threading.get_ident()

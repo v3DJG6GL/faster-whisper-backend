@@ -17,6 +17,7 @@ from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_fake_model as _register
+from tests.transcription._load_helpers import stub_hub_snapshot as _stub_hub
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -202,19 +203,16 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
     these too, so the load fails before the LRU loop instead of swallowing
     them as a best-effort pre-download failure."""
     import httpx2
-    import huggingface_hub
     from huggingface_hub import errors as hf_errors
     built = []
     _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
                max_loaded=1)
-    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
-                        raising=False)
     response = httpx2.Response(404, request=httpx2.Request(
         "GET", "https://huggingface.co/api/models/org/nope"))
 
     def _missing(**kw):
         raise getattr(hf_errors, err)("not found", response=response)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _missing)
+    _stub_hub(monkeypatch, _missing)
     _register("a")
 
     with pytest.raises(HTTPException) as exc:
@@ -228,12 +226,9 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
 
 def _concurrent_cold_loads(monkeypatch, snapshot, n=4):
     """n concurrent misses for one cold Hub repo; their outcomes."""
-    import huggingface_hub
     _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
-    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
-                        raising=False)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
+    _stub_hub(monkeypatch, snapshot)
 
     async def run():
         return await asyncio.gather(
@@ -291,11 +286,8 @@ def test_hub_refusal_of_an_existing_repo_points_at_the_token(
     HF_TOKEN / access, not only to hunt a typo, and the start of the Hub's
     own text (log_safe caps it at LOG_FIELD_MAX) reaches the log."""
     import httpx2
-    import huggingface_hub
     from huggingface_hub import errors as hf_errors
     _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
-                        raising=False)
     response = httpx2.Response(403, request=httpx2.Request(
         "GET", "https://huggingface.co/api/models/org/gated"))
 
@@ -303,7 +295,7 @@ def test_hub_refusal_of_an_existing_repo_points_at_the_token(
         raise getattr(hf_errors, err)("Access to model org/gated is "
                                       "restricted.\nVisit the page.",
                                       response=response)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _refused)
+    _stub_hub(monkeypatch, _refused)
 
     with caplog.at_level(logging.WARNING):
         with pytest.raises(HTTPException) as exc:
@@ -322,21 +314,18 @@ def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
     send the same token: refused before the LRU loop with a pointer at the
     token. Any other HTTP error stays a best-effort pre-download failure."""
     import httpx2
-    import huggingface_hub
     from huggingface_hub import errors as hf_errors
     built = []
     _stub_load(monkeypatch,
                whisper_model=lambda path, **kw: built.append(path) or FakeModel(),
                max_loaded=1)
-    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
-                        raising=False)
     response = httpx2.Response(status, request=httpx2.Request(
         "GET", "https://huggingface.co/api/models/org/public"))
 
     def _rejected(**kw):
         raise hf_errors.HfHubHTTPError("Invalid credentials in Authorization "
                                        "header", response=response)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _rejected)
+    _stub_hub(monkeypatch, _rejected)
     _register("a")
 
     if not refused:

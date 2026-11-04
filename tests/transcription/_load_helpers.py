@@ -44,3 +44,11 @@ def register_fake_model(name, leases=0):
     model_registry.register_loaded_model(name, 0, "cpu", "int8")
     if leases:
         tx_models._model_leases[name] = leases
+
+
+def stub_hub_snapshot(monkeypatch, snapshot):
+    """Let the load's Hub pre-download run (LOCAL_FILES_ONLY off) against
+    `snapshot`, the huggingface_hub.snapshot_download stand-in."""
+    import huggingface_hub
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
