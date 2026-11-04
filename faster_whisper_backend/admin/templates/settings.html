@@ -3459,6 +3459,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       // that backtracks for its full 2 s guard) can land after the reply for
       // the fixed pattern. Only the newest request may paint.
       let seq = 0;
+      const paintStatus = (kind, text) => {
+        status.className = 'regex-status ' + kind;
+        status.textContent = text;
+      };
       refresh = async function () {
         if (timer) clearTimeout(timer);
         timer = setTimeout(async () => {
@@ -3466,51 +3470,43 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           const step = await _testOneRule(rule);
           if (my !== seq) return;
           if (!step) {
-            status.className = 'regex-status err';
-            status.textContent = '✗ test endpoint error';
+            paintStatus('err', '✗ test endpoint error');
             return;
           }
           if (step.skipped_language) {
             const pl = document.getElementById('pipeline-test-language');
-            status.className = 'regex-status empty';
-            status.textContent = '∅ skipped — language: the rule runs only for '
+            paintStatus('empty', '∅ skipped — language: the rule runs only for '
               + (rule.languages || []).join(', ') + ', the test sample is '
-              + ((pl && pl.value) || '?');
+              + ((pl && pl.value) || '?'));
           } else if (step.skipped) {
-            status.className = 'regex-status empty';
-            status.textContent = rule.enabled
+            paintStatus('empty', rule.enabled
               ? '∅ empty pattern — rule skipped'
-              : '∅ disabled';
+              : '∅ disabled');
           } else if (step.not_run) {
             // Screened, not executed — a warning, not a failure: an
             // already-saved rule of this shape still runs in the engine.
             // Tested BEFORE the regex-list advisory: a screened regex-list
             // step carries both flags and must not claim "pattern skipped".
             // Its other entries DID run, so it keeps their match count.
-            status.className = 'regex-status warn';
             const n = step.matches || 0;
-            status.textContent = '⚠ ' + (step.type === 'regex-list'
-              ? n + ' match' + (n === 1 ? '' : 'es') + ' · ' : '') + step.error;
+            paintStatus('warn', '⚠ ' + (step.type === 'regex-list'
+              ? n + ' match' + (n === 1 ? '' : 'es') + ' · ' : '') + step.error);
           } else if (step.error && step.type === 'regex-list') {
             // Advisory: the bad entry is skipped, the valid ones still applied.
-            status.className = 'regex-status warn';
             const n = step.matches || 0;
-            status.textContent = '⚠ ' + n + ' match' + (n === 1 ? '' : 'es')
-              + ' · bad pattern skipped: ' + step.error;
+            paintStatus('warn', '⚠ ' + n + ' match' + (n === 1 ? '' : 'es')
+              + ' · bad pattern skipped: ' + step.error);
           } else if (step.error) {
-            status.className = 'regex-status err';
-            status.textContent = '✗ ' + step.error;
+            paintStatus('err', '✗ ' + step.error);
           } else if (step.slow) {
-            status.className = 'regex-status warn';
-            status.textContent = '⚠ slow — exceeded 2 s on sample (catastrophic backtracking?)';
+            paintStatus('warn', '⚠ slow — exceeded 2 s on sample (catastrophic backtracking?)');
           } else {
-            status.className = 'regex-status ok';
             const n = step.matches || 0;
             // A repeating rule's step spans its passes (test-pipeline
             // `passes`: the passes that changed the text, so one that ran
             // once or changed nothing reads like a non-repeating rule).
-            status.textContent = '✓ valid · ' + n + ' match' + (n === 1 ? '' : 'es') + ' in sample'
-              + (step.passes > 1 ? ' · ' + step.passes + ' passes' : '');
+            paintStatus('ok', '✓ valid · ' + n + ' match' + (n === 1 ? '' : 'es') + ' in sample'
+              + (step.passes > 1 ? ' · ' + step.passes + ' passes' : ''));
           }
         }, 250);
       };
