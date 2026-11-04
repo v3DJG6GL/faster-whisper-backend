@@ -29,10 +29,8 @@
     var popCtl = null;
 
     if (!readOnly) {
-      addBtn = document.createElement('button');
+      addBtn = _mk('button', 'lang-picker-add', '+ add');
       addBtn.type = 'button';
-      addBtn.className = 'lang-picker-add';
-      addBtn.textContent = '+ add';
       addBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         if (popCtl && popCtl.isOpen()) { _close(); return; }
@@ -103,10 +101,8 @@
       codes.forEach(function(c) {
         var pill = _mk('span', 'lang-pill', c);
         if (!readOnly) {
-          var x = document.createElement('button');
+          var x = _mk('button', 'lang-pill-x', '×');
           x.type = 'button';
-          x.className = 'lang-pill-x';
-          x.textContent = '×';
           x.addEventListener('click', function(e) { e.stopPropagation(); _removeCode(c); });
           pill.appendChild(x);
         }
