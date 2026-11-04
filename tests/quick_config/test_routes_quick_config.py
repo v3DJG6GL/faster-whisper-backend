@@ -7,10 +7,9 @@ import pytest
 
 from faster_whisper_backend.quick_config import routes as qc
 from tests._page_helpers import js_upto
-from tests.conftest import bearer, fake_request, schema_map_cap
+from tests.conftest import bearer, fake_request, locked_alice, schema_map_cap
 from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
-from tests.quick_config._rules_helpers import locked_alice
 
 
 def _post_patch(client, rules_patch, **kw):

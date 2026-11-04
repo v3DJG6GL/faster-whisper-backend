@@ -5,7 +5,7 @@ key-field suggestions, built by the same build_word_suggestions() helper as the
 USER_WEBUI_ALLOWED_HOSTS the way the browser /quick-config page is.
 """
 
-from tests.conftest import bearer, locked_user
+from tests.conftest import bearer, locked_alice, locked_user
 
 
 def _seed(uid, tokens, *, request_id, bigrams=None):
@@ -69,8 +69,7 @@ def test_v1_recent_words_limit_param_clamps(client, app_module):
 
 
 def test_v1_recent_words_scoped_per_user(client, make_user_key):
-    make_user_key("root", is_admin=True)  # flips lockdown
-    uid_a, raw_a = make_user_key("alice", pages={"quick_config": "own"})
+    uid_a, raw_a = locked_alice(make_user_key)
     uid_b, raw_b = make_user_key("bob", pages={"quick_config": "own"})
 
     _seed(uid_a, ["alpha-word"], request_id="ra")

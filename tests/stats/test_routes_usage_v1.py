@@ -15,7 +15,7 @@ set_tz where it matters).
 import datetime
 import zoneinfo
 
-from tests.conftest import bearer, locked_user
+from tests.conftest import bearer, locked_alice, locked_user
 
 _KINDS = ("dictation", "file", "url", "text")
 _CELL = {"sessions", "requests", "errors", "words", "audio_s", "processing_s"}
@@ -104,8 +104,7 @@ def test_v1_usage_params_clamped_and_tz_echoed(client):
 
 
 def test_v1_usage_per_kind_totals_series_and_today(client, make_user_key):
-    make_user_key("root", is_admin=True)  # flip lockdown
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_alice(make_user_key)
     zh = zoneinfo.ZoneInfo("Europe/Zurich")
     # Two utterances of one dictation session today, a file yesterday, a
     # failed url three days ago, a text translation eight days ago (outside a
@@ -152,8 +151,7 @@ def test_v1_usage_per_kind_totals_series_and_today(client, make_user_key):
 
 
 def test_v1_usage_stages_from_batch_extras(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_alice(make_user_key)
     utc = zoneinfo.ZoneInfo("UTC")
     _seed(uid, hour=_hour_in(utc), words=100, audio_s=120.0,
           kind="file", job_id="1" * 32, stages=[
@@ -172,8 +170,7 @@ def test_v1_usage_stages_from_batch_extras(client, make_user_key):
 
 def test_v1_usage_server_local_days_without_tz(client, make_user_key, set_tz):
     set_tz("Asia/Tokyo")
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_alice(make_user_key)
     tokyo = zoneinfo.ZoneInfo("Asia/Tokyo")
     _seed(uid, hour=_hour_in(tokyo, 0, 1), words=5)   # 01:00 Tokyo = yesterday UTC
     body = client.get("/v1/usage", headers=bearer(raw)).json()
@@ -213,8 +210,7 @@ def test_v1_usage_not_host_gated(app_module, make_user_key, monkeypatch):
     from starlette.testclient import TestClient
     monkeypatch.setattr(app_module.cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1/32"])
     with TestClient(app_module.app, client=("203.0.113.9", 4242)) as remote:
-        make_user_key("root", is_admin=True)
-        _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+        _uid, raw = locked_alice(make_user_key)
         assert remote.get("/v1/usage").status_code == 401
         assert remote.get("/v1/usage", headers=bearer(raw)).status_code == 200
         # Control: the host-gated sibling refuses the same remote peer.
@@ -222,8 +218,7 @@ def test_v1_usage_not_host_gated(app_module, make_user_key, monkeypatch):
 
 
 def test_v1_usage_zeroed_when_store_unavailable(client, make_user_key, monkeypatch):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_alice(make_user_key)
     from faster_whisper_backend.stats import usage_store
     monkeypatch.setattr(usage_store, "_conn", None)
     r = client.get("/v1/usage", params={"days": 5}, headers=bearer(raw))

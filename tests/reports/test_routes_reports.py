@@ -8,7 +8,7 @@ import pytest
 from faster_whisper_backend.core import web_common
 
 from tests._page_helpers import js_body, js_fn, needs_node
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_alice
 
 _SUBMIT = "/quick-config/reports/api/submit"
 
@@ -357,8 +357,7 @@ def test_list_signals_truncation_with_uncapped_counts(client, monkeypatch):
 def test_submit_disabled_for_nonadmin_403(client, app_module, make_user_key,
                                           monkeypatch):
     monkeypatch.setattr(app_module.cfg, "REPORTS_ALLOW_USER_SUBMIT", False)
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid, raw = locked_alice(make_user_key)
     r = client.post(_SUBMIT, json=_payload(request_id="nope"), headers=bearer(raw))
     assert r.status_code == 403
 

@@ -828,6 +828,12 @@ def locked_user(make_user_key, username="alice", **kwargs):
     return make_user_key(username, **kwargs)
 
 
+def locked_alice(make_user_key, scope="own"):
+    """Lock the server down with an admin key (open mode off), then create
+    non-admin alice with quick_config=`scope`. Returns her (uid, raw_key)."""
+    return locked_user(make_user_key, pages={"quick_config": scope})
+
+
 def fake_request(headers=None, client=("127.0.0.1", 12345), *,
                  path="/stats/stream", query=b"", receive=None):
     """A bare GET Request (on /stats/stream by default) for exercising auth

@@ -11,10 +11,9 @@ USER_WEBUI_ALLOWED_HOSTS, unlike the browser /quick-config page).
 import copy
 
 from faster_whisper_backend.quick_config import routes as quick_config_routes
-from tests.conftest import bearer, locked_user, schema_map_cap
+from tests.conftest import bearer, locked_alice, locked_user, schema_map_cap
 from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
-from tests.quick_config._rules_helpers import locked_alice
 
 
 def _patch_rules(client, rules_patch, **kw):

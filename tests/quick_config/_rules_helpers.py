@@ -1,4 +1,4 @@
-"""Shared helpers for the tests/quick_config/ rule-exposure and lockdown tests."""
+"""Shared helpers for the tests/quick_config/ rule-exposure tests."""
 import copy
 
 
@@ -24,10 +24,3 @@ def assert_saved(r, slug):
     """A rules patch that answered 200 and saved `slug`."""
     assert r.status_code == 200, r.text
     assert slug in r.json()["saved"], r.text
-
-
-def locked_alice(make_user_key, scope="own"):
-    """Lock the server down with an admin key (open mode off), then create
-    non-admin alice with quick_config=`scope`. Returns her (uid, raw_key)."""
-    make_user_key("root", is_admin=True)
-    return make_user_key("alice", pages={"quick_config": scope})

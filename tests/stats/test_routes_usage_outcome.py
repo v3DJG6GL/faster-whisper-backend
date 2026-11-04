@@ -8,7 +8,7 @@ someone else's job id both read `duplicate`.
 
 import pytest
 
-from tests.conftest import bearer, locked_user
+from tests.conftest import bearer, locked_alice, locked_user
 
 _URL = "/v1/usage/outcome"
 
@@ -74,8 +74,7 @@ def test_outcome_batch_of_100_accepted(client):
 
 
 def test_outcome_accepted_then_duplicate_and_visible_in_usage(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    uid, raw = locked_alice(make_user_key)
     _dictate(uid, "b" * 32, words=40, audio_s=30.0)
     body = {"outcomes": [_outcome("b" * 32, activation="handsfree",
                                   delivery="clipboard", translation="translated",
@@ -107,8 +106,7 @@ def test_outcome_results_follow_input_order(client, make_user_key):
 def test_outcome_is_scoped_to_the_callers_own_jobs(client, make_user_key):
     """Bob reporting Alice's job id gets `duplicate` — the same word a
     re-send gets — and Alice's job is untouched."""
-    make_user_key("root", is_admin=True)
-    alice, raw_a = make_user_key("alice", pages={"quick_config": "own"})
+    alice, raw_a = locked_alice(make_user_key)
     _bob, raw_b = make_user_key("bob", pages={"quick_config": "own"})
     _dictate(alice, "c" * 32)
     r = client.post(_URL, json={"outcomes": [_outcome("c" * 32, app_id="spy")]},
