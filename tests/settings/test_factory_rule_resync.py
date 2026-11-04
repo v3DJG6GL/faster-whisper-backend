@@ -11,16 +11,12 @@ editor. The test for "untouched" is the editor's own: the copy's fingerprint
 
 import copy
 import json
-import os
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.settings import config_store as cs
-from tests._page_helpers import js_fn, needs_node, node_json
+from tests._page_helpers import js_fn, needs_node, node_json, settings_template_src
 from tests.settings._rules_helpers import factory_rules as _factory_rules
 from tests.settings._rules_helpers import load_saved
 
-_SETTINGS_HTML = os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
-                              "templates", "settings.html")
 _QUOTE_LABELS = ("tighten-german-quote-open", "tighten-german-quote-close")
 
 
@@ -97,8 +93,7 @@ _JS_KNOWN_HASH = "1cb72f88d12faf"
 def test_the_rule_hash_is_the_editors():
     """Every factory rule, plus key orders JSON.stringify writes its own way
     (array-index keys first, UTF-16 order) and characters it escapes."""
-    with open(_SETTINGS_HTML, encoding="utf-8") as fh:
-        src = fh.read()
+    src = settings_template_src()
     js = "".join(js_fn(src, f"  function {n}(") + "\n"
                  for n in ("_sortDeep", "_withDefaults", "_ruleStrip", "_ruleHash"))
     rules = cs.load_factory_rules() + [

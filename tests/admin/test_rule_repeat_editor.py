@@ -9,16 +9,11 @@ before the switch existed must keep its config_rev.
 The real editor functions run under node against a small DOM stub."""
 
 import json
-import os
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests._page_helpers import js_fn, needs_node, node_json, script_src
-
-_SETTINGS_HTML = os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
-                              "templates", "settings.html")
+from tests._page_helpers import js_fn, needs_node, node_json, script_src, settings_template_src
 
 _DOM = r"""
 function el(tag) {
@@ -91,8 +86,7 @@ def test_the_help_text_names_the_engine_pass_cap(client):
 
 @needs_node
 def test_a_false_repeat_fingerprints_like_none_and_reads_unedited():
-    with open(_SETTINGS_HTML, encoding="utf-8") as fh:
-        src = fh.read()
+    src = settings_template_src()
     js = "".join(js_fn(src, f"  function {n}(") + "\n" for n in (
         "_sortDeep", "_withDefaults", "_ruleStrip", "_ruleContentEqual", "_ruleHash",
         "_factoryRule", "_ruleStatus"))

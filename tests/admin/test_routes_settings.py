@@ -11,7 +11,7 @@ from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as translation
-from tests._page_helpers import TOP_CLOSE, js_body, js_upto
+from tests._page_helpers import TOP_CLOSE, js_body, js_upto, settings_template_src
 from tests._translation_helpers import enable_translation, lab_run
 from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
 from tests.conftest import _repoint_path_default, bearer
@@ -1290,11 +1290,8 @@ def test_settings_page_guards_every_localstorage_read(client):
     through _lsGet (try/catch, null = default), like the writes. Read the
     template itself — the shared snippets substituted into the page are not
     this file's."""
-    from pathlib import Path
-
     assert client.get("/settings").status_code == 200
-    text = (Path(admin_routes.__file__).parent / "templates" / "settings.html"
-            ).read_text(encoding="utf-8")
+    text = settings_template_src()
     helper = ("function _lsGet(k) { try { return localStorage.getItem(k); }"
               " catch (_) { return null; } }")
     assert text.count(helper) == 1
