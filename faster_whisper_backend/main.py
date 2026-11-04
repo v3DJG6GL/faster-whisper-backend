@@ -3146,10 +3146,7 @@ async def transcribe(
                                  if _pad_applied else ")")),
                 ident=ident,
                 overrides_ignored=ignored,
-                user_id=user.get("user_id"),
-                key_id=user.get("key_id"),
-                username=user.get("username"),
-                key_label=user.get("key_label"),
+                **tx_receipt._user_row_fields(user),
                 guards={"segment_max_words_per_sec": _max_wps,
                         **tx_guards.tail_guard_rows(_tail_limits),
                         **tx_guards.tail_cut_rows(_tail_cuts),
@@ -3525,10 +3522,7 @@ async def transcribe(
             error_class=_error_class,
             error_stage=_error_stage,
             request_id=request_id,
-            user_id=_user_id,
-            key_id=_key_id,
-            username=user.get("username"),
-            key_label=user.get("key_label"),
+            **tx_receipt._user_row_fields(user),
             stages=_stage_timings or None,
             # The client's progress id names this run on its side too, so
             # the usage job row is addressable by both ends.

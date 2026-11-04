@@ -486,6 +486,11 @@ def _align_speakers_to_diag(seg_diag: list, speakers: "list | None") -> "list | 
     return [("" if s.get("dropped") else next(it, "")) for s in seg_diag]
 
 
+def _user_row_fields(user: dict) -> dict:
+    """The caller-identity columns a usage row / receipt block names."""
+    return {k: user.get(k) for k in ("user_id", "key_id", "username", "key_label")}
+
+
 def _stage_extras(stats_key: "str | None", t0_perf: float) -> dict:
     """`device` + `load_secs` for one Pipeline-table row.
 

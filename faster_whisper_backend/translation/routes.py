@@ -726,8 +726,7 @@ async def translate_text(request: Request,
                 result=(f"{len(seg_in)} segs · {total_chars} chars in / "
                         f"{_chars_out} out · {len(warnings)} guard fallbacks"),
                 secs=_elapsed, load_secs=_load_s, client_job=_client_job,
-                user_id=user.get("user_id"), key_id=user.get("key_id"),
-                username=user.get("username"), key_label=user.get("key_label")))
+                **tx_receipt._user_row_fields(user)))
         except Exception as _me:  # noqa: BLE001 — never fail on a receipt
             logger.warning("[translate] receipt render failed: %s", _me)
 
