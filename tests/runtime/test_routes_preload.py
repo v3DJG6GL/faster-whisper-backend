@@ -143,10 +143,8 @@ def test_disallowed_model_is_202_deferred_not_allowed(client, app_module,
 
 def test_empty_stage_allowlist_means_the_configured_model_only(
         client, app_module, monkeypatch):
-    cfg = _enable(app_module, monkeypatch)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", [], raising=False)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-Only",
-                        raising=False)
+    _enable(app_module, monkeypatch, BGM_SEPARATION_ALLOWED_MODELS=[],
+            BGM_SEPARATION_UVR_MODEL="UVR-Only")
     # The configured model passes even though the allowlist is empty...
     ok = _one(client, {"models": [{"family": "separation", "id": "UVR-Only"}]})
     assert ok.get("reason") != "not_allowed"
@@ -162,9 +160,8 @@ def test_a_blank_stage_model_id_is_never_allowed(client, app_module,
     whitespace-only id (it passes min_length, then strips to "") joined the
     plan, could never be warmed and held its /stats row open until the TTL."""
     from faster_whisper_backend.runtime import preload_routes
-    cfg = _enable(app_module, monkeypatch)
-    for k in ("DIARIZATION_MODEL", "BGM_SEPARATION_UVR_MODEL"):
-        monkeypatch.setattr(cfg, k, "", raising=False)
+    _enable(app_module, monkeypatch, DIARIZATION_MODEL="",
+            BGM_SEPARATION_UVR_MODEL="")
     assert preload_routes._allowed("diarization", "", {}) is False
     assert preload_routes._allowed("separation", "", {}) is False
     for fam in ("diarization", "separation"):
@@ -197,9 +194,8 @@ def test_identity_effective_stage_model_is_not_reported_not_allowed(
     # profile / MODEL_OVERRIDES) as admin policy; the preload route must too,
     # or the up-front warm silently does nothing for exactly those users.
     from faster_whisper_backend.settings import effective_config
-    cfg = _enable(app_module, monkeypatch)
-    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", [], raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/global", raising=False)
+    _enable(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[],
+            DIARIZATION_MODEL="p/global")
     real = effective_config.cfg_for
 
     def _cfg_for(model, key, ident=None):
@@ -220,14 +216,9 @@ def test_a_request_profile_stage_model_is_judged_like_the_batch_job(
     # The job sends override_profile=X and runs X's DIARIZATION_MODEL; a
     # preload naming the same profile must be admitted for it, not deferred
     # not_allowed off the identity-only ident.
-    cfg = _enable(app_module, monkeypatch)
-    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", [], raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/global", raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True,
-                        raising=False)
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES",
-                        {"diar": {"DIARIZATION_MODEL": "p/profiled"}},
-                        raising=False)
+    _enable(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[],
+            DIARIZATION_MODEL="p/global", ALLOW_REQUEST_OVERRIDE_PROFILE=True,
+            OVERRIDE_PROFILES={"diar": {"DIARIZATION_MODEL": "p/profiled"}})
     models = [{"family": "diarization", "id": "p/profiled"}]
     row = _one(client, {"models": models, "override_profile": "diar"})
     assert row.get("reason") != "not_allowed"
@@ -245,10 +236,8 @@ def test_a_locked_stage_model_admits_only_the_effective_value(
     # allowlisted model would load something this caller's job never uses —
     # and in a singleton family drop the one it does.
     from faster_whisper_backend.settings import effective_config
-    cfg = _enable(app_module, monkeypatch)
-    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", ["p/A", "p/B"],
-                        raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/A", raising=False)
+    _enable(app_module, monkeypatch,
+            DIARIZATION_ALLOWED_MODELS=["p/A", "p/B"], DIARIZATION_MODEL="p/A")
     # Unlocked, the allowlist admits both.
     row = _one(client, {"models": [{"family": "diarization", "id": "p/B"}]})
     assert row.get("reason") != "not_allowed"
@@ -269,10 +258,8 @@ def test_a_refused_whisper_id_does_not_unlock_a_locked_stage_model(
     # ident locks still hold, or one bogus id in the body would admit any
     # allowlisted model in place of the locked one.
     from faster_whisper_backend.settings import effective_config
-    cfg = _enable(app_module, monkeypatch)
-    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", ["p/A", "p/B"],
-                        raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/A", raising=False)
+    _enable(app_module, monkeypatch,
+            DIARIZATION_ALLOWED_MODELS=["p/A", "p/B"], DIARIZATION_MODEL="p/A")
     monkeypatch.setattr(
         effective_config, "build_ident",
         lambda *a, **k: effective_config.Resolved(
@@ -342,9 +329,8 @@ def test_path_shaped_whisper_id_is_deferred_with_an_empty_allowlist(
     """Parity with transcription.models._get_or_load_model: an empty ALLOWED_MODELS admits
     well-formed ids, not filesystem paths — the loader would reject this
     anyway, so it must not cost a queue slot and a warm key first."""
-    cfg = _enable(app_module, monkeypatch)
-    monkeypatch.setattr(cfg, "ALLOWED_MODELS", [], raising=False)
-    monkeypatch.setattr(cfg, "DEFAULT_MODEL", "large-v3", raising=False)
+    _enable(app_module, monkeypatch, ALLOWED_MODELS=[],
+            DEFAULT_MODEL="large-v3")
     row = _one(client, {"models": [{"family": "whisper",
                                     "id": "../etc/passwd"}]})
     assert row["state"] == "deferred"
@@ -359,14 +345,10 @@ def test_a_refused_whisper_id_contributes_no_per_model_stage_model(
     """The batch handler 400s a whisper id outside ALLOWED_MODELS before any
     stage runs, so that id's MODEL_OVERRIDES stage model is one no real job
     can use: the preload must not admit (and load) it either."""
-    cfg = _enable(app_module, monkeypatch)
-    monkeypatch.setattr(cfg, "ALLOWED_MODELS", ["tiny"], raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", [], raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/global", raising=False)
-    monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
-                        {"bad": {"DIARIZATION_MODEL": "p/x"},
-                         "tiny": {"DIARIZATION_MODEL": "p/tiny"}},
-                        raising=False)
+    _enable(app_module, monkeypatch, ALLOWED_MODELS=["tiny"],
+            DIARIZATION_ALLOWED_MODELS=[], DIARIZATION_MODEL="p/global",
+            MODEL_OVERRIDES={"bad": {"DIARIZATION_MODEL": "p/x"},
+                             "tiny": {"DIARIZATION_MODEL": "p/tiny"}})
 
     def _rows(models):
         r = client.post(_URL, json={"models": models})
@@ -437,12 +419,10 @@ def test_a_raising_loader_leaves_the_plan_intact(client, app_module,
 
 
 def test_v1_models_loaded_flag_agrees(client, app_module, monkeypatch):
-    _enable(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "small",
-                        raising=False)
-    # On the allowlist: /v1/models leaves out a default the loader refuses.
-    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", {"small"},
-                        raising=False)
+    _enable(app_module, monkeypatch, DEFAULT_MODEL="small",
+            # On the allowlist: /v1/models leaves out a default the loader
+            # refuses.
+            ALLOWED_MODELS={"small"})
     tx_models._loaded_models["small"] = object()
     try:
         data = client.get("/v1/models").json()["data"]
@@ -455,21 +435,17 @@ def test_v1_models_loaded_flag_agrees(client, app_module, monkeypatch):
 
 def test_v1_me_loaded_flags_agree_for_all_four_families(client, app_module,
                                                         monkeypatch):
-    cfg = _enable(app_module, monkeypatch)
-    # /v1/me seeds each list with the CONFIGURED model before the allowlist,
-    # so pin both to the allowlist's first entry to keep the dicts exact.
-    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/x", raising=False)
-    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", ["p/x", "p/y"],
-                        raising=False)
-    # A UVR FRIENDLY name (no ".onnx"): is_resident must map it to the
-    # loaded ".onnx" separator key, as /v1/me does.
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-Foo",
-                        raising=False)
-    monkeypatch.setattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS",
-                        ["UVR-Foo", "UVR-Bar"], raising=False)
-    monkeypatch.setattr(cfg, "TRANSLATION_ALLOWED_MODELS", {"o/r:Q4"},
-                        raising=False)
-    monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "", raising=False)
+    _enable(
+        app_module, monkeypatch,
+        # /v1/me seeds each list with the CONFIGURED model before the
+        # allowlist, so pin both to the allowlist's first entry to keep the
+        # dicts exact.
+        DIARIZATION_MODEL="p/x", DIARIZATION_ALLOWED_MODELS=["p/x", "p/y"],
+        # A UVR FRIENDLY name (no ".onnx"): is_resident must map it to the
+        # loaded ".onnx" separator key, as /v1/me does.
+        BGM_SEPARATION_UVR_MODEL="UVR-Foo",
+        BGM_SEPARATION_ALLOWED_MODELS=["UVR-Foo", "UVR-Bar"],
+        TRANSLATION_ALLOWED_MODELS={"o/r:Q4"}, TRANSLATION_DEFAULT_MODEL="")
 
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/x", "cpu", 4))
     monkeypatch.setattr(bgm_separation, "_separator_key",
@@ -505,11 +481,9 @@ def test_job_plan_skips_non_allowlisted_translation_model(
     """The stage-ahead plan a transcription registers must apply the same
     TRANSLATION_ALLOWED_MODELS verdict the stage itself renders later — a
     ref the stage will refuse must never be pre-downloaded/loaded."""
-    _enable(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
-                        "org/default-GGUF:Q4", raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
-                        {"org/default-GGUF:Q4"}, raising=False)
+    _enable(app_module, monkeypatch,
+            TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4",
+            TRANSLATION_ALLOWED_MODELS={"org/default-GGUF:Q4"})
 
     async def _fake(segments, targets, **kw):
         return ([{t: "x" for t in targets} for _ in segments], [],
