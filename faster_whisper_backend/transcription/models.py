@@ -518,8 +518,7 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         and "suppress_chars" not in (ident.locked_client_keys
                                      if ident is not None else frozenset()))
     if _chars_from_client:
-        _suppress_chars = _client_chars[
-            :settings_schema.client_key_bounds()["suppress_chars"]["maxlen"]]
+        _suppress_chars = _client_chars[:_client_maxlen("suppress_chars")]
     if _suppress_chars:
         extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars,
                                             _chars_from_client)
@@ -607,13 +606,12 @@ def _output_wrappers(resolved_model, ident, overrides: "dict | None") -> "tuple[
     Shared by the batch route and the streaming wrappers (handshake and
     _refresh_ident)."""
     locked = ident.locked_client_keys if ident is not None else frozenset()
-    bounds = settings_schema.client_key_bounds()
     out = []
     for field, key in (("OUTPUT_PREFIX", "output_prefix"),
                        ("OUTPUT_SUFFIX", "output_suffix")):
         v = (overrides or {}).get(key)
         if isinstance(v, str) and key not in locked:
-            out.append(v[:bounds[key]["maxlen"]])
+            out.append(v[:_client_maxlen(key)])
         else:
             out.append(effective_config.cfg_for(resolved_model, field, ident) or "")
     return out[0], out[1]
