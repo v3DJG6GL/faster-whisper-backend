@@ -35,6 +35,12 @@ def _park(key, *, hold_s, **extra):
     receipt_hold.park(key, payload, hold_s=hold_s)
 
 
+def _enable_stubbed(app_module, monkeypatch, **cfg_fields):
+    """Translation on, translator stubbed; returns the stub's call record."""
+    _enable(app_module, monkeypatch, **cfg_fields)
+    return _stub_translate(monkeypatch)
+
+
 def _assert_parked_receipt_released(client, key, status, **body):
     """A request naming parked receipt ``key`` is refused with ``status``; the
     receipt is handed back, not left for the sweeper."""
@@ -59,8 +65,7 @@ def _stub_raising(monkeypatch, exc):
 
 def test_translates_and_echoes_ids_in_input_order(client, app_module,
                                                   monkeypatch):
-    _enable(app_module, monkeypatch)
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch)
     r = client.post(URL, json=_body(targets=["en", "fr"], source="de",
                                     translation_mode="faithful"))
     assert r.status_code == 200, r.text
@@ -119,8 +124,7 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
 
 
 def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     r = client.post(URL, json={"segments": [{"text": "a"}, {"text": "b"}],
                                "targets": ["en"]})
     assert r.status_code == 200, r.text
@@ -128,8 +132,7 @@ def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
 
 
 def test_401_when_locked_down(client, app_module, make_user_key, monkeypatch):
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     _, raw_admin = make_user_key("admin", is_admin=True)   # flips to lockdown
     assert client.post(URL, json=_body()).status_code == 401
     # ...and a plain (non-admin) bearer passes: no host gate, no page perm.
@@ -152,8 +155,7 @@ def test_serial_translations_are_not_rate_limited(client, app_module,
     user retranslates line by line — below the per-minute ceiling it must
     never 429. The protection is the in-flight cap below; the per-minute
     counter is only a flood backstop (next test)."""
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     for _ in range(25):
         assert client.post(URL, json=_body()).status_code == 200
 
@@ -165,8 +167,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     counted too: over the ceiling the request 429s with the config field
     named, and a parked dictation receipt is handed back instead of left to
     the sweeper."""
-    _enable(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
     window = tr_routes._text_translate_rate
     window._state.clear()
     # A body that fails validation still counts against the window.
@@ -195,8 +196,7 @@ def _open_key():
 
 def test_inflight_cap_rejects_when_the_identity_is_full(client, app_module,
                                                         monkeypatch):
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     gauge = tr_routes._translate_inflight
     limit = int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)
     for _ in range(limit):
@@ -217,8 +217,7 @@ def test_inflight_cap_rejects_when_the_identity_is_full(client, app_module,
 
 
 def test_inflight_slot_is_released_on_success(client, app_module, monkeypatch):
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     assert client.post(URL, json=_body()).status_code == 200
     assert tr_routes._translate_inflight._counts == {}
 
@@ -298,8 +297,7 @@ def test_cancellation_stamps_the_job_row_cancelled(client, app_module,
 
 
 def test_inflight_zero_is_unlimited(client, app_module, monkeypatch):
-    _enable(app_module, monkeypatch, TRANSLATE_MAX_INFLIGHT_PER_USER=0)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch, TRANSLATE_MAX_INFLIGHT_PER_USER=0)
     # A stale count from before the field was zeroed must not gate anything.
     tr_routes._translate_inflight._counts[_open_key()] = 99
     assert client.post(URL, json=_body()).status_code == 200
@@ -309,8 +307,7 @@ def test_inflight_cap_is_per_user(client, app_module, make_user_key,
                                   monkeypatch):
     """The loopback `client` fixture is OPEN MODE — one synthetic admin, one
     bucket — so real keys are what prove the gauge is keyed per identity."""
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     uid_a, key_a = make_user_key("alice", is_admin=True)
     _uid_b, key_b = make_user_key("bob", is_admin=False)
     gauge = tr_routes._translate_inflight
@@ -324,10 +321,9 @@ def test_inflight_cap_is_per_user(client, app_module, make_user_key,
 
 
 def test_400_on_allowlist_miss(client, app_module, monkeypatch):
-    _enable(app_module, monkeypatch,
-            TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4",
-            TRANSLATION_ALLOWED_MODELS={"org/allowed-GGUF:Q4"})
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch,
+                            TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4",
+                            TRANSLATION_ALLOWED_MODELS={"org/allowed-GGUF:Q4"})
     r = client.post(URL, json=_body(translation_model="org/other-GGUF:Q4"))
     assert r.status_code == 400
     assert "TRANSLATION_ALLOWED_MODELS" in r.json()["detail"]
@@ -339,17 +335,14 @@ def test_400_on_allowlist_miss(client, app_module, monkeypatch):
 
 
 def test_413_over_total_char_cap(client, app_module, monkeypatch):
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     r = client.post(URL, json=_body(
         segments=[{"id": 0, "text": "x" * 200_001}]))
     assert r.status_code == 413
 
 
 def test_422_malformed_shapes(client, app_module, monkeypatch):
-    _enable(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch, TRANSLATION_MAX_TARGETS=3)
     cases = [
         {"segments": "not-a-list", "targets": ["en"]},
         {"segments": [], "targets": ["en"]},
@@ -380,8 +373,7 @@ def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
     refused up front instead, and a parked receipt is handed back."""
     import json
 
-    _enable(app_module, monkeypatch)
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch)
     for seg in ({"id": 1, "text": "a\ud800"},
                 {"id": "\ud800", "text": "a"}):
         _park("cap-u", hold_s=90)
@@ -401,8 +393,7 @@ def test_422_non_finite_number_in_body(client, app_module, monkeypatch,
     """json.loads accepts NaN/Infinity, the JSON response refuses them: an
     echoed id would fail the response only after the run was recorded as
     ok. Refused up front instead, without a translation call."""
-    _enable(app_module, monkeypatch)
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch)
     r = client.post(
         URL,
         content='{"segments": [{"id": %s, "text": "eins"}], '
@@ -418,9 +409,7 @@ def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
     """De-dup is a set and the cap is checked inside the loop: a body of
     10k distinct valid codes is one cheap 422, not a quadratic walk on the
     event loop. Duplicates under the cap still collapse."""
-    _enable(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 2)
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch, TRANSLATION_MAX_TARGETS=2)
     # The invalid entry sits AFTER the code that trips the cap: only an
     # in-loop cap answers "capped at" — a cap checked after the walk would
     # reach the int first and answer "invalid language code".
@@ -440,8 +429,7 @@ def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
 def test_source_must_be_a_language_code(client, app_module, monkeypatch):
     """`source` reaches every prompt and the receipt: a code, "auto" or
     nothing — never a forged log line."""
-    _enable(app_module, monkeypatch)
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch)
     r = client.post(URL, json=_body(source="de\n[translate] req=deadbeef forged"))
     assert r.status_code == 422, r.text
     assert calls == []
@@ -457,8 +445,7 @@ def test_speaker_is_clipped_and_counted_against_the_char_cap(
         client, app_module, monkeypatch):
     """The speaker prefixes every context line of every prompt: clipped at
     parse time, control characters neutralised, and counted in the cap."""
-    _enable(app_module, monkeypatch)
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch)
     r = client.post(URL, json={"segments": [
         {"id": 0, "text": "eins", "speaker": "S\nPEAKER" + "x" * 500}],
         "targets": ["en"]})
@@ -478,8 +465,7 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
     """The success payload (up to 2000 segments x 10 targets) is encoded and
     written on a worker thread, never on the loop."""
     from faster_whisper_backend.transcription import jobs_store
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     seen = []
     _orig = jobs_store.finish
 
@@ -801,8 +787,8 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
     model on the batch path just switches endpoints."""
     # Open allowlist: this test is about the lock, not the allowlist gate
     # (the shipped config allowlists two real models).
-    _enable(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set())
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch,
+                            TRANSLATION_ALLOWED_MODELS=set())
     _, raw_bob = bind_profile(client, make_user_key, "small-mt", {
         "TRANSLATION_MODEL": "org/small:Q4_K_M",
         "locks": ["TRANSLATION_MODEL"]})
@@ -823,8 +809,7 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     must still be released — not left for the sweeper to log 90 s later."""
     from faster_whisper_backend.transcription import receipt as tx_receipt
 
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     logged = []
     monkeypatch.setattr(tx_receipt, "_log_held_receipts", logged.extend)
     gauge = tr_routes._translate_inflight
@@ -840,8 +825,7 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
     """Every validation exit (422 shape, 413 size) runs inside the same
     release-on-reject bracket as the rate hit: a parked receipt must be
     handed back on a malformed request, not left for the 90 s sweeper."""
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     _assert_parked_receipt_released(client, "cap-v", 422, segments=[])
     _assert_parked_receipt_released(
         client, "cap-s", 413, segments=[{"id": 0, "text": "x" * 200_001}])
@@ -852,10 +836,9 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
     """The allowlist constrains only the CLIENT-requested value (the
     diarization/separation stance): an admin who pins TRANSLATION_MODEL in a
     profile need not also add it to the global allowlist."""
-    _enable(app_module, monkeypatch,
-            TRANSLATION_ALLOWED_MODELS={"org/public-GGUF:Q4"},
-            TRANSLATION_DEFAULT_MODEL="org/public-GGUF:Q4")
-    calls = _stub_translate(monkeypatch)
+    calls = _enable_stubbed(app_module, monkeypatch,
+                            TRANSLATION_ALLOWED_MODELS={"org/public-GGUF:Q4"},
+                            TRANSLATION_DEFAULT_MODEL="org/public-GGUF:Q4")
     admin_h, raw_bob = bind_profile(client, make_user_key, "pinned-mt", {
         "TRANSLATION_MODEL": "org/pinned-GGUF:Q4",
         "locks": ["TRANSLATION_MODEL"]})
@@ -985,8 +968,7 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
     /stats table shows ONE dictate job with transcribing + translating."""
     from faster_whisper_backend.stats import recent_transcriptions_store as rts
 
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     _fast = translation.translate_segments
 
     async def _slow(*a, **kw):
@@ -1022,8 +1004,7 @@ def test_dictation_translation_joins_its_session_usage_job(
     import zoneinfo
 
     from faster_whisper_backend.stats import usage_store
-    _enable(app_module, monkeypatch)
-    _stub_translate(monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     uid, raw = make_user_key("alice", is_admin=True)
     bob, raw_bob = make_user_key("bob")
     sess = "5e55" * 8
