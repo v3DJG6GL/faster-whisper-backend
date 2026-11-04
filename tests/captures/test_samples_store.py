@@ -7,7 +7,7 @@ import pytest
 
 from faster_whisper_backend.captures import samples as capture_samples
 from tests.captures._store_helpers import insert_capture
-from tests.conftest import waits_on as _waits_on, write_bytes as _touch
+from tests.conftest import wait_until, waits_on as _waits_on, write_bytes as _touch
 
 
 def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
@@ -263,7 +263,6 @@ def test_racing_dissolves_drop_the_lock_entry(captures_store_db,
     loser is still pinned, so the loser (which finds the row gone) must drop
     the dead sid's lock entry itself."""
     import threading
-    import time
 
     gs = groups_store_db
     sid = "gdissolverace001"
@@ -273,10 +272,7 @@ def test_racing_dissolves_drop_the_lock_entry(captures_store_db,
                    for _ in range(2)]
         for t in threads:
             t.start()
-        deadline = time.monotonic() + 5
-        while (capture_samples._rebuild_inflight.get(sid, 0) < 3
-               and time.monotonic() < deadline):
-            time.sleep(0.01)
+        wait_until(lambda: capture_samples._rebuild_inflight.get(sid, 0) >= 3)
         assert capture_samples._rebuild_inflight.get(sid) == 3
     for t in threads:
         t.join(5)

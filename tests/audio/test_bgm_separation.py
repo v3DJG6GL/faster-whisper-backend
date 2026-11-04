@@ -7,7 +7,6 @@ import os
 import sys
 import tempfile
 import threading
-import time
 import types
 
 import pytest
@@ -19,7 +18,7 @@ from tests._transcription_helpers import (
     assert_cancelled_load_listed, bind_profile, blocked_register,
     cancel_while_register_held, cancel_with_register_queued, record_loads)
 from tests._transcription_helpers import post_verbose_ok as _post_ok
-from tests.conftest import bearer
+from tests.conftest import bearer, wait_until
 
 _M4A_UPLOAD = {"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")}
 
@@ -493,10 +492,7 @@ def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
         gate.set()
 
     asyncio.run(_main())
-    deadline = time.monotonic() + 5
-    while (not written or os.path.exists(written[0])) \
-            and time.monotonic() < deadline:
-        time.sleep(0.01)
+    wait_until(lambda: written and not os.path.exists(written[0]))
     assert len(written) == 1
     assert not os.path.exists(written[0])
 

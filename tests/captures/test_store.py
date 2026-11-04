@@ -11,7 +11,7 @@ import pytest
 from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.settings import config
 from tests.captures._store_helpers import create_stub_capture
-from tests.conftest import install_fake_wav_transcode, waits_on, write_bytes
+from tests.conftest import install_fake_wav_transcode, wait_until, waits_on, write_bytes
 
 
 def _make(cs, monkeypatch, tmp_path, **over):
@@ -529,9 +529,7 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
     with cs._lock:
         t = threading.Thread(target=lambda: out.append(_make(cs, monkeypatch, tmp_path)))
         t.start()
-        deadline = time.monotonic() + 5
-        while not _audio_files(cs, ".wav") and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: _audio_files(cs, ".wav"))
         # The wipe clear_all does while holding _lock.
         for p in _audio_files(cs, ".wav"):
             os.unlink(p)

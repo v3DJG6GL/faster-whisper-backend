@@ -431,6 +431,13 @@ def waits_on(lock, fn):
     assert done.is_set()
 
 
+def wait_until(done, timeout=5, interval=0.01):
+    """Poll done() until it holds or `timeout` s pass; the caller asserts the outcome."""
+    deadline = time.monotonic() + timeout
+    while not done() and time.monotonic() < deadline:
+        time.sleep(interval)
+
+
 def fake_wav_transcode(src_path, dst_path):
     """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
     write_wav(dst_path, b"\x00\x00" * 100)

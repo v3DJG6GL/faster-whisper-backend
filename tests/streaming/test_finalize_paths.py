@@ -25,6 +25,7 @@ from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
     dictate_session, handshake as _config, ready_ws, speak, speak_and_stop, stop_and_drain,
     timed_final, ws_drain as _drain)
+from tests.conftest import wait_until
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.stats import recent_transcriptions_store
@@ -472,10 +473,9 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(
             for _ in range(100):
                 ws.send_bytes(b"\x00\x00")
                 ws.send_json({"type": "flush"})
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline and not any(
-                    "audio backlog over cap" in r.getMessage() for r in caplog.records):
-                time.sleep(0.02)
+            wait_until(lambda: any("audio backlog over cap" in r.getMessage()
+                                   for r in caplog.records),
+                       timeout=10, interval=0.02)
             released.set()
             stop_and_drain(ws)
     assert any("audio backlog over cap" in r.getMessage() for r in caplog.records), \

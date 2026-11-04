@@ -13,6 +13,7 @@ import time
 
 from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests.conftest import wait_until
 from tests.media.test_routes_url import (  # noqa: F401 — fixtures
     _PID, _post_url, url_enabled, video_enabled)
 
@@ -128,9 +129,7 @@ def test_task_closes_the_entry_when_the_handler_passed_its_check_first(
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200, r.text
     assert r.json().get("source_video_pending") is True
-    deadline = time.monotonic() + 10
-    while _PID in tx_progress._BATCH_PROGRESS and time.monotonic() < deadline:
-        time.sleep(0.02)
+    wait_until(lambda: _PID not in tx_progress._BATCH_PROGRESS, timeout=10, interval=0.02)
     assert len(attach_calls) == 2           # the task retried the attach
     assert _PID not in tx_progress._BATCH_PROGRESS
     res = client.get(f"/v1/jobs/{_PID}/result")
