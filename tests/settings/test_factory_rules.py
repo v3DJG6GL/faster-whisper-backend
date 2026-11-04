@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
+from tests.settings._rules_helpers import entry_by_label
 
 
 def _regex_rule(name, pattern="x", replacement="y", **kw):
@@ -273,11 +274,7 @@ def _factory_map_sub(m=None):
 
 
 def _factory_entry(label):
-    for rule in cs.load_factory_rules():
-        for e in rule.get("entries") or []:
-            if e.get("label") == label:
-                return e
-    assert False, f"no factory entry {label!r}"
+    return entry_by_label(cs.load_factory_rules(), label)
 
 
 def test_quote_spacing_pairs_quotes_left_to_right():

@@ -50,8 +50,7 @@ def _pp(text, language="de"):
 
 
 def _hyphen_pattern():
-    entry = next(e for e in _by_name()["final-cleanup"]["entries"]
-                 if e["label"] == "delete-punct-before-hyphen")
+    entry = _entry(_factory_rules(), "delete-punct-before-hyphen")
     return entry["pattern"], entry["replacement"]
 
 
