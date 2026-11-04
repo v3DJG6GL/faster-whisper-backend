@@ -737,6 +737,18 @@ def _install_complete(monkeypatch, fake):
     _stub_get_model(monkeypatch)
 
 
+def _record_complete(monkeypatch, reply):
+    """Stub _complete (and _get_model) with a fake answering ``reply`` to
+    every call; returns the (family, prompt_or_msgs) list it records."""
+    calls = []
+
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        calls.append((family, prompt_or_msgs))
+        return reply
+    _install_complete(monkeypatch, fake)
+    return calls
+
+
 def _install_fake(monkeypatch, transform, calls=None):
     """Stub translation._complete: applies `transform` per item, handling the
     numbered-list batch payloads transparently."""
@@ -1413,19 +1425,15 @@ def test_progress_callback_raising_typeerror_fires_once(base_cfg, monkeypatch):
 def test_unknown_source_is_not_asserted_as_english(base_cfg, monkeypatch):
     """source_lang omitted: the prompt must not claim the input is English —
     the source clause is dropped instead."""
-    prompts = []
-
-    def fake(llm, family, msgs, max_tokens):
-        prompts.append(msgs[0]["content"])
-        return "Bonjour le monde ici"
-    _install_complete(monkeypatch, fake)
+    prompts = _record_complete(monkeypatch, "Bonjour le monde ici")
 
     res, warns, _ = _run(translation.translate_segments(
         _segs("Hallo Welt hier"), ["fr"], source_lang=None, mode="faithful"))
     assert warns == []
     assert res[0]["fr"] == "Bonjour le monde ici"
-    assert "English" not in prompts[0]
-    assert "French" in prompts[0]
+    content = prompts[0][1][0]["content"]
+    assert "English" not in content
+    assert "French" in content
 
 
 def test_greedy_context_blind_family_skips_context_retry(base_cfg,
@@ -2499,12 +2507,7 @@ def test_template_override_forces_custom_family_and_renders_it(
     for a model whose name detects a different family."""
     monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_TEMPLATE",
                         "SAVED {text}", raising=False)
-    prompts = []
-
-    def fake(llm, family, prompt_or_msgs, max_tokens):
-        prompts.append((family, prompt_or_msgs))
-        return "Hello world."
-    _install_complete(monkeypatch, fake)
+    prompts = _record_complete(monkeypatch, "Hello world.")
 
     res, warns, meta = _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful",
@@ -2522,16 +2525,11 @@ def test_without_override_custom_family_still_reads_cfg(base_cfg, monkeypatch):
                         raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_TEMPLATE",
                         "SAVED {text}", raising=False)
-    prompts = []
-
-    def fake(llm, family, prompt_or_msgs, max_tokens):
-        prompts.append(prompt_or_msgs)
-        return "Hello world."
-    _install_complete(monkeypatch, fake)
+    prompts = _record_complete(monkeypatch, "Hello world.")
 
     _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful"))
-    assert prompts[0] == [{"role": "user", "content": "SAVED Hallo Welt."}]
+    assert prompts[0][1] == [{"role": "user", "content": "SAVED Hallo Welt."}]
 
 
 def test_busy_model_is_never_evicted():
@@ -2672,15 +2670,10 @@ class TestRenderPrompt:
                                       family=family)
         preview = p.get("messages") or p.get("text")
         assert want in str(preview)
-        seen = {}
-
-        def fake_complete(llm, fam, prompt, max_tokens):
-            seen["prompt"] = prompt
-            return "ok"
-        monkeypatch.setattr(translation, "_complete", fake_complete)
+        calls = _record_complete(monkeypatch, "ok")
         _run(translation._run_completion(object(), family, "Hallo", "de",
                                          target, "", ""))
-        assert seen["prompt"] == preview
+        assert calls[-1][1] == preview
 
     def test_script_and_region_target_folds_to_the_script_entry(self):
         """A script subtag the table names wins over the region behind it:
@@ -2730,15 +2723,10 @@ class TestRenderPrompt:
                                       family="gemma-translate")
         preview = p.get("messages") or p.get("text")
         assert "source_lang_code:ja," in str(preview)
-        seen = {}
-
-        def fake_complete(llm, fam, prompt, max_tokens):
-            seen["prompt"] = prompt
-            return "ok"
-        monkeypatch.setattr(translation, "_complete", fake_complete)
+        calls = _record_complete(monkeypatch, "ok")
         _run(translation._run_completion(object(), "gemma-translate", "Hallo",
                                          "jpn", "de", "", ""))
-        assert seen["prompt"] == preview
+        assert calls[-1][1] == preview
 
     def test_unknown_source_custom_template_renders_empty(self):
         p = translation.render_prompt(
@@ -2750,24 +2738,18 @@ class TestFamilyOverride:
     def test_translate_segments_family_override(self, monkeypatch):
         monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
                             "org/m-GGUF:Q4", raising=False)
-        seen = {}
-
-        def fake_complete(llm, family, prompt, max_tokens):
-            seen["family"] = family
-            seen["prompt"] = prompt
-            return "ok"
-
-        _install_complete(monkeypatch, fake_complete)
+        calls = _record_complete(monkeypatch, "ok")
         results, warnings, meta = _run(translation.translate_segments(
             [{"text": "Hallo"}], ["en"], source_lang="de", mode="faithful",
             family_override="seedx",
             template_override="stale {text} {target_language}"))
-        assert seen["family"] == "seedx"
+        family, prompt = calls[-1]
+        assert family == "seedx"
         # seedx is a raw family: the prompt is the builder's string, and the
         # stale textarea template never leaks into it.
-        assert isinstance(seen["prompt"], str)
-        assert "stale" not in seen["prompt"]
-        assert seen["prompt"].endswith("Hallo <en>")
+        assert isinstance(prompt, str)
+        assert "stale" not in prompt
+        assert prompt.endswith("Hallo <en>")
         assert results[0]["en"] == "ok"
 
 
