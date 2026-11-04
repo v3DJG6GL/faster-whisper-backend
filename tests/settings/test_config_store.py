@@ -20,6 +20,7 @@ from tests.settings._rules_helpers import (
     load_saved,
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
     regex_list_rules,
+    validate_rules,
 )
 
 
@@ -607,10 +608,8 @@ def test_pipeline_guard_scoped_to_guard_slugs():
     good = _regex("harmless", pattern="Komma", replacement=",")
 
     def _save(slugs):
-        return settings_schema.AdminConfig.model_validate(
-            {"PIPELINE_RULES": [bad, good, _terminal()]},
-            context={"guard_regex": True, "guard_slugs": frozenset(slugs)},
-        )
+        return validate_rules([bad, good, _terminal()],
+                              guard_regex=True, guard_slugs=frozenset(slugs))
 
     _save({"harmless"})
     with pytest.raises(ValidationError) as ei:
@@ -650,11 +649,9 @@ def test_pipeline_guard_scoping_never_skips_compile_and_template_checks():
     # ALWAYS-on in-process checks (bad backref template) must keep failing
     # even when guard_slugs points at a different rule.
     with pytest.raises(ValidationError) as ei:
-        settings_schema.AdminConfig.model_validate(
-            {"PIPELINE_RULES": [_regex("b", pattern="(a)", replacement=r"\3"),
-                                _regex("harmless"), _terminal()]},
-            context={"guard_regex": True, "guard_slugs": frozenset({"harmless"})},
-        )
+        validate_rules([_regex("b", pattern="(a)", replacement=r"\3"),
+                        _regex("harmless"), _terminal()],
+                       guard_regex=True, guard_slugs=frozenset({"harmless"}))
     assert "regex test failed" in str(ei.value)
 
 
@@ -764,8 +761,7 @@ def test_nested_fixed_counts_refused_at_load_without_a_replacement():
             {"name": "dd", "label": "DD", "type": "callback:dedup",
              "pattern": pat}):
         with pytest.raises(ValidationError, match="nested fixed counts"):
-            settings_schema.AdminConfig.model_validate(
-                {"PIPELINE_RULES": [rule, _terminal()]})
+            validate_rules([rule, _terminal()])
 
 
 def test_map_key_collision_check_is_scoped_to_guard_slugs():
@@ -773,12 +769,11 @@ def test_map_key_collision_check_is_scoped_to_guard_slugs():
     without the guard context) must not 422 a save scoped to another rule."""
     rule = {"name": "m", "label": "m", "type": "callback:map",
             "map": {"Passwort": "x", "passwort": "y"}}
-    payload = {"PIPELINE_RULES": [rule, _terminal()]}
-    settings_schema.AdminConfig.model_validate(
-        payload, context={"guard_regex": True, "guard_slugs": {"other"}})
+    rules = [rule, _terminal()]
+    validate_rules(rules, guard_regex=True, guard_slugs={"other"})
     for ctx in ({"guard_regex": True, "guard_slugs": {"m"}}, {"guard_regex": True}):
         with pytest.raises(ValidationError, match="collide when lowercased"):
-            settings_schema.AdminConfig.model_validate(payload, context=ctx)
+            validate_rules(rules, **ctx)
 
 
 def test_rule_scoped_to_every_whisper_language_validates():
