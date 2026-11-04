@@ -35,15 +35,15 @@ def _foo_model(monkeypatch, device="cpu"):
     return cfg
 
 
-def _stub_separate(monkeypatch, calls=None):
+def _stub_separate(monkeypatch):
     """separate() writes a real vocals tmp file — the handler swaps it into
-    tmp_path and the request-level finally must unlink it."""
-    made = []
+    tmp_path and the request-level finally must unlink it. Returns (the paths
+    it was given, the files it wrote)."""
+    calls, made = [], []
 
     async def _fake(path, *, model_filename=None, progress_cb=None,
                     cancel_check=None):
-        if calls is not None:
-            calls.append(path)
+        calls.append(path)
         fd, out = tempfile.mkstemp(prefix="vocals-test-", suffix=".wav")
         with os.fdopen(fd, "wb") as f:
             f.write(b"RIFFsepWAVE")
@@ -51,12 +51,11 @@ def _stub_separate(monkeypatch, calls=None):
         return out
 
     monkeypatch.setattr(bgm_separation, "separate", _fake)
-    return made
+    return calls, made
 
 
 def test_separate_swaps_audio_and_cleans_up(client, monkeypatch, fake_model, bgm_on):
-    calls = []
-    made = _stub_separate(monkeypatch, calls)
+    calls, made = _stub_separate(monkeypatch)
     r = _post(client, separate_bgm="true")
     assert r.status_code == 200, r.text
     assert "warnings" not in r.json()
@@ -73,8 +72,7 @@ def test_separate_transcodes_non_libsndfile_container(
     separator (libsndfile can't read AAC/MP4 → slow audioread fallback)."""
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    calls = []
-    made = _stub_separate(monkeypatch, calls)
+    calls, made = _stub_separate(monkeypatch)
     transcoded = []
 
     def _fake_transcode(src, dst, *, rate, layout):
@@ -104,8 +102,7 @@ def test_separate_transcode_failure_falls_back_to_original(
         client, monkeypatch, fake_model, bgm_on):
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls, _ = _stub_separate(monkeypatch)
 
     def _boom(src, dst, *, rate, layout):
         raise RuntimeError("no decoder")
@@ -129,8 +126,7 @@ def test_separate_wav_input_skips_transcode(
         client, monkeypatch, fake_model, bgm_on):
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls, _ = _stub_separate(monkeypatch)
 
     # Record instead of only raising: the route swallows any transcode
     # exception and falls back to the original file, so a raise alone
@@ -150,8 +146,7 @@ def test_separate_wav_input_skips_transcode(
 
 
 def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls, _ = _stub_separate(monkeypatch)
     r = _post(client, separate_bgm="true")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -176,8 +171,7 @@ def test_separate_error_becomes_warning(client, monkeypatch, fake_model, bgm_on)
 def test_separate_absent_inherits_config_default(client, app_module, monkeypatch,
                                                  bgm_on):
     monkeypatch.setattr(app_module.cfg, "SEPARATE_BGM", True, raising=False)
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls, _ = _stub_separate(monkeypatch)
     r = _post(client)
     assert r.status_code == 200
     assert len(calls) == 1                 # SEPARATE_BGM=true applies
@@ -189,8 +183,7 @@ def test_separate_absent_inherits_config_default(client, app_module, monkeypatch
 def test_locked_separate_ignores_client_param(client, make_user_key,
                                               monkeypatch, bgm_on):
     from tests.conftest import bearer
-    calls = []
-    _stub_separate(monkeypatch, calls)
+    calls, _ = _stub_separate(monkeypatch)
     _, raw_alice = bind_profile(client, make_user_key, "nosep",
                                 {"locks": ["SEPARATE_BGM"]})
     r = _post(client, bearer(raw_alice), separate_bgm="true")
