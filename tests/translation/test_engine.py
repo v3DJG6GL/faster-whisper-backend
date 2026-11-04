@@ -754,17 +754,19 @@ def _record_complete(monkeypatch, reply):
     return calls
 
 
-def _install_fake(monkeypatch, transform, calls=None):
+def _install_fake(monkeypatch, transform):
     """Stub translation._complete: applies `transform` per item, handling the
-    numbered-list batch payloads transparently."""
+    numbered-list batch payloads transparently; returns the payload list."""
+    calls = []
+
     def fake(llm, family, prompt_or_msgs, max_tokens):
         payload = _payload_of(prompt_or_msgs)
-        if calls is not None:
-            calls.append(payload)
+        calls.append(payload)
         if payload.startswith(translation._NUMBERED_INSTRUCTION):
             return _numbered_reply(payload, transform)
         return transform(payload)
     _install_complete(monkeypatch, fake)
+    return calls
 
 
 def _xlate(text):
@@ -807,8 +809,7 @@ def test_no_model_configured_raises(base_cfg, monkeypatch):
 
 
 def test_same_language_short_circuit_no_model_calls(base_cfg, monkeypatch):
-    calls = []
-    _install_fake(monkeypatch, _xlate, calls)
+    calls = _install_fake(monkeypatch, _xlate)
 
     async def boom(ref, **kwargs):
         raise AssertionError("model must not load for a same-language target")
@@ -830,8 +831,7 @@ def test_script_target_is_not_a_same_language_short_circuit(base_cfg,
                                                             monkeypatch):
     """Whisper names Chinese "zh"; "zh-Hant" is a different written
     language, so it must reach the model, not come back as a copy."""
-    calls = []
-    _install_fake(monkeypatch, lambda t: "我們昨天重複了測量。", calls)
+    calls = _install_fake(monkeypatch, lambda t: "我們昨天重複了測量。")
     res, _, _ = _run(translation.translate_segments(
         _segs("我们昨天重复了测量。"), ["zh-Hant"], source_lang="zh",
         mode="faithful"))
@@ -862,8 +862,7 @@ def test_traditional_region_target_is_translated_as_traditional(base_cfg,
 
 
 def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
-    calls = []
-    _install_fake(monkeypatch, _xlate, calls)
+    calls = _install_fake(monkeypatch, _xlate)
     segs = _segs("Erstens 1.", "Zweitens.", "Drittens.")
     res, warns, _ = _de_en(segs)
     assert warns == []
@@ -1042,8 +1041,7 @@ def test_unknown_source_echo_is_no_kept_original(base_cfg, monkeypatch):
     no "translation failed" warning, no kept mark, no retry call. The fake
     echoes every call: with no source to compare against, an unchanged
     reply is accepted under the other target ("en") as well."""
-    calls = []
-    _install_fake(monkeypatch, lambda t: t, calls)
+    calls = _install_fake(monkeypatch, lambda t: t)
     res, warns, meta = _run(translation.translate_segments(
         _segs("Wir sehen uns morgen im Büro."), ["de", "en"],
         mode="faithful"))
@@ -1080,8 +1078,7 @@ _GUARD_SRC_NO_DIGITS = "Nimm die Tabletten und ruf mich morgen wieder an"
 ])
 def test_guards_keep_original_without_retry_for_greedy_family(
         base_cfg, monkeypatch, src, bad_out, reason):
-    calls = []
-    _install_fake(monkeypatch, bad_out, calls)
+    calls = _install_fake(monkeypatch, bad_out)
     res, warns, meta = _de_en(_segs(src))
     assert res == [{"en": src}]
     # Greedy family (chatml) + no context on the first attempt: the retry
@@ -1214,13 +1211,12 @@ def test_hunyuan_no_context_still_rerolls(base_cfg, monkeypatch):
 
 def test_batch_guard_failure_retries_that_segment_alone(base_cfg, monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 2, raising=False)
-    calls = []
 
     def per_item(t):
         if t == "Zweitens kaputt.":
             return t                                     # copy → guard fails
         return _xlate(t)
-    _install_fake(monkeypatch, per_item, calls)
+    calls = _install_fake(monkeypatch, per_item)
 
     # The standalone retry sends the bare text, which per_item would sabotage
     # again — patch on top so the retry path is distinguishable and succeeds.
@@ -1260,13 +1256,11 @@ def test_batch_kept_original_recorded_per_segment(base_cfg, monkeypatch):
 
 
 def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
-    calls = []
-
     def fake_group(t):
         assert t == "Wie geht es dir?" or t == "Hallo Welt."
         return {"Hallo Welt.": "Hello world.",
                 "Wie geht es dir?": "How are you doing?"}[t]
-    _install_fake(monkeypatch, fake_group, calls)
+    calls = _install_fake(monkeypatch, fake_group)
 
     segs = _segs("Hallo Welt.", "Wie geht", "es dir?")
     res, warns, _ = _de_en(segs, mode="fluent")
@@ -1282,9 +1276,8 @@ def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
 def test_fluent_zh_source_group_reaches_model_without_inner_space(
         base_cfg, monkeypatch):
     # Whisper cut 商店 across two cues; the joined group must not read '商 店'.
-    calls = []
-    _install_fake(monkeypatch, lambda t: "I went to the shop to buy bread.",
-                  calls)
+    calls = _install_fake(
+        monkeypatch, lambda t: "I went to the shop to buy bread.")
     segs = _segs("我今天去商", "店买一些面包。")
     res, warns, _ = _run(translation.translate_segments(
         segs, ["en"], source_lang="zh", mode="fluent"))
@@ -1412,8 +1405,7 @@ def test_greedy_context_blind_family_skips_context_retry(base_cfg,
     re-rolls: see test_retry_drops_context)."""
     monkeypatch.setattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 1, raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
-    calls = []
-    _install_fake(monkeypatch, lambda t: t, calls)       # copy → guard fails
+    calls = _install_fake(monkeypatch, lambda t: t)      # copy → guard fails
     segs = _segs("Hallo Welt und mehr", "Wie geht es dir denn?")
     res, warns, _ = _de_en(segs)
     assert [r["en"] for r in res] == [s["text"] for s in segs]
@@ -2792,8 +2784,7 @@ def test_join_translations_glues_digit_and_latin_to_han_in_a_zh_ja_target():
 
 def test_fluent_blank_segment_is_skipped_not_fed_from_neighbour(base_cfg,
                                                                 monkeypatch):
-    calls = []
-    _install_fake(monkeypatch, _xlate, calls)
+    calls = _install_fake(monkeypatch, _xlate)
     segs = _segs("Hi.", "", "Hello world.")
     res, warns, meta = _run(translation.translate_segments(
         segs, ["de"], source_lang="en", mode="fluent"))
@@ -2805,8 +2796,7 @@ def test_fluent_blank_segment_is_skipped_not_fed_from_neighbour(base_cfg,
 
 def test_faithful_blank_segment_no_model_call_no_warning(base_cfg,
                                                          monkeypatch):
-    calls = []
-    _install_fake(monkeypatch, _xlate, calls)
+    calls = _install_fake(monkeypatch, _xlate)
     segs = _segs("Hi.", "", "Hello world.")
     res, warns, meta = _run(translation.translate_segments(
         segs, ["de"], source_lang="en", mode="faithful"))
