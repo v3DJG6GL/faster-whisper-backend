@@ -462,14 +462,6 @@
   function _hasDraft(id) { return Object.prototype.hasOwnProperty.call(_drafts, id); }
 
   // absTime / relTime / fmtWhen / timeTick are injected via TIME_HELPERS_JS.
-  function escapeHtml(s) {
-    var d = document.createElement('div');
-    d.textContent = s == null ? '' : String(s);
-    // textContent->innerHTML escapes & < > but NOT quotes; escape those too so
-    // the result is safe in a double-/single-quoted attribute (the model
-    // filter renders user-supplied model ids into option value="...").
-    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
 
   function _el(tag, cls, text) {
     var e = document.createElement(tag);

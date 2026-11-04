@@ -718,13 +718,6 @@ function _el(tag, cls, text) {
   return e;
 }
 
-function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s == null ? '' : String(s);
-  // textContent->innerHTML escapes & < > but NOT quotes; escape those too so
-  // the result stays safe if it is ever interpolated into an attribute.
-  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
 // absTime is injected via TIME_HELPERS_JS.
 
 // Long file transcripts would otherwise render in full for raw, final and

@@ -1576,14 +1576,6 @@
   }
 
   // absTime / relTime / fmtWhen / timeTick are injected via TIME_HELPERS_JS.
-  function escapeHtml(s) {
-    var d = document.createElement('div');
-    d.textContent = s == null ? '' : String(s);
-    // textContent->innerHTML escapes & < > but NOT quotes; escape those too so
-    // the result is safe in a quoted attribute (the model filter renders
-    // model ids into option value="...").
-    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
 
   // Status filter. 'new' is the page default (left out of the URL by
   // _syncUrl); the status button-group bootstrap below starts from it.

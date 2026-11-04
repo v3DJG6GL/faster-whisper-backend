@@ -164,6 +164,9 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #   5. window._detailMsg(j, fallback), an error body's toast text: FastAPI's
 #      `detail` string, or the first `msg` of a 422 detail list (a bare
 #      assignment toasted "[object Object]"), else `fallback`.
+#   6. window.escapeHtml, the /captures, /reports and /quick-config escape. It
+#      differs from _escHtml by also escaping ', so its output is safe in a
+#      single-quoted attribute; the two are not interchangeable.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -178,6 +181,9 @@ SCALE_BOOTSTRAP_HEAD = (
     "if(typeof d==='string'&&d)return d;"
     "if(Array.isArray(d)&&d[0]&&d[0].msg)return String(d[0].msg);"
     "return fallback;};"
+    "window.escapeHtml=function(s){var d=document.createElement('div');"
+    "d.textContent=s==null?'':String(s);"
+    "return d.innerHTML.replace(/\"/g,'&quot;').replace(/'/g,'&#39;');};"
     "(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"
