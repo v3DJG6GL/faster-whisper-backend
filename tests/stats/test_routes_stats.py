@@ -607,14 +607,6 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
             req, seen, at - stats_routes._REAUTH_INTERVAL_S - 1)
 
 
-def _seed_usage(alice, bob, alice_key, bob_key):
-    h = us.now_hour()
-    us.record_usage(key_id=alice_key, user_id=alice, audio_s=10.0, words=5,
-                    status="ok", hour=h)
-    us.record_usage(key_id=bob_key, user_id=bob, audio_s=90.0, words=5,
-                    status="ok", hour=h)
-
-
 def _usage_now(key_id, user_id, audio_s, words, job_id, kind, processing_s=1.0, **kw):
     """One "ok" usage row in the current hour (the list-filter / picker tests)."""
     us.record_usage(key_id=key_id, user_id=user_id, audio_s=audio_s, words=words,
@@ -632,9 +624,19 @@ def _two_users(make_user_key):
     return raw_admin, alice, raw_alice, bob, raw_bob, keys
 
 
+def _two_users_with_usage(make_user_key):
+    users = _two_users(make_user_key)
+    _, alice, _, bob, _, keys = users
+    h = us.now_hour()
+    us.record_usage(key_id=keys[alice], user_id=alice, audio_s=10.0, words=5,
+                    status="ok", hour=h)
+    us.record_usage(key_id=keys[bob], user_id=bob, audio_s=90.0, words=5,
+                    status="ok", hour=h)
+    return users
+
+
 def test_usage_own_scope_by_user_is_403(client, app_module, make_user_key):
-    _, alice, raw_alice, bob, _, keys = _two_users(make_user_key)
-    _seed_usage(alice, bob, keys[alice], keys[bob])
+    _, alice, raw_alice, bob, _, keys = _two_users_with_usage(make_user_key)
     r = client.get("/stats/usage?by=user", headers=bearer(raw_alice))
     assert r.status_code == 403
     # An unknown `by` normalises to "user" BEFORE the scope check.
@@ -647,8 +649,7 @@ def test_usage_own_scope_by_user_is_403(client, app_module, make_user_key):
 
 def test_usage_own_scope_by_key_only_own_keys(client, app_module,
                                                make_user_key):
-    _, alice, raw_alice, bob, _, keys = _two_users(make_user_key)
-    _seed_usage(alice, bob, keys[alice], keys[bob])
+    _, alice, raw_alice, bob, _, keys = _two_users_with_usage(make_user_key)
     body = client.get("/stats/usage?by=key", headers=bearer(raw_alice)).json()
     assert body["scope"] == "own"
     assert [r["id"] for r in body["leaderboard"]] == [keys[alice]]
@@ -660,8 +661,7 @@ def test_usage_own_scope_by_key_only_own_keys(client, app_module,
 
 def test_usage_all_scope_nonadmin_scrubs_names_and_marks_me(
         client, app_module, make_user_key):
-    _, alice, _, bob, raw_bob, keys = _two_users(make_user_key)
-    _seed_usage(alice, bob, keys[alice], keys[bob])
+    _, alice, _, bob, raw_bob, keys = _two_users_with_usage(make_user_key)
     body = client.get("/stats/usage?by=user", headers=bearer(raw_bob)).json()
     assert body["scope"] == "all"
     rows = {r["id"]: r for r in body["leaderboard"]}
@@ -683,8 +683,7 @@ def test_usage_all_scope_nonadmin_scrubs_names_and_marks_me(
 
 def test_usage_admin_sees_names_and_can_preview_user(client, app_module,
                                                       make_user_key):
-    raw_admin, alice, _, bob, _, keys = _two_users(make_user_key)
-    _seed_usage(alice, bob, keys[alice], keys[bob])
+    raw_admin, alice, _, bob, _, keys = _two_users_with_usage(make_user_key)
     body = client.get("/stats/usage?by=user", headers=bearer(raw_admin)).json()
     assert {r["label"] for r in body["leaderboard"]} == {"alice", "bob"}
     assert body["scope"] == "all"
