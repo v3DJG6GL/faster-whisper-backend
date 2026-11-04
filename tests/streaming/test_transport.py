@@ -81,71 +81,6 @@ def test_ffmpeg_transport_decodes_webm_to_pcm():
     assert len(got) > 16000
 
 
-def test_ffmpeg_transport_dead_reader_warns_once(caplog):
-    """Once ffmpeg has exited, feed() is still called once per inbound frame at
-    the client's pace — it must log the dead decoder once, not per frame."""
-    caplog.set_level(logging.WARNING, logger="faster_whisper_backend.streaming.transport")
-
-    async def sink(b):
-        pass
-
-    async def run():
-        t = FfmpegTransport(sink)
-        await t.start()
-        t._proc.kill()
-        for _ in range(100):
-            if t._reader_dead:
-                break
-            await asyncio.sleep(0.05)
-        assert t._reader_dead
-        assert t.dead                  # the route ends the session on this
-        for _ in range(50):
-            await t.feed(b"\x00")
-        await t.aclose()
-        assert not t.dead              # a closed transport is finished, not dead
-
-    asyncio.run(run())
-    assert sum("ffmpeg exited" in r.getMessage() for r in caplog.records) == 1
-
-
-def test_ffmpeg_transport_cancelled_aclose_still_kills_the_process():
-    """A cancel while aclose() waits (server shutdown) must still kill ffmpeg:
-    _closed is already True, so the routes backstop aclose() returns at once
-    without killing it. The cancel itself must still propagate."""
-    class _Stdin:
-        def is_closing(self):
-            return False
-
-        def close(self):
-            pass
-
-    class _Proc:
-        returncode = None
-        stdin = _Stdin()
-        killed = False
-
-        async def wait(self):
-            await asyncio.Event().wait()
-
-        def kill(self):
-            self.killed = True
-
-    async def sink(b):
-        pass
-
-    async def run():
-        t = FfmpegTransport(sink)
-        t._proc = _Proc()
-        task = asyncio.create_task(t.aclose())
-        await asyncio.sleep(0.05)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        return t._proc.killed
-
-    assert asyncio.run(run())
-
-
 class _StuckProc:
     """An ffmpeg stand-in whose stdout never yields and that never exits."""
     returncode = None
@@ -174,6 +109,47 @@ class _StuckProc:
 
 async def _nosink(b):
     pass
+
+
+def test_ffmpeg_transport_dead_reader_warns_once(caplog):
+    """Once ffmpeg has exited, feed() is still called once per inbound frame at
+    the client's pace — it must log the dead decoder once, not per frame."""
+    caplog.set_level(logging.WARNING, logger="faster_whisper_backend.streaming.transport")
+
+    async def run():
+        t = FfmpegTransport(_nosink)
+        await t.start()
+        t._proc.kill()
+        for _ in range(100):
+            if t._reader_dead:
+                break
+            await asyncio.sleep(0.05)
+        assert t._reader_dead
+        assert t.dead                  # the route ends the session on this
+        for _ in range(50):
+            await t.feed(b"\x00")
+        await t.aclose()
+        assert not t.dead              # a closed transport is finished, not dead
+
+    asyncio.run(run())
+    assert sum("ffmpeg exited" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_ffmpeg_transport_cancelled_aclose_still_kills_the_process():
+    """A cancel while aclose() waits (server shutdown) must still kill ffmpeg:
+    _closed is already True, so the routes backstop aclose() returns at once
+    without killing it. The cancel itself must still propagate."""
+    async def run():
+        t = FfmpegTransport(_nosink)
+        t._proc = _StuckProc()
+        task = asyncio.create_task(t.aclose())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return t._proc.killed
+
+    assert asyncio.run(run())
 
 
 def test_ffmpeg_transport_cancel_during_reader_join_propagates():
