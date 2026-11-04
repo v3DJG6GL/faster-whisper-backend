@@ -17,6 +17,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose as _post
+from tests._transcription_helpers import watch_progress as _watch_progress
 from tests.runtime.test_preload_registry import _FakeQueue
 from tests.runtime.test_routes_preload import _enable as _routes_enable
 
@@ -94,19 +95,9 @@ def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
     calls = _stub_diarize(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[
         "pyannote/speaker-diarization-community-1"])
     pid = "abcd" * 8
-    seen = {}
-    orig = tx_progress._progress_set
-
-    def spy(p, **fields):
-        orig(p, **fields)
-        if p == pid:
-            seen.update(tx_progress._BATCH_PROGRESS.get(pid) or {})
-    tx_progress._progress_set = spy
-    try:
-        r = _post(client, diarize="true", progress_id=pid,
-                  diarization_model="pyannote/speaker-diarization-3.1")
-    finally:
-        tx_progress._progress_set = orig
+    seen = _watch_progress(monkeypatch, pid)
+    r = _post(client, diarize="true", progress_id=pid,
+              diarization_model="pyannote/speaker-diarization-3.1")
     assert r.status_code == 200, r.text
     body = r.json()
     assert calls == []

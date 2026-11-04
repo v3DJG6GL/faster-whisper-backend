@@ -14,7 +14,7 @@ from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import (
     WAV_UPLOAD as _FILE, fail_model_load, post_transcription as _post, post_verbose,
-    record_runs, serve_model)
+    record_runs, serve_model, watch_progress)
 
 
 def test_default_json_returns_text_object(client):
@@ -446,26 +446,15 @@ def test_verbose_json_omits_vad_receipt_when_filter_off(client):
     assert "duration_after_vad" not in r.json()
 
 
-def test_progress_reports_skipped_separation(client, app_module):
+def test_progress_reports_skipped_separation(client, app_module, monkeypatch):
     # A requested-but-disabled optional stage is named in the progress entry
     # the moment it is declined, so a polling client marks the rail row
     # "skipped" live instead of inferring it; the final response still
     # carries the warning text.
     pid = "d" * 32
-    seen = {}
-    orig = tx_progress._progress_set
-
-    def spy(p, **fields):
-        orig(p, **fields)
-        if p == pid:
-            seen.update(tx_progress._BATCH_PROGRESS.get(pid) or {})
-
-    tx_progress._progress_set = spy
-    try:
-        r = _post(client, response_format="verbose_json",
-                  separate_bgm="true", progress_id=pid)
-    finally:
-        tx_progress._progress_set = orig
+    seen = watch_progress(monkeypatch, pid)
+    r = _post(client, response_format="verbose_json",
+              separate_bgm="true", progress_id=pid)
     assert r.status_code == 200
     assert seen.get("skipped") == ["separating"]
     assert any("music separation requested" in w

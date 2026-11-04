@@ -1,6 +1,6 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
 (the stub upload, a plain / verbose_json post, a profile-bound non-admin key,
-the record_transcription spy, a fixed / failing model loader, a constant-tone WAV, the
+the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a gated model_registry write, a cancel while that
 write is held or queued).
 Import as ``from tests._transcription_helpers import ...``."""
@@ -10,6 +10,7 @@ import io
 import numpy as np
 
 from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import bearer, write_wav
 
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -55,6 +56,20 @@ def record_runs(app_module, monkeypatch):
         return real(**kw)
     monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
     return recorded
+
+
+def watch_progress(monkeypatch, pid):
+    """Spy on _progress_set (passing through to the real one); return a dict
+    that mirrors pid's live _BATCH_PROGRESS entry after every tick."""
+    seen = {}
+    orig = tx_progress._progress_set
+
+    def spy(p, **fields):
+        orig(p, **fields)
+        if p == pid:
+            seen.update(tx_progress._BATCH_PROGRESS.get(pid) or {})
+    monkeypatch.setattr(tx_progress, "_progress_set", spy)
+    return seen
 
 
 def serve_model(monkeypatch, model):

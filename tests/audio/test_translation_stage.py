@@ -10,6 +10,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile
 from tests._transcription_helpers import post_verbose as _post
+from tests._transcription_helpers import watch_progress
 from tests._translation_helpers import enable_translation
 from tests.conftest import bearer
 
@@ -33,17 +34,6 @@ def _stub_translate(monkeypatch, calls=None):
             "model": (model_ref or "").strip() or "org/default-GGUF:Q4",
             "source": source_lang or "", "mode": mode}
     monkeypatch.setattr(translation, "translate_segments", _fake)
-
-
-def _progress_spy(app_module, seen, pid):
-    orig = tx_progress._progress_set
-
-    def spy(p, **fields):
-        orig(p, **fields)
-        if p == pid:
-            seen.update(tx_progress._BATCH_PROGRESS.get(pid) or {})
-
-    return orig, spy
 
 
 def test_translation_stage_populates_segments_and_response(
@@ -112,13 +102,8 @@ def test_translation_disabled_soft_fails_with_progress_skip(
     # names the skipped stage the moment it is declined.
     calls = []
     _stub_translate(monkeypatch, calls=calls)
-    seen = {}
-    orig, spy = _progress_spy(app_module, seen, _PID)
-    tx_progress._progress_set = spy
-    try:
-        r = _post(client, translate_to="en", progress_id=_PID)
-    finally:
-        tx_progress._progress_set = orig
+    seen = watch_progress(monkeypatch, _PID)
+    r = _post(client, translate_to="en", progress_id=_PID)
     assert r.status_code == 200, r.text
     body = r.json()
     assert calls == []
