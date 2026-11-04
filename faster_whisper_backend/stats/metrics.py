@@ -422,6 +422,15 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
         logger.warning("[metrics] usage rollup failed: %s", e)
 
 
+def record_classified(exc: "BaseException | None", stage: str, *, status: str,
+                      **row: Any) -> None:
+    """record_transcription with error_class / error_stage from
+    classify_error(exc, status=status, stage=stage)."""
+    error_class, error_stage = classify_error(exc, status=status, stage=stage)
+    record_transcription(status=status, error_class=error_class,
+                         error_stage=error_stage, **row)
+
+
 def record_download(model: str, seconds: float, bytes_done: int, *,
                     status: str = "ok") -> None:
     """Persist a model download that moved bytes as a 'download' recent-jobs

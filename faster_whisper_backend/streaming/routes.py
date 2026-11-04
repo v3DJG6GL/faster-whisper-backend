@@ -898,13 +898,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # same one here: a CUDA OOM / missing model on a live dictation
             # shows on /stats like the identical batch failure. Best effort.
             try:
-                _ec, _es = metrics.classify_error(exc, status="error",
-                                                  stage="transcribing")
-                metrics.record_transcription(
+                metrics.record_classified(
+                    exc, "transcribing",
                     model=str(_loading or ""), audio_dur=0.0, proc_dur=0.0,
                     status="error", words=0, kind="dictate",
-                    request_id=session_id, **_user_row_fields(user), job_id=usage_job_id,
-                    error_class=_ec, error_stage=_es)
+                    request_id=session_id, **_user_row_fields(user), job_id=usage_job_id)
             except Exception:  # noqa: BLE001 — never mask the refusal
                 pass
             # Generic client message — the raw exception text can carry model
@@ -1583,9 +1581,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # Timing/usage half — UPSERTs onto the same request_id row as record_trace.
             # kind + the one live stage: without them /stats shows "no per-stage
             # timings recorded" for dictation rows instead of a batch-comparable row.
-            _ec, _es = metrics.classify_error(_final_exc[0], status=_status,
-                                              stage="transcribing")
-            metrics.record_transcription(
+            metrics.record_classified(
+                _final_exc[0], "transcribing",
                 model=final_model, audio_dur=info["audio_dur"],
                 proc_dur=info["proc_dur"], status=_status,
                 words=len(final_text.split()), kind="dictate",
@@ -1593,7 +1590,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         if stages else None),
                 request_id=rid, **_user_row_fields(user), job_id=usage_job_id,
                 language=(_stored_lang(fw_info) or None),
-                wait_s=metrics.take_wait(), error_class=_ec, error_stage=_es)
+                wait_s=metrics.take_wait())
 
         # The client's own live-dictation knobs (decode_overrides), fixed for
         # the connection like the rest of the session shape.
@@ -1984,15 +1981,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # session's job id, classified like a batch failure. Best effort —
         # locals bound only after the handshake may be missing.
         try:
-            _ec, _es = metrics.classify_error(exc, status="error",
-                                              stage="transcribing")
             _loc = locals()
-            metrics.record_transcription(
+            metrics.record_classified(
+                exc, "transcribing",
                 model=str(_loc.get("final_model") or ""), audio_dur=0.0,
                 proc_dur=0.0, status="error", words=0, kind="dictate",
                 request_id=session_id, **_user_row_fields(user),
-                job_id=_loc.get("usage_job_id") or session_id,
-                error_class=_ec, error_stage=_es)
+                job_id=_loc.get("usage_job_id") or session_id)
         except Exception:  # noqa: BLE001 — never mask the real error
             pass
         # Lock like every other send: on a setup-window failure the consumer

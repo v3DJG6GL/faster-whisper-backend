@@ -405,11 +405,8 @@ async def translate_text(request: Request,
             the usage rollup. Also called from the `finally` for a
             disconnect, where no await is safe."""
             secs = round(time.perf_counter() - _t0, 3)
-            _ec, _es = metrics.classify_error(exc, status=status,
-                                              stage="translating")
-            metrics.record_transcription(
-                error_class=_ec,
-                error_stage=_es,
+            metrics.record_classified(
+                exc, "translating",
                 model=(_tr_model or ""),
                 audio_dur=0.0,
                 proc_dur=secs,
