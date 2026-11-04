@@ -1,20 +1,23 @@
 """Integration tests for the /stats router (host-gated dashboard)."""
 
+import inspect
 import pathlib
 import re
+import time
 
 import pytest
 from starlette.testclient import TestClient
 
 from faster_whisper_backend.admin import logs_routes
-from faster_whisper_backend.core import jobs
+from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend.core import jobs, web_common
 from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.stats import routes as stats_routes
 from faster_whisper_backend.stats import usage_store as us
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_upto
-from tests.conftest import bearer
+from tests.conftest import bearer, fake_request
 
 
 def _stats_js() -> str:
@@ -110,8 +113,6 @@ def test_header_activity_cluster_shell_on_every_page(client):
     """The cluster shell rides {{SEV_PILLS}}, so every template gets it;
     it renders as an empty, default-hidden shell (no live values baked into
     the cached page shell) and the JS that fills it ships alongside."""
-    from faster_whisper_backend.core import web_common
-
     frag = web_common.sev_pills_html()
     assert frag.index('id="hact"') < frag.index('class="sevpills"')
     for path in ("/stats", "/logs"):
@@ -130,8 +131,6 @@ def test_header_activity_cluster_inert_on_headerless_hub(client):
     syncAllowed()'s header-scoped selector can never reveal the button. The
     JS must bail before installing its timer/listeners, and the hub CSS hides
     the empty flex item the shared fragment still ships."""
-    from faster_whisper_backend.core import web_common
-
     assert "document.querySelector('header')" in web_common.ACTIVITY_CLUSTER_JS
     html = client.get("/").text
     # a CSS comment mentions "<header>", so assert on the closing tag
@@ -156,8 +155,6 @@ def test_header_activity_cluster_js_contract():
     field the lite stream actually emits, a fatal EventSource close must be
     retried, and staleness is signalled via `title` (the data-tip CSS
     tooltip is scoped to the .vtag chip)."""
-    from faster_whisper_backend.core import web_common
-
     js = web_common.ACTIVITY_CLUSTER_JS
     cancel = js_upto(js, "transcriptions/cancel/", ".then(")
     assert "X-CSRF-Token" in cancel and "_csrfToken()" in cancel
@@ -182,7 +179,6 @@ def test_stage_hues_have_one_definition():
     /logs receipt, /quick-config traces, captures) reference the tokens
     rather than carrying their own hexes."""
     from faster_whisper_backend.quick_config import routes as quick_config_routes
-    from faster_whisper_backend.core import web_common
 
     assert set(web_common.STAGE_COLORS) == {
         "downloading", "separating", "vad", "transcribing", "diarizing", "translating"}
@@ -217,8 +213,6 @@ def test_nav_css_defines_the_magenta_token():
     border, .hact-bar.vram fill). Pages that define no --magenta of their own
     (/dictate, /settings/api-keys) rely on NAV_CSS's :root carrying it --
     without it the ring is invisible and the VRAM bar always reads empty."""
-    from faster_whisper_backend.core import web_common
-
     assert "--magenta: #d2a8ff;" in web_common.NAV_CSS
 
 
@@ -231,8 +225,6 @@ def test_stats_stream_frame_is_built_off_the_loop(client):
     payload shape the frame carries survives being built in a worker
     thread."""
     import asyncio
-    import inspect
-
 
     src = inspect.getsource(stats_routes.stats_stream)
     assert "await asyncio.to_thread(" in src
@@ -249,9 +241,6 @@ def test_stats_snapshot_is_built_off_the_loop(client):
     """The one-shot snapshot is fetched on every /stats page load and runs
     the same blocking builder as the stream frame, so it must not block
     the loop either."""
-    import inspect
-
-
     src = inspect.getsource(stats_routes.stats_snapshot)
     assert "await asyncio.to_thread(" in src
     assert "_build_payload" in src.split("await asyncio.to_thread(")[1][:80]
@@ -305,8 +294,6 @@ def test_log_stage_colors_flag_reaches_logs_page(client, app_module,
                                                 monkeypatch):
     """LOG_STAGE_COLORS is hot-mutable via the settings save path, so it
     must enter the render_page memo key and land in the viewer JS."""
-    from faster_whisper_backend.core import web_common
-
     monkeypatch.setattr(app_module.cfg, "LOG_STAGE_COLORS", True,
                         raising=False)
     assert "const _STAGE_COLORS = true;" in client.get("/logs").text
@@ -537,12 +524,8 @@ def test_snapshot_route_own_user_over_http(client, make_user_key, monkeypatch):
 def test_stream_rechecks_version(client, make_user_key, app_module):
     """The stream re-resolves its StatsScope when the config version moves
     (a permission edit) and ends only when the caller lost access."""
-    import inspect
     from faster_whisper_backend.settings import version as settings_version
     from fastapi import HTTPException
-    from tests.conftest import fake_request as _fake_request
-
-    import time
 
     src = inspect.getsource(stats_routes.stats_stream)
     assert "_rescope_on_version_change, request, seen, resolved_at)" in src
@@ -550,11 +533,10 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "all"})
-    req = _fake_request(headers=bearer(raw))
+    req = fake_request(headers=bearer(raw))
     seen = settings_version.config_version()
     at = time.monotonic()
     assert stats_routes._rescope_on_version_change(req, seen, at) is None
-    from faster_whisper_backend.auth import api_keys_store
     api_keys_store.set_user_permissions(uid, {"pages": {"stats": "own"}})
     res = stats_routes._rescope_on_version_change(req, seen, at)
     assert res is not None
@@ -573,9 +555,6 @@ def test_stream_rechecks_the_caller_before_its_first_frame(
     up to _REAUTH_INTERVAL_S later. The generator is driven directly (never
     through TestClient)."""
     import asyncio
-
-    from faster_whisper_backend.auth import api_keys_store
-    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "all"})
@@ -615,14 +594,11 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
     the stream must still re-resolve once _REAUTH_INTERVAL_S has passed, and
     end for a cookie session past SESSION_TTL_S (the helper is called
     directly — the stream itself is never driven)."""
-    import time
-
     from fastapi import HTTPException
 
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.settings import config
     from faster_whisper_backend.settings import version as settings_version
-    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, _raw = make_user_key("alice", pages={"stats": "all"})
@@ -660,7 +636,6 @@ def _usage_now(key_id, user_id, audio_s, words, job_id, kind, processing_s=1.0):
 
 
 def _two_users(make_user_key):
-    from faster_whisper_backend.auth import api_keys_store
     _, raw_admin = make_user_key("root", is_admin=True)
     alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
     bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
@@ -949,7 +924,6 @@ def test_transcription_records_the_gate_wait(client):
 
 
 def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
-    import time
     from faster_whisper_backend.stats import system_metrics_store
     now = int(time.time()) // 10 * 10
     system_metrics_store.record(
@@ -1166,7 +1140,6 @@ def test_stats_page_jobs_table_v2(client):
     assert "rjFilter().users" in html and "Q.users" not in html
     assert "rj-stage-row wait" in html and "end to end" in html
     assert "colspan=\"11\"" in html
-    from faster_whisper_backend.core import web_common
     js = web_common.ACTIVITY_CLUSTER_JS
     assert "window._fwCancelJob = function(pid, c)" in js
 
