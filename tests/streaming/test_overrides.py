@@ -10,7 +10,7 @@ import pytest
 
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
-    config_frame, const_pcm, handshake, speak_and_stop, ws_drain)
+    config_drain, config_frame, const_pcm, handshake, speak_and_stop, ws_drain)
 from tests._transcription_helpers import bind_profile
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -212,10 +212,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
 
     monkeypatch.setattr(effective_config, "cfg_for", boom)
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json(config_frame())
-        msgs = _drain(ws)
+    msgs = config_drain(client, raw_alice)
 
     errors = [m for m in msgs if m.get("type") == "error"]
     assert errors, f"expected an internal error frame, got {msgs!r}"
@@ -239,10 +236,7 @@ def test_model_load_failure_delivers_generic_error_and_closes(
 
     monkeypatch.setattr(tx_models, "_get_or_load_model", _boom)
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json(config_frame())
-        msgs = _drain(ws)
+    msgs = config_drain(client, raw_alice)
 
     errors = [m for m in msgs if m.get("type") == "error"]
     assert errors, f"expected a model_load_failed frame, got {msgs!r}"
@@ -358,10 +352,7 @@ def test_model_load_failure_records_a_classified_error_row(
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json(config_frame())
-        msgs = _drain(ws)
+    msgs = config_drain(client, raw_alice)
 
     assert any(m.get("code") == "model_load_failed" for m in msgs), msgs
     err_rows = [r for r in rows if r.get("status") == "error"]
@@ -390,10 +381,7 @@ def test_partial_model_load_failure_row_names_the_partial_model(
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
-        ws.send_json(config_frame())
-        msgs = _drain(ws)
+    msgs = config_drain(client, raw_alice)
 
     assert any(m.get("code") == "model_load_failed" for m in msgs), msgs
     err_rows = [r for r in rows if r.get("status") == "error"]

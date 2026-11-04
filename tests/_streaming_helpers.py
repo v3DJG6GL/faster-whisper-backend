@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
+from tests.conftest import bearer
 
 
 def const_pcm(level: int, ms: int, sample_rate: int = 16000) -> bytes:
@@ -42,6 +43,15 @@ def ws_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     except WebSocketDisconnect as exc:
         return msgs, exc.code
     return msgs, None
+
+
+def config_drain(client, raw_key, limit: int = 200) -> list[dict]:
+    """Connect with ``raw_key``'s bearer header, send ``config_frame()`` and
+    return every frame up to the server's close (``ws_drain``)."""
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_key)) as ws:
+        ws.send_json(config_frame())
+        return ws_drain(ws, limit)[0]
 
 
 def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
