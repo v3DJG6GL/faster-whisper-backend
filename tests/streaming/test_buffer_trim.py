@@ -17,7 +17,7 @@ import numpy as np
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm, fast_config,
-    handshake, inert_session, ws_drain)
+    handshake, inert_session, stop_and_drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
@@ -417,8 +417,7 @@ def test_capture_segments_share_the_utterance_timeline(client, app_module, monke
         assert handshake(ws, response_format="verbose_json")["type"] == "ready"
         ws.send_bytes(const_pcm(8000, 3500))
         ws.send_bytes(const_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        ws_drain(ws, 200)
+        stop_and_drain(ws)
 
     assert finals and created_captures, (finals, created_captures)
     off = finals[-1]["trimmed_sec"]

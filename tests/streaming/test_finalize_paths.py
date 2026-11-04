@@ -23,7 +23,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
-    dictate_session, handshake as _config, speak_and_stop, stream_ws, ws_drain as _drain)
+    dictate_session, handshake as _config, speak_and_stop, stop_and_drain, stream_ws,
+    ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
@@ -192,8 +193,7 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
         with client.websocket_connect(_STREAM_URL) as ws:
             assert _config(ws)["type"] == "ready"
             _gate_second_utterance(monkeypatch, ws)
-            ws.send_json({"type": "stop"})
-            msgs, _code = _drain(ws)
+            msgs, _code = stop_and_drain(ws)
     finals = [m for m in msgs if m["type"] == "final"]
     assert len(finals) >= 2, msgs
     rows = sorted(recent_transcriptions_store.list_recent(limit=10),
@@ -223,8 +223,7 @@ def test_gate_skipped_utterance_receipt_says_no_final_decode(
         with client.websocket_connect(_STREAM_URL) as ws:
             assert _config(ws)["type"] == "ready"
             _gate_second_utterance(monkeypatch, ws)
-            ws.send_json({"type": "stop"})
-            _drain(ws)
+            stop_and_drain(ws)
     receipts = [r.getMessage() for r in caplog.records
                 if "/v1/audio/transcriptions/stream" in r.getMessage()
                 and "═" in r.getMessage()]
@@ -512,7 +511,6 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, c
                         "audio backlog over cap" in r.getMessage() for r in caplog.records):
                     time.sleep(0.02)
                 released.set()
-                ws.send_json({"type": "stop"})
-                _drain(ws)
+                stop_and_drain(ws)
     assert any("audio backlog over cap" in r.getMessage() for r in caplog.records), \
         [r.getMessage() for r in caplog.records]
