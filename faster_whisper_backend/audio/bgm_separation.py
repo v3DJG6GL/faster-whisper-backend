@@ -533,13 +533,8 @@ def _release_locked(model: str, sep) -> None:
     dying separator's stats early and skip the idle-clock restamp below."""
     global _last_used_monotonic
     live = sep is not None and sep is _separator
-    n = 0 if live else _orphans.get(model, 0)
-    if n:
-        n -= 1
-        if n:
-            _orphans[model] = n
-        else:
-            _orphans.pop(model, None)
+    if not live and _orphans.get(model, 0):
+        if release_count(_orphans, model) <= 0:
             _free_locked(model)
         return
     release_count(_leases, model)

@@ -303,13 +303,8 @@ def _release_locked(model_id: str, pipe=None) -> None:
     ``pipe`` orphans are decremented first."""
     global _last_used_monotonic
     live = pipe is not None and pipe is _pipeline
-    n = 0 if live else _orphans.get(model_id, 0)
-    if n:
-        n -= 1
-        if n:
-            _orphans[model_id] = n
-        else:
-            _orphans.pop(model_id, None)
+    if not live and _orphans.get(model_id, 0):
+        if release_count(_orphans, model_id) <= 0:
             _free_locked(model_id)
         return
     release_count(_leases, model_id)
