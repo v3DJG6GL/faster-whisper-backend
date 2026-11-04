@@ -41,7 +41,7 @@ def _done(db, result, **start_kw):
     return jid
 
 
-def test_schema_and_migration_are_idempotent(tmp_path):
+def test_schema_and_migration_are_idempotent(db, tmp_path):
     path = str(tmp_path / "old.sqlite3")
     # A DB from a build that predated the task / response_format and
     # side-blob (stages / plan) columns.
@@ -54,12 +54,10 @@ def test_schema_and_migration_are_idempotent(tmp_path):
         " DEFAULT 'file', source_name TEXT, error TEXT, result_json TEXT,"
         " result_bytes INTEGER NOT NULL DEFAULT 0);")
     conn.commit(); conn.close()
-    js._reset_for_tests()
     js.init_db(path)
     js.init_db(path)  # second call must not raise
     cols = {r["name"] for r in js._conn.execute("PRAGMA table_info(jobs)")}
     assert {"task", "response_format", "stages_json", "plan_json"} <= cols
-    js._reset_for_tests()
 
 
 def test_start_and_finish_round_trip_dict_result(db):
@@ -152,16 +150,13 @@ def test_start_refuses_a_foreign_row(db):
     assert db.get(jid)["user_id"] == "bob" and db.get_result(jid) is None
 
 
-def test_init_db_twice_closes_the_previous_connection(tmp_path):
-    js._reset_for_tests()
+def test_init_db_twice_closes_the_previous_connection(db, tmp_path):
     path = str(tmp_path / "jobs.sqlite3")
-    js.init_db(path)
     first = js._conn
     js.init_db(path)
     assert js._conn is not first
     with pytest.raises(sqlite3.ProgrammingError):
         first.execute("SELECT 1")  # closed, not leaked
-    js._reset_for_tests()
 
 
 def test_list_jobs_skips_the_side_blobs(db):
