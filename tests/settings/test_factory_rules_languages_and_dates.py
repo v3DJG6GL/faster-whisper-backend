@@ -6,7 +6,6 @@ deleted ".-" between two numbers). A silently changed date or dose is the
 worst kind of error in a medical dictation.
 """
 import copy
-import json
 import os
 import re
 import time
@@ -19,6 +18,7 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     factory_rules as _factory_rules,
+    load_saved as _load_saved,
 )
 
 
@@ -299,14 +299,11 @@ def test_edited_factory_entry_is_left_alone():
 
 
 def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
-    from faster_whisper_backend.settings import config_store as cs
     rules = copy.deepcopy(_factory_rules())
     old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
     e = _entry(rules, "tighten-quote-spacing")
     e["pattern"], e["replacement"] = old_pat, old_rep
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})
     new = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][1]
     got = _entry(out["PIPELINE_RULES"], "tighten-quote-spacing")
     assert (got["pattern"], got["replacement"]) == new
@@ -378,7 +375,6 @@ def test_every_hyphen_of_a_digit_chain_becomes_a_slash(app_module, text, want):
 def test_stored_old_digit_range_entry_is_upgraded(tmp_path, single_regex):
     """A copy saved before 8cde7fd holds the rule as a single `regex` card,
     which becomes a one-entry list labelled with its slug first."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = copy.deepcopy(_factory_rules())
     (old_pat, old_rep), new = renames.UPGRADED_RULE_ENTRIES["normalize-digit-range"]
     i = next(i for i, r in enumerate(rules) if r["name"] == "normalize-digit-range")
@@ -387,9 +383,7 @@ def test_stored_old_digit_range_entry_is_upgraded(tmp_path, single_regex):
                     "type": "regex", "pattern": old_pat, "replacement": old_rep}
     else:
         rules[i]["entries"][0].update(pattern=old_pat, replacement=old_rep)
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    got = next(r for r in cs.load_overrides(str(p))["PIPELINE_RULES"]
+    got = next(r for r in _load_saved(tmp_path, {"PIPELINE_RULES": rules})["PIPELINE_RULES"]
                if r["name"] == "normalize-digit-range")["entries"]
     assert [(e["label"], e["pattern"], e["replacement"]) for e in got] == [
         ("normalize-digit-range", *new)]
@@ -462,15 +456,12 @@ def test_closing_punct_rule_saved_before_june_is_upgraded(tmp_path):
     """A copy saved before 8cde7fd holds the single `regex` rule with the
     pattern from before `%` joined the class, which UPGRADED_RULE_ENTRIES
     does not know: it kept the quadratic scan on a "... ... ..." loop."""
-    from faster_whisper_backend.settings import config_store as cs
     old_pat, old_rep = renames.EARLIER_RULE_ENTRIES["space-before-closing-punct"][0]
     rules = copy.deepcopy(_factory_rules())
     rules.insert(0, {"name": "space-before-closing-punct",
                      "label": "Remove space before closing punctuation",
                      "type": "regex", "pattern": old_pat, "replacement": old_rep})
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    got = next(r for r in cs.load_overrides(str(p))["PIPELINE_RULES"]
+    got = next(r for r in _load_saved(tmp_path, {"PIPELINE_RULES": rules})["PIPELINE_RULES"]
                if r["name"] == "space-before-closing-punct")["entries"]
     new = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][1]
     assert [(e["label"], e["pattern"], e["replacement"]) for e in got] == [
