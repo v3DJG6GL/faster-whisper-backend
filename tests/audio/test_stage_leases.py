@@ -14,6 +14,7 @@ import pytest
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_registry
+from tests._transcription_helpers import record_loads
 
 
 class _RaisingLock:
@@ -55,11 +56,9 @@ def diar_cfg(monkeypatch):
     return cfg
 
 
-def _stub_pipes(monkeypatch, made, pipe=None):
-    def _load(model_id, device, batch):
-        made.append(model_id)
-        return pipe if pipe is not None else _Pipe()
-    monkeypatch.setattr(diarization, "_load_blocking", _load)
+def _stub_pipes(monkeypatch, pipe=None):
+    return record_loads(monkeypatch, diarization,
+                        lambda: pipe if pipe is not None else _Pipe())
 
 
 def test_diarize_cache_hit_does_not_take_the_lock(diar_cfg, monkeypatch):
@@ -74,7 +73,7 @@ def test_diarize_cache_hit_does_not_take_the_lock(diar_cfg, monkeypatch):
 
 
 def test_diarize_drop_refuses_while_leased(diar_cfg, monkeypatch):
-    _stub_pipes(monkeypatch, [])
+    _stub_pipes(monkeypatch)
     asyncio.run(diarization._get_pipeline("m1", lease=True))
 
     assert asyncio.run(diarization.drop_pipeline(force=False)) is False
@@ -83,7 +82,7 @@ def test_diarize_drop_refuses_while_leased(diar_cfg, monkeypatch):
 
 
 def test_diarize_force_orphans_and_the_last_release_frees(diar_cfg, monkeypatch):
-    _stub_pipes(monkeypatch, [])
+    _stub_pipes(monkeypatch)
     pipe = asyncio.run(diarization._get_pipeline("m1", lease=True))
 
     assert asyncio.run(diarization.drop_pipeline()) is True
@@ -99,8 +98,7 @@ def test_diarize_force_orphans_and_the_last_release_frees(diar_cfg, monkeypatch)
 
 
 def test_diarize_other_model_mid_job_keeps_both(diar_cfg, monkeypatch):
-    made: "list[str]" = []
-    _stub_pipes(monkeypatch, made)
+    made = _stub_pipes(monkeypatch)
 
     pipe = asyncio.run(diarization._get_pipeline("m1", lease=True))
     asyncio.run(diarization._get_pipeline("m2"))
@@ -117,7 +115,7 @@ def test_diarize_other_model_mid_job_keeps_both(diar_cfg, monkeypatch):
 
 def test_diarize_balances_the_lease_on_success(diar_cfg, monkeypatch, tmp_path):
     pipe = _Pipe()
-    _stub_pipes(monkeypatch, [], pipe)
+    _stub_pipes(monkeypatch,pipe)
 
     turns = asyncio.run(diarization.diarize(str(tmp_path / "a.wav")))
 
@@ -128,7 +126,7 @@ def test_diarize_balances_the_lease_on_success(diar_cfg, monkeypatch, tmp_path):
 
 
 def test_diarize_balances_the_lease_on_error(diar_cfg, monkeypatch, tmp_path):
-    _stub_pipes(monkeypatch, [], _Pipe(boom=RuntimeError("nope")))
+    _stub_pipes(monkeypatch,_Pipe(boom=RuntimeError("nope")))
 
     with pytest.raises(diarization.DiarizationError):
         asyncio.run(diarization.diarize(str(tmp_path / "a.wav")))
@@ -137,7 +135,7 @@ def test_diarize_balances_the_lease_on_error(diar_cfg, monkeypatch, tmp_path):
 
 
 def test_diarize_balances_the_lease_on_cancel(diar_cfg, monkeypatch, tmp_path):
-    _stub_pipes(monkeypatch, [])
+    _stub_pipes(monkeypatch)
 
     with pytest.raises(diarization.DiarizeCancelled):
         asyncio.run(diarization.diarize(str(tmp_path / "a.wav"),
@@ -159,7 +157,7 @@ def test_diarize_forward_typeerror_is_not_retried(diar_cfg, monkeypatch,
             calls.append(dict(kw))
             raise TypeError("boom")
 
-    _stub_pipes(monkeypatch, [], _BoomPipe())
+    _stub_pipes(monkeypatch,_BoomPipe())
     with pytest.raises(diarization.DiarizationError):
         asyncio.run(diarization.diarize(str(tmp_path / "a.wav"),
                                         progress_cb=lambda f, step=None: None))
@@ -178,7 +176,7 @@ def test_diarize_hookless_pipeline_retries_without_the_hook(
                     "__call__() got an unexpected keyword argument 'hook'")
             return _Ann()
 
-    _stub_pipes(monkeypatch, [], _HooklessPipe())
+    _stub_pipes(monkeypatch,_HooklessPipe())
     turns = asyncio.run(diarization.diarize(
         str(tmp_path / "a.wav"), progress_cb=lambda f, step=None: None))
     assert turns == [(0.0, 1.0, "S0")]
@@ -201,7 +199,7 @@ def test_diarize_cancel_only_still_installs_the_hook(diar_cfg, monkeypatch,
                 hook("segmentation", None, total=2, completed=1)
             return _Ann()
 
-    _stub_pipes(monkeypatch, [], _HookedPipe())
+    _stub_pipes(monkeypatch,_HookedPipe())
     with pytest.raises(diarization.DiarizeCancelled):
         asyncio.run(diarization.diarize(str(tmp_path / "a.wav"),
                                         cancel_check=lambda: next(answers)))
@@ -232,11 +230,9 @@ def bgm_cfg(monkeypatch):
     return cfg
 
 
-def _stub_seps(monkeypatch, made, sep=None):
-    def _load(model, device):
-        made.append(model)
-        return sep if sep is not None else _Sep("")
-    monkeypatch.setattr(bgm_separation, "_load_blocking", _load)
+def _stub_seps(monkeypatch, sep=None):
+    return record_loads(monkeypatch, bgm_separation,
+                        lambda: sep if sep is not None else _Sep(""))
 
 
 def test_bgm_cache_hit_does_not_take_the_lock(bgm_cfg, monkeypatch):
@@ -252,7 +248,7 @@ def test_bgm_cache_hit_does_not_take_the_lock(bgm_cfg, monkeypatch):
 
 
 def test_bgm_drop_refuses_while_leased(bgm_cfg, monkeypatch):
-    _stub_seps(monkeypatch, [])
+    _stub_seps(monkeypatch)
     asyncio.run(bgm_separation._get_separator("Foo", lease=True))
 
     assert asyncio.run(bgm_separation.drop_separator(force=False)) is False
@@ -261,7 +257,7 @@ def test_bgm_drop_refuses_while_leased(bgm_cfg, monkeypatch):
 
 
 def test_bgm_force_orphans_and_the_last_release_frees(bgm_cfg, monkeypatch):
-    _stub_seps(monkeypatch, [])
+    _stub_seps(monkeypatch)
     sep = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
 
     assert asyncio.run(bgm_separation.drop_separator()) is True
@@ -275,8 +271,7 @@ def test_bgm_force_orphans_and_the_last_release_frees(bgm_cfg, monkeypatch):
 
 
 def test_bgm_other_model_mid_job_keeps_both(bgm_cfg, monkeypatch):
-    made: "list[str]" = []
-    _stub_seps(monkeypatch, made)
+    made = _stub_seps(monkeypatch)
 
     sep = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
     asyncio.run(bgm_separation._get_separator("Bar"))
@@ -297,7 +292,7 @@ def test_bgm_orphan_release_mid_load_keeps_the_new_session_device(
     loads. An orphan finishing inside that window must not wipe the
     placement the new session just recorded: ORT's silent CPU fallback
     would then be registered (and reported) as the requested cuda."""
-    _stub_seps(monkeypatch, [])
+    _stub_seps(monkeypatch)
     old = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
     monkeypatch.setattr(bgm_cfg, "BGM_SEPARATION_DEVICE", "cuda",
                         raising=False)
@@ -328,7 +323,7 @@ def test_bgm_same_model_orphan_release_mid_load_keeps_the_stats_row(
     """A same-model reload (device change) publishes the new separator and
     then awaits its stats-row write; an orphan of that model released while
     that await is pending must not unregister the row just written."""
-    _stub_seps(monkeypatch, [])
+    _stub_seps(monkeypatch)
     old = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
     monkeypatch.setattr(bgm_cfg, "BGM_SEPARATION_DEVICE", "cuda",
                         raising=False)
@@ -360,7 +355,7 @@ def test_bgm_balances_the_lease_on_success(bgm_cfg, monkeypatch, tmp_path):
     out = tmp_path / "vocals.wav"
     out.write_bytes(b"RIFF")
     sep = _Sep(str(out))
-    _stub_seps(monkeypatch, [], sep)
+    _stub_seps(monkeypatch,sep)
 
     got = asyncio.run(bgm_separation.separate(str(tmp_path / "in.wav")))
 
@@ -371,7 +366,7 @@ def test_bgm_balances_the_lease_on_success(bgm_cfg, monkeypatch, tmp_path):
 
 
 def test_bgm_balances_the_lease_on_error(bgm_cfg, monkeypatch, tmp_path):
-    _stub_seps(monkeypatch, [], _Sep("", boom=RuntimeError("nope")))
+    _stub_seps(monkeypatch,_Sep("", boom=RuntimeError("nope")))
 
     with pytest.raises(bgm_separation.BgmSeparationError):
         asyncio.run(bgm_separation.separate(str(tmp_path / "in.wav")))
@@ -380,7 +375,7 @@ def test_bgm_balances_the_lease_on_error(bgm_cfg, monkeypatch, tmp_path):
 
 
 def test_bgm_balances_the_lease_on_cancel(bgm_cfg, monkeypatch, tmp_path):
-    _stub_seps(monkeypatch, [])
+    _stub_seps(monkeypatch)
 
     with pytest.raises(bgm_separation.BgmCancelled):
         asyncio.run(bgm_separation.separate(str(tmp_path / "in.wav"),
@@ -396,7 +391,7 @@ def test_bgm_balances_the_lease_on_cancel(bgm_cfg, monkeypatch, tmp_path):
 
 def test_diarize_live_release_is_not_charged_to_a_same_id_orphan(
         diar_cfg, monkeypatch, caplog):
-    _stub_pipes(monkeypatch, [])
+    _stub_pipes(monkeypatch)
     old = asyncio.run(diarization._get_pipeline("m1", lease=True))
     monkeypatch.setattr(diar_cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 8,
                         raising=False)
@@ -430,7 +425,7 @@ def test_diarize_live_release_is_not_charged_to_a_same_id_orphan(
 
 def test_bgm_live_release_is_not_charged_to_a_same_model_orphan(
         bgm_cfg, monkeypatch, caplog):
-    _stub_seps(monkeypatch, [])
+    _stub_seps(monkeypatch)
     old = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
     monkeypatch.setattr(bgm_cfg, "BGM_SEPARATION_DEVICE", "cuda", raising=False)
     live = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
