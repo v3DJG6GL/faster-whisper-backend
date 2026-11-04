@@ -91,6 +91,18 @@ def training_text(raw: str, final: str, *, model: Any, ident: Any,
     )
 
 
+def text_patch(stored_final: Any, stored_training: Any, final: str,
+               training: str | None) -> dict[str, str]:
+    """The columns a recompute changed; a None `training` (its pass failed)
+    changes nothing."""
+    patch: dict[str, str] = {}
+    if final != (stored_final or ""):
+        patch["final"] = final
+    if training is not None and training != (stored_training or ""):
+        patch["text_for_training"] = training
+    return patch
+
+
 def status() -> dict[str, Any]:
     with _state_lock:
         return dict(_state)
@@ -203,7 +215,6 @@ def _run_pass() -> None:
                 _state["processed"] += 1
             continue
         raw_text = r["raw"] or ""
-        patch: dict[str, str] = {}
         # Scope by the TEXT language ("en" for task=translate), as the
         # live run did — see captures_store.text_language.
         text_lang = captures_store.text_language(r)
@@ -221,8 +232,6 @@ def _run_pass() -> None:
             with _state_lock:
                 _state["processed"] += 1
             continue
-        if new_final != (r["final"] or ""):
-            patch["final"] = new_final
         try:
             new_training = training_text(
                 raw_text, new_final, model=r["model"], ident=ident,
@@ -234,8 +243,7 @@ def _run_pass() -> None:
                 cid[:8], e,
             )
             new_training = None
-        if new_training is not None and new_training != (r["text_for_training"] or ""):
-            patch["text_for_training"] = new_training
+        patch = text_patch(r["final"], r["text_for_training"], new_final, new_training)
         if patch:
             # Re-read the capture's CURRENT sample and its lock at the write,
             # holding the samples lock its merge / is_locked writes take: the

@@ -1036,11 +1036,8 @@ async def reprocess_capture_api(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "pipeline reprocessing failed",
             )
-        patch: dict[str, Any] = {}
-        if new_final != (row.get("final") or ""):
-            patch["final"] = new_final
-        if new_training != (row.get("text_for_training") or ""):
-            patch["text_for_training"] = new_training
+        patch = captures_reapply.text_patch(
+            row.get("final"), row.get("text_for_training"), new_final, new_training)
         updated = captures_store.update_capture(cid, patch) if patch else row
         return updated or row, list(patch.keys())
 
@@ -1978,10 +1975,8 @@ def _refresh_final_if_stale(
     if parent_locked:
         return
     raw = row.get("raw") or ""
-    stored_training = row.get("text_for_training") or ""
     if not raw:
         return
-    stored_final = row.get("final") or ""
     try:
         # The capture OWNER's pipeline, as /reprocess uses it: GLOBAL rules
         # here would write back text that silently reverts a per-identity
@@ -1992,10 +1987,6 @@ def _refresh_final_if_stale(
             raw, model=row.get("model"), ident=ident, language=text_lang)
     except Exception:
         return
-    patch: dict[str, Any] = {}
-    if fresh_final != stored_final:
-        patch["final"] = fresh_final
-        row["final"] = fresh_final
     # Training text too, even when `final` is current:
     # CAPTURES_PIPELINE_RULES_EXCLUDE can change without any PIPELINE_RULES
     # change.
@@ -2007,9 +1998,9 @@ def _refresh_final_if_stale(
         )
     except Exception:
         fresh_training = None
-    if fresh_training is not None and fresh_training != stored_training:
-        patch["text_for_training"] = fresh_training
-        row["text_for_training"] = fresh_training
+    patch = captures_reapply.text_patch(
+        row.get("final"), row.get("text_for_training"), fresh_final, fresh_training)
+    row.update(patch)
     if patch:
         try:
             captures_store.update_capture(row["id"], patch)
