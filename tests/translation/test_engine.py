@@ -791,9 +791,9 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _de_en(segs, mode="faithful"):
+def _de_en(segs, mode="faithful", **kwargs):
     return _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode=mode))
+        segs, ["en"], source_lang="de", mode=mode, **kwargs))
 
 
 @pytest.fixture()
@@ -1357,10 +1357,8 @@ def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
     """Three-arg callbacks get the last completed translation's tail."""
     _install_fake(monkeypatch, _xlate)
     tails = []
-    _run(translation.translate_segments(
-        _segs("Eins.", "Zwei.", _LONG_LINE), ["en"], source_lang="de",
-        mode="fluent",
-        progress_cb=lambda f, s=None, last_text=None, **kw: tails.append(last_text)))
+    _de_en(_segs("Eins.", "Zwei.", _LONG_LINE), "fluent",
+           progress_cb=lambda f, s=None, last_text=None, **kw: tails.append(last_text))
     assert any(t for t in tails)
     assert all(t is None or len(t) <= 160 for t in tails)
     assert any(t and len(t) == 160 for t in tails)     # the long one is capped
@@ -1379,9 +1377,7 @@ def test_progress_callback_raising_typeerror_fires_once(base_cfg, monkeypatch):
         calls.append((f, s))
         raise TypeError("internal bug")
 
-    res, warns, _ = _run(translation.translate_segments(
-        _segs("Eins."), ["en"], source_lang="de", mode="fluent",
-        progress_cb=cb))
+    res, warns, _ = _de_en(_segs("Eins."), "fluent", progress_cb=cb)
     assert warns == []
     assert res[0]["en"]
     # One call per tick (the start tick and the group tick), no ghost repeat.
@@ -2394,10 +2390,10 @@ def test_template_override_forces_custom_family_and_renders_it(
                         "SAVED {text}", raising=False)
     prompts = _record_complete(monkeypatch, "Hello world.")
 
-    res, warns, meta = _run(translation.translate_segments(
-        _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful",
+    res, warns, meta = _de_en(
+        _segs("Hallo Welt."),
         model_ref="tencent/HY-MT1.5-7B-GGUF:Q4",   # would detect hunyuan
-        template_override="OVERRIDE {text} -> {target_language}"))
+        template_override="OVERRIDE {text} -> {target_language}")
     assert res == [{"en": "Hello world."}]
     family, msgs = prompts[0]
     assert family == "custom"
@@ -2623,10 +2619,9 @@ class TestFamilyOverride:
         monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
                             "org/m-GGUF:Q4", raising=False)
         calls = _record_complete(monkeypatch, "ok")
-        results, warnings, meta = _run(translation.translate_segments(
-            [{"text": "Hallo"}], ["en"], source_lang="de", mode="faithful",
-            family_override="seedx",
-            template_override="stale {text} {target_language}"))
+        results, warnings, meta = _de_en(
+            [{"text": "Hallo"}], family_override="seedx",
+            template_override="stale {text} {target_language}")
         family, prompt = calls[-1]
         assert family == "seedx"
         # seedx is a raw family: the prompt is the builder's string, and the
