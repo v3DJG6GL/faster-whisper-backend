@@ -550,7 +550,7 @@ console.log(JSON.stringify({ span: span, heal: chip.wrong,
 def _heal_fns(page):
     """renderChips and its heal helpers, with a do-nothing DOM."""
     return _chip_max(page) + _js_functions(page, "_dispWord", "_dispRemoved", "recomputeWrong",
-                                           "renderChips", "markDirty") + r"""
+                                           "renderChips", "markDirty", "_el") + r"""
 function el() { return { classList: { remove: function() {} },
   appendChild: function() {}, addEventListener: function() {} }; }
 global.document = { createElement: el };
@@ -944,7 +944,7 @@ global.clearInterval = function() {};
 
 
 def _batch_fns(page):
-    return _js_functions(page, "_renderBatchCard", "_advanceBatch") + "\n"
+    return _js_functions(page, "_renderBatchCard", "_advanceBatch", "_el") + "\n"
 
 
 def _batch_reload_harness(page):
@@ -1130,7 +1130,7 @@ def test_batch_open_superseded_while_loading_waits_for_the_latest_reload(
     session: the card showed (and auto-played) a stale proposal, live for an
     Accept that the newer reload then released mid-POST."""
     fns = _js_functions(page, "_loadProposals", "_openProposeModal", "_enterBatchMode",
-                        "_renderBatchCard", "_advanceBatch")
+                        "_renderBatchCard", "_advanceBatch", "_el")
     out = _run_node(tmp_path, fns + _BATCH_STUBS + r"""
 var _filtSpeakers = [], gets = [], cards = [], shown = false, _batchKeyHandler = null;
 _batchActive = false;

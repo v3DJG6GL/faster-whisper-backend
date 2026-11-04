@@ -2570,24 +2570,17 @@
     }
     refreshAllReplacementsInline(state);
     if (state.corrections.length === 0) {
-      var empty = document.createElement('span');
-      empty.className = 'help';
-      empty.textContent = '(none yet — click a word above)';
+      var empty = _el('span', 'help', '(none yet — click a word above)');
       box.appendChild(empty);
       return;
     }
     state.corrections.forEach(function(c, i) {
-      var chip = document.createElement('div');
-      chip.className = 'cc-correction';
+      var chip = _el('div', 'cc-correction');
 
-      var w = document.createElement('span');
-      w.className = 'wrong';
-      w.textContent = c.wrong || '?';
+      var w = _el('span', 'wrong', c.wrong || '?');
       chip.appendChild(w);
 
-      var arrow = document.createElement('span');
-      arrow.className = 'arrow';
-      arrow.textContent = '→';
+      var arrow = _el('span', 'arrow', '→');
       chip.appendChild(arrow);
 
       var inp = document.createElement('input');
@@ -2629,10 +2622,8 @@
       });
       chip.appendChild(inp);
 
-      var rm = document.createElement('button');
-      rm.className = 'remove';
+      var rm = _el('button', 'remove', '×');
       rm.type = 'button';
-      rm.textContent = '×';
       rm.addEventListener('click', function() {
         removeChip(state, i);
       });
@@ -4595,8 +4586,7 @@
     }
     var p = _proposals[0];
 
-    var banner = document.createElement('div');
-    banner.className = 'batch-banner';
+    var banner = _el('div', 'batch-banner');
     banner.innerHTML = '<span>Reviewing <span class="count">'
       + 1 + ' / ' + _proposals.length + '</span></span>'
       + '<span class="spacer"></span>'
@@ -4604,8 +4594,7 @@
       + '<span class="count">' + _batchDismissed + '</span> dismissed</span>';
     host.appendChild(banner);
 
-    var card = document.createElement('div');
-    card.className = 'batch-card';
+    var card = _el('div', 'batch-card');
     // CSS hides this card's own Accept; the action row below replaces it.
     card.appendChild(_buildProposalCard(p));
     host.appendChild(card);
@@ -4613,28 +4602,25 @@
 
     // Revert sits far left, away from Dismiss/Accept, so it is not
     // mis-tapped. Replay is ⏮, not a curved arrow, so it cannot read as undo.
-    var actions = document.createElement('div');
-    actions.className = 'batch-actions';
-    var revertBtn = document.createElement('button');
-    revertBtn.type = 'button'; revertBtn.className = 'revert';
+    var actions = _el('div', 'batch-actions');
+    var revertBtn = _el('button', 'revert');
+    revertBtn.type = 'button';
     revertBtn.title = 'Revert last action (Ctrl+↓)';
     revertBtn.setAttribute('aria-label', 'Revert last action');
     revertBtn.appendChild(_svgIcon('undo'));
     revertBtn.disabled = !_batchUndo;
     revertBtn.addEventListener('click', function() { _revertBatch(); });
-    var dismissBtn = document.createElement('button');
-    dismissBtn.type = 'button'; dismissBtn.className = 'dismiss';
-    dismissBtn.textContent = '✗ Dismiss';
+    var dismissBtn = _el('button', 'dismiss', '✗ Dismiss');
+    dismissBtn.type = 'button';
     dismissBtn.addEventListener('click', function() { _advanceBatch('dismiss'); });
-    var replayBtn = document.createElement('button');
-    replayBtn.type = 'button'; replayBtn.className = 'replay';
+    var replayBtn = _el('button', 'replay');
+    replayBtn.type = 'button';
     replayBtn.title = 'Replay from start (Ctrl+↑)';
     replayBtn.setAttribute('aria-label', 'Replay audio from start');
     replayBtn.appendChild(_svgIcon('skipprev'));
     replayBtn.addEventListener('click', function() { _batchReplay(); });
-    var acceptBtn = document.createElement('button');
-    acceptBtn.type = 'button'; acceptBtn.className = 'accept primary';
-    acceptBtn.textContent = '✓ Accept';
+    var acceptBtn = _el('button', 'accept primary', '✓ Accept');
+    acceptBtn.type = 'button';
     acceptBtn.addEventListener('click', function() { _advanceBatch('accept'); });
     actions.appendChild(revertBtn);
     actions.appendChild(dismissBtn);
@@ -4642,10 +4628,9 @@
     actions.appendChild(acceptBtn);
     host.appendChild(actions);
 
-    var hint = document.createElement('div');
-    hint.className = 'batch-hint';
-    hint.textContent = 'Ctrl+← Dismiss · Ctrl+→ Accept · Ctrl+↓ Revert · '
-      + 'Ctrl+Space pause · Ctrl+↑ Replay · Esc Exit';
+    var hint = _el('div', 'batch-hint',
+      'Ctrl+← Dismiss · Ctrl+→ Accept · Ctrl+↓ Revert · '
+      + 'Ctrl+Space pause · Ctrl+↑ Replay · Esc Exit');
     host.appendChild(hint);
 
     card.addEventListener('touchstart', _onBatchTouchStart, { passive: true });
