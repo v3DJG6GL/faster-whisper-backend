@@ -17,16 +17,12 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    const_pcm, handshake as _handshake, speak_and_stop, stream_ws, ws_drain)
+    const_pcm, drain_frames as _drain, handshake as _handshake, speak_and_stop, stream_ws)
 from tests._transcription_helpers import guard_line
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
 _pcm = const_pcm
-
-
-def _drain(ws, limit=200):
-    return ws_drain(ws, limit)[0]
 
 
 def test_stream_happy_path_partials_then_final(app_module, monkeypatch, energy_vad):

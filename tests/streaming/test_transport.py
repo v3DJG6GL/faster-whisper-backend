@@ -18,7 +18,7 @@ from faster_whisper_backend.streaming.transport import (
     RawPcmTransport,
     make_transport,
 )
-from tests._streaming_helpers import handshake, ws_drain
+from tests._streaming_helpers import drain_frames, handshake, ws_drain
 
 
 def test_ffmpeg_exe_resolves_to_runnable_binary():
@@ -234,7 +234,7 @@ def test_stream_route_ends_the_session_when_the_decoder_dies(app_module, monkeyp
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             assert handshake(ws, audio={"format": "webm"})["type"] == "ready"
             ws.send_bytes(b"\x1a\x45\xdf\xa3 corrupt")
-            msgs = ws_drain(ws, 50)[0]
+            msgs = drain_frames(ws, 50)
     errors = [m for m in msgs if m.get("type") == "error"]
     assert [m["code"] for m in errors] == ["decoder_failed"], msgs
     assert len(feeds) == 1

@@ -10,7 +10,8 @@ import pytest
 
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
-    config_drain, config_frame, const_pcm, handshake, speak_and_stop, stream_ws, ws_drain)
+    config_drain, config_frame, const_pcm, drain_frames as _drain, handshake, speak_and_stop,
+    stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -19,10 +20,6 @@ OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
 _pcm = const_pcm
-
-
-def _drain(ws, limit=200):
-    return ws_drain(ws, limit)[0]
 
 
 def _profile(client, h, name, **fields):

@@ -45,6 +45,11 @@ def ws_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     return msgs, None
 
 
+def drain_frames(ws, limit: int = 200) -> list[dict]:
+    """``ws_drain`` without the close code."""
+    return ws_drain(ws, limit)[0]
+
+
 def stream_ws(client, raw_key):
     """Open the streaming socket with ``raw_key``'s bearer header (use as ``with``)."""
     return client.websocket_connect(
@@ -56,7 +61,7 @@ def config_drain(client, raw_key, limit: int = 200) -> list[dict]:
     return every frame up to the server's close (``ws_drain``)."""
     with stream_ws(client, raw_key) as ws:
         ws.send_json(config_frame())
-        return ws_drain(ws, limit)[0]
+        return drain_frames(ws, limit)
 
 
 def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
