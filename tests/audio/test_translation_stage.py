@@ -106,11 +106,9 @@ def test_translation_disabled_soft_fails_with_progress_skip(
 
 
 def test_translation_allowlist_miss_soft_fails(client, app_module, monkeypatch):
-    enable_translation(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
-                        "org/default-GGUF:Q4", raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
-                        {"org/allowed-GGUF:Q4"}, raising=False)
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4",
+                       TRANSLATION_ALLOWED_MODELS={"org/allowed-GGUF:Q4"})
     calls = _stub_translate(monkeypatch)
 
     body = _post_ok(client, translate_to="en", translation_model="org/other-GGUF:Q4")
@@ -129,8 +127,7 @@ def test_translation_allowlist_miss_soft_fails(client, app_module, monkeypatch):
 
 def test_translate_to_clamped_to_max_targets_with_warning(
         client, app_module, monkeypatch):
-    enable_translation(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
+    enable_translation(app_module, monkeypatch, TRANSLATION_MAX_TARGETS=3)
     # Ask for 5 (+ a malformed entry and a duplicate, both dropped silently
     # BEFORE the clamp).
     calls = _stub_translate(monkeypatch)
@@ -185,9 +182,7 @@ def test_invalid_translation_mode_is_422(client):
 
 
 def test_captures_never_store_translated_text(client, app_module, monkeypatch, created_captures):
-    enable_translation(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True)
     _stub_translate(monkeypatch)
 
     assert _post_ok(client, translate_to="en")["translations"]["en"] == "XLATED-en"  # the stage ran
@@ -262,8 +257,7 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
 
 def test_context_segments_form_field_inherit_value_clamp(
         client, app_module, monkeypatch):
-    enable_translation(app_module, monkeypatch)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3)
+    enable_translation(app_module, monkeypatch, TRANSLATION_CONTEXT_SEGMENTS=3)
     calls = _stub_translate(monkeypatch)
     assert _post(client, translate_to="en").status_code == 200
     assert calls[-1]["context_segments"] == 3          # absent → inherit
