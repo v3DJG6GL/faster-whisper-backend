@@ -2489,6 +2489,11 @@ function _hideStripSoon() {
     strip.classList.remove('fade-out');
   }, 3000);
 }
+function _stripErr(text) {
+  const strip = document.getElementById('reapply-strip');
+  strip.classList.add('err');
+  strip.querySelector('.r-label').textContent = text;
+}
 async function _pollStripOnce() {
   let r;
   try { r = await api('GET', '/quick-config/reapply-rules/status'); }
@@ -2498,10 +2503,7 @@ async function _pollStripOnce() {
     // polling: stop instead of re-polling every 1.5 s for the tab's life.
     if (r.status === 401 || r.status === 403) {
       if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
-      const strip = document.getElementById('reapply-strip');
-      strip.classList.add('err');
-      strip.querySelector('.r-label').textContent =
-        'Re-apply status unavailable (HTTP ' + r.status + ')';
+      _stripErr('Re-apply status unavailable (HTTP ' + r.status + ')');
     }
     return null;
   }
@@ -2526,27 +2528,21 @@ async function _pollStripOnce() {
     if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
     _hideStripSoon();
   } else if (s.status === 'error') {
-    label.textContent = 'Re-apply failed: ' + (s.error || 'unknown');
-    strip.classList.add('err');
+    _stripErr('Re-apply failed: ' + (s.error || 'unknown'));
     if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
   } else if (s.status === 'idle') {
     // The job state lives in memory: 'idle' while a job was being polled
     // means the server restarted mid-job (or captures were turned off).
     // Terminal, like on the start path; the interval would otherwise run
     // for the life of the tab under a stale "Re-applying rules…".
-    label.textContent = 'Re-apply interrupted (server restarted?)';
-    strip.classList.add('err');
+    _stripErr('Re-apply interrupted (server restarted?)');
     if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
   }
   return s.status || null;
 }
 async function startReapplyJobSilent(n) {
   _showStrip(n);
-  const fail = (why) => {
-    const strip = document.getElementById('reapply-strip');
-    strip.classList.add('err');
-    strip.querySelector('.r-label').textContent = 'Re-apply failed: ' + why;
-  };
+  const fail = (why) => _stripErr('Re-apply failed: ' + why);
   let r;
   try { r = await api('POST', '/quick-config/reapply-rules'); }
   catch (e) { fail(String(e)); return; }
