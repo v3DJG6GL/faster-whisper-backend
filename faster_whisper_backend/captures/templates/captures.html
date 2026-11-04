@@ -1503,19 +1503,13 @@
     }).filter(Boolean));
     var tasks = new Set(rows.map(function(r) { return r.task || 'transcribe'; }));
     var mixedLangTask = langs.size > 1 || tasks.size > 1;
-    if (mixedUsers) {
-      warn.textContent = '⚠ multiple speakers — merging not allowed';
-      warn.style.color = 'var(--red)';
-    } else if (hasInSample) {
-      warn.textContent = '⚠ selection includes captures already in a sample';
-      warn.style.color = 'var(--red)';
-    } else if (mixedLangTask) {
-      warn.textContent = '⚠ ' + (langs.size > 1 ? 'multiple languages' : 'transcribe + translate mixed')
-        + ' — merging not allowed';
-      warn.style.color = 'var(--red)';
-    } else {
-      warn.textContent = '';
-    }
+    var why = mixedUsers ? '⚠ multiple speakers — merging not allowed'
+      : hasInSample ? '⚠ selection includes captures already in a sample'
+      : mixedLangTask ? '⚠ ' + (langs.size > 1 ? 'multiple languages' : 'transcribe + translate mixed')
+        + ' — merging not allowed'
+      : '';
+    warn.textContent = why;
+    if (why) warn.style.color = 'var(--red)';
 
     // A bulk-sized selection (select all) is never a merge candidate: skip
     // the trimmed-duration estimate (500 ids per keystroke) and keep Merge off.
