@@ -128,12 +128,16 @@ def test_words_included_with_granularity_field(client, app_module):
     assert [w["word"] for w in r.json()["words"]] == ["hallo", "welt"]
 
 
-def test_model_transcribe_raises_returns_500(client, app_module, monkeypatch):
-    class BoomModel(FakeModel):
+def _serve_failing_decode(monkeypatch, msg):
+    """Every load returns a model whose transcribe() raises RuntimeError(msg)."""
+    class _Failing(FakeModel):
         def transcribe(self, path, **kwargs):
-            raise RuntimeError("decode blew up")
+            raise RuntimeError(msg)
+    serve_model(monkeypatch, _Failing())
 
-    serve_model(monkeypatch, BoomModel())
+
+def test_model_transcribe_raises_returns_500(client, app_module, monkeypatch):
+    _serve_failing_decode(monkeypatch, "decode blew up")
     r = _post(client, response_format="json")
     assert r.status_code == 500
 
@@ -557,11 +561,7 @@ def _ledger_row():
 
 
 def test_cuda_oom_is_classified_on_the_ledger(client, app_module, monkeypatch):
-    class OomModel(FakeModel):
-        def transcribe(self, path, **kwargs):
-            raise RuntimeError("CUDA failed with error out of memory")
-
-    serve_model(monkeypatch, OomModel())
+    _serve_failing_decode(monkeypatch, "CUDA failed with error out of memory")
     r = _post(client, response_format="json")
     assert r.status_code == 500
     row = _ledger_row()
@@ -581,11 +581,7 @@ def test_unknown_failure_is_other_and_success_has_no_class(client, app_module,
     ok = _ledger_row()
     assert ok["error_class"] is None and ok["error_stage"] is None
 
-    class BoomModel(FakeModel):
-        def transcribe(self, path, **kwargs):
-            raise RuntimeError("decode blew up")
-
-    serve_model(monkeypatch, BoomModel())
+    _serve_failing_decode(monkeypatch, "decode blew up")
     assert _post(client, response_format="json").status_code == 500
     row = _ledger_row()
     assert (row["error_class"], row["error_stage"]) == ("other", "transcribing")
