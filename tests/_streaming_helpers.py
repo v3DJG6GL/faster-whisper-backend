@@ -84,6 +84,21 @@ def collector():
     return items, sink
 
 
+def const_final(text: str = "", dropped_all: bool = False):
+    """Fake decode_final that always returns ``(text, [], dropped_all)``."""
+    async def decode_final(audio, prompt):
+        return (text, [], dropped_all)
+    return decode_final
+
+
+def const_partial(*words):
+    """Fake decode_partial that always returns ``list(words)``
+    (``(start, end, text)`` triples)."""
+    async def decode_partial(audio, prompt):
+        return list(words)
+    return decode_partial
+
+
 async def _no_partial(audio, prompt):
     return []
 

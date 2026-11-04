@@ -16,19 +16,17 @@ import asyncio
 import pytest
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, collector, const_pcm as _pcm, fast_config as _cfg,
-    inert_session)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm as _pcm,
+    fast_config as _cfg, inert_session)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import CloseAbort
 
 
 def _session(*, decode_partial=None, decode_final=None, on_final=None, cfg=None,
              endpointer=None, postprocess=lambda raw: raw):
-    async def _df(audio, prompt):
-        return ("hallo welt.", [], False)
-
     return inert_session(cfg or _cfg(), decode_partial=decode_partial,
-                         decode_final=decode_final or _df, endpointer=endpointer,
+                         decode_final=decode_final or const_final("hallo welt."),
+                         endpointer=endpointer,
                          postprocess=postprocess, on_final=on_final)
 
 
@@ -138,10 +136,7 @@ def test_gate_with_no_text_emits_dropped_no_speech_and_spends_the_ordinal():
 def test_empty_document_emits_dropped_empty():
     """The decode ran and threw everything away as a hallucination: nothing to
     put in a ``final``, so the cycle is closed explicitly."""
-    async def _df(audio, prompt):
-        return ("", [], True)
-
-    s, msgs = _session(decode_final=_df)
+    s, msgs = _session(decode_final=const_final(dropped_all=True))
 
     feed_levels(s, (8000, 500), (0, 400))
     assert _utt(msgs) == [("open", 0), ("decoding", 0), ("dropped", 0)]
@@ -160,14 +155,12 @@ def test_failed_final_decode_falls_back_to_the_partial_transcript():
     calls = []
     infos, _on_final = collector()
 
-    async def _dp(audio, prompt):
-        return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
-
     async def _df(audio, prompt):
         calls.append(1)
         raise RuntimeError("CUDA out of memory")
 
-    s, msgs = _session(decode_partial=_dp, decode_final=_df, on_final=_on_final)
+    s, msgs = _session(decode_partial=const_partial((0.0, 0.3, " hallo"), (0.3, 0.6, " welt")),
+                       decode_final=_df, on_final=_on_final)
 
     feed_levels(s, (8000, 500), (0, 400))     # does not raise
     finals = [m for m in msgs if m["type"] == "final"]

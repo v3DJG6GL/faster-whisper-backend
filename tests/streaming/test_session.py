@@ -9,7 +9,8 @@ import asyncio
 
 import pytest
 
-from tests._streaming_helpers import const_pcm, fast_config, inert_session
+from tests._streaming_helpers import (
+    const_final, const_partial, const_pcm, fast_config, inert_session)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 
@@ -189,14 +190,8 @@ _pcm = const_pcm
 
 def test_pcm_loop_emits_partials_then_a_final_after_silence():
     cfg = fast_config()
-
-    async def decode_partial(audio, prompt):
-        return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
-
-    async def decode_final(audio, prompt):
-        return ("hallo welt.", [], False)
-
-    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
+    s, msgs = _make_session(decode_partial=const_partial((0.0, 0.3, " hallo"), (0.3, 0.6, " welt")),
+                            decode_final=const_final("hallo welt."), cfg=cfg)
 
     feed_levels(s, (8000, 500),   # ~0.5 s speech (loud)
                 (0, 400))     # ~0.4 s silence → finalize
@@ -216,11 +211,7 @@ def test_hard_break_resets_document_after_long_silence():
     `boundary` marker (carrying the separator) and reset the accumulated document,
     without closing the connection. Fires once per quiet gap."""
     cfg = fast_config(hard_break_silence_ms=500, hard_break_separator="\n")
-
-    async def decode_final(audio, prompt):
-        return ("hallo welt.", [], False)
-
-    s, msgs = _make_session(decode_final=decode_final, cfg=cfg)
+    s, msgs = _make_session(decode_final=const_final("hallo welt."), cfg=cfg)
 
     feed_levels(s, (8000, 300),   # speech → one utterance
                 (0, 700))     # silence: finalize (192 ms) then hard break (500 ms)
@@ -336,14 +327,10 @@ def test_all_dropped_final_keeps_empty_and_does_not_resurrect_partials():
     drop — it still holds that hallucination — so the empty-decode fallback must
     NOT resurrect it."""
     cfg = fast_config()
-
-    async def decode_partial(audio, prompt):
-        return [(0.0, 0.3, " thank"), (0.3, 0.6, " you")]   # the hallucination
-
-    async def decode_final(audio, prompt):
-        return ("", [], True)   # decode produced segments, dropped them ALL
-
-    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
+    s, msgs = _make_session(
+        decode_partial=const_partial((0.0, 0.3, " thank"), (0.3, 0.6, " you")),  # the hallucination
+        decode_final=const_final(dropped_all=True),  # decode produced segments, dropped them ALL
+        cfg=cfg)
 
     async def run():
         await s.feed_pcm(_pcm(8000, 500))   # speech → partials commit "thank you"
@@ -365,14 +352,9 @@ def test_empty_final_still_falls_back_to_localagreement():
     filter trimmed the buffer), the partial-built transcript is still used so a
     momentary final-decode miss doesn't silently drop spoken text."""
     cfg = fast_config()
-
-    async def decode_partial(audio, prompt):
-        return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
-
-    async def decode_final(audio, prompt):
-        return ("", [], False)   # genuinely empty decode (no segments)
-
-    s, msgs = _make_session(decode_partial=decode_partial, decode_final=decode_final, cfg=cfg)
+    s, msgs = _make_session(decode_partial=const_partial((0.0, 0.3, " hallo"), (0.3, 0.6, " welt")),
+                            decode_final=const_final(),  # genuinely empty decode (no segments)
+                            cfg=cfg)
 
     feed_levels(s, (8000, 500),
                 (0, 400))     # silence → finalize (empty → fall back)

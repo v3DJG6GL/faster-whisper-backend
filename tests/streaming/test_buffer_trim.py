@@ -16,8 +16,8 @@ import asyncio
 import numpy as np
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, collector, const_pcm, fast_config, handshake, inert_session,
-    ws_drain)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm, fast_config,
+    handshake, inert_session, ws_drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
@@ -198,16 +198,13 @@ def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = 
     msgs, emit = collector()
     decoded: list[float] = []
 
-    async def decode_partial(audio, prompt):
-        return []
-
     async def decode_final(audio, prompt):
         decoded.append(audio.shape[0] / SR)
         return (" chunk.", [], False)
 
     s = StreamSession(
         config=cfg, endpointer=_AlwaysSpeech(),
-        decode_partial=decode_partial, decode_final=decode_final,
+        decode_partial=const_partial(), decode_final=decode_final,
         postprocess=lambda raw: raw, emit=emit,
     )
     s._skip_partials = skip_partials
@@ -370,11 +367,7 @@ def test_buffer_counter_matches_the_array_after_every_frame():
     """Drive the real pump through speech, a mid-utterance trim, a finalize and
     trailing silence — every writer must leave counter and array agreeing."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
-
-    async def decode_final(audio, prompt):
-        return (" tail.", [], False)
-
-    s = _grid_session([], cfg, decode_final)
+    s = _grid_session([], cfg, const_final(" tail."))
 
     trimmed = []  # _trimmed_text is cleared by the finalize, so watch it live
 

@@ -22,8 +22,8 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, collector, const_pcm as _pcm, fast_config, handshake as _config,
-    speak_and_stop, ws_drain as _drain)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
+    handshake as _config, speak_and_stop, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
 from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamSession
@@ -152,11 +152,7 @@ def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
     trim-banked prefix), so the captured text and words match."""
     cfg = fast_config(buffer_trim_sec=2.0 if trim else 100.0, buffer_trim_keep_sec=1.0)
     finals_meta, on_final = collector()
-
-    async def decode_final(audio, prompt):
-        return ("", [], False)
-
-    s = _grid_session([], cfg, decode_final, on_final=on_final)
+    s = _grid_session([], cfg, const_final(), on_final=on_final)
 
     feed_levels(s, (8000, 3500), (0, 400))
     info = finals_meta[-1]
