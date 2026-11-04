@@ -23,7 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import Field, ValidationError
 
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config as cfg
@@ -293,8 +293,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     return await pl_apply.run_to_end(_locked())
 
 
-class _RenameProfileIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class _RenameProfileIn(web_common.StrictIn):
     old: str = Field(min_length=1)
     new: str = Field(min_length=1)
 

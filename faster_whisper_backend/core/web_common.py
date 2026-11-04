@@ -9,6 +9,8 @@ import functools
 import logging
 from collections import deque
 
+from pydantic import BaseModel
+
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.core import templates
@@ -93,6 +95,11 @@ PAGE_NO_CACHE_HEADERS = {
     "Pragma": "no-cache",
     "Expires": "0",
 }
+
+
+class StrictIn(BaseModel):
+    """Request body that 422s an unknown field."""
+    model_config = {"extra": "forbid"}
 
 
 def sse_response(generator):

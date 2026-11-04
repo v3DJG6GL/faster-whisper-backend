@@ -36,7 +36,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from faster_whisper_backend.admin import overrides_routes
 from faster_whisper_backend.auth import api_keys_store
@@ -59,26 +59,23 @@ router = APIRouter(
 )
 
 
-class CreateUserIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class CreateUserIn(web_common.StrictIn):
     username: str = Field(min_length=1, max_length=128)
     is_admin: bool = False
 
 
-class CreateKeyIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class CreateKeyIn(web_common.StrictIn):
     label: str = Field(default="", max_length=128)
 
 
-class RenameKeyIn(BaseModel):
+class RenameKeyIn(web_common.StrictIn):
     """Wire shape for PATCH /api/users/{uid}/keys/{kid}/label. A label is
     required (the store rejects blank) — renaming only touches the display
     label, never the secret."""
-    model_config = {"extra": "forbid"}
     label: str = Field(max_length=128)
 
 
-class ConfigBindingIn(BaseModel):
+class ConfigBindingIn(web_common.StrictIn):
     """Wire shape for a per-identity config binding — shared by the per-user
     `config` field on PatchPermissionsIn and the per-key /config endpoint.
     `overrides` is a flat OverrideProfile-shaped dict (decode/streaming fields
@@ -98,7 +95,6 @@ class ConfigBindingIn(BaseModel):
     it resolves to plain defaults. It does NOT inherit and is NOT bound by
     ALLOW_REQUEST_OVERRIDE_PROFILE; None/absent = off.
     """
-    model_config = {"extra": "forbid"}
     overrides: dict[str, Any] = Field(default_factory=dict)
     profiles: list[str] = Field(default_factory=list)
     locks: list[str] = Field(default_factory=list)
@@ -108,7 +104,7 @@ class ConfigBindingIn(BaseModel):
     apply_no_profiles: bool | None = None
 
 
-class PatchPermissionsIn(BaseModel):
+class PatchPermissionsIn(web_common.StrictIn):
     """Payload for PATCH /api/users/{uid}/permissions.
 
     `pages` is a partial map — only the cells the admin changed need
@@ -122,7 +118,6 @@ class PatchPermissionsIn(BaseModel):
     stored value untouched" — useful for cell-level saves that only
     touched pages. An empty list `[]` is explicit "clear all tags"
     (user sees only untagged rules)."""
-    model_config = {"extra": "forbid"}
     pages: dict[str, str] = Field(default_factory=dict)
     quick_config_tags: list[str] | None = None
     # Per-user config binding (override profiles + direct override blob + per-
@@ -132,12 +127,11 @@ class PatchPermissionsIn(BaseModel):
     config: ConfigBindingIn | None = None
 
 
-class ImportClientSettingsIn(BaseModel):
+class ImportClientSettingsIn(web_common.StrictIn):
     """Wire shape for POST /api/users/{uid}/client-settings/import — the
     WebUI's restore path. `blob` is a full opaque settings document (the
     desktop export's `categories` object, or a file previously downloaded
     with Export here); the route force-writes it, so no base_version."""
-    model_config = {"extra": "forbid"}
     blob: dict[str, Any]
 
 

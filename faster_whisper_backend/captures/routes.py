@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse,
 )
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
@@ -190,9 +190,7 @@ def _refuse_over_cap(chip_lists: Iterable[list[Any] | None], holder: str) -> Non
 _ReviewStatus = Literal["new", "reviewed", "ready", "dismissed"]
 
 
-class _StrictIn(BaseModel):
-    """Request body that 422s an unknown field."""
-    model_config = {"extra": "forbid"}
+_StrictIn = web_common.StrictIn
 
 
 class CorrectionIn(_StrictIn):

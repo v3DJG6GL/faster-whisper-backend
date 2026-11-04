@@ -38,20 +38,20 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from faster_whisper_backend.client_settings import store as client_settings_store
 from faster_whisper_backend.auth.dependencies import get_current_user
+from faster_whisper_backend.core import web_common
 
 router = APIRouter(prefix="/v1")
 
 
-class PutClientSettings(BaseModel):
+class PutClientSettings(web_common.StrictIn):
     """PUT body. `blob` must be a JSON OBJECT (not any scalar) so a stored
     blob can never be confused with the `blob: null` zero-state on GET.
     The server never interprets its keys. `base_version` echoes the version
     the client last saw; 0 (or absent row semantics) means "create"."""
-    model_config = {"extra": "forbid"}
     blob: dict[str, Any]
     # Bounded: pydantic accepts arbitrary-precision JSON ints, and anything
     # past SQLite's INTEGER would OverflowError (a 500) in the store's CAS.
