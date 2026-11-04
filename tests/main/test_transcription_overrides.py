@@ -11,7 +11,7 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.translation import gating as tr_gating
 from tests._transcription_helpers import (
-    WAV_UPLOAD as _FILE, bind_profile, post_transcription, post_verbose_ok)
+    bind_profile, post_transcription, post_verbose_ok)
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
@@ -75,8 +75,7 @@ def test_unknown_language_is_a_422_before_the_decode(client, make_user_key,
     for route in ("/v1/audio/transcriptions", "/v1/audio/translations"):
         for sent in ("xx", "auto", "english"):
             fake_model.last_kwargs = {}
-            r = client.post(route, files=_FILE, headers=bearer(raw),
-                            data={"model": "whisper-1", "language": sent})
+            r = post_transcription(client, bearer(raw), route=route, language=sent)
             assert r.status_code == 422, (route, sent, r.text)
             assert repr(sent) in r.json()["detail"], (route, sent)
             assert fake_model.last_kwargs == {}, (route, sent)

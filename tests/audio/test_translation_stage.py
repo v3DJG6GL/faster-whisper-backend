@@ -7,8 +7,8 @@ import json
 
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile
+from tests._transcription_helpers import post_translation
 from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import watch_progress
@@ -273,13 +273,11 @@ def test_context_segments_form_field_inherit_value_clamp(
     assert calls[-1]["context_segments"] == 10         # clamped to the field
     # /v1/audio/translations forwards it (an omitted argument would be the
     # Form FieldInfo, not None).
-    r = client.post("/v1/audio/translations", files=_FILE,
-                    data={"model": "whisper-1", "response_format": "verbose_json",
-                          "translate_to": "fr", "context_segments": "5"})
+    r = post_translation(client, response_format="verbose_json",
+                         translate_to="fr", context_segments="5")
     assert r.status_code == 200, r.text
     assert calls[-1]["context_segments"] == 5
-    r = client.post("/v1/audio/translations", files=_FILE,
-                    data={"model": "whisper-1", "translate_to": "fr"})
+    r = post_translation(client, translate_to="fr")
     assert r.status_code == 200, r.text
     assert calls[-1]["context_segments"] == 3
 

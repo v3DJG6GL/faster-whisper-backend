@@ -6,6 +6,7 @@ import pytest
 
 from faster_whisper_backend.transcription import jobs_store as js
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests._transcription_helpers import post_translation
 from tests.conftest import bearer
 from faster_whisper_backend.media import video as media_video
 
@@ -63,8 +64,7 @@ def test_post_without_progress_id_creates_no_row(client):
 
 
 def test_audio_translations_forward_lands_with_task_translate(client):
-    r = client.post("/v1/audio/translations", files=_FILE,
-                    data={"model": "whisper-1", "progress_id": _PID})
+    r = post_translation(client, progress_id=_PID)
     assert r.status_code == 200, r.text
     row = client.get(f"/v1/jobs/{_PID}").json()
     assert row["kind"] == "transcribe" and row["task"] == "translate"

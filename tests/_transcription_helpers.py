@@ -1,5 +1,5 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
-(the stub upload, a plain / verbose_json post, a 200-checked body fetch, the progress GET and cancel
+(the stub upload, a plain / verbose_json / translations post, a 200-checked body fetch, the progress GET and cancel
 POST, a profile-bound non-admin key, the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a _load_blocking recorder, a gated model_registry write, a cancel while that
 write is held or queued, its post-condition).
@@ -16,12 +16,16 @@ from tests.conftest import bearer, write_wav
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
 
-def post_transcription(client, headers=None, files=WAV_UPLOAD, **data):
-    """POST `files` (default the stub upload) with form fields `data` (model
-    defaults to whisper-1)."""
+def post_transcription(client, headers=None, files=WAV_UPLOAD,
+                       route="/v1/audio/transcriptions", **data):
+    """POST `files` (default the stub upload) to `route` with form fields
+    `data` (model defaults to whisper-1)."""
     data.setdefault("model", "whisper-1")
-    return client.post("/v1/audio/transcriptions", files=files, data=data,
-                       headers=headers)
+    return client.post(route, files=files, data=data, headers=headers)
+
+
+def post_translation(client, headers=None, **data):
+    return post_transcription(client, headers, route="/v1/audio/translations", **data)
 
 
 def post_verbose(client, headers=None, **data):

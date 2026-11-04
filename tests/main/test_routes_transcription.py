@@ -19,8 +19,8 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.transcription import run_plan
 from tests._transcription_helpers import (
-    WAV_UPLOAD as _FILE, fail_model_load, get_progress, post_transcription as _post,
-    post_verbose_ok, record_runs, serve_model, watch_progress)
+    fail_model_load, get_progress, post_transcription as _post,
+    post_translation, post_verbose_ok, record_runs, serve_model, watch_progress)
 
 
 def test_default_json_returns_text_object(client):
@@ -39,8 +39,7 @@ def test_text_format_returns_plain_string(client):
 
 
 def test_translations_text_format_returns_plain_string(client):
-    r = client.post("/v1/audio/translations", files=_FILE,
-                    data={"model": "whisper-1", "response_format": "text"})
+    r = post_translation(client, response_format="text")
     assert r.status_code == 200, r.text
     assert r.text == "hallo welt"
     assert r.headers["content-type"].startswith("text/plain")
@@ -99,8 +98,7 @@ def test_vtt_format_returns_a_webvtt_document(client, fake_model, monkeypatch):
 
 
 def test_translations_srt_format_returns_a_subrip_document(client):
-    r = client.post("/v1/audio/translations", files=_FILE,
-                    data={"model": "whisper-1", "response_format": "srt"})
+    r = post_translation(client, response_format="srt")
     assert r.status_code == 200, r.text
     assert r.text == "1\n00:00:00,000 --> 00:00:01,000\nhallo welt\n"
 
@@ -269,10 +267,7 @@ def test_task_invalid_is_422(client):
 
 
 def test_translations_endpoint_pins_task(client, fake_model):
-    r = client.post(
-        "/v1/audio/translations", files=_FILE,
-        data={"model": "whisper-1", "response_format": "verbose_json"},
-    )
+    r = post_translation(client, response_format="verbose_json")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["task"] == "translate"
     assert r.json()["task"] == "translate"
