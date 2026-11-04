@@ -1099,24 +1099,23 @@ function refreshStatusPill() {
   // see setStatus) outranks the rings': a spark hover or L on a dead
   // stream must not paint it green "live".
   if (connState) {
-    statusEl.className = 'pill paused';
-    statusEl.textContent = connState;
+    paintPill('paused', connState);
     return;
   }
   if (frozenTs != null && liveMode !== 'live') {
-    statusEl.className = 'pill paused';
-    statusEl.innerHTML = 'paused · ' + flagTime(frozenTs) + ' · <u style="cursor:pointer">back to now</u>';
+    paintPill('paused', 'paused · ' + flagTime(frozenTs) + ' · <u style="cursor:pointer">back to now</u>');
     return;
   }
   if (frozenTs != null && histX.length) {
     const behind = Math.max(0, histX[histX.length - 1] - frozenTs);
-    statusEl.className = 'pill paused';
-    statusEl.innerHTML = 'paused · ' + behind + ' s behind · <u style="cursor:pointer">back to live</u>';
+    paintPill('paused', 'paused · ' + behind + ' s behind · <u style="cursor:pointer">back to live</u>');
     return;
   }
   statusEl.className = 'pill live';
   statusEl.textContent = liveMode !== 'live' ? 'live · rings show ' + rangeLabel(liveMode) : 'live';
 }
+// html: page-built markup or a setStatus literal, never server text.
+function paintPill(cls, html) { statusEl.className = 'pill ' + cls; statusEl.innerHTML = html; }
 let rangeTo = null;    // epoch seconds the last /stats/history fetch ended at
 let gpuTotalMb = null; // latest GPU total VRAM for MB→% conversion
 function _clock(ts, secs) {
@@ -2138,8 +2137,7 @@ wireRingControls();
 
 function setStatus(text, cls) {
   connState = cls === 'live' ? null : text;
-  statusEl.textContent = text;
-  statusEl.className = 'pill ' + cls;
+  paintPill(cls, text);
 }
 
 function openStream() {
