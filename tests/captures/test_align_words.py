@@ -44,6 +44,13 @@ def _align(monkeypatch, mapping, final, *raw):
     return capture_samples._align_words_to_final(_words(*raw), final)
 
 
+def _member(monkeypatch, final, training, *raw):
+    """A member row for _align_member_words, under the identity word map."""
+    _install_word_map(monkeypatch, {})
+    return {"words": _words(*raw), "final": final,
+            "text_for_training": training, "model": None}
+
+
 def test_one_to_many_expansion_keeps_all_tokens(monkeypatch):
     _install_word_map(monkeypatch, {"Nurtax": "nur tags"})
     words = _words("Nurtax", "137", "Schrägstrich", "94")
@@ -287,13 +294,8 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
     # Identity per-word map: the "134 Schrägstrich 92" -> "134/92" merge is a
     # cross-word rule, modeled here purely by the differing final/training
     # STRINGS (CAPTURES_PIPELINE_RULES_EXCLUDE drops it from training).
-    _install_word_map(monkeypatch, {})
-    m = {
-        "words": _words(" Tag", " und", " Nacht", " 134", " Schrägstrich", " 92"),
-        "final": "Tag und Nacht 134/92",
-        "text_for_training": "Tag und Nacht 134 Schrägstrich 92",
-        "model": None,
-    }
+    m = _member(monkeypatch, "Tag und Nacht 134/92", "Tag und Nacht 134 Schrägstrich 92",
+                " Tag", " und", " Nacht", " 134", " Schrägstrich", " 92")
     out = cr._align_member_words(m)
     # Runtime `word`: the de-dictation-map form; "Schrägstrich"/"92" merged away.
     assert out[3]["word"] == " 134/92"
@@ -316,13 +318,7 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
 def test_align_member_words_no_train_when_equal(monkeypatch):
     # When training == final there is no excluded-rule difference, so no
     # train_word is attached and the strip falls back to the runtime token.
-    _install_word_map(monkeypatch, {})
-    m = {
-        "words": _words(" Hallo", " Welt"),
-        "final": "Hallo Welt",
-        "text_for_training": "Hallo Welt",
-        "model": None,
-    }
+    m = _member(monkeypatch, "Hallo Welt", "Hallo Welt", " Hallo", " Welt")
     out = cr._align_member_words(m)
     assert all("train_word" not in w for w in out)
 
@@ -331,13 +327,8 @@ def test_align_member_words_blanked_training_marks_every_word_removed(monkeypatc
     # A training-only removal rule blanked the member ("" is the verdict, not
     # a missing value) while runtime `final` kept the text: every word is
     # train_removed, as the merged transcript and the export leave them out.
-    _install_word_map(monkeypatch, {})
-    m = {
-        "words": _words(" Untertitel", " im", " Auftrag", " des", " ZDF"),
-        "final": "Untertitel im Auftrag des ZDF",
-        "text_for_training": "",
-        "model": None,
-    }
+    m = _member(monkeypatch, "Untertitel im Auftrag des ZDF", "",
+                " Untertitel", " im", " Auftrag", " des", " ZDF")
     out = cr._align_member_words(m)
     assert all("train_word" in w and w.get("train_removed") is True for w in out)
     # A missing training text still falls back to `final`.
@@ -349,13 +340,8 @@ def test_align_member_words_keeps_the_lead_on_word_when_equal(monkeypatch):
     # With no train_word the page builds a range chip's `wrong` from `word`
     # with join(''). Matched tokens came back without the raw lead, so a
     # chip over "Hallo Welt" got wrong="HalloWelt" and the export dropped it.
-    _install_word_map(monkeypatch, {})
-    m = {
-        "words": _words(" Hallo", " Welt", " heute"),
-        "final": "Hallo Welt heute",
-        "text_for_training": "Hallo Welt heute",
-        "model": None,
-    }
+    m = _member(monkeypatch, "Hallo Welt heute", "Hallo Welt heute",
+                " Hallo", " Welt", " heute")
     out = cr._align_member_words(m)
     assert [w["word"] for w in out] == [" Hallo", " Welt", " heute"]
     wrong = "".join(w["word"] for w in out[0:2]).lstrip()
