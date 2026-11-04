@@ -20,6 +20,7 @@ from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     entry_by_label as _entry,
     factory_rules as _factory_rules,
+    factory_rules_with_entry as _factory_rules_with_entry,
     load_saved as _load_saved,
 )
 
@@ -231,9 +232,7 @@ def test_upgraded_entries_match_config_json():
 
 
 def _assert_upgraded_once(label, path):
-    rules = copy.deepcopy(_factory_rules())
-    e = _entry(rules, label)
-    e["pattern"], e["replacement"] = renames.UPGRADED_RULE_ENTRIES[label][0]
+    rules = _factory_rules_with_entry(label, renames.UPGRADED_RULE_ENTRIES[label][0])
     _assert_upgrades_to_factory_once(rules, [path])
 
 
@@ -273,21 +272,15 @@ def test_stray_symbols_strip_both_halves_of_a_typographic_quote(app_module):
     run = _pp
     assert run(" Er sagte „Hallo“ zu mir.", "de") == "Er sagte Hallo zu mir"
     assert run(" Il a dit «Bonjour» à moi.", "fr") == "Il a dit Bonjour à moi"
-    rules = copy.deepcopy(_factory_rules())
-    (old_pat, old_rep), _new = renames.UPGRADED_RULE_ENTRIES["strip-stray-symbols"]
-    e = _entry(rules, "strip-stray-symbols")
-    e["pattern"], e["replacement"] = old_pat, old_rep
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == ["strip-stray-symbols/strip-stray-symbols"]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
+    _assert_upgraded_once("strip-stray-symbols", "strip-stray-symbols/strip-stray-symbols")
+    old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["strip-stray-symbols"][0]
     assert re.sub(old_pat, old_rep, "„Hallo“") == "Hallo“"
 
 
 def test_edited_factory_entry_is_left_alone():
-    rules = copy.deepcopy(_factory_rules())
     old_pat, _old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
-    e = _entry(rules, "tighten-quote-spacing")
-    e["pattern"], e["replacement"] = old_pat, '"\\1" '       # admin's own replacement
+    # admin's own replacement
+    rules = _factory_rules_with_entry("tighten-quote-spacing", (old_pat, '"\\1" '))
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == []
     assert _entry(raw["PIPELINE_RULES"], "tighten-quote-spacing")["pattern"] == old_pat
@@ -296,12 +289,9 @@ def test_edited_factory_entry_is_left_alone():
 
 
 def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
-    rules = copy.deepcopy(_factory_rules())
-    old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
-    e = _entry(rules, "tighten-quote-spacing")
-    e["pattern"], e["replacement"] = old_pat, old_rep
+    old, new = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"]
+    rules = _factory_rules_with_entry("tighten-quote-spacing", old)
     out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})
-    new = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][1]
     got = _entry(out["PIPELINE_RULES"], "tighten-quote-spacing")
     assert (got["pattern"], got["replacement"]) == new
 

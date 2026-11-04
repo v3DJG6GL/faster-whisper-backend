@@ -21,6 +21,14 @@ def entry_by_label(rules, label):
                 if e.get("label") == label)
 
 
+def factory_rules_with_entry(label, pair):
+    """The factory rules with entry `label` holding (pattern, replacement) `pair`."""
+    rules = factory_rules()
+    e = entry_by_label(rules, label)
+    e["pattern"], e["replacement"] = pair
+    return rules
+
+
 def regex_list_rules(name, pattern, replacement="x"):
     """A one-entry regex-list rule `name` (labelled `name`), then the
     trim-edges terminal: the smallest valid PIPELINE_RULES list."""

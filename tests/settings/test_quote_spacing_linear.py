@@ -19,6 +19,7 @@ from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     entry_by_label as _entry,
     factory_rules as _factory_rules,
+    factory_rules_with_entry as _factory_rules_with_entry,
 )
 
 _LABEL = "tighten-quote-spacing"
@@ -78,6 +79,5 @@ def test_the_output_is_unchanged():
 def test_a_stored_copy_of_either_earlier_entry_is_upgraded_once():
     for old in (renames.UPGRADED_RULE_ENTRIES[_LABEL][0],
                 *renames.EARLIER_RULE_ENTRIES[_LABEL]):
-        rules = copy.deepcopy(_factory_rules())
-        _entry(rules, _LABEL)["pattern"], _entry(rules, _LABEL)["replacement"] = old
-        _assert_upgrades_to_factory_once(rules, [f"digit-and-whitespace-tidy/{_LABEL}"])
+        _assert_upgrades_to_factory_once(_factory_rules_with_entry(_LABEL, old),
+                                         [f"digit-and-whitespace-tidy/{_LABEL}"])
