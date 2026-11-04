@@ -33,6 +33,11 @@ from faster_whisper_backend.transcription import models as tx_models
 _pcm = const_pcm
 
 
+@pytest.fixture
+def body(client):
+    return client.get("/dictate").text
+
+
 def test_stream_happy_path_partials_then_final(client, energy_vad):
     with stream_ws(client) as ws:
         ready = _handshake(ws, response_format="json")
@@ -74,13 +79,12 @@ def test_stream_announces_the_utterance_lifecycle(client, energy_vad):
     assert seen == [("open", 0), ("decoding", 0), ("final", 0)], msgs
 
 
-def test_dictate_page_shows_the_decode_as_transcribing(client):
+def test_dictate_page_shows_the_decode_as_transcribing(body):
     """The status follows the utterance frames ("decoding" shows
     "transcribing…"), but only while running, so the post-Stop drain's frames
     can't overwrite "finishing…". A dropped utterance gets no final, so the
     frame itself clears the faded partial (before the guard: harmless after
     Stop)."""
-    body = client.get("/dictate").text
     block = body.split('m.type === "utterance"', 1)[1].split("else if (m.type", 1)[0]
     guard = block.index('if (!running || statusEl.className === "error") return;')
     decoding = block.index('m.state === "decoding") setStatus("transcribing…", "live")')
@@ -142,11 +146,10 @@ def test_dictate_page_served(client):
     assert "startBatch" in body
 
 
-def test_dictate_page_explains_streaming_disabled_close(client):
+def test_dictate_page_explains_streaming_disabled_close(body):
     """Each refusal close the WS handler sends (4401/4403/4503/4429/4408 —
     4503 is STREAMING_ENABLED off) gets its own message in the page's
     onclose instead of falling through to a bare "closed"."""
-    body = client.get("/dictate").text
     for code in ("4401", "4403", "4503", "4429", "4408"):
         assert code in body, code
     assert "live dictation is disabled on this server" in body
@@ -154,12 +157,11 @@ def test_dictate_page_explains_streaming_disabled_close(client):
     assert "no audio for a while" in body
 
 
-def test_dictate_page_keeps_the_socket_open_until_closing(client):
+def test_dictate_page_keeps_the_socket_open_until_closing(body):
     """The server emits the held final and the last document after
     {"type":"stop"} and closes the socket itself after {"type":"closing"}, so
     stop() must not close the socket / detach onmessage synchronously: it
     waits for "closing" with a fallback timer."""
-    body = client.get("/dictate").text
     stop_body = body.split("function stop() {", 1)[1].split("\n  }\n", 1)[0]
     assert 'ws.send(JSON.stringify({ type: "stop" }))' in stop_body
     assert 'setStatus("finishing…")' in stop_body
@@ -174,13 +176,12 @@ def test_dictate_page_keeps_the_socket_open_until_closing(client):
     assert "releaseMic()" in closing
 
 
-def test_dictate_page_boundary_strips_the_suffix_before_the_line_break(client):
+def test_dictate_page_boundary_strips_the_suffix_before_the_line_break(body):
     """The server puts a configured output suffix in front of the boundary's
     separator (and repeats it as m.suffix). With the default empty separator
     the preview must still show a line break between documents, so the
     fallback applies to the separator minus the suffix — not to the raw
     separator, which the suffix alone made truthy (">> A <<>> B")."""
-    body = client.get("/dictate").text
     block = body.split('m.type === "boundary"', 1)[1].split("else if (m.type", 1)[0]
     assert 'const suf = m.suffix || "";' in block
     assert 'const sep = (m.separator || "").slice(suf.length);' in block
@@ -188,14 +189,13 @@ def test_dictate_page_boundary_strips_the_suffix_before_the_line_break(client):
     assert 'docPrefix += m.separator || "\\n"' not in block
 
 
-def test_dictate_page_stop_flow_guards(client):
+def test_dictate_page_stop_flow_guards(body):
     """Pins the client half of the stop flow, which has no JS test harness:
     a Stop during the mic prompt / worklet load cancels the pending start
     (generation guard), Stop flushes the partly filled PCM frame first, the
     fallback timer is re-armed per frame (long window for the forced final
     decode) and says when it fired, and a server error frame stays on
     screen through the closing drain's final."""
-    body = client.get("/dictate").text
     assert "const gen = ++startGen;" in body
     for fn, use in (("async function start(gen) {", "new WebSocket("),
                     ("async function startBatch(gen) {", "new MediaRecorder(")):
@@ -252,10 +252,9 @@ def test_dictate_page_unreadable_template_is_a_named_500(client, monkeypatch, ex
     assert r.status_code == 500 and "dictate unavailable" in r.text
 
 
-def test_dictate_page_uses_the_shared_shell(client):
+def test_dictate_page_uses_the_shared_shell(body):
     """It renders through render_page like every other WebUI page: no
     unsubstituted placeholders, and the shared chrome is present."""
-    body = client.get("/dictate").text
     assert "{{" not in body                       # every placeholder resolved
     assert "faster-whisper-backend · dictate" in body   # {{HEADER_TITLE}}
     assert 'class="navrow"' in body                     # {{NAV}}
@@ -263,12 +262,11 @@ def test_dictate_page_uses_the_shared_shell(client):
     assert "login-gate" in body                         # shared auth screen
 
 
-def test_dictate_page_carries_no_credential_field(client):
+def test_dictate_page_carries_no_credential_field(body):
     """The page authenticates with the session cookie the rest of the WebUI
     uses. It must not reintroduce an API-key input, a key-bearing subprotocol,
     or the /auth/login exchange that used to mint a 30-day origin-wide session
     from a chrome-less page with no way to sign out."""
-    body = client.get("/dictate").text
     # NB: the shared login gate legitimately carries its own key input, so only
     # the page's OWN field and credential plumbing are asserted absent.
     assert 'id="key"' not in body
@@ -277,13 +275,12 @@ def test_dictate_page_carries_no_credential_field(client):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
-def test_dictate_page_sends_a_cleared_language_as_auto_detect(client):
+def test_dictate_page_sends_a_cleared_language_as_auto_detect(body):
     """The server reads `language` tri-state: absent / null inherits
     DEFAULT_LANGUAGE, "" auto-detects. The page sent a cleared box as null
     (streaming) or left the field out (batch), so on a server with a default
     language set, clearing the box to get auto-detect still decoded in the
     default. Runs the page's own handshake and form-building code."""
-    body = client.get("/dictate").text
     onopen = body.split("sock.onopen = () => {", 1)[1]
     handshake = onopen.split("sock.send(JSON.stringify(", 1)[1].split("));\n", 1)[0]
     batch = body.split("const fd = new FormData();", 1)[1].split(
@@ -725,25 +722,23 @@ def test_stream_malformed_client_job_falls_back_to_session_id(client, energy_vad
     assert len(rows[0]["job_id"]) == 32 and rows[0]["job_id"] != "../not-hex"
 
 
-def test_dictate_page_keeps_earlier_documents_across_a_hard_break(client):
+def test_dictate_page_keeps_earlier_documents_across_a_hard_break(body):
     """StreamSession._hard_break (STREAMING_HARD_BREAK_SILENCE_MS, 5 s by
     default) emits {"type":"boundary"} and resets the document, so the next
     final's committed/tail cover only the NEW document. The page must fold
     what is on screen into a prefix on that frame, or the full-replace final
     handler wipes everything dictated before the pause the moment the user
     resumes speaking."""
-    body = client.get("/dictate").text
     assert 'm.type === "boundary"' in body
     assert "docPrefix + (m.committed" in body
     assert 'docPrefix = ""' in body          # reset per start()
 
 
-def test_dictate_page_resampler_seam_uses_a_real_neighbour(client):
+def test_dictate_page_resampler_seam_uses_a_real_neighbour(body):
     """pushSamples() must interpolate a block seam between the previous block's
     last sample (carry, index -1) and this block's first — not use the carry as
     the right neighbour of the LAST sample (128 samples stale). Invisible at
     48 kHz (integer ratio) but a ~124 Hz click train at 44.1 kHz."""
-    body = client.get("/dictate").text
     assert "i < 0 ? resampleCarry : float32[i]" in body
     assert "float32[i + 1] : resampleCarry" not in body
 
