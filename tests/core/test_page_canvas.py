@@ -121,7 +121,7 @@ def test_pickers_re_place_their_layer_after_a_redraw():
     every search keystroke, so each redraw must re-run the placement."""
     pick = web_common.PICK_LIST_JS
     assert "function replace() { if (ctl && _open === inst) ctl.place(); }" in pick
-    draw = pick[pick.index("function draw(needle)"):pick.index("function open()")]
+    draw = js_upto(pick, "function draw(needle)", "function open()")
     assert "footer(); replace();" in draw
     # Text typed while the rows loaded is honoured by the first draw.
     assert "draw(q.value.trim().toLowerCase()); label();" in pick
@@ -145,7 +145,7 @@ def test_popover_fallback_portals_even_when_the_layer_is_already_unhidden():
     fallback isOpen() was then already true and the body portal, nested in
     the `if (!isOpen())` guard, was skipped on the first open."""
     js = web_common.POPOVER_JS
-    show = js[js.index("function show() {"):js.index("function hide() {")]
+    show = js_upto(js, "function show() {", "function hide() {")
     portal = ("if (!nativePop && popEl.parentNode !== document.body) "
               "document.body.appendChild(popEl);")
     assert show.count("document.body.appendChild(popEl)") == 1

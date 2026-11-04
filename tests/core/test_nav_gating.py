@@ -30,7 +30,7 @@ def test_more_list_never_sets_display_unconditionally():
 
 def test_tuck_skips_unrendered_links():
     js = web_common.NAV_OVERFLOW_JS
-    tuck = js[js.index("function tuck()"):js.index("function layout()")]
+    tuck = js_upto(js, "function tuck()", "function layout()")
     guard = tuck.index("if(el.offsetParent===null)continue;")
     # the guard runs before the node is moved into the list
     assert guard < tuck.index("li.appendChild(el)")
@@ -116,9 +116,9 @@ def test_activity_cluster_reads_no_gpu_on_a_cpu_only_server():
     js = web_common.ACTIVITY_CLUSTER_JS
     acc = js_body(js, "function gpuOf(snap)")
     assert "sg.present === false" in acc and "return null" in acc
-    feed = js[js.index("function feed(snap)"):js.index("function renderPop()")]
+    feed = js_upto(js, "function feed(snap)", "function renderPop()")
     assert "var gpu = gpuOf(snap);" in feed
-    pop = js[js.index("function renderPop()"):js.index("function releaseHold()")]
+    pop = js_upto(js, "function renderPop()", "function releaseHold()")
     assert "var gpu = gpuOf(s)" in pop
     assert "snap.gpu || null;\n    setBar" not in js
 
@@ -129,12 +129,12 @@ def test_activity_cluster_stops_on_a_401_or_403():
     fatal close probes once; 401/403 hides the button and stops until the
     next auth change."""
     js = web_common.ACTIVITY_CLUSTER_JS
-    onerr = js[js.index("es.onerror = function()"):js.index("function closeStream()")]
+    onerr = js_upto(js, "es.onerror = function()", "function closeStream()")
     assert "fetch('/stats/snapshot?lite=1'" in onerr
     assert "st === 401 || st === 403" in onerr
-    deny = onerr[onerr.index("st === 401"):onerr.index("return;")]
+    deny = js_upto(onerr, "st === 401", "return;")
     assert "denied = true;" in deny and "btn.hidden = true;" in deny
     assert onerr.index("fetch(") < onerr.index("setTimeout(")
-    opener = js[js.index("function openStream()"):js.index("es = new EventSource")]
+    opener = js_upto(js, "function openStream()", "es = new EventSource")
     assert "denied) return;" in opener
     assert "denied = false;" in js_upto(js, "'whisper:auth-changed'", "syncAllowed();")
