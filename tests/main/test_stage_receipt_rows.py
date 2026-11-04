@@ -10,6 +10,7 @@ import pytest
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
@@ -27,7 +28,9 @@ def _separating_row(client, monkeypatch, upload):
 _STUB_CREATED: list[str] = []
 
 
-def _stub_separate(monkeypatch):
+def _stub_separate(app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
+
     async def _fake(path, *, model_filename=None, progress_cb=None,
                     cancel_check=None):
         fd, out = tempfile.mkstemp(prefix="vocals-test-", suffix=".wav")
@@ -89,9 +92,7 @@ def test_diarization_block_present_when_stage_labels_nobody(
 
 def test_separation_row_has_no_transcode_detail_for_wav_input(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import transcode as audio_transcode
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
-    _stub_separate(monkeypatch)
+    _stub_separate(app_module, monkeypatch)
     # The detail alone cannot tell a skipped transcode from a failed one
     # (the real transcode raises on these fake bytes and the fallback drops
     # the detail too): the transcode must not even be attempted. Recorded,
@@ -107,9 +108,7 @@ def test_separation_row_has_no_transcode_detail_for_wav_input(
 
 def test_separation_row_keeps_transcode_detail_when_transcode_ran(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import transcode as audio_transcode
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
-    _stub_separate(monkeypatch)
+    _stub_separate(app_module, monkeypatch)
 
     def _fake_transcode(src, dst, *, rate=44100, layout="stereo"):
         with open(dst, "wb") as f:
@@ -121,9 +120,7 @@ def test_separation_row_keeps_transcode_detail_when_transcode_ran(
 
 def test_separation_row_drops_transcode_detail_when_transcode_failed(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import transcode as audio_transcode
-    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
-    _stub_separate(monkeypatch)
+    _stub_separate(app_module, monkeypatch)
 
     def _boom(src, dst, *, rate=44100, layout="stereo"):
         raise RuntimeError("no decoder")
