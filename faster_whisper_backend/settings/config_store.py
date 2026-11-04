@@ -116,14 +116,8 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
             # The value is not echoed: HF_TOKEN is a secret.
             notes.append(f"dropped {key}: it holds a NUL character, "
                          f"which is no longer accepted")
-    for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
-        group = raw.get(group_key)
-        if not isinstance(group, dict):
-            continue
-        for name, bundle in group.items():
-            if isinstance(bundle, dict):
-                notes.extend(migrate_tightened_bundle(
-                    bundle, f"{group_key}[{name!r}]"))
+    for group_key, name, bundle in _renames.iter_bundles(raw):
+        notes.extend(migrate_tightened_bundle(bundle, f"{group_key}[{name!r}]"))
     # A callback:map key gained a non-blank rule: a whitespace-only key has
     # no word edge, so it matched every space. Drop it (and its map_meta).
     rules = raw.get("PIPELINE_RULES")
@@ -751,11 +745,9 @@ def _factory_slugs(path: str | None = None) -> set[str]:
 def _stored_ref_slugs(refs: dict[str, Any]) -> set[str]:
     """Every rule slug named by the slug-bearing keys of a stored dict."""
     out: set[str] = set(refs.get("CAPTURES_PIPELINE_RULES_EXCLUDE") or [])
-    for group in ("MODEL_OVERRIDES", "OVERRIDE_PROFILES"):
-        for bundle in (refs.get(group) or {}).values():
-            if isinstance(bundle, dict):
-                for k in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
-                    out.update(bundle.get(k) or [])
+    for _group, _name, bundle in _renames.iter_bundles(refs):
+        for k in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
+            out.update(bundle.get(k) or [])
     return {s for s in out if isinstance(s, str)}
 
 

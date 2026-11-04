@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, MutableMapping
+from typing import Any, Iterator, MutableMapping
 
 RENAMED_KEYS: dict[str, str] = {
     # HF_TOKEN matches the env var huggingface_hub itself reads.
@@ -687,6 +687,18 @@ def migrate_bundle(bundle: dict[str, Any], known: Any = None) -> list[str]:
     return renamed
 
 
+def iter_bundles(raw: dict[str, Any]) -> Iterator[tuple[str, Any, dict[str, Any]]]:
+    """(group_key, name, bundle) for every dict bundle of the
+    OVERRIDE_PROFILES / MODEL_OVERRIDES groups of an overrides dict; a
+    non-dict group or bundle is skipped."""
+    for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
+        group = raw.get(group_key)
+        if isinstance(group, dict):
+            for name, bundle in group.items():
+                if isinstance(bundle, dict):
+                    yield group_key, name, bundle
+
+
 def migrate_bundle_keys(raw: dict[str, Any], known: Any = None) -> list[str]:
     """Apply migrate_bundle to every OVERRIDE_PROFILES / MODEL_OVERRIDES
     bundle of an overrides dict (in place). The bundles are extra="forbid",
@@ -697,13 +709,8 @@ def migrate_bundle_keys(raw: dict[str, Any], known: Any = None) -> list[str]:
     if known is None:
         known = _rule_names(raw.get("PIPELINE_RULES"))
     renamed: list[str] = []
-    for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
-        group = raw.get(group_key)
-        if not isinstance(group, dict):
-            continue
-        for bundle in group.values():
-            if isinstance(bundle, dict):
-                renamed.extend(migrate_bundle(bundle, known))
+    for _group, _name, bundle in iter_bundles(raw):
+        renamed.extend(migrate_bundle(bundle, known))
     return sorted(set(renamed))
 
 
