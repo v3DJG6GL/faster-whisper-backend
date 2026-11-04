@@ -1967,10 +1967,7 @@ function modelMultiSelectEditor(name, v, lists) {
       t.value = preload.join('\n');
       t.rows = Math.min(Math.max(preload.length, 2), 8);
       t.placeholder = 'One model id per line';
-      t.addEventListener('input', () => {
-        const lines = t.value.split('\n').map(s => s.trim()).filter(Boolean);
-        setDirty(name, lines);
-      });
+      t.addEventListener('input', () => setDirty(name, _textLines(t.value)));
       wrap.appendChild(t);
       wrap.appendChild(_helpDiv(lists.allowed + ' is empty — free-form. Add entries there for checkboxes.'));
       return;
@@ -4745,11 +4742,7 @@ function linesEditor(name, v) {
   t.rows = Math.min(Math.max(v.length, 2), 10);
   t.placeholder = 'One entry per line';
   const help = _helpDiv('One entry per line. Blank lines ignored.');
-  const update = () => {
-    const lines = t.value.split('\n').map(s => s.trim()).filter(Boolean);
-    setDirty(name, lines);
-  };
-  t.addEventListener('input', update);
+  t.addEventListener('input', () => setDirty(name, _textLines(t.value)));
   const wrap = document.createElement('div');
   wrap.appendChild(t); wrap.appendChild(help);
   return wrap;

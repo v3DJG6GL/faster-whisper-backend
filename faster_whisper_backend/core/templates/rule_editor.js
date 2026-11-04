@@ -75,6 +75,11 @@ function _bindEnterCommit(inp, onEnter) {
   });
 }
 
+// One entry per line: trimmed, blank lines dropped.
+function _textLines(text) {
+  return text.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
 function _helpDiv(text) {
   const d = document.createElement('div');
   d.className = 'help';
@@ -568,7 +573,7 @@ function renderTypeEditor(rule, commitData, opts) {
     ta.value = (rule.wordlist || []).join('\n');
     ta.rows = 6;
     ta.addEventListener('input', () => {
-      rule.wordlist = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+      rule.wordlist = _textLines(ta.value);
       commitData();
     });
     // Intentionally NO Enter binding on the wordlist textarea — Enter must
