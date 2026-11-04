@@ -3,6 +3,7 @@ Asserts the kwargs the FakeModel receives + the overrides_ignored
 feedback. Driven through the real app; no faster-whisper needed."""
 
 import json
+from types import SimpleNamespace
 
 from tests.conftest import bearer
 from tests._translation_helpers import enable_translation
@@ -195,17 +196,22 @@ def test_decode_overrides_drop_overflowing_suppress_tokens():
         assert "suppress_tokens" not in kw, (st, kw)
 
 
+_SEG_DIAG = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
+              "cr": 1.2, "temp": 0.0, "text": "hi"}]
+
+
+def _info(language="de", prob=0.99):
+    return SimpleNamespace(language=language, language_probability=prob,
+                           duration=1.0, duration_after_vad=1.0)
+
+
 def test_request_block_identity_section():
-    from types import SimpleNamespace
     ident = SimpleNamespace(layers=["user.profile:clinic-de"], locked={"BEAM_SIZE"},
                             profiles_applied=["clinic-de"])
-    info = SimpleNamespace(language="de", language_probability=0.99,
-                           duration=1.0, duration_after_vad=1.0)
-    seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
-            "cr": 1.2, "temp": 0.0, "text": "hi"}]
+    info = _info()
     block = tx_receipt._format_request_block(
         file_label="x", model_name="whisper-1", info=info,
-        kwargs={"beam_size": 8}, seg_diag=seg, raw="hi", final="hi",
+        kwargs={"beam_size": 8}, seg_diag=_SEG_DIAG, raw="hi", final="hi",
         ident=ident, overrides_ignored=["beam_size"])
     assert "Identity" in block
     assert "clinic-de" in block and "BEAM_SIZE" in block
@@ -214,7 +220,7 @@ def test_request_block_identity_section():
     empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
     block2 = tx_receipt._format_request_block(
         file_label="x", model_name="whisper-1", info=info, kwargs={},
-        seg_diag=seg, raw="hi", final="hi", ident=empty)
+        seg_diag=_SEG_DIAG, raw="hi", final="hi", ident=empty)
     assert "Identity" not in block2
 
 
@@ -223,24 +229,20 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
     (before != after) as "changed" — skipped/EXCLUDED no-op rows are
     "unchanged", the same split the /quick-config + /reports viewers make of
     the same trace."""
-    from types import SimpleNamespace
-    info = SimpleNamespace(language="en", language_probability=1.0,
-                           duration=1.0, duration_after_vad=1.0)
-    seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
-            "cr": 1.2, "temp": 0.0, "text": "hi"}]
+    info = _info("en", 1.0)
     # 7 no-op (EXCLUDED) rows + 1 that actually trimmed → 1 changed, 7 unchanged.
     steps = [(f"#{i} excluded [EXCLUDED for m]", " hi", " hi") for i in range(7)]
     steps.append(("#18 Trim edges", " hi", "hi"))
     block = tx_receipt._format_request_block(
         file_label="x", model_name="m", info=info, kwargs={},
-        seg_diag=seg, raw=" hi", final="hi", steps=steps)
+        seg_diag=_SEG_DIAG, raw=" hi", final="hi", steps=steps)
     assert "PIPELINE  (1 step changed text, 7 unchanged)" in block
     assert "8 step" not in block
 
     # All-changed → no "unchanged" tail, plural "steps".
     block2 = tx_receipt._format_request_block(
         file_label="x", model_name="m", info=info, kwargs={},
-        seg_diag=seg, raw="a", final="c",
+        seg_diag=_SEG_DIAG, raw="a", final="c",
         steps=[("#1 x", "a", "b"), ("#2 y", "b", "c")])
     assert "PIPELINE  (2 steps changed text)" in block2
     assert "unchanged" not in block2
@@ -248,7 +250,7 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
     # Nothing changed (every rule excluded) → "0 steps changed text, N unchanged".
     block3 = tx_receipt._format_request_block(
         file_label="x", model_name="m", info=info, kwargs={},
-        seg_diag=seg, raw="hi", final="hi",
+        seg_diag=_SEG_DIAG, raw="hi", final="hi",
         steps=[("#1 x", "hi", "hi"), ("#2 y", "hi", "hi")])
     assert "PIPELINE  (0 steps changed text, 2 unchanged)" in block3
 
@@ -257,15 +259,11 @@ def test_request_block_identity_always_shows_user_even_without_layers():
     """An authenticated caller with NO per-identity binding still gets an
     Identity block naming them + an explicit 'inherits' note — so a missing
     binding (the classic 'my override didn't apply') is visible in the log."""
-    from types import SimpleNamespace
     empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
-    info = SimpleNamespace(language="de", language_probability=0.99,
-                           duration=1.0, duration_after_vad=1.0)
-    seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
-            "cr": 1.2, "temp": 0.0, "text": "hi"}]
+    info = _info()
     block = tx_receipt._format_request_block(
         file_label="x", model_name="whisper-1", info=info, kwargs={},
-        seg_diag=seg, raw="hi", final="hi", ident=empty,
+        seg_diag=_SEG_DIAG, raw="hi", final="hi", ident=empty,
         user_id="abcd1234ef", key_id="ffee0011bb", username="Admin")
     assert "Identity" in block
     assert "Admin" in block and "abcd1234" in block      # username + short user id
