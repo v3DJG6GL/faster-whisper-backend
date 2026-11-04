@@ -1142,23 +1142,23 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         label = rule.get("label", rule.get("name", "?"))
         common = {"label": label, "type": rtype, "before": text, "matches": 0,
                   "skipped": False, "error": None, "slow": False}
+        kept = {**common, "after": text}
 
         if rtype == "terminal":
             after = text.lstrip(" \t\r").rstrip(" \t\r")
             return {**common, "after": after}
 
         if not rule.get("enabled", True):
-            return {**common, "after": text, "skipped": True}
+            return {**kept, "skipped": True}
         if _language_skipped(rule):
-            return {**common, "after": text, "skipped": True,
-                    "skipped_language": True}
+            return {**kept, "skipped": True, "skipped_language": True}
 
         # regex-list: every entry runs inside ONE 2 s guard and the card
         # reports one step (summed matches).
         if rtype == "regex-list":
             entries = rule.get("entries", []) or []
             if not entries:
-                return {**common, "after": text, "skipped": True}
+                return {**kept, "skipped": True}
             lout: dict[str, Any] = {"done": False, "after": text, "matches": 0}
             def _do_list() -> None:
                 try:
@@ -1261,7 +1261,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             tl.start()
             tl.join(timeout=2.0)
             if not lout["done"]:
-                return {**common, "after": text, "slow": True}
+                return {**kept, "slow": True}
             return {**common, "after": lout["after"], "matches": lout["matches"],
                     "error": lout.get("err"),
                     **({"not_run": True} if lout.get("not_run") else {}),
@@ -1274,10 +1274,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 # would reach compile_map's m.items() and surface as a raw
                 # AttributeError instead of this message.
                 if not isinstance(m, dict):
-                    return {**common, "after": text,
-                            "error": "map must be an object"}
+                    return {**kept, "error": "map must be an object"}
                 if not m:
-                    return {**common, "after": text, "skipped": True}
+                    return {**kept, "skipped": True}
                 # The engine's own compile (pl_engine.rebuild_caches uses it too):
                 # ß/ss variants and the dictated-punctuation prefix included,
                 # so the dry run shows what a transcription really gets.
@@ -1285,18 +1284,15 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             else:
                 pattern = rule.get("pattern", "") or ""
                 if not pattern:
-                    return {**common, "after": text, "skipped": True}
+                    return {**kept, "skipped": True}
                 # As in the regex-list branch: never screen an uncapped repr.
                 if not isinstance(pattern, str):
-                    return {**common, "after": text,
-                            "error": "pattern must be a string"}
+                    return {**kept, "error": "pattern must be a string"}
                 screen = _screen_msg(pattern)
                 if screen is not None:
-                    return {**common, "after": text, "error": screen,
-                            "not_run": True}
+                    return {**kept, "error": screen, "not_run": True}
                 if -1 in held:
-                    return {**common, "after": text, "error": held[-1],
-                            "not_run": True}
+                    return {**kept, "error": held[-1], "not_run": True}
                 cre = re.compile(pattern)
                 if rtype == "callback:lowercase-wordlist":
                     replacer = pl_engine._make_lowercase_wordlist_replacer(
@@ -1306,7 +1302,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 elif rtype == "callback:upper":
                     replacer = pl_engine._upper_callback
                 else:
-                    return {**common, "after": text, "skipped": True,
+                    return {**kept, "skipped": True,
                             "error": f"unknown rule type: {rtype}"}
         # Editor rules skip pl_apply._PIPELINE_RULE_ADAPTER, so a hand-rolled
         # body (a non-list wordlist, non-string wordlist items or map keys) can
@@ -1315,7 +1311,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         # per-step error, not an unhandled 500.
         except (re.error, AttributeError, TypeError, ValueError, OverflowError,
                 RecursionError) as e:
-            return {**common, "after": text, "error": str(e)}
+            return {**kept, "error": str(e)}
 
         out: dict[str, Any] = {"done": False, "after": text, "matches": 0}
         size = [len(text)]
@@ -1348,12 +1344,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         t.start()
         t.join(timeout=2.0)
         if not out["done"]:
-            return {**common, "after": text, "slow": True}
+            return {**kept, "slow": True}
         if "err" in out:
-            return {**common, "after": text, "error": out["err"]}
+            return {**kept, "error": out["err"]}
         if out.get("capped"):
-            return {**common, "after": text, "matches": out["matches"],
-                    "capped": True}
+            return {**kept, "matches": out["matches"], "capped": True}
         return {**common, "after": out["after"], "matches": out["matches"]}
 
     async def _run_pass(idx: int, rule: dict, text: str,
