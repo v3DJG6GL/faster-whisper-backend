@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
-    dictate_session, handshake as _config, ready_ws, speak_and_stop, stop_and_drain,
+    dictate_session, handshake as _config, ready_ws, speak, speak_and_stop, stop_and_drain,
     timed_final, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.captures import store as captures_store
@@ -172,8 +172,7 @@ def _gate_second_utterance(monkeypatch, ws, *, before_second=None):
     """Utterance 1 decodes normally; utterance 2 commits text through the
     partials and is then finalized with the RMS gate forced shut, so on_final
     runs for it without a decode."""
-    ws.send_bytes(_pcm(8000, 2500))
-    ws.send_bytes(_pcm(0, 1500))          # utterance 1 → decoded final
+    speak(ws)                             # utterance 1 → decoded final
     time.sleep(0.5)
     ws.send_bytes(_pcm(8000, 2500))       # utterance 2: partials commit text
     time.sleep(0.5)
