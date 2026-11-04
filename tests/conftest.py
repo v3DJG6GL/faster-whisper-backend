@@ -213,6 +213,14 @@ def _no_inherited_hf_hub_cache(monkeypatch):
 # Per-store fixtures (fresh temp DB per test)
 # ---------------------------------------------------------------------------
 
+def _close_store(store):
+    try:
+        store._require_conn().close()
+    except Exception:
+        pass
+    store._conn = None
+
+
 @pytest.fixture
 def captures_store_db(tmp_path):
     """captures_store initialised on a temp DB + temp audio dir."""
@@ -225,11 +233,7 @@ def captures_store_db(tmp_path):
     proposer._CACHE.clear()
     proposer._TRIM_DUR_CACHE.clear()
     yield captures_store
-    try:
-        captures_store._require_conn().close()
-    except Exception:
-        pass
-    captures_store._conn = None
+    _close_store(captures_store)
     captures_store._audio_dir = None
 
 
@@ -251,11 +255,7 @@ def tx_store(tmp_path):
     recent_transcriptions_store.init_db(str(tmp_path / "recent.sqlite3"))
     recent_transcriptions_store._insert_counter = 0
     yield recent_transcriptions_store
-    try:
-        recent_transcriptions_store._require_conn().close()
-    except Exception:
-        pass
-    recent_transcriptions_store._conn = None
+    _close_store(recent_transcriptions_store)
 
 
 @pytest.fixture
@@ -263,11 +263,7 @@ def sm_store(tmp_path):
     from faster_whisper_backend.stats import system_metrics_store
     system_metrics_store.init_db(str(tmp_path / "system_metrics.sqlite3"))
     yield system_metrics_store
-    try:
-        system_metrics_store._require_conn().close()
-    except Exception:
-        pass
-    system_metrics_store._conn = None
+    _close_store(system_metrics_store)
 
 
 @pytest.fixture
@@ -275,11 +271,7 @@ def usage_store_db(tmp_path):
     from faster_whisper_backend.stats import usage_store
     usage_store.init_db(str(tmp_path / "usage.sqlite3"))
     yield usage_store
-    try:
-        usage_store._require_conn().close()
-    except Exception:
-        pass
-    usage_store._conn = None
+    _close_store(usage_store)
 
 
 @pytest.fixture
@@ -287,11 +279,7 @@ def reports_store_db(tmp_path):
     from faster_whisper_backend.reports import store as reports_store
     reports_store.init_db(str(tmp_path / "reports.sqlite3"))
     yield reports_store
-    try:
-        reports_store._require_conn().close()
-    except Exception:
-        pass
-    reports_store._conn = None
+    _close_store(reports_store)
 
 
 @pytest.fixture
@@ -299,11 +287,7 @@ def client_settings_store_db(tmp_path):
     from faster_whisper_backend.client_settings import store as client_settings_store
     client_settings_store.init_db(str(tmp_path / "client_settings.sqlite3"))
     yield client_settings_store
-    try:
-        client_settings_store._require_conn().close()
-    except Exception:
-        pass
-    client_settings_store._conn = None
+    _close_store(client_settings_store)
     client_settings_store._DB_READY = False
 
 
@@ -313,11 +297,7 @@ def api_keys_db(tmp_path):
     api_keys_store.init_db(str(tmp_path / "api_keys.sqlite3"))
     api_keys_store._LAST_USED_CACHE.clear()
     yield api_keys_store
-    try:
-        api_keys_store._require_conn().close()
-    except Exception:
-        pass
-    api_keys_store._conn = None
+    _close_store(api_keys_store)
     # Closing the connection un-readies the store; leaving _DB_READY set would
     # let a later test read this test's stale lockdown cache.
     api_keys_store._reset_for_tests()
