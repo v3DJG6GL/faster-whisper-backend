@@ -43,19 +43,13 @@ def _ends_sentence(text: str) -> bool:
 
 def _global_silence_ms() -> int:
     """Inter-member silence, sourced from the global VAD-internal knob."""
-    try:
-        return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
-    except (TypeError, ValueError):
-        return 300
+    return captures_store._cfg_int("CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)
 
 
 def _global_edge_ms() -> int:
     """Outer-margin silence (both ends of the merged WAV), sourced from the
     global VAD edge knob."""
-    try:
-        return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300))
-    except (TypeError, ValueError):
-        return 300
+    return captures_store._cfg_int("CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300)
 
 
 def _outer_edge_ms() -> int:
