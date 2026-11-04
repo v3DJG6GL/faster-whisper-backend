@@ -453,14 +453,8 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         v = cf(field)
         if v and v != default:
             transcribe_kwargs[key] = v
-    _prompt_reset_t = cf("PROMPT_RESET_ON_TEMPERATURE")
-    if _prompt_reset_t is not None and _prompt_reset_t != 0.5:
-        transcribe_kwargs["prompt_reset_on_temperature"] = _prompt_reset_t
     if cf("MULTILINGUAL"):
         transcribe_kwargs["multilingual"] = True
-    _lang_thresh = cf("LANGUAGE_DETECTION_THRESHOLD")
-    if _lang_thresh is not None and _lang_thresh != 0.5:
-        transcribe_kwargs["language_detection_threshold"] = _lang_thresh
     _hallu_silence = cf("HALLUCINATION_SILENCE_THRESHOLD")
     if _hallu_silence:
         # 0 is "off" here, but an active threshold to faster-whisper (it only
@@ -491,13 +485,15 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
             transcribe_kwargs["suppress_tokens"] = None
     # "" is an explicit "no punctuation splitting" (a cleared profile /
     # per-model field), so it is forwarded like the per-request override
-    # path does; only an ABSENT value leaves faster-whisper's default.
-    _prepend_p = cf("PREPEND_PUNCTUATIONS")
-    if _prepend_p is not None:
-        transcribe_kwargs["prepend_punctuations"] = _prepend_p
-    _append_p = cf("APPEND_PUNCTUATIONS")
-    if _append_p is not None:
-        transcribe_kwargs["append_punctuations"] = _append_p
+    # path does; only an ABSENT value leaves faster-whisper's default. A 0
+    # threshold is forwarded here too, unlike the table above.
+    for field, key, default in (("PROMPT_RESET_ON_TEMPERATURE", "prompt_reset_on_temperature", 0.5),
+                                ("LANGUAGE_DETECTION_THRESHOLD", "language_detection_threshold", 0.5),
+                                ("PREPEND_PUNCTUATIONS", "prepend_punctuations", None),
+                                ("APPEND_PUNCTUATIONS", "append_punctuations", None)):
+        v = cf(field)
+        if v is not None and v != default:
+            transcribe_kwargs[key] = v
     _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
     # A client hallucination_silence_threshold of 0 is "off" too (see above).
     if not transcribe_kwargs.get("hallucination_silence_threshold"):
