@@ -1356,6 +1356,13 @@ _TRANSCRIPT_FNS = ("_endsSentence", "_applyChipsToText", "_cjkEdge", "_trainingB
 _CARD_PREVIEW_FNS = ("_capturePreviewText", "_chippedText", "_trainingBase", "_applyChipsToText", "_cjkEdge")
 
 
+def _js_transcript(page, tmp_path, rows, strategy):
+    """What the page's _buildDefaultTranscript makes of `rows`."""
+    return _run_node(tmp_path, _js_functions(page, *_TRANSCRIPT_FNS)
+                     + "\nconsole.log(JSON.stringify(_buildDefaultTranscript("
+                     + json.dumps(rows) + ", " + json.dumps(strategy) + ")));")
+
+
 @needs_node
 def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     """The merge modal's transcript and member lines, and the collapsed
@@ -1392,13 +1399,9 @@ def test_merge_preview_skips_a_member_the_pipeline_blanked(page, tmp_path):
     text_for_training "" (not NULL): the merge preview used to fall back to
     the raw hallucination, as the server's transcript builder did. A legacy
     row (NULL column) still falls back to `final`."""
-    fns = _js_functions(page, *_TRANSCRIPT_FNS)
-    out = _run_node(tmp_path, fns + r"""
-console.log(JSON.stringify(_buildDefaultTranscript([
-  { text_for_training: '', final: '', raw: 'Untertitel im Auftrag des ZDF' },
-  { text_for_training: null, final: 'Wie geht es?', raw: 'wie geht es' }],
-  'space')));
-""")
+    out = _js_transcript(page, tmp_path, [
+        {"text_for_training": "", "final": "", "raw": "Untertitel im Auftrag des ZDF"},
+        {"text_for_training": None, "final": "Wie geht es?", "raw": "wie geht es"}], "space")
     assert out == "Wie geht es?"
 
 
@@ -1442,11 +1445,7 @@ def test_merge_preview_period_space_join_matches_the_server(
     """The JS twin of samples._build_default_transcript still put a literal
     ". " between members after the server stopped doubling a member's own
     sentence punctuation, so the preview showed "Hallo Welt.. Wie …"."""
-    fns = _js_functions(page, *_TRANSCRIPT_FNS)
-    rows = [{"final": f} for f in finals]
-    out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
-                    "_buildDefaultTranscript(" + json.dumps(rows)
-                    + ", 'period_space')));")
+    out = _js_transcript(page, tmp_path, [{"final": f} for f in finals], "period_space")
     assert out == expected
 
 
@@ -1490,11 +1489,8 @@ def test_merge_preview_join_of_unspaced_members_matches_the_server(
     the server joins Han / kana with no space and closes them with "。"."""
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
-    fns = _js_functions(page, *_TRANSCRIPT_FNS)
     rows = [{"final": f} for f in finals]
-    out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
-                    "_buildDefaultTranscript(" + json.dumps(rows)
-                    + ", " + json.dumps(strategy) + ")));")
+    out = _js_transcript(page, tmp_path, rows, strategy)
     assert out == expected[strategy]
     assert out == _build_default_transcript(rows, strategy)
 
