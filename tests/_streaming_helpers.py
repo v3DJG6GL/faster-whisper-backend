@@ -45,11 +45,16 @@ def ws_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     return msgs, None
 
 
+def stream_ws(client, raw_key):
+    """Open the streaming socket with ``raw_key``'s bearer header (use as ``with``)."""
+    return client.websocket_connect(
+        "/v1/audio/transcriptions/stream", headers=bearer(raw_key))
+
+
 def config_drain(client, raw_key, limit: int = 200) -> list[dict]:
     """Connect with ``raw_key``'s bearer header, send ``config_frame()`` and
     return every frame up to the server's close (``ws_drain``)."""
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_key)) as ws:
+    with stream_ws(client, raw_key) as ws:
         ws.send_json(config_frame())
         return ws_drain(ws, limit)[0]
 

@@ -10,7 +10,7 @@ import pytest
 
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
-    config_drain, config_frame, const_pcm, handshake, speak_and_stop, ws_drain)
+    config_drain, config_frame, const_pcm, handshake, speak_and_stop, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -41,8 +41,7 @@ def test_ready_frame_reports_locked_handshake_override(client, make_user_key):
                                 {"TEMPERATURE": "0.0", "DEFAULT_LANGUAGE": "de",
                                  "locks": ["TEMPERATURE", "DEFAULT_LANGUAGE"]})
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         ws.send_json({"type": "config", "model": "whisper-1", "language": "fr",
                       "decode_overrides": {"temperature": 0.7},
                       "audio": {"format": "pcm_s16le"}})
@@ -55,8 +54,7 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
                                         app_module, monkeypatch, energy_vad):
     _, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 7})
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         speak_and_stop(ws)
 
@@ -75,8 +73,7 @@ def test_stream_request_override_profile_applies(
     _profile(client, h, "fast", BEAM_SIZE=9)
     _, raw_alice = make_user_key("alice")     # no binding → inherits global gate (on)
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         ready = handshake(ws, override_profile="fast")
         assert ready["type"] == "ready"
         assert ready["profile_applied"] == "fast"
@@ -101,8 +98,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
     _bind(client, h, uid, profiles=["p7"])
 
     from faster_whisper_backend.auth import api_keys_store
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         # utterance 1 under profile p7
         ws.send_bytes(_pcm(8000, 2500))
@@ -131,8 +127,7 @@ def test_final_drops_low_confidence_hallucination_segment(
     good.avg_logprob, good.temperature = -0.2, 0.0       # healthy → keep
     fake_model._segments = [bad, good]
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         msgs = speak_and_stop(ws)[0]
 
@@ -152,8 +147,7 @@ def test_stream_prompt_sentinel_inherit_clear_value(
     _, raw_alice = make_user_key("alice")
 
     def _run(conf_extra):
-        with client.websocket_connect(
-                "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        with stream_ws(client, raw_alice) as ws:
             assert handshake(ws, **conf_extra)["type"] == "ready"
             speak_and_stop(ws)
         return fake_model.last_kwargs.get("initial_prompt")
@@ -171,8 +165,7 @@ def test_stream_handshake_drops_lone_surrogates(
     nothing gets typed, and in an output wrapper it would break the UTF-8
     frame, so it is dropped."""
     _, raw_alice = make_user_key("alice")
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         # json.dumps escapes the surrogate as "\\ud83d", as a browser sends it.
         ws.send_text(json.dumps(config_frame(
             prompt="Kardiologie \ud83d", decode_overrides={"output_prefix": ">> \ud83d"})))
@@ -251,8 +244,7 @@ def _refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, gon
 
     from faster_whisper_backend.streaming import routes as streaming_routes
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         ws.send_json(config_frame())
         # No close frame ever reaches the test session (the refusal send failed),
         # so wait for the handler to reach its teardown — it drops the session
@@ -389,8 +381,7 @@ def test_handshake_drops_unknown_decode_override_keys(
 
     monkeypatch.setattr(streaming_routes, "_client_stream_values", _spy)
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         ready = handshake(ws, decode_overrides={"beam_size": 5,
                                                 "not_a_real_key": "x" * 1024,
                                                 "__proto__": 1})
@@ -413,8 +404,7 @@ def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
     _, raw_alice = make_user_key("alice")
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws, language=language)["type"] == "ready"
         speak_and_stop(ws)
 
@@ -455,8 +445,7 @@ def test_handshake_language_reaches_the_model_as_a_whisper_code(
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
     _, raw_alice = make_user_key("alice")
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         ready = handshake(ws, language=language)
         assert ready["type"] == "ready"
         # An unusable value is reported, not silently swapped.
@@ -485,8 +474,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
     uid, raw_alice = make_user_key("alice")
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
         time.sleep(0.5)
@@ -522,8 +510,7 @@ def test_revoked_session_closes_without_a_further_client_frame(
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
     uid, raw_alice = make_user_key("alice")
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
         time.sleep(0.5)
@@ -562,8 +549,7 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
         return user
     monkeypatch.setattr(streaming_routes, "authenticate_ws", _auth_then_revoke)
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # first decode re-auths → revoked
         time.sleep(0.5)
@@ -586,8 +572,7 @@ def test_stream_survives_an_unrelated_config_bump(
     the still-valid credential must NOT be treated as revoked."""
     h, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 3})
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         time.sleep(0.3)
@@ -618,8 +603,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
     monkeypatch.setattr(streaming_routes, "authenticate_ws",
                         lambda ws: (calls.append(1), real(ws))[1])
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         msgs, _code = speak_and_stop(ws)
 
@@ -679,8 +663,7 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     monkeypatch.setattr(metrics, "record_transcription",
                         lambda **kw: rows.append(kw.get("status")))
 
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))        # speech, utterance stays open
         time.sleep(0.5)                        # pump has drained the queue
@@ -895,8 +878,7 @@ def test_stream_client_output_wrappers_survive_a_refresh(
     _, raw_admin = make_user_key("admin", is_admin=True)
     uid, raw_alice = make_user_key("alice")
     from faster_whisper_backend.auth import api_keys_store
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws, decode_overrides={"output_prefix": ">> ",
                                                "output_suffix": " <<"})["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
@@ -921,8 +903,7 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[old] ")
     uid, raw_alice = make_user_key("alice")
     from faster_whisper_backend.auth import api_keys_store
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))        # final, document stays open
@@ -961,8 +942,7 @@ def test_stream_output_suffix_closes_every_document_at_a_hard_break(
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SEPARATOR", "\n")
     _, raw_alice = make_user_key("alice")
-    with client.websocket_connect(
-            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert handshake(ws, decode_overrides={"output_prefix": ">> ",
                                                "output_suffix": " <<"})["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))

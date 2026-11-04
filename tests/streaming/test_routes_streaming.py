@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    const_pcm, handshake as _handshake, speak_and_stop, ws_drain)
+    const_pcm, handshake as _handshake, speak_and_stop, stream_ws, ws_drain)
 from tests._transcription_helpers import guard_line
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -411,7 +411,7 @@ def test_stream_records_the_key_label_on_the_trace_row(
     make_user_key("root", is_admin=True)   # locks the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
     raw, _rec = api_keys_store.create_key(uid, label="alice-laptop")
-    with client.websocket_connect(_STREAM_URL, headers=bearer(raw)) as ws:
+    with stream_ws(client, raw) as ws:
         assert _handshake(ws)["type"] == "ready"
         speak_and_stop(ws)
     rows = metrics.metrics_snapshot(include_identity=True)["recent_transcriptions"]

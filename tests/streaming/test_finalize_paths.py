@@ -23,9 +23,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
-    handshake as _config, speak_and_stop, ws_drain as _drain)
+    handshake as _config, speak_and_stop, stream_ws, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
-from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
 from faster_whisper_backend.transcription import models as tx_models
@@ -255,7 +254,7 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
         counted["before"] = recent_transcriptions_store.count()
         api_keys_store.revoke_user(uid)
 
-    with client.websocket_connect(_STREAM_URL, headers=bearer(raw_alice)) as ws:
+    with stream_ws(client, raw_alice) as ws:
         assert _config(ws)["type"] == "ready"
         _gate_second_utterance(monkeypatch, ws, before_second=revoke)
         ws.send_bytes(_pcm(0, 200))
