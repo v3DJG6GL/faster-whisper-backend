@@ -199,7 +199,6 @@ def test_sweep_reclaims_file_whose_unlink_failed(tmp_path, monkeypatch):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
 def test_pipeline_copy_fallback_is_0600(tmp_path, monkeypatch):
     src = _make_src(tmp_path, size=64)
-    monkeypatch.setattr(ums.tempfile, "gettempdir", lambda: str(tmp_path))
 
     def _no_link(a, b, **kw):
         raise OSError("cross-device link")
@@ -214,12 +213,11 @@ def test_pipeline_copy_fallback_is_0600(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
-def test_pipeline_copy_link_path_is_0600(tmp_path, monkeypatch):
+def test_pipeline_copy_link_path_is_0600(tmp_path):
     # The os.link fast path inherits the source's mode: a 0644 download must
     # still end up 0600 in the shared tempdir.
     src = _make_src(tmp_path, size=64)
     os.chmod(src, 0o644)
-    monkeypatch.setattr(ums.tempfile, "gettempdir", lambda: str(tmp_path))
     copy = ums.make_pipeline_copy(src)
     assert copy is not None
     assert os.stat(copy).st_nlink == 2  # really the link path, not the copy
@@ -248,11 +246,10 @@ def test_startup_reset_wipes(tmp_path):
     assert os.path.isdir(ums._dir())
 
 
-def test_pipeline_copy_is_independent(tmp_path, monkeypatch):
+def test_pipeline_copy_is_independent(tmp_path):
     src = _make_src(tmp_path, size=64)
-    # Pin the tempdir next to the source so the os.link branch — the only
-    # one where "unlinking the copy" is non-trivial — is the branch tested.
-    monkeypatch.setattr(ums.tempfile, "gettempdir", lambda: str(tmp_path))
+    # The autouse tempdir sits next to the source, so the os.link branch — the
+    # only one where "unlinking the copy" is non-trivial — is the branch tested.
     copy = ums.make_pipeline_copy(src)
     assert copy and os.path.getsize(copy) == 64
     if os.name != "nt":
