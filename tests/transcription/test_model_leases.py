@@ -74,15 +74,20 @@ def test_all_leased_overflows_the_cap(monkeypatch, caplog):
                for r in caplog.records)
 
 
-def _doomed_constructor(built):
-    """WhisperModel that raises faster-whisper's ValueError for an unknown
-    short size and records every build, so a test can assert none ran."""
+def _hot_a_with_doomed_load(monkeypatch):
+    """Cap 1 with the hot "a" cached, and a WhisperModel that raises
+    faster-whisper's ValueError for an unknown short size; returns the list of
+    builds, so a test can assert none ran."""
+    built = []
+
     def _build(path, **kw):
         built.append(path)
         if path not in sys.modules["faster_whisper"].available_models():
             raise ValueError(f"Invalid model size '{path}'")
         return FakeModel()
-    return _build
+    _stub_load(monkeypatch, whisper_model=_build, max_loaded=1)
+    _register("a")
+    return built
 
 
 def _assert_refused_evicting_nothing(exc, built):
@@ -95,10 +100,7 @@ def _assert_refused_evicting_nothing(exc, built):
 def test_unknown_short_name_evicts_nothing(monkeypatch):
     """A typo'd size can only fail in the constructor, so it is rejected
     before the LRU loop and costs the hot model no cold reload."""
-    built = []
-    _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
-               max_loaded=1)
-    _register("a")
+    built = _hot_a_with_doomed_load(monkeypatch)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(tx_models._get_or_load_model("largev3", lease=True))
@@ -160,14 +162,11 @@ def test_an_unconfigured_dir_fails_the_shared_gate(monkeypatch, tmp_path,
     under the server's cwd too: refused up front (preload included), not
     loaded after the LRU loop evicted the hot model for it. The two-level one
     has the org/repo shape and would skip the Hub pre-download."""
-    built = []
-    _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
-               max_loaded=1)
+    built = _hot_a_with_doomed_load(monkeypatch)
     monkeypatch.chdir(tmp_path)
     (tmp_path / name).mkdir(parents=True)
     monkeypatch.setattr(tx_models.cfg, "DEFAULT_MODEL", "a", raising=False)
     monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", [], raising=False)
-    _register("a")
 
     with pytest.raises(HTTPException) as exc:
         tx_models._check_model_name(name)
@@ -213,15 +212,12 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
     these too, so the load fails before the LRU loop instead of swallowing
     them as a best-effort pre-download failure."""
     from huggingface_hub import errors as hf_errors
-    built = []
-    _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
-               max_loaded=1)
+    built = _hot_a_with_doomed_load(monkeypatch)
     response = _hub_response(404, "org/nope")
 
     def _missing(**kw):
         raise getattr(hf_errors, err)("not found", response=response)
     _stub_hub(monkeypatch, _missing)
-    _register("a")
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(tx_models._get_or_load_model("org/nope", lease=True))
