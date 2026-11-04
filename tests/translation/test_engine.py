@@ -1465,23 +1465,20 @@ def _predownload_fails(monkeypatch, make_error, cached):
     return record
 
 
-def _predownload_misses(monkeypatch, cached=None):
-    """A fake llama behind an online load whose hub pre-download finds no
-    unique file and whose cache lookup answers ``cached``; returns the llama
-    call record."""
+def _predownload_answers(monkeypatch, path=None, cached=None):
+    """A fake llama behind an online load whose hub pre-download answers
+    ``path`` (None: no unique file) and whose cache lookup answers ``cached``;
+    returns the llama call record."""
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(translation, "_predownload_gguf",
-                        lambda repo, quant, cb=None: None)
+                        lambda repo, quant, cb=None: path)
     monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: cached)
     return record
 
 
 def test_load_uses_predownloaded_path(monkeypatch):
-    record = []
-    _install_fake_llama(monkeypatch, record)
-    monkeypatch.setattr(translation, "_predownload_gguf",
-                        lambda repo, quant, cb=None: "/models/x.Q4.gguf")
+    record = _predownload_answers(monkeypatch, "/models/x.Q4.gguf")
     translation._load_blocking_inner("org/repo:Q4_K_M", "cpu", "chatml")
     assert record[0][0] == "direct"
     assert record[0][1] == "/models/x.Q4.gguf"
@@ -1490,12 +1487,8 @@ def test_load_uses_predownloaded_path(monkeypatch):
 
 
 def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
-    record = []
-    _install_fake_llama(monkeypatch, record)
-
-    def boom(repo, quant, cb=None):
-        raise RuntimeError("listing failed")
-    monkeypatch.setattr(translation, "_predownload_gguf", boom)
+    record = _predownload_fails(
+        monkeypatch, lambda: RuntimeError("listing failed"), None)
     with caplog.at_level(logging.WARNING, logger="whisper-server"):
         out = translation._load_blocking_inner("org/repo:Q4", "cuda", "chatml")
     assert out == "LLM-FP"
@@ -1664,17 +1657,14 @@ def test_load_falls_back_to_from_pretrained_unless_the_hub_failed_and_cached(
 
 def test_load_n_ctx_follows_family(monkeypatch):
     """n_ctx is the FAMILY's window, not one module constant."""
-    record = []
-    _install_fake_llama(monkeypatch, record)
-    monkeypatch.setattr(translation, "_predownload_gguf",
-                        lambda repo, quant, cb=None: "/models/h.gguf")
+    record = _predownload_answers(monkeypatch, "/models/h.gguf")
     translation._load_blocking_inner("org/hy", "cpu", "hunyuan")
     assert record[0][2]["n_ctx"] == translation._ctx_for("hunyuan")
     assert translation._ctx_for("hunyuan") != translation._ctx_for("chatml")
 
 
 def test_load_falls_back_when_no_unique_match(monkeypatch):
-    record = _predownload_misses(monkeypatch)
+    record = _predownload_answers(monkeypatch)
     translation._load_blocking_inner("org/repo", "cpu", "chatml")
     assert record[0][0] == "from_pretrained"
     assert record[0][1]["filename"] == "*.gguf"
@@ -1685,7 +1675,7 @@ def test_load_uses_the_cached_gguf_when_no_unique_hub_file_matches(
     """The quant removed or renamed upstream, or a second file matching the
     glob: from_pretrained's own listing refuses the load, so a GGUF already
     on disk must load directly."""
-    record = _predownload_misses(monkeypatch, "/cache/m.Q4.gguf")
+    record = _predownload_answers(monkeypatch, cached="/cache/m.Q4.gguf")
     translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
     assert record == [("direct", "/cache/m.Q4.gguf", record[0][2])]
 
@@ -1711,7 +1701,7 @@ def test_local_files_only_skips_predownload(monkeypatch):
 def test_online_load_does_not_pass_dead_local_files_only_kwarg(monkeypatch):
     """Llama.from_pretrained has no local_files_only parameter (it would be
     swallowed by Llama.__init__'s **kwargs) — never pass it."""
-    record = _predownload_misses(monkeypatch)
+    record = _predownload_answers(monkeypatch)
     translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
     assert record[0][0] == "from_pretrained"
     assert "local_files_only" not in record[0][1]
@@ -1916,12 +1906,9 @@ def test_predownload_ends_job_when_download_raises(monkeypatch):
 
 
 def test_from_pretrained_fallback_passes_cache_dir(monkeypatch, tmp_path):
-    record = []
-    _install_fake_llama(monkeypatch, record)
+    record = _predownload_answers(monkeypatch)
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
-    monkeypatch.setattr(translation, "_predownload_gguf",
-                        lambda repo, quant, cb=None: None)
     translation._load_blocking_inner("org/repo", "cpu", "chatml")
     assert record[0][1]["cache_dir"] == str(tmp_path / "hf" / "hub")
 
