@@ -1815,7 +1815,8 @@ def test_sample_and_by_request_routes_read_the_store_off_the_loop():
     from faster_whisper_backend.captures import routes as cr
 
     banned = {"get_sample", "get_members", "find_by_request_id",
-              "get_capture", "_assert_member_sample_not_locked"}
+              "get_capture", "_admit_capture",
+              "_assert_member_sample_not_locked"}
 
     def _inline_calls(fn):
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))

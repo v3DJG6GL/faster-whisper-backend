@@ -120,6 +120,13 @@ async def _admit_sample(sid: str, user: dict[str, Any], kind: str) -> dict[str, 
     )
 
 
+def _admit_capture(cid: str, user: dict[str, Any], kind: str) -> dict[str, Any]:
+    """_admit_row for capture `cid`. Blocking: call it from a to_thread worker."""
+    return _admit_row(
+        captures_store.get_capture(cid), user, kind, cid, "capture not found",
+    )
+
+
 def _audit_cross_user_read(
     user: dict[str, Any], row: dict[str, Any] | None,
     kind: str, row_id: str,
@@ -877,10 +884,7 @@ async def patch_capture_api(
             return _patch()
 
     def _patch() -> dict[str, Any] | None:
-        row = _admit_row(
-            captures_store.get_capture(cid),
-            user, "capture-patch", cid, "capture not found",
-        )
+        row = _admit_capture(cid, user, "capture-patch")
         _assert_member_sample_not_locked(row, user)
         if (payload.status is not None
                 and row.get("status") == "audio_missing"
@@ -936,10 +940,7 @@ async def delete_capture_api(
     # connection that clear_all VACUUMs. The guards keep their order (scope
     # 404 before the lock 409, which would confirm the row exists).
     def _read_and_guard() -> None:
-        row = _admit_row(
-            captures_store.get_capture(cid),
-            user, "capture-delete", cid, "capture not found",
-        )
+        row = _admit_capture(cid, user, "capture-delete")
         _assert_member_sample_not_locked(row, user)
 
     await asyncio.to_thread(_read_and_guard)
@@ -1004,10 +1005,7 @@ async def reprocess_capture_api(
     # other request and WebSocket for the length of the run. The HTTPExceptions
     # raised inside propagate out of to_thread unchanged.
     def _run() -> tuple[dict[str, Any], list[str]]:
-        row = _admit_row(
-            captures_store.get_capture(cid),
-            user, "capture-reprocess", cid, "capture not found",
-        )
+        row = _admit_capture(cid, user, "capture-reprocess")
         _assert_member_sample_not_locked(row, user)
         raw = row.get("raw") or ""
         captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
