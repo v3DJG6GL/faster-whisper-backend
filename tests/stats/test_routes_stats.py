@@ -497,8 +497,7 @@ def test_nonadmin_all_scope_unchanged(client):
 
 def test_snapshot_route_own_user_over_http(client, make_user_key, monkeypatch):
     _with_gpu(monkeypatch)
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"stats": "own"})
+    uid, raw = _stats_user(make_user_key, "alice", "own")
     a = jobs.job_start("transcribe", model="m", user="alice", user_id=uid)
     jobs.job_start("transcribe", model="m", user="bob", user_id="other")
     snap = client.get("/stats/snapshot", headers=bearer(raw)).json()
@@ -519,8 +518,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     assert "_rescope_on_version_change, request, seen, resolved_at)" in src
     assert "await asyncio.to_thread(" in src   # SQLite lookups off the loop
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"stats": "all"})
+    uid, raw = _stats_user(make_user_key, "alice", "all")
     req = fake_request(headers=bearer(raw))
     seen = settings_version.config_version()
     at = time.monotonic()
@@ -544,8 +542,7 @@ def test_stream_rechecks_the_caller_before_its_first_frame(
     through TestClient)."""
     import asyncio
 
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"stats": "all"})
+    uid, raw = _stats_user(make_user_key, "alice", "all")
     req = fake_request(headers=bearer(raw))
 
     async def first_frame():
@@ -587,8 +584,7 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.settings import version as settings_version
 
-    make_user_key("root", is_admin=True)
-    uid, _raw = make_user_key("alice", pages={"stats": "all"})
+    uid, _raw = _stats_user(make_user_key, "alice", "all")
     token, _csrf = sessions_store.create_session(uid, 3600.0)
     req = fake_request(headers={"cookie": f"{cfg.SESSION_COOKIE_NAME}={token}"})
     seen = settings_version.config_version()
@@ -622,6 +618,12 @@ def _two_users(make_user_key):
     for uid in (alice, bob):
         keys[uid] = api_keys_store.list_keys(uid)[0]["id"]
     return raw_admin, alice, raw_alice, bob, raw_bob, keys
+
+
+def _stats_user(make_user_key, name, scope):
+    """Leave open mode (the root admin), then add one user with that stats scope."""
+    make_user_key("root", is_admin=True)
+    return make_user_key(name, pages={"stats": scope})
 
 
 def _two_users_with_usage(make_user_key):
@@ -918,8 +920,7 @@ def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
     assert client.get("/stats/history?metric=nope").status_code == 422
     assert client.get(f"/stats/history?metric=gpu_util&from={now}&to={now - 1}").status_code == 422
     # Own scope without the machine cards: no curves.
-    make_user_key("root", is_admin=True)
-    _, raw = make_user_key("alice", pages={"stats": "own"})
+    _, raw = _stats_user(make_user_key, "alice", "own")
     assert client.get("/stats/history?metric=gpu_util",
                       headers=bearer(raw)).status_code == 403
     _, raw_all = make_user_key("bob", pages={"stats": "all"})
@@ -1236,8 +1237,7 @@ def test_stats_usage_list_filters_respect_scope(client, make_user_key):
     """Own-scope users cannot widen to other users (users= is 403, and so is
     the user picker); a non-admin 'all' viewer sends the opaque labels it
     was shown and gets the matching rows back."""
-    make_user_key("root", is_admin=True)
-    alice_uid, alice_raw = make_user_key("alice", pages={"stats": "own"})
+    alice_uid, alice_raw = _stats_user(make_user_key, "alice", "own")
     _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
     _usage_now("ka", alice_uid, 100.0, 10, "a1", "file", processing_s=2.0)
     _usage_now("kb", "bob", 30.0, 3, "b1", "url")
@@ -1260,8 +1260,7 @@ def test_stats_scrubbed_viewer_sees_sentinel_ids_literally(client, make_user_key
     """The open-mode sentinel names nobody, so a non-admin 'all' viewer sees
     "(open-mode)" on the user and key pickers, not an opaque label that reads
     like a real person; real users stay scrubbed."""
-    make_user_key("root", is_admin=True)
-    _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
+    _, viewer_raw = _stats_user(make_user_key, "viewer", "all")
     _usage_now(None, None, 5.0, 1, "o1", "file")
     _usage_now("kb", "bob", 30.0, 3, "b1", "url")
     hdr = bearer(viewer_raw)
@@ -1280,8 +1279,7 @@ def test_stats_usage_scrubbed_viewer_filters_by_picked_row_id(client, make_user_
     """A non-admin 'all' viewer filters by the row `id` /stats/pick and the
     leaderboard hand it (static/stats.js sends Q.users/Q.keys, never labels)
     — for other users, other keys and its own key alike."""
-    make_user_key("root", is_admin=True)
-    alice_uid, _ = make_user_key("alice", pages={"stats": "own"})
+    alice_uid, _ = _stats_user(make_user_key, "alice", "own")
     viewer_uid, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
     _usage_now("ka", alice_uid, 100.0, 10, "a1", "file", processing_s=2.0)
     _usage_now("kb", "bob", 30.0, 3, "b1", "url")
