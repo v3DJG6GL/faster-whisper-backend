@@ -51,6 +51,12 @@ def _seed_rows(conn, ids, status="new", ts=1.0, rel="x.wav"):
         "'[]',?,'bob')", [(i, ts, rel, status) for i in ids])
 
 
+def _audio_files(cs, suffix):
+    """Every file under the audio tree with this suffix, as full paths."""
+    return [os.path.join(r, f) for r, _d, fs in os.walk(cs._require_audio_dir())
+            for f in fs if f.endswith(suffix)]
+
+
 def _caps(monkeypatch, rows, mb):
     """Set the store's CAPTURES_MAX row cap and CAPTURES_MAX_MB byte cap."""
     from faster_whisper_backend.settings import config
@@ -196,10 +202,7 @@ def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypa
             words=[], segments=[],
         )
     assert cs.count() == 0
-    leftovers = []
-    for root, _d, files in os.walk(cs._require_audio_dir()):
-        leftovers += [f for f in files if f.endswith(".tmp")]
-    assert leftovers == []
+    assert _audio_files(cs, ".tmp") == []
 
 
 def test_create_capture_insert_failure_unlinks_audio(captures_store_db, monkeypatch, tmp_path):
@@ -224,10 +227,7 @@ def test_create_capture_insert_failure_unlinks_audio(captures_store_db, monkeypa
             words=[], segments=[],
         )
     monkeypatch.setattr(cs, "_require_conn", lambda: real_conn)
-    files = []
-    for root, _d, fs in os.walk(cs._require_audio_dir()):
-        files += [f for f in fs if f.endswith(".wav")]
-    assert files == []
+    assert _audio_files(cs, ".wav") == []
 
 
 def test_list_captures_newest_first_drops_words(captures_store_db, monkeypatch, tmp_path):
@@ -534,24 +534,19 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
     import time
 
     cs = captures_store_db
-    audio_dir = cs._require_audio_dir()
     # The cap probe up front reads under _lock too; this test is about the
     # INSERT's window only.
     monkeypatch.setattr(cs, "ready_fills_cap", lambda: False)
-
-    def wavs():
-        return [os.path.join(r, f) for r, _d, fs in os.walk(audio_dir)
-                for f in fs if f.endswith(".wav")]
 
     out = []
     with cs._lock:
         t = threading.Thread(target=lambda: out.append(_make(cs, monkeypatch, tmp_path)))
         t.start()
         deadline = time.monotonic() + 5
-        while not wavs() and time.monotonic() < deadline:
+        while not _audio_files(cs, ".wav") and time.monotonic() < deadline:
             time.sleep(0.01)
         # The wipe clear_all does while holding _lock.
-        for p in wavs():
+        for p in _audio_files(cs, ".wav"):
             os.unlink(p)
     t.join(5)
     assert out == [None]
