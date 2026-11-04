@@ -3495,16 +3495,14 @@ async def transcribe(
             # progress entry closed in the inner finally, and the URL flow's
             # rmtree awaited since, so a same-id re-post may already have
             # claimed _pid and bound its own job / plan / run plan.
-            if tx_progress._JOB_BY_PID.get(_pid) == request_id:
-                tx_progress._JOB_BY_PID.pop(_pid, None)
             # The plan itself is NOT cancelled here: its warm leases are what
             # keep the models this job just used alive for the next one, and
             # the TTL retires them on its own.
-            if (_bound_plan_id is not None
-                    and tx_progress._PLAN_BY_PID.get(_pid) == _bound_plan_id):
-                tx_progress._PLAN_BY_PID.pop(_pid, None)
-            if tx_progress._RUN_PLAN_BY_PID.get(_pid) is _rplan:
-                tx_progress._RUN_PLAN_BY_PID.pop(_pid, None)
+            for _binding, _mine in ((tx_progress._JOB_BY_PID, request_id),
+                                    (tx_progress._PLAN_BY_PID, _bound_plan_id),
+                                    (tx_progress._RUN_PLAN_BY_PID, _rplan)):
+                if _mine is not None and _binding.get(_pid) == _mine:
+                    _binding.pop(_pid, None)
         jobs.job_end(request_id)
         if _status != "ok" and _error_class is None:
             _error_class, _error_stage = metrics.classify_error(
