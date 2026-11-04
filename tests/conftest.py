@@ -26,10 +26,12 @@ module: test_<module>.py, test_routes_<area>.py for HTTP tests.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib
 import os
 import sys
+import threading
 import time
 import types
 import wave
@@ -407,6 +409,20 @@ def write_bytes(path, data=b"x"):
     with open(path, "wb") as f:
         f.write(data)
     return path
+
+
+@contextlib.contextmanager
+def waits_on(lock, fn):
+    """Run fn() on a thread while `lock` is held: it must still be waiting
+    after 0.3 s (the with-body runs under the lock) and finish once released."""
+    done = threading.Event()
+    with lock:
+        t = threading.Thread(target=lambda: (fn(), done.set()))
+        t.start()
+        assert not done.wait(0.3)
+        yield
+    t.join(5)
+    assert done.is_set()
 
 
 def fake_wav_transcode(src_path, dst_path):

@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from tests.conftest import install_fake_wav_transcode, write_bytes
+from tests.conftest import install_fake_wav_transcode, waits_on, write_bytes
 
 
 def _make(cs, monkeypatch, tmp_path, **over):
@@ -705,20 +705,13 @@ def test_bulk_update_status_holds_the_samples_lock(captures_store_db):
     must hold samples_store._lock too: a sample patch from a rebuild thread
     (samples lock only) would otherwise join the transaction and be lost if
     it rolls back."""
-    import threading
-
     from faster_whisper_backend.captures import samples_store as capture_samples_store
 
     cs = captures_store_db
     _seed_rows(cs._require_conn(), ["bulklock0000001"])
-    done = threading.Event()
-    with capture_samples_store._lock:
-        t = threading.Thread(target=lambda: (
-            cs.bulk_update_status(["bulklock0000001"], "ready"), done.set()))
-        t.start()
-        assert not done.wait(0.3)
-    t.join(5)
-    assert done.is_set()
+    with waits_on(capture_samples_store._lock,
+                  lambda: cs.bulk_update_status(["bulklock0000001"], "ready")):
+        pass
     assert cs.get_capture("bulklock0000001")["status"] == "ready"
 
 

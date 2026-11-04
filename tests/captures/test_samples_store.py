@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from tests.conftest import write_bytes as _touch
+from tests.conftest import waits_on as _waits_on, write_bytes as _touch
 
 
 def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
@@ -254,21 +254,13 @@ def test_dissolve_waits_for_an_in_flight_rebuild(captures_store_db,
                                                  groups_store_db):
     """dissolve_sample takes the per-sid rebuild lock, so it cannot delete the
     row (and unlink the WAV) under a regenerate that is mid-build."""
-    import threading
-
     from faster_whisper_backend.captures import samples as capture_samples
 
     gs = groups_store_db
     sid = "gdissolvewait001"
     _insert_group(gs, sid)
-    done = threading.Event()
-    with capture_samples._rebuild_lock(sid):
-        t = threading.Thread(target=lambda: (gs.dissolve_sample(sid), done.set()))
-        t.start()
-        assert not done.wait(0.3)
+    with _waits_on(capture_samples._rebuild_lock(sid), lambda: gs.dissolve_sample(sid)):
         assert gs.get_sample(sid) is not None
-    t.join(5)
-    assert done.is_set()
     assert gs.get_sample(sid) is None
 
 
@@ -339,21 +331,13 @@ def test_clear_all_waits_for_an_in_flight_rebuild(captures_store_db,
     """clear_all_samples takes each sample's rebuild lock like dissolve_sample,
     so the admin wipe cannot delete a row under a regenerate that is mid-build
     (whose merged WAV would then outlive the wipe)."""
-    import threading
-
     from faster_whisper_backend.captures import samples as capture_samples
 
     gs = groups_store_db
     sid = "gclearwait000001"
     _insert_group(gs, sid)
-    done = threading.Event()
-    with capture_samples._rebuild_lock(sid):
-        t = threading.Thread(target=lambda: (gs.clear_all_samples(), done.set()))
-        t.start()
-        assert not done.wait(0.3)
+    with _waits_on(capture_samples._rebuild_lock(sid), gs.clear_all_samples):
         assert gs.get_sample(sid) is not None
-    t.join(5)
-    assert done.is_set()
     assert gs.get_sample(sid) is None
     assert sid not in capture_samples._rebuild_locks
 
