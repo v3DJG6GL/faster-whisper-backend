@@ -17,6 +17,7 @@ from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.core import atomic_json
 from tests.settings._rules_helpers import (
+    load_saved,
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
 )
 
@@ -330,9 +331,7 @@ def test_translation_bounds_and_literals():
 
 
 def test_load_overrides_coerces_translation_allowed_models_to_set(tmp_path):
-    p = tmp_path / "config.local.json"
-    _write_json(p, {"TRANSLATION_ALLOWED_MODELS": ["org/a", "org/b:Q4_0"]})
-    out = cs.load_overrides(str(p))
+    out = load_saved(tmp_path, {"TRANSLATION_ALLOWED_MODELS": ["org/a", "org/b:Q4_0"]})
     assert out["TRANSLATION_ALLOWED_MODELS"] == {"org/a", "org/b:Q4_0"}
     assert isinstance(out["TRANSLATION_ALLOWED_MODELS"], set)
 
@@ -917,9 +916,7 @@ def test_load_overrides_non_object_returns_empty(tmp_path):
 def test_load_overrides_hand_edited_unhashable_rule_fields_never_raise(tmp_path, rules):
     # The rename/upgrade migrations run before validation; a list where a
     # string belongs must end in the schema's rejection, not a TypeError.
-    p = tmp_path / "h.json"
-    _write_json(p, {"PIPELINE_RULES": rules})
-    assert cs.load_overrides(str(p)) == {}
+    assert load_saved(tmp_path, {"PIPELINE_RULES": rules}) == {}
 
 
 @pytest.mark.parametrize("rule", [
@@ -933,9 +930,7 @@ def test_overflowing_repeat_count_is_a_validation_error(tmp_path, rule):
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[rule, _terminal()])
     assert "invalid regex" in str(ei.value)
-    p = tmp_path / "o.json"
-    _write_json(p, {"PIPELINE_RULES": [rule, _terminal()]})
-    assert cs.load_overrides(str(p)) == {}
+    assert load_saved(tmp_path, {"PIPELINE_RULES": [rule, _terminal()]}) == {}
 
 
 def test_override_models_apply_the_global_value_rules():
@@ -962,27 +957,21 @@ def test_suppress_tokens_ids_must_be_real_token_ids():
 
 
 def test_stored_out_of_range_suppress_tokens_is_dropped_not_fatal(tmp_path):
-    p = tmp_path / "config.local.json"
-    _write_json(p, {
+    out = load_saved(tmp_path, {
         "SERVER_PORT": 9000, "SUPPRESS_TOKENS": "100000000",
         "OVERRIDE_PROFILES": {"p": {"SUPPRESS_TOKENS": "-1,100000000",
                                     "BEAM_SIZE": 2}}})
-    out = cs.load_overrides(str(p))
     assert out["SERVER_PORT"] == 9000
     assert "SUPPRESS_TOKENS" not in out
     assert out["OVERRIDE_PROFILES"]["p"] == {"BEAM_SIZE": 2}
 
 
 def test_load_overrides_unknown_key_ignored_whole_file(tmp_path):
-    p = tmp_path / "u.json"
-    _write_json(p, {"BEAM_SIZE": 5, "BOGUS": 1})
-    assert cs.load_overrides(str(p)) == {}
+    assert load_saved(tmp_path, {"BEAM_SIZE": 5, "BOGUS": 1}) == {}
 
 
 def test_load_overrides_coerces_allowed_models_to_set(tmp_path):
-    p = tmp_path / "a.json"
-    _write_json(p, {"ALLOWED_MODELS": ["a", "b"]})
-    out = cs.load_overrides(str(p))
+    out = load_saved(tmp_path, {"ALLOWED_MODELS": ["a", "b"]})
     assert isinstance(out["ALLOWED_MODELS"], set)
     assert out["ALLOWED_MODELS"] == {"a", "b"}
 
@@ -991,9 +980,7 @@ def test_load_overrides_coerces_captures_excludes_to_set(tmp_path):
     # config.json default + ENV paths already yield a set (config._SET_FIELDS);
     # the config.local.json override path must match, or the pipeline engine's
     # _postprocess_text does `set | list` and raises TypeError on every captures consumer.
-    p = tmp_path / "a.json"
-    _write_json(p, {"CAPTURES_PIPELINE_RULES_EXCLUDE": ["r1", "r2"]})
-    out = cs.load_overrides(str(p))
+    out = load_saved(tmp_path, {"CAPTURES_PIPELINE_RULES_EXCLUDE": ["r1", "r2"]})
     assert isinstance(out["CAPTURES_PIPELINE_RULES_EXCLUDE"], set)
     assert out["CAPTURES_PIPELINE_RULES_EXCLUDE"] == {"r1", "r2"}
 
