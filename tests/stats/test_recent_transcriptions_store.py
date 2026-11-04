@@ -4,6 +4,8 @@ prune, step truncation, and the row-to-dict derivations."""
 import sqlite3
 import time
 
+from faster_whisper_backend.stats import recent_transcriptions_store as rts
+
 
 def _trace(ts, request_id, **kw):
     ts.record_trace(request_id=request_id, model="m", raw="x", final="y", **kw)
@@ -45,8 +47,6 @@ def test_timing_without_kind_keeps_earlier_values(tx_store):
 def test_migration_adds_columns_to_old_db(tmp_path):
     """A DB created before the recent-jobs columns migrates on init_db and
     its old rows still render (kind None, stages [], key_label '')."""
-    from faster_whisper_backend.stats import recent_transcriptions_store as mod
-
     path = str(tmp_path / "old.sqlite3")
     conn = sqlite3.connect(path)
     conn.executescript("""
@@ -68,16 +68,16 @@ def test_migration_adds_columns_to_old_db(tmp_path):
     conn.commit()
     conn.close()
 
-    mod.init_db(path)
+    rts.init_db(path)
     try:
-        cols = {r["name"] for r in mod._require_conn().execute(
+        cols = {r["name"] for r in rts._require_conn().execute(
             "PRAGMA table_info(recent_transcriptions)")}
         assert {"source", "kind", "stages", "key_label",
                 "wait_s", "error_class", "error_stage"} <= cols
         # The legacy JSON columns were renamed in place, not duplicated.
         assert {"steps", "tokens", "bigrams"} <= cols
         assert not ({"steps_json", "tokens_json", "bigrams_json"} & cols)
-        row = mod.list_recent(limit=10)[0]
+        row = rts.list_recent(limit=10)[0]
         assert row["request_id"] == "old1"
         assert row["kind"] is None
         assert row["stages"] == []
@@ -91,11 +91,11 @@ def test_migration_adds_columns_to_old_db(tmp_path):
         assert not ({"audio_dur_s", "proc_dur_s", "words_count"} & cols)
         assert (row["audio_s"], row["processing_s"], row["words"]) == (2.0, 1.0, 5)
         assert row["rtf"] == 2.0
-        assert [r["request_id"] for r in mod.list_recent(limit=10, slow_rtf=0.4)] == ["old1"]
-        assert mod.list_recent(limit=10, slow_rtf=0.6) == []
+        assert [r["request_id"] for r in rts.list_recent(limit=10, slow_rtf=0.4)] == ["old1"]
+        assert rts.list_recent(limit=10, slow_rtf=0.6) == []
     finally:
-        mod._require_conn().close()
-        mod._conn = None
+        rts._require_conn().close()
+        rts._conn = None
 
 
 # ---------------------------------------------------------------------------
@@ -282,17 +282,15 @@ def test_clear_all(tx_store):
 # ---------------------------------------------------------------------------
 
 def test_truncate_steps_drops_malformed():
-    from faster_whisper_backend.stats import recent_transcriptions_store as ts
     steps = [("ok", "a", "b"), "bad", ("short",), [1, 2], ("x", "y", "z")]
-    out = ts._truncate_steps(steps)
+    out = rts._truncate_steps(steps)
     assert out == [["ok", "a", "b"], ["x", "y", "z"]]
 
 
 def test_truncate_steps_front_trim(monkeypatch):
-    from faster_whisper_backend.stats import recent_transcriptions_store as ts
-    monkeypatch.setattr(ts, "_CAP_STEPS_JSON", 80)
+    monkeypatch.setattr(rts, "_CAP_STEPS_JSON", 80)
     steps = [(f"label{i}", "x" * 20, "y" * 20) for i in range(10)]
-    out = ts._truncate_steps(steps)
+    out = rts._truncate_steps(steps)
     # Oldest (front) entries shed until the JSON blob fits the cap.
     assert 0 < len(out) < 10
     import json
@@ -476,14 +474,12 @@ def test_failed_init_leaves_the_store_closed(tmp_path, monkeypatch):
     does not re-read and re-log the broken store on every /stats frame."""
     import pytest
 
-    from faster_whisper_backend.stats import recent_transcriptions_store as mod
-
-    monkeypatch.setattr(mod, "_conn", None)
+    monkeypatch.setattr(rts, "_conn", None)
     path = str(tmp_path / "broken.sqlite3")
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE recent_transcriptions (id INTEGER PRIMARY KEY, request_id TEXT)")
     conn.commit()
     conn.close()
     with pytest.raises(sqlite3.OperationalError):
-        mod.init_db(path)
-    assert mod.is_open() is False
+        rts.init_db(path)
+    assert rts.is_open() is False
