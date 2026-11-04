@@ -39,6 +39,14 @@ def _bind_user(client, h, uid, **config):
     return r
 
 
+def _bind_key(client, h, uid, kid, **config):
+    """PATCH key {kid}'s config binding (unnamed parts empty); asserts 200."""
+    body = {"overrides": {}, "profiles": [], "locks": [], **config}
+    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h, json=body)
+    assert r.status_code == 200, r.text
+    return r
+
+
 def test_overrides_page_renders(client):
     import re
     r = client.get(OV)
@@ -160,10 +168,7 @@ def test_delete_guard_counts_allowlist_only_reference(client, make_user_key):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
-    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h, json={
-        "overrides": {}, "profiles": [], "locks": [],
-        "allowed_override_profiles": ["clinic-de"]})
-    assert r.status_code == 200, r.text
+    _bind_key(client, h, uid, kid, allowed_override_profiles=["clinic-de"])
 
     usage = client.get(f"{OV}/state", headers=h).json()["usage"]["clinic-de"]
     assert kid in usage["keys"]
@@ -246,10 +251,7 @@ def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key):
     _, _, h = _admin(make_user_key)
     bob_uid, _ = make_user_key("bob", is_admin=False)
     kid = client.get(f"{PERMS}/{bob_uid}/keys", headers=h).json()["keys"][0]["id"]
-    r = client.patch(f"{PERMS}/{bob_uid}/keys/{kid}/config", headers=h, json={
-        "overrides": {}, "profiles": [], "locks": [],
-        "allow_request_decode_overrides": False})
-    assert r.status_code == 200, r.text
+    _bind_key(client, h, bob_uid, kid, allow_request_decode_overrides=False)
 
     rj = client.get(f"{OV}/resolve", headers=h, params={
         "user_id": bob_uid, "key_id": kid, "model": "whisper-1",
@@ -358,9 +360,7 @@ def test_per_key_config_overrides_user(client, make_user_key):
         "pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
     keys = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"]
     kid = keys[0]["id"]
-    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h,
-                     json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
-    assert r.status_code == 200, r.text
+    r = _bind_key(client, h, uid, kid, overrides={"BEAM_SIZE": 4})
     assert r.json()["config"]["direct"]["BEAM_SIZE"] == 4
 
     rj = client.get(f"{OV}/resolve", headers=h, params={
@@ -387,9 +387,7 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
     _bind_user(client, h, uid, profiles=["clinic-de"],
                allowed_override_profiles=["clinic-de"])
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
-    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h,
-                     json={"overrides": {}, "profiles": ["clinic-de"], "locks": []})
-    assert r.status_code == 200, r.text
+    _bind_key(client, h, uid, kid, profiles=["clinic-de"])
 
     r = client.post(f"{OV}/profiles/rename", headers=h,
                     json={"old": "clinic-de", "new": "clinic-deutsch"})
