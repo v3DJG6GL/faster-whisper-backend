@@ -9,7 +9,9 @@ buffer tail, high avg_logprob, T=0.0, nsp possibly below NO_SPEECH_THRESHOLD.
 import numpy as np
 
 from tests._streaming_helpers import handshake
-from tests.conftest import RATE, FakeSegment, FakeWord
+from tests.conftest import RATE, FakeInfo, FakeSegment, FakeWord
+from faster_whisper_backend.settings import schema as settings_schema
+from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.streaming import routes as sr
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -107,7 +109,6 @@ def _loop_segment() -> FakeSegment:
 
 
 def test_batch_cuts_made_up_tail_everywhere(client, fake_model, caplog):
-    from faster_whisper_backend.stats import metrics
     fake_model._segments = [_loop_segment()]
     with caplog.at_level("INFO"):
         body = post_verbose_ok(client, **{"timestamp_granularities[]": "word"})
@@ -135,7 +136,6 @@ def test_batch_tail_cuts_off_keep_the_tail(client, app_module, fake_model):
 def test_batch_whole_segment_verdict_runs_before_the_cut(client, fake_model):
     """The echo segment is dropped WHOLE by the rate guard — not trimmed down to
     its first few words by the burst rule."""
-    from faster_whisper_backend.stats import metrics
     real = _worded("hallo welt", 0.0, 1.0)
     fake_model._segments = [real, _echo_segment()]
     r = post_transcription(client)
@@ -144,7 +144,6 @@ def test_batch_whole_segment_verdict_runs_before_the_cut(client, fake_model):
 
 
 def test_batch_emptied_segment_counts_as_dropped(client, app_module, fake_model):
-    from faster_whisper_backend.stats import metrics
     app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0          # let it reach the cuts
     real = _worded("hallo welt", 0.0, 1.0)
     pile = [FakeWord(f" x{i}", 2.0, 2.0) for i in range(12)]
@@ -167,7 +166,6 @@ def test_batch_repeated_commands_survive(client, fake_model):
 
 
 def test_guard_hits_in_machine_snapshot_only(app_module):
-    from faster_whisper_backend.stats import metrics
     metrics.record_guard_hit("burst")
     metrics.record_guard_hit("not-a-guard")
     assert metrics.metrics_snapshot()["guard_hits"] == {"burst": 1}
@@ -191,7 +189,6 @@ def _head_echo_segment() -> FakeSegment:
 
 
 def test_batch_cuts_prompt_echo_from_the_start(client, fake_model, caplog):
-    from faster_whisper_backend.stats import metrics
     fake_model._segments = [_head_echo_segment()]
     with caplog.at_level("INFO"):
         body = post_verbose_ok(client, prompt=_ECHO_PROMPT,
@@ -224,7 +221,6 @@ def test_batch_prompt_echo_only_on_the_first_segment(client, fake_model):
 
 
 def test_batch_whole_segment_prompt_echo_is_emptied(client, app_module, fake_model):
-    from faster_whisper_backend.stats import metrics
     app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0          # let it reach the cuts
     # three words (the default minimum), squeezed onto the first frames; the
     # head cut runs before the tail cuts, so it is the one that empties it
@@ -243,7 +239,6 @@ def test_batch_whole_segment_prompt_echo_is_emptied(client, app_module, fake_mod
 def test_stream_final_cuts_prompt_echo(app_module, fake_model, monkeypatch, caplog, energy_vad):
     from fastapi.testclient import TestClient
     from tests._streaming_helpers import ws_drain
-    from faster_whisper_backend.stats import metrics
     fake_model._segments = [_head_echo_segment()]
     t = np.arange(8000 * 2) / RATE
     loud = (0.3 * np.sin(2 * np.pi * 220 * t) * 32767).astype("<i2").tobytes()
@@ -335,7 +330,6 @@ def test_streaming_partial_conditioning_unaffected(app_module, fake_model):
 
 
 def test_admin_config_accepts_new_fields():
-    from faster_whisper_backend.settings import schema as settings_schema
     m = settings_schema.AdminConfig(
         SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
@@ -349,7 +343,6 @@ def test_admin_config_accepts_new_fields():
 def test_admin_config_rejects_out_of_range():
     import pytest as _pytest
     from pydantic import ValidationError
-    from faster_whisper_backend.settings import schema as settings_schema
     with _pytest.raises(ValidationError):
         settings_schema.AdminConfig(SEGMENT_MAX_WORDS_PER_S=-1.0)
     with _pytest.raises(ValidationError):
@@ -374,7 +367,6 @@ def test_defaults_present_in_config(app_module):
 
 
 def test_log_block_shows_guards_and_drop_marker(app_module):
-    from tests.conftest import FakeInfo
     seg_diag = [
         {"id": 0, "start": 0.31, "end": 13.42, "alp": -0.11, "nsp": 0.0,
          "cr": 1.13, "temp": 0.0, "text": "real speech", "dropped": False},
@@ -398,7 +390,6 @@ def test_log_block_shows_guards_and_drop_marker(app_module):
 
 
 def test_log_block_no_guards_section_when_absent(app_module):
-    from tests.conftest import FakeInfo
     block = tx_receipt._format_request_block(
         file_label="x.wav", model_name="m", info=FakeInfo(),
         kwargs={"beam_size": 10},
@@ -424,7 +415,6 @@ _NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_S", "STREAMING_TAIL_TRIM_PAD_MS",
 
 
 def test_new_fields_in_override_profile_and_lockable(app_module):
-    from faster_whisper_backend.settings import schema as settings_schema
     p = settings_schema.OverrideProfile(
         SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
