@@ -24,7 +24,7 @@ from starlette.websockets import WebSocketDisconnect
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
     dictate_session, handshake as _config, speak_and_stop, stop_and_drain, stream_ws,
-    ws_drain as _drain)
+    timed_final, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
@@ -73,11 +73,7 @@ def _run_gate_path():
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
                       rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
     finals_meta, on_final = collector()
-    final_decodes: list[float] = []
-
-    async def decode_final(audio, prompt):
-        final_decodes.append(audio.shape[0] / SR)
-        return (" should-not-run.", [], False)
+    final_decodes, decode_final = timed_final(" should-not-run.", SR)
 
     s = _grid_session([], cfg, decode_final, endpointer=_AlwaysSpeech(), on_final=on_final)
 

@@ -17,7 +17,7 @@ import numpy as np
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm, fast_config,
-    handshake, inert_session, stop_and_drain)
+    handshake, inert_session, stop_and_drain, timed_final)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
@@ -196,11 +196,7 @@ def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = 
     ``forced`` non-empty anyway), and the duration of each buffer that
     reached the final decode."""
     msgs, emit = collector()
-    decoded: list[float] = []
-
-    async def decode_final(audio, prompt):
-        decoded.append(audio.shape[0] / SR)
-        return (" chunk.", [], False)
+    decoded, decode_final = timed_final(" chunk.", SR)
 
     s = StreamSession(
         config=cfg, endpointer=_AlwaysSpeech(),
@@ -284,11 +280,7 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
                       rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
     msgs, emit = collector()
     finals_meta, on_final = collector()
-    final_decodes: list[float] = []
-
-    async def decode_final(audio, prompt):
-        final_decodes.append(audio.shape[0] / SR)
-        return (" should-not-run.", [], False)
+    final_decodes, decode_final = timed_final(" should-not-run.", SR)
 
     s = _grid_session([], cfg, decode_final, endpointer=_AlwaysSpeech(),
                       emit=emit, on_final=on_final)

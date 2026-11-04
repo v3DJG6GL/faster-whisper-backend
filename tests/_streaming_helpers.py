@@ -131,6 +131,17 @@ def const_final(text: str = "", dropped_all: bool = False):
     return decode_final
 
 
+def timed_final(text: str, sample_rate: int = 16000):
+    """``(durations, decode_final)``: a fake decode_final returning
+    ``(text, [], False)`` that appends each buffer's seconds to ``durations``."""
+    durations: list[float] = []
+
+    async def decode_final(audio, prompt):
+        durations.append(audio.shape[0] / sample_rate)
+        return (text, [], False)
+    return durations, decode_final
+
+
 def const_partial(*words):
     """Fake decode_partial that always returns ``list(words)``
     (``(start, end, text)`` triples)."""
