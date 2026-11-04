@@ -17,7 +17,7 @@ from faster_whisper_backend.streaming.transport import (
     RawPcmTransport,
     make_transport,
 )
-from tests._streaming_helpers import drain_frames, handshake, stop_and_drain, stream_ws
+from tests._streaming_helpers import drain_frames, handshake, ready_ws, stop_and_drain, stream_ws
 
 
 def test_ffmpeg_exe_resolves_to_runnable_binary():
@@ -227,8 +227,7 @@ def test_stream_route_ends_the_session_when_the_decoder_dies(client, monkeypatch
 
     monkeypatch.setattr(stream_routes, "make_transport",
                         lambda fmt, sink, **kw: _DyingTransport(sink, **kw))
-    with stream_ws(client) as ws:
-        assert handshake(ws, audio={"format": "webm"})["type"] == "ready"
+    with ready_ws(client, audio={"format": "webm"}) as ws:
         ws.send_bytes(b"\x1a\x45\xdf\xa3 corrupt")
         msgs = drain_frames(ws, 50)
     errors = [m for m in msgs if m.get("type") == "error"]

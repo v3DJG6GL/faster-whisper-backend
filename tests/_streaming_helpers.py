@@ -6,6 +6,8 @@ Kept out of conftest.py so the fixture file stays about fixtures; import as
 pytest.ini puts the repo root on sys.path).
 """
 
+from contextlib import contextmanager
+
 import numpy as np
 from starlette.websockets import WebSocketDisconnect
 
@@ -70,6 +72,14 @@ def stream_ws(client, raw_key=None):
         "/v1/audio/transcriptions/stream", headers=bearer(raw_key) if raw_key else {})
 
 
+@contextmanager
+def ready_ws(client, raw_key=None, **extra):
+    """``stream_ws`` whose handshake already answered ready; yields the socket."""
+    with stream_ws(client, raw_key) as ws:
+        assert handshake(ws, **extra)["type"] == "ready"
+        yield ws
+
+
 def config_drain(client, raw_key, limit: int = 200) -> list[dict]:
     """Connect with ``raw_key``'s bearer header, send ``config_frame()`` and
     return every frame up to the server's close (``ws_drain``)."""
@@ -89,8 +99,7 @@ def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
 def dictate_session(client, raw_key=None, **extra) -> list[dict]:
     """One whole session: the handshake (must answer ready), ``speak_and_stop``;
     returns the frames."""
-    with stream_ws(client, raw_key) as ws:
-        assert handshake(ws, **extra)["type"] == "ready"
+    with ready_ws(client, raw_key, **extra) as ws:
         return speak_and_stop(ws)[0]
 
 

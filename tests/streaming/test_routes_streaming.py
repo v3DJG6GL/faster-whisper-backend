@@ -18,7 +18,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake,
-    locked_down_user, speak_and_stop, stop_and_drain, stream_ws)
+    locked_down_user, ready_ws, speak_and_stop, stop_and_drain, stream_ws)
 from tests._transcription_helpers import guard_line
 from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.transcription import models as tx_models
@@ -420,8 +420,7 @@ def test_flush_after_new_audio_is_not_coalesced(client, monkeypatch, energy_vad)
         await orig_flush(self)
 
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
-    with stream_ws(client) as ws:
-        assert _handshake(ws)["type"] == "ready"
+    with ready_ws(client) as ws:
         ws.send_bytes(_pcm(8000, 1000))   # utterance A
         ws.send_json({"type": "flush"})   # flush A (pump held for 0.4 s)
         ws.send_bytes(_pcm(8000, 1000))   # utterance B — new audio after A's flush
@@ -477,8 +476,7 @@ def test_stream_session_idle_timeout_closes_and_notifies(
     # After a successful handshake, a connection that goes silent mid-session is
     # closed once the idle timeout elapses, with an idle_timeout notice first.
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
-    with stream_ws(client) as ws:
-        assert _handshake(ws, response_format="json")["type"] == "ready"
+    with ready_ws(client, response_format="json") as ws:
         msgs = _drain(ws)   # send nothing further → idle close
     assert any(m.get("code") == "idle_timeout" for m in msgs)
 
@@ -487,8 +485,7 @@ def test_stream_idle_timeout_zero_disables(client, app_module, monkeypatch, ener
     # 0 disables the idle timeout: the normal stop/close flow still works and no
     # idle_timeout notice is emitted (the receive falls through to a plain await).
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.0, raising=False)
-    with stream_ws(client) as ws:
-        assert _handshake(ws, response_format="json")["type"] == "ready"
+    with ready_ws(client, response_format="json") as ws:
         msgs = stop_and_drain(ws)[0]
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
@@ -507,8 +504,7 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(
     Here the socket must already be closed by the time we stop sending.
     """
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.5, raising=False)
-    with stream_ws(client) as ws:
-        assert _handshake(ws, response_format="json")["type"] == "ready"
+    with ready_ws(client, response_format="json") as ws:
         for _ in range(3):            # 0.9 s of keepalive-ish traffic, no audio
             time.sleep(0.3)
             try:
@@ -532,8 +528,7 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(
     # stalled sleep on a loaded CI runner cannot turn into a spurious idle
     # close (a 0.5 s timeout with 0.25 s frames flaked in CI).
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 2.0, raising=False)
-    with stream_ws(client) as ws:
-        assert _handshake(ws, response_format="json")["type"] == "ready"
+    with ready_ws(client, response_format="json") as ws:
         for _ in range(12):           # 3 s of streaming: 1.5x the idle timeout
             time.sleep(0.25)
             ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
@@ -552,8 +547,7 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
     with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
-        with stream_ws(client) as ws:
-            assert _handshake(ws)["type"] == "ready"
+        with ready_ws(client):
             assert len(streaming_routes._active_sessions) == 1
             with pytest.raises(WebSocketDisconnect) as ei:
                 with stream_ws(client) as ws2:
@@ -585,8 +579,7 @@ def test_session_admitted_with_the_cap_off_releases_no_slot(client, app_module,
     counts = streaming_routes._stream_sessions._counts
     b_cm = None
     try:
-        with stream_ws(client) as a:
-            assert _handshake(a)["type"] == "ready"
+        with ready_ws(client):
             assert counts == {}
             monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER",
                                 1, raising=False)
@@ -611,8 +604,7 @@ def test_global_cap_refusal_with_the_cap_off_releases_no_slot(client, app_module
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
     counts = streaming_routes._stream_sessions._counts
-    with stream_ws(client) as a:
-        assert _handshake(a)["type"] == "ready"
+    with ready_ws(client):
         assert list(counts.values()) == [1]
         monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
                             raising=False)
@@ -645,8 +637,7 @@ def test_per_user_cap_is_per_user(client, make_user_key, app_module,
     _uid_a, key_a = locked_down_user(make_user_key)
     _uid_b, key_b = make_user_key("bob")
 
-    with stream_ws(client, key_a) as a:
-        assert _handshake(a)["type"] == "ready"
+    with ready_ws(client, key_a):
         with pytest.raises(WebSocketDisconnect) as ei:
             with stream_ws(client, key_a) as dup:
                 dup.receive_json()

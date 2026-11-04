@@ -15,7 +15,7 @@ from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 from tests._streaming_helpers import (
     config_drain, config_frame, const_pcm, dictate_session, handshake, locked_down_user,
-    speak_and_stop, stop_and_drain, stream_ws, ws_drain)
+    ready_ws, speak_and_stop, stop_and_drain, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -96,8 +96,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
     uid, raw_alice = make_user_key("alice")
     _bind(client, h, uid, profiles=["p7"])
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         # utterance 1 under profile p7
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))
@@ -459,8 +458,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     version, which is the signal _refresh_ident already consumes."""
     uid, raw_alice = locked_down_user(make_user_key)
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
         time.sleep(0.5)
         api_keys_store.revoke_user(uid)        # bumps the config version
@@ -490,8 +488,7 @@ def test_revoked_session_closes_without_a_further_client_frame(
     _auth_revoked branch is only the backstop."""
     uid, raw_alice = locked_down_user(make_user_key)
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
         time.sleep(0.5)
         api_keys_store.revoke_user(uid)        # bumps the config version
@@ -522,8 +519,7 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
         return user
     monkeypatch.setattr(streaming_routes, "authenticate_ws", _auth_then_revoke)
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))        # first decode re-auths → revoked
         time.sleep(0.5)
         try:
@@ -544,8 +540,7 @@ def test_stream_survives_an_unrelated_config_bump(
     the still-valid credential must NOT be treated as revoked."""
     h, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 3})
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))
         time.sleep(0.3)
         _profile(client, h, "p", BEAM_SIZE=7)   # unrelated bump, alice untouched
@@ -621,8 +616,7 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     monkeypatch.setattr(metrics, "record_transcription",
                         lambda **kw: rows.append(kw.get("status")))
 
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))        # speech, utterance stays open
         time.sleep(0.5)                        # pump has drained the queue
         api_keys_store.revoke_user(uid)        # bumps the config version
@@ -826,9 +820,8 @@ def test_stream_client_output_wrappers_survive_a_refresh(
     # _refresh_ident recomputes the wrappers; it must keep the client's.
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
     uid, raw_alice = locked_down_user(make_user_key)
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws, decode_overrides={"output_prefix": ">> ",
-                                               "output_suffix": " <<"})["type"] == "ready"
+    with ready_ws(client, raw_alice, decode_overrides={"output_prefix": ">> ",
+                                                       "output_suffix": " <<"}) as ws:
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))
         # Any config bump makes the next utterance re-resolve ident.
@@ -850,8 +843,7 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[old] ")
     uid, raw_alice = make_user_key("alice")
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))        # final, document stays open
         early = []
@@ -889,9 +881,8 @@ def test_stream_output_suffix_closes_every_document_at_a_hard_break(
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SEPARATOR", "\n")
     _, raw_alice = make_user_key("alice")
-    with stream_ws(client, raw_alice) as ws:
-        assert handshake(ws, decode_overrides={"output_prefix": ">> ",
-                                               "output_suffix": " <<"})["type"] == "ready"
+    with ready_ws(client, raw_alice, decode_overrides={"output_prefix": ">> ",
+                                                       "output_suffix": " <<"}) as ws:
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
         msgs = speak_and_stop(ws)[0]      # final, no second break
