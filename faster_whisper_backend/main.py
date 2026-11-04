@@ -240,14 +240,8 @@ async def _hourly_sweep_loop(sweep, error_fmt: str) -> None:
     writers behind their own locks), so a backlog never blocks in-flight
     transcriptions, dictation frames or SSE ticks. A failed tick logs and
     the next one still runs; cancellation on shutdown is the normal exit."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            await asyncio.to_thread(sweep)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.error(error_fmt, exc)
+    await loop_lock.run_every(lambda: 3600, lambda: asyncio.to_thread(sweep),
+                              logger, error_fmt)
 
 
 async def _reports_retention_loop() -> None:
