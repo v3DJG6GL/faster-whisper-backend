@@ -18,6 +18,7 @@ from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.core import atomic_json
 from tests.settings._rules_helpers import (
     load_saved,
+    map_rule as _map_rule,
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
     regex_list_rules,
     regex_rule as _regex,
@@ -492,8 +493,7 @@ def _terminal():
 
 
 def test_pipeline_callback_map_skips_pattern_validation():
-    rule = {"name": "m", "label": "m", "type": "callback:map",
-            "map": {"Komma": ","}}
+    rule = _map_rule("m", {"Komma": ","})
     m = _ok(PIPELINE_RULES=[rule, _terminal()])
     assert m.PIPELINE_RULES[0].type == "callback:map"
 
@@ -715,8 +715,7 @@ def test_regex_list_entry_conflicting_flags_reports_index():
 
 
 def test_map_meta_pruned_to_map_keys():
-    rule = {"name": "m", "label": "m", "type": "callback:map",
-            "map": {"Komma": ","}, "map_meta": {"Komma": 5, "ghost": 9}}
+    rule = _map_rule("m", {"Komma": ","}, map_meta={"Komma": 5, "ghost": 9})
     m = _ok(PIPELINE_RULES=[rule, _terminal()])
     assert m.PIPELINE_RULES[0].map_meta == {"Komma": 5}
 
@@ -761,8 +760,7 @@ def test_nested_fixed_counts_refused_at_load_without_a_replacement():
 def test_map_key_collision_check_is_scoped_to_guard_slugs():
     """An untouched dictionary with colliding keys (it loads fine: load runs
     without the guard context) must not 422 a save scoped to another rule."""
-    rule = {"name": "m", "label": "m", "type": "callback:map",
-            "map": {"Passwort": "x", "passwort": "y"}}
+    rule = _map_rule("m", {"Passwort": "x", "passwort": "y"})
     rules = [rule, _terminal()]
     validate_rules(rules, guard_regex=True, guard_slugs={"other"})
     for ctx in ({"guard_regex": True, "guard_slugs": {"m"}}, {"guard_regex": True}):
@@ -1728,8 +1726,7 @@ def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
 def test_load_overrides_drops_blank_map_key_keeps_rest(tmp_path):
     # The old map-key pattern accepted " "; a file stored then must lose only
     # that key, not every override — and must stay saveable.
-    rule = {"name": "m", "label": "m", "type": "callback:map",
-            "map": {" ": "x", "Komma": ","}, "map_meta": {" ": 1, "Komma": 2}}
+    rule = _map_rule("m", {" ": "x", "Komma": ","}, map_meta={" ": 1, "Komma": 2})
     p = str(_seed_local(tmp_path, {"PIPELINE_RULES": [rule, _terminal()], "BEAM_SIZE": 7}))
     out = cs.load_overrides(p)
     assert out["BEAM_SIZE"] == 7

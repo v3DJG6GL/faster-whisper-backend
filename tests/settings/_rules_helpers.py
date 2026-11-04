@@ -37,6 +37,16 @@ def regex_rule(name, pattern="x", replacement="y", **kw):
             "entries": [{"pattern": pattern, "replacement": replacement}], **kw}
 
 
+def map_rule(name, mapping=None, map_meta=None, **kw):
+    """A callback:map rule `name` (labelled `name`); `kw` adds or overrides keys."""
+    r = {"name": name, "label": name, "type": "callback:map",
+         "map": mapping if mapping is not None else {"foo": "=>"}}
+    if map_meta is not None:
+        r["map_meta"] = map_meta
+    r.update(kw)
+    return r
+
+
 def regex_list_rules(name, pattern, replacement="x"):
     """A one-entry regex-list rule `name` (labelled `name`), then the
     trim-edges terminal: the smallest valid PIPELINE_RULES list."""
