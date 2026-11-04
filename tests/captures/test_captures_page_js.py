@@ -1360,9 +1360,9 @@ _KATZE_ALIGNED = ([{"word": "äh", "removed": True}] * 4
 
 # _buildDefaultTranscript and the helpers it calls, sliced together.
 _TRANSCRIPT_FNS = ("_endsSentence", "_applyChipsToText", "_cjkEdge", "_trainingBase",
-                   "_buildDefaultTranscript")
+                   "_chippedText", "_buildDefaultTranscript")
 # _capturePreviewText and the helpers it calls.
-_CARD_PREVIEW_FNS = ("_capturePreviewText", "_trainingBase", "_applyChipsToText", "_cjkEdge")
+_CARD_PREVIEW_FNS = ("_capturePreviewText", "_chippedText", "_trainingBase", "_applyChipsToText", "_cjkEdge")
 
 
 @needs_node
@@ -1543,8 +1543,8 @@ function escapeHtml(s) { return String(s); }   // the page's /"/ regex trips _js
 
 
 def _sample_card_js(page):
-    return _SAMPLE_CARD_STUBS + _js_functions(page, "applyServerSample", "_paintWordSpan", "_trainingBase",
-                                              "_applyChipsToText", "_chipFields", "_el")
+    return _SAMPLE_CARD_STUBS + _js_functions(page, "applyServerSample", "_paintWordSpan", "_chippedText",
+                                              "_trainingBase", "_applyChipsToText", "_chipFields", "_el")
 
 
 @needs_node
