@@ -11,7 +11,6 @@ import subprocess
 
 import pytest
 from starlette.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
 from faster_whisper_backend.streaming.transport import (
@@ -19,6 +18,7 @@ from faster_whisper_backend.streaming.transport import (
     RawPcmTransport,
     make_transport,
 )
+from tests._streaming_helpers import handshake, ws_drain
 
 
 def test_ffmpeg_exe_resolves_to_runnable_binary():
@@ -221,19 +221,12 @@ def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):
     webm = _gen_webm(2.0)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({"type": "config", "model": "whisper-1",
-                          "audio": {"format": "webm"}})
-            ready = ws.receive_json()
+            ready = handshake(ws, audio={"format": "webm"})
             assert ready["type"] == "ready"
             assert ready["audio_format"] == "webm"
             ws.send_bytes(webm)
             ws.send_json({"type": "stop"})
-            msgs = []
-            try:
-                for _ in range(200):
-                    msgs.append(ws.receive_json())
-            except WebSocketDisconnect:
-                pass
+            msgs = ws_drain(ws)[0]
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals, "expected a final from the decoded WebM"
     assert "welt" in "".join(m["committed"] + m.get("tail", "") for m in finals)
@@ -267,16 +260,9 @@ def test_stream_route_ends_the_session_when_the_decoder_dies(app_module, monkeyp
                         lambda fmt, sink, **kw: _DyingTransport(sink, **kw))
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({"type": "config", "model": "whisper-1",
-                          "audio": {"format": "webm"}})
-            assert ws.receive_json()["type"] == "ready"
+            assert handshake(ws, audio={"format": "webm"})["type"] == "ready"
             ws.send_bytes(b"\x1a\x45\xdf\xa3 corrupt")
-            msgs = []
-            try:
-                for _ in range(50):
-                    msgs.append(ws.receive_json())
-            except WebSocketDisconnect:
-                pass
+            msgs = ws_drain(ws, 50)[0]
     errors = [m for m in msgs if m.get("type") == "error"]
     assert [m["code"] for m in errors] == ["decoder_failed"], msgs
     assert len(feeds) == 1
