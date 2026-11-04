@@ -196,6 +196,12 @@ def _short_id(v):
     return v if v.startswith("(") else (v[:8] if v else "—")
 
 
+def _named_id(name, id_) -> str:
+    """`name (short id)` for an Identity row; the short id alone when there is no name."""
+    safe = _log_safe(name) if name else None
+    return f"{safe} ({_short_id(id_)})" if safe else _short_id(id_)
+
+
 def _format_translate_block(
     *,
     request_id: str | None,
@@ -247,14 +253,9 @@ def _format_translate_block(
 
     if user_id or key_id:
         lines.append(_section_rule("Identity"))
-        _safe_name = _log_safe(username) if username else None
-        who = f"{_safe_name} ({_short_id(user_id)})" if _safe_name else _short_id(user_id)
-        lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
+        lines.append(f"    {'user':<{_NAME_COL - 4}}{_named_id(username, user_id)}")
         if key_id:
-            _safe_label = _log_safe(key_label) if key_label else None
-            which = (f"{_safe_label} ({_short_id(key_id)})"
-                     if _safe_label else _short_id(key_id))
-            lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
+            lines.append(f"    {'key':<{_NAME_COL - 4}}{_named_id(key_label, key_id)}")
     lines.append(title_rule)
     return "\n".join(lines)
 
@@ -825,14 +826,9 @@ def _format_request_block(
                                            or overrides_ignored)
     if user_id or key_id or _ident_detail:
         lines.append(_section_rule("Identity"))
-        _safe_name = _log_safe(username) if username else None
-        who = f"{_safe_name} ({_short_id(user_id)})" if _safe_name else _short_id(user_id)
-        lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
+        lines.append(f"    {'user':<{_NAME_COL - 4}}{_named_id(username, user_id)}")
         if key_id:
-            _safe_label = _log_safe(key_label) if key_label else None
-            which = (f"{_safe_label} ({_short_id(key_id)})"
-                     if _safe_label else _short_id(key_id))
-            lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
+            lines.append(f"    {'key':<{_NAME_COL - 4}}{_named_id(key_label, key_id)}")
         if ident is not None and ident.profiles_applied:
             lines.append(f"    {'profiles':<{_NAME_COL - 4}}{' → '.join(ident.profiles_applied)}")
         # A failed binding fetch locks every field because the identity's
