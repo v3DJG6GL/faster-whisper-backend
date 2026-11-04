@@ -4,6 +4,7 @@ Module globals are reset between tests by the autouse _reset_singletons
 fixture in conftest.
 """
 
+import asyncio
 import time
 
 from faster_whisper_backend.stats import metrics
@@ -316,7 +317,6 @@ def test_gpu_gate_counts_held_queue_and_charges_the_wait():
     """Capacity 1: the second task waits, the snapshot shows it queued, and
     the wait is charged to THAT task's WAIT_ACC (seeded per request);
     releasing brings held back to 0."""
-    import asyncio
 
     async def scenario():
         gate = metrics.GpuGate(1)
@@ -352,8 +352,6 @@ def test_gpu_gate_counts_held_queue_and_charges_the_wait():
 
 
 def test_gpu_gate_snapshot_reports_the_oldest_waiter():
-    import asyncio
-
     async def scenario():
         gate = metrics.GpuGate(1)
         await gate.acquire()
@@ -389,7 +387,6 @@ def test_gpu_gate_snapshot_survives_the_last_waiter_leaving_mid_read():
 
 
 def test_take_wait_without_a_seed_is_zero_and_take_resets():
-    import asyncio
     assert metrics.take_wait() == 0.0
 
     async def scenario():
@@ -419,7 +416,6 @@ def test_an_unseeded_context_is_not_charged_the_wait():
     """The streaming handler seeds one accumulator per session; a live
     preview's acquire must run with it unset (WAIT_ACC.set(None)) so only
     the final's own wait lands on the dictation row."""
-    import asyncio
 
     async def scenario():
         gate = metrics.GpuGate(1)
