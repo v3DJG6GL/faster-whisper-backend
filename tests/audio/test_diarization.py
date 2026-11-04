@@ -51,17 +51,22 @@ def _offline_load_env(monkeypatch):
     return cfg
 
 
-def _stub_turns(monkeypatch, turns, calls=None):
+_ONE_TURN = [(0.0, 1.0, "SPEAKER_00")]
+
+
+def _stub_turns(monkeypatch, turns=_ONE_TURN):
+    calls = []
+
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
                             max_speakers=None, model_id=None,
                             progress_cb=None, cancel_check=None):
-        if calls is not None:
-            calls.append({"path": path, "num_speakers": num_speakers,
-                          "min_speakers": min_speakers,
-                          "max_speakers": max_speakers,
-                          "model_id": model_id})
+        calls.append({"path": path, "num_speakers": num_speakers,
+                      "min_speakers": min_speakers,
+                      "max_speakers": max_speakers,
+                      "model_id": model_id})
         return turns
     monkeypatch.setattr(diarization, "diarize", _fake_diarize)
+    return calls
 
 
 def test_diarize_labels_segments_and_lists_speakers(client, monkeypatch, diar_on):
@@ -78,8 +83,7 @@ def test_diarize_labels_segments_and_lists_speakers(client, monkeypatch, diar_on
 
 def test_diarize_disabled_server_soft_fails(client, app_module, monkeypatch):
     # DIARIZATION_ENABLED defaults off, so this test leaves it unset.
-    called = []
-    _stub_turns(monkeypatch, [(0.0, 1.0, "SPEAKER_00")], calls=called)
+    called = _stub_turns(monkeypatch)
     r = _post(client, diarize="true")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -90,8 +94,7 @@ def test_diarize_disabled_server_soft_fails(client, app_module, monkeypatch):
 
 
 def test_diarize_absent_inherits_config_default_off(client, monkeypatch, diar_on):
-    called = []
-    _stub_turns(monkeypatch, [(0.0, 1.0, "SPEAKER_00")], calls=called)
+    called = _stub_turns(monkeypatch)
     r = _post(client)
     assert r.status_code == 200
     assert called == []          # DIARIZE global default is false
@@ -101,8 +104,7 @@ def test_diarize_absent_inherits_config_default_off(client, monkeypatch, diar_on
 def test_diarize_config_default_on_applies(client, app_module, monkeypatch,
                                            diar_on):
     monkeypatch.setattr(app_module.cfg, "DIARIZE", True, raising=False)
-    called = []
-    _stub_turns(monkeypatch, [(0.0, 1.0, "SPEAKER_00")], calls=called)
+    called = _stub_turns(monkeypatch)
     r = _post(client)
     assert r.status_code == 200
     assert len(called) == 1      # absent field inherits DIARIZE=true
@@ -127,8 +129,7 @@ def test_diarization_error_becomes_warning(client, monkeypatch, diar_on):
 
 
 def test_num_speakers_wins_and_clamps(client, monkeypatch, diar_on):
-    called = []
-    _stub_turns(monkeypatch, [(0.0, 1.0, "SPEAKER_00")], calls=called)
+    called = _stub_turns(monkeypatch)
     r = _post(client, diarize="yes", num_speakers="99", min_speakers="2",
               max_speakers="5")
     assert r.status_code == 200
@@ -138,8 +139,7 @@ def test_num_speakers_wins_and_clamps(client, monkeypatch, diar_on):
 
 
 def test_min_max_forwarded_without_num(client, monkeypatch, diar_on):
-    called = []
-    _stub_turns(monkeypatch, [(0.0, 1.0, "SPEAKER_00")], calls=called)
+    called = _stub_turns(monkeypatch)
     r = _post(client, diarize="on", min_speakers="2", max_speakers="4")
     assert r.status_code == 200
     assert called[0]["num_speakers"] is None
@@ -149,8 +149,7 @@ def test_min_max_forwarded_without_num(client, monkeypatch, diar_on):
 
 def test_no_segments_skips_diarization_with_warning(client, monkeypatch,
                                                     fake_model, diar_on):
-    called = []
-    _stub_turns(monkeypatch, [(0.0, 1.0, "SPEAKER_00")], calls=called)
+    called = _stub_turns(monkeypatch)
     fake_model._segments = []          # silence: whisper yields nothing
     r = _post(client, diarize="true")
     assert r.status_code == 200
