@@ -23,9 +23,7 @@ def _post(client, headers=None, **hints):
 
 def test_explicit_zero_num_speakers_auto_detects_instead_of_inheriting(
         client, app_module, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_NUM_SPEAKERS", 2)
     _post(client, num_speakers=0)
     assert calls == [{"num": None, "min": None, "max": None}]
@@ -33,9 +31,7 @@ def test_explicit_zero_num_speakers_auto_detects_instead_of_inheriting(
 
 def test_explicit_zero_against_a_locked_count_is_reported_ignored(
         client, app_module, make_user_key, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     h = _as_profile_user(client, make_user_key, DIARIZATION_NUM_SPEAKERS=3,
                          locks=["DIARIZATION_NUM_SPEAKERS"])
     ignored = _post(client, h, num_speakers=0)
@@ -45,9 +41,7 @@ def test_explicit_zero_against_a_locked_count_is_reported_ignored(
 
 def test_client_min_beats_an_inherited_lower_max(
         client, app_module, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_MAX_SPEAKERS", 4)
     _post(client, min_speakers=6)
     assert calls == [{"num": None, "min": 6, "max": None}]
@@ -55,9 +49,7 @@ def test_client_min_beats_an_inherited_lower_max(
 
 def test_client_max_beats_an_inherited_higher_min(
         client, app_module, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_MIN_SPEAKERS", 5)
     _post(client, max_speakers=2)
     assert calls == [{"num": None, "min": None, "max": 2}]
@@ -65,18 +57,14 @@ def test_client_max_beats_an_inherited_higher_min(
 
 def test_inverted_client_range_still_clamps_min_down_to_max(
         client, app_module, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     _post(client, min_speakers=6, max_speakers=3)
     assert calls == [{"num": None, "min": 3, "max": 3}]
 
 
 def test_refused_client_bound_keeps_the_inherited_count(
         client, app_module, make_user_key, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     h = _as_profile_user(client, make_user_key, DIARIZATION_NUM_SPEAKERS=3,
                          DIARIZATION_MIN_SPEAKERS=2,
                          locks=["DIARIZATION_MIN_SPEAKERS"])
@@ -87,9 +75,7 @@ def test_refused_client_bound_keeps_the_inherited_count(
 
 def test_client_num_outside_a_locked_min_is_refused(
         client, app_module, make_user_key, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     h = _as_profile_user(client, make_user_key, DIARIZATION_MIN_SPEAKERS=2,
                          locks=["DIARIZATION_MIN_SPEAKERS"])
     ignored = _post(client, h, num_speakers=1)
@@ -99,9 +85,7 @@ def test_client_num_outside_a_locked_min_is_refused(
 
 def test_client_max_below_a_locked_min_is_refused(
         client, app_module, make_user_key, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     h = _as_profile_user(client, make_user_key, DIARIZATION_MIN_SPEAKERS=3,
                          locks=["DIARIZATION_MIN_SPEAKERS"])
     ignored = _post(client, h, max_speakers=1)
@@ -111,9 +95,7 @@ def test_client_max_below_a_locked_min_is_refused(
 
 def test_client_min_above_a_locked_max_keeps_the_inherited_count(
         client, app_module, make_user_key, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     h = _as_profile_user(client, make_user_key, DIARIZATION_NUM_SPEAKERS=3,
                          DIARIZATION_MAX_SPEAKERS=4,
                          locks=["DIARIZATION_MAX_SPEAKERS"])
@@ -124,9 +106,7 @@ def test_client_min_above_a_locked_max_keeps_the_inherited_count(
 
 def test_client_max_below_a_locked_min_keeps_the_inherited_count(
         client, app_module, make_user_key, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     h = _as_profile_user(client, make_user_key, DIARIZATION_NUM_SPEAKERS=4,
                          DIARIZATION_MIN_SPEAKERS=3,
                          locks=["DIARIZATION_MIN_SPEAKERS"])

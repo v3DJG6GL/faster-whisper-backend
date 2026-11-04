@@ -374,8 +374,10 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
     assert "diarize" in r.json()["overrides_ignored"]
 
 
-def _record_diarize(monkeypatch, calls):
+def _record_diarize(monkeypatch, app_module) -> list:
     from faster_whisper_backend.audio import diarization
+
+    calls = []
 
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
                             max_speakers=None, **kw):
@@ -383,15 +385,15 @@ def _record_diarize(monkeypatch, calls):
                       "max": max_speakers})
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake_diarize)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    return calls
 
 
 def test_explicit_speaker_range_beats_inherited_num_speakers(
         client, app_module, fake_model, monkeypatch):
     # An unlocked DIARIZATION_NUM_SPEAKERS default must not erase the bounds
     # the client sent: absent inherits, explicit wins.
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_NUM_SPEAKERS", 2)
     r = post_verbose(client, diarize="true", min_speakers="3", max_speakers="6")
     assert r.status_code == 200, r.text
@@ -400,9 +402,7 @@ def test_explicit_speaker_range_beats_inherited_num_speakers(
 
 def test_locked_num_speakers_reports_dropped_client_bounds(
         client, app_module, make_user_key, fake_model, monkeypatch):
-    calls = []
-    _record_diarize(monkeypatch, calls)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    calls = _record_diarize(monkeypatch, app_module)
     raw_alice = _bind_profile_user(client, make_user_key, "twospk",
                                    DIARIZATION_NUM_SPEAKERS=2,
                                    locks=["DIARIZATION_NUM_SPEAKERS"])
