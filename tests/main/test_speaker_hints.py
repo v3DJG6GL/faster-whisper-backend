@@ -3,8 +3,9 @@ num/min/max_speakers combine with inherited and LOCKED DIARIZATION_* config.
 Asserts the kwargs the stubbed diarize() receives + overrides_ignored."""
 
 from tests.conftest import bearer
+from tests._transcription_helpers import post_verbose
 from tests.main.test_transcription_overrides import (
-    _FILE, _bind_profile_user, _record_diarize,
+    _bind_profile_user, _record_diarize,
 )
 
 
@@ -13,10 +14,8 @@ def _as_profile_user(client, make_user_key, **fields):
 
 
 def _post(client, headers=None, **hints):
-    data = {"model": "whisper-1", "response_format": "verbose_json",
-            "diarize": "true", **{k: str(v) for k, v in hints.items()}}
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    headers=headers or {}, data=data)
+    r = post_verbose(client, headers, diarize="true",
+                     **{k: str(v) for k, v in hints.items()})
     assert r.status_code == 200, r.text
     return r.json().get("overrides_ignored", [])
 

@@ -16,10 +16,11 @@ from tests.conftest import bearer, write_wav
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
 
-def post_transcription(client, headers=None, **data):
-    """POST the stub upload with form fields `data` (model defaults to whisper-1)."""
+def post_transcription(client, headers=None, files=WAV_UPLOAD, **data):
+    """POST `files` (default the stub upload) with form fields `data` (model
+    defaults to whisper-1)."""
     data.setdefault("model", "whisper-1")
-    return client.post("/v1/audio/transcriptions", files=WAV_UPLOAD, data=data,
+    return client.post("/v1/audio/transcriptions", files=files, data=data,
                        headers=headers)
 
 

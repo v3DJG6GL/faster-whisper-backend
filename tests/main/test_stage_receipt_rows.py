@@ -13,14 +13,8 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
-from tests._transcription_helpers import WAV_UPLOAD as _FILE, serve_model, wav_bytes as _wav_bytes
+from tests._transcription_helpers import post_verbose as _post, serve_model, wav_bytes as _wav_bytes
 from tests.main._stage_helpers import capture_receipt, must_not_run
-
-
-def _post(client, files=_FILE, **data):
-    data.setdefault("model", "whisper-1")
-    data.setdefault("response_format", "verbose_json")
-    return client.post("/v1/audio/transcriptions", files=files, data=data)
 
 
 def _separating_row(client, monkeypatch, upload):

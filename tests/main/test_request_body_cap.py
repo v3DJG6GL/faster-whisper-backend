@@ -9,6 +9,8 @@ keep the full ceiling.
 
 import json
 
+from tests._transcription_helpers import post_transcription
+
 _JSON = {"Content-Type": "application/json"}
 
 
@@ -138,11 +140,9 @@ def test_json_cap_honours_a_cfg_override(client, app_module, monkeypatch):
 def test_multipart_upload_is_not_subject_to_the_json_cap(client, app_module,
                                                          monkeypatch):
     monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 4096, raising=False)
-    r = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")},
-        data={"model": "whisper-1", "response_format": "json"},
-    )
+    r = post_transcription(
+        client, response_format="json",
+        files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")})
     assert r.status_code == 200, r.text
     assert r.json() == {"text": "hallo welt"}
 
@@ -240,11 +240,9 @@ def test_multipart_label_on_a_non_upload_route_keeps_the_backstop(
 def test_multipart_upload_route_is_not_held_to_the_backstop(
         client, app_module, monkeypatch):
     monkeypatch.setattr(app_module, "_NON_UPLOAD_BODY_BACKSTOP", 1024)
-    r = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")},
-        data={"model": "whisper-1", "response_format": "json"},
-    )
+    r = post_transcription(
+        client, response_format="json",
+        files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")})
     assert r.status_code == 200, r.text
 
 

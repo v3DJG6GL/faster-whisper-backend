@@ -202,11 +202,8 @@ def test_deeply_nested_decode_overrides_is_ignored_not_500(client, fake_model):
 def test_absurdly_long_filename_extension_does_not_crash(client):
     # The client filename feeds tempfile.NamedTemporaryFile's suffix; a 250-char
     # extension used to raise OSError(36, 'File name too long') → 500.
-    r = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("a." + "x" * 250, b"RIFFxxxxWAVE", "audio/wav")},
-        data={"model": "whisper-1", "response_format": "json"},
-    )
+    r = _post(client, response_format="json",
+              files={"file": ("a." + "x" * 250, b"RIFFxxxxWAVE", "audio/wav")})
     assert r.status_code == 200, r.text
     assert r.json() == {"text": "hallo welt"}
 
@@ -760,10 +757,9 @@ def test_ffconcat_upload_is_refused_before_any_decoder(client, app_module,
     decoded = []
     monkeypatch.setattr(faster_whisper.audio, "decode_audio",
                         lambda *a, **k: decoded.append(a))
-    r = client.post("/v1/audio/transcriptions", data={"model": "whisper-1"},
-                    files={"file": ("upload", b"ffconcat version 1.0\n"
-                                    b"file 'secret.wav'\n",
-                                    "application/octet-stream")})
+    r = _post(client, files={"file": ("upload", b"ffconcat version 1.0\n"
+                                      b"file 'secret.wav'\n",
+                                      "application/octet-stream")})
     assert r.status_code == 400, r.text
     assert fake_model.last_audio is None
     assert decoded == []
@@ -787,8 +783,7 @@ def test_upload_with_no_audio_stream_is_a_400_not_a_server_fault(
                 c.mux(pk)
         for pk in s.encode():
             c.mux(pk)
-    r = client.post("/v1/audio/transcriptions", data={"model": "whisper-1"},
-                    files={"file": ("v.mp4", clip.read_bytes(), "video/mp4")})
+    r = _post(client, files={"file": ("v.mp4", clip.read_bytes(), "video/mp4")})
     assert r.status_code == 400, r.text
     assert r.json()["detail"] == "source has no audio stream"
     assert fake_model.last_audio is None
@@ -810,10 +805,8 @@ def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
     def _refuse(src, dst, *, rate=44100, layout="stereo"):
         raise ValueError("unsupported container")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _refuse)
-    r = client.post("/v1/audio/transcriptions",
-                    files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
-                    data={"model": "whisper-1", "separate_bgm": "true",
-                          "response_format": "verbose_json"})
+    r = post_verbose(client, separate_bgm="true",
+                     files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
     assert r.status_code == 200, r.text
     assert calls == []
     assert any("music separation skipped" in w
@@ -841,10 +834,8 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
         raise av.error.InvalidDataError(1094995529, "Invalid data",
                                         "avcodec_send_packet()")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _invalid)
-    r = client.post("/v1/audio/transcriptions",
-                    files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
-                    data={"model": "whisper-1", "separate_bgm": "true",
-                          "response_format": "verbose_json"})
+    r = post_verbose(client, separate_bgm="true",
+                     files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
     assert r.status_code == 200, r.text
     assert len(calls) == 1 and not calls[0].endswith(".wav")
     assert not any("could not be prepared" in w

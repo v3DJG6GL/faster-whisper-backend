@@ -12,13 +12,11 @@ import numpy as np
 import pytest
 
 from tests.conftest import FakeInfo, FakeModel, FakeSegment, FakeWord
-from tests._transcription_helpers import serve_model, wav_bytes as _wav_bytes
+from tests._transcription_helpers import post_transcription, serve_model, wav_bytes as _wav_bytes
 
 
 def _post(client, wav, **data):
-    data.setdefault("model", "whisper-1")
-    return client.post("/v1/audio/transcriptions",
-                       files={"file": ("a.wav", wav, "audio/wav")}, data=data)
+    return post_transcription(client, files={"file": ("a.wav", wav, "audio/wav")}, **data)
 
 
 def test_model_receives_padded_array(client, app_module, fake_model):
