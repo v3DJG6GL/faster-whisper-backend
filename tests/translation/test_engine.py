@@ -1340,9 +1340,7 @@ def test_progress_and_cancel(base_cfg, monkeypatch):
     assert steps[0].startswith("en ") and steps[-1].startswith("fr ")
 
     with pytest.raises(translation.TranslationCancelled):
-        _run(translation.translate_segments(
-            _segs("Eins."), ["en"], source_lang="de",
-            cancel_check=lambda: True))
+        _de_en(_segs("Eins."), "fluent", cancel_check=lambda: True)
 
 
 # ~250 chars with no repeated run (the repetition guard would refuse it).
@@ -3186,9 +3184,7 @@ def test_run_plan_unit_clock_covers_the_whole_target(base_cfg, monkeypatch,
     def cb(f, s, t=None, target=None, target_progress=None):
         plan.tick(stage="translating", progress=f, target=target,
                   target_progress=target_progress)
-    _run(translation.translate_segments(
-        _segs("Eins zwei.", "Drei vier."), ["en"], source_lang="de",
-        mode="faithful", progress_cb=cb))
+    _de_en(_segs("Eins zwei.", "Drei vier."), progress_cb=cb)
     unit = plan.snapshot()["plan"][0]["units"][0]
     assert unit["state"] == "done"
     assert unit["took_s"] == pytest.approx(10.0 if batch == 1 else 5.0)
@@ -3232,8 +3228,7 @@ def test_blank_first_step_does_not_start_the_unit_before_the_load(
     def cb(f, s, t=None, target=None, target_progress=None):
         plan.tick(stage="translating", progress=f, target=target,
                   target_progress=target_progress)
-    res, _, _ = _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode=mode, progress_cb=cb))
+    res, _, _ = _de_en(segs, mode, progress_cb=cb)
     assert res[0]["en"] == ""
     unit = plan.snapshot()["plan"][0]["units"][0]
     assert unit["state"] == "done"
