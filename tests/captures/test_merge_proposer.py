@@ -10,6 +10,7 @@ import random
 
 import pytest
 
+from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.captures import merge_proposer as P
 
 
@@ -391,7 +392,6 @@ def test_propose_admin_unknown_user_returns_nothing_uncached(
     mint a cache key; a known one sweeps and caches.
     (test_propose_admin_specific_user_cache_key runs with the store
     uninitialised, so it only reaches the fallback.)"""
-    from faster_whisper_backend.auth import api_keys_store
     cs = captures_store_db
     _insert_eligible(cs, "cap0000000000k1", ts=1000.0, user_id="u1",
                      text="alpha text one")
@@ -415,7 +415,6 @@ def test_propose_admin_open_mode_sentinel_is_a_known_user(
         captures_store_db, monkeypatch, trim_disabled):
     """Open-mode captures are stored under the "(open-mode)" sentinel, which
     has no users row — filtering on it must still sweep those captures."""
-    from faster_whisper_backend.auth import api_keys_store
     cs = captures_store_db
     sentinel = api_keys_store.OPEN_MODE_USER["user_id"]
     _insert_eligible(cs, "cap0000000000o1", ts=1000.0, user_id=sentinel,
@@ -440,7 +439,6 @@ def test_propose_admin_several_users_sweep_only_those(
     """A pick of several speakers narrows the sweep itself (before the
     max-proposals cap), drops unknown ids, caches under its own key, and
     any write by one of them drops that entry."""
-    from faster_whisper_backend.auth import api_keys_store
     cs = captures_store_db
     for i, uid in enumerate(("u1", "u2", "u3")):
         _insert_eligible(cs, f"cap000000000{i}a", ts=1000.0 + i * 10, user_id=uid,
