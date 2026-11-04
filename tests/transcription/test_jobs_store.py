@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.transcription import jobs_store as js
 
 _TTL = 3600.0
@@ -281,7 +282,6 @@ def test_a_run_longer_than_a_short_ttl_stays_listed_and_finishes(
 
 
 def test_mark_running_as_failed_flips_only_running_rows(db, monkeypatch):
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "SERVER_WORKERS", 1, raising=False)
     a = _start(db, job_id="a" * 32)
     b = _done(db, {"text": "1"}, job_id="b" * 32)
@@ -295,7 +295,6 @@ def test_mark_running_as_failed_restamps_the_expiry_from_the_flip(
         db, monkeypatch):
     # The flip is the run's finish: a short TTL counts from it, not from
     # start()'s 24 h running floor.
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "SERVER_WORKERS", 1, raising=False)
     monkeypatch.setattr(cfg, "JOBS_TTL_S", 600, raising=False)
     a = _start(db, job_id="a" * 32, ttl_s=600.0)
@@ -323,7 +322,6 @@ def test_finish_with_a_stale_request_id_leaves_the_re_posted_row_alone(db):
 
 def test_mark_running_as_failed_is_skipped_with_several_workers(db, monkeypatch):
     # The DB is shared: a respawned worker must not fail its siblings' runs.
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "SERVER_WORKERS", 4, raising=False)
     a = _start(db, job_id="a" * 32)
     assert db.mark_running_as_failed("server restarted") == 0
@@ -402,7 +400,6 @@ def test_jobs_start_async_keeps_the_loop_free_while_the_lock_is_held(db):
 
 def test_sweep_retention_reads_live_config(db, monkeypatch):
     """A lowered row / byte cap applies on the next sweep tick."""
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "JOBS_MAX_ROWS", 100, raising=False)
     monkeypatch.setattr(cfg, "JOBS_MAX_BYTES", 0, raising=False)
     ids = []
