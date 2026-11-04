@@ -17,6 +17,11 @@ from faster_whisper_backend.settings import schema as settings_schema
 from tests.settings._rules_helpers import entry_by_label
 
 
+@pytest.fixture
+def path(tmp_path):
+    return str(tmp_path / "config.json")
+
+
 def _regex_rule(name, pattern="x", replacement="y", **kw):
     # A one-entry regex-list == a former single `regex` rule.
     r = {"name": name, "label": name, "type": "regex-list",
@@ -45,8 +50,7 @@ def test_load_real_config_json():
     assert sum(1 for r in rules if r["type"] == "terminal") == 1
 
 
-def test_save_load_roundtrip(tmp_path):
-    path = str(tmp_path / "config.json")
+def test_save_load_roundtrip(path):
     rules = [_regex_rule("alpha"), _regex_rule("beta"), _terminal()]
     saved = cs.save_factory_rules(rules, path=path)
     loaded = cs.load_factory_rules(path=path)
@@ -54,13 +58,12 @@ def test_save_load_roundtrip(tmp_path):
     assert [r["name"] for r in loaded] == ["alpha", "beta", "trim-edges"]
 
 
-def test_save_load_preserves_given_order(tmp_path):
+def test_save_load_preserves_given_order(path):
     """Rule order is persisted EXACTLY as given — not sorted or canonicalised.
 
     This is the backend invariant the WebUI's "Promote order" action relies on:
     the array we POST is the array config.json keeps.
     """
-    path = str(tmp_path / "config.json")
     rules = [_regex_rule("gamma"), _regex_rule("alpha"),
              _regex_rule("beta"), _terminal()]
     saved = cs.save_factory_rules(rules, path=path)
@@ -74,9 +77,8 @@ def test_save_load_preserves_given_order(tmp_path):
     assert [r["name"] for r in raw["PIPELINE_RULES"]] == expected
 
 
-def test_wrapped_object_shape(tmp_path):
+def test_wrapped_object_shape(path):
     """The on-disk file is {schema_version, PIPELINE_RULES}, not a bare array."""
-    path = str(tmp_path / "config.json")
     cs.save_factory_rules([_regex_rule("only"), _terminal()], path=path)
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
@@ -84,18 +86,16 @@ def test_wrapped_object_shape(tmp_path):
     assert isinstance(raw["PIPELINE_RULES"], list)
 
 
-def test_note_round_trips(tmp_path):
-    path = str(tmp_path / "config.json")
+def test_note_round_trips(path):
     why = "explains why this rule exists"
     cs.save_factory_rules([_regex_rule("noted", note=why), _terminal()], path=path)
     loaded = cs.load_factory_rules(path=path)
     assert loaded[0]["note"] == why
 
 
-def test_save_normalizes_seeded(tmp_path):
+def test_save_normalizes_seeded(path):
     """save_factory_rules forces seeded=True on every written rule — a rule in
     the committed factory file is a factory default by definition."""
-    path = str(tmp_path / "config.json")
     rules = [_regex_rule("a", seeded=False), _regex_rule("b"), _terminal()]
     saved = cs.save_factory_rules(rules, path=path)
     assert all(r["seeded"] is True for r in saved), saved
@@ -103,9 +103,8 @@ def test_save_normalizes_seeded(tmp_path):
     assert all(r["seeded"] is True for r in loaded), loaded
 
 
-def test_map_meta_round_trips(tmp_path):
+def test_map_meta_round_trips(path):
     """The server-owned `map_meta` timestamps survive a save/load cycle."""
-    path = str(tmp_path / "config.json")
     meta = {"foo": 1700000000, "bar": 1700000123}
     rule = _map_rule("words", mapping={"foo": "=>", "bar": "->"}, map_meta=meta)
     cs.save_factory_rules([rule, _terminal()], path=path)
@@ -139,21 +138,19 @@ def test_map_still_accepts_a_space_edged_key(key):
     assert key in rule.map
 
 
-def test_bad_regex_rejected(tmp_path):
+def test_bad_regex_rejected(path):
     """An uncompilable pattern is rejected before anything is written."""
-    path = str(tmp_path / "config.json")
     bad = [_regex_rule("broken", pattern="("), _terminal()]
     with pytest.raises(ValidationError):
         cs.save_factory_rules(bad, path=path)
     assert not os.path.exists(path), "nothing should be written on a bad save"
 
 
-def test_factory_save_refuses_dropping_a_slug_stored_overrides_name(tmp_path):
+def test_factory_save_refuses_dropping_a_slug_stored_overrides_name(tmp_path, path):
     """With no local PIPELINE_RULES copy the factory slugs are canonical: a
     stored per-model / profile / captures exclude naming a removed rule would
     make every later save of that key 422 (and drop the per-model entry at
     boot), so the factory save refuses it and leaves config.json alone."""
-    path = str(tmp_path / "config.json")
     local = tmp_path / "config.local.json"
     cs.save_factory_rules([_regex_rule("keep"), _regex_rule("gone"), _terminal()],
                           path=path, overrides_path=str(local))
@@ -178,11 +175,10 @@ def test_factory_save_refuses_dropping_a_slug_stored_overrides_name(tmp_path):
     assert [r["name"] for r in cs.load_factory_rules(path)] == ["keep", "trim-edges"]
 
 
-def test_factory_save_ignores_a_ref_that_already_dangles(tmp_path):
+def test_factory_save_ignores_a_ref_that_already_dangles(tmp_path, path):
     """Only the slugs THIS save removes are refused: a stored ref that already
     names no factory rule (left by a local-copy reset or a git-pulled rename)
     must not brick every Defaults save, a no-op one included."""
-    path = str(tmp_path / "config.json")
     local = tmp_path / "config.local.json"
     rules = [_regex_rule("keep"), _regex_rule("other"), _regex_rule("gone"),
              _terminal()]
@@ -200,17 +196,15 @@ def test_factory_save_ignores_a_ref_that_already_dangles(tmp_path):
                               path=path, overrides_path=str(local))
 
 
-def test_terminal_must_be_last(tmp_path):
+def test_terminal_must_be_last(path):
     with pytest.raises(ValidationError):
-        cs.save_factory_rules([_terminal(), _regex_rule("after")],
-                              path=str(tmp_path / "config.json"))
+        cs.save_factory_rules([_terminal(), _regex_rule("after")], path=path)
 
 
-def test_duplicate_slug_rejected(tmp_path):
+def test_duplicate_slug_rejected(path):
     with pytest.raises(ValidationError):
         cs.save_factory_rules(
-            [_regex_rule("dup"), _regex_rule("dup"), _terminal()],
-            path=str(tmp_path / "config.json"))
+            [_regex_rule("dup"), _regex_rule("dup"), _terminal()], path=path)
 
 
 def test_missing_file_raises():
