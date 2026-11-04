@@ -17,12 +17,14 @@ from faster_whisper_backend.settings import config
 _VAR = "WHISPER_BOOTSTRAP_ADMIN_KEY"
 
 
-def _reload_with_secret_file(monkeypatch, path):
+def _reload_with_secret_file(monkeypatch, tmp_path, data):
+    secret = tmp_path / "key"
+    secret.write_bytes(data)
     # setenv (not delenv: that records nothing for an absent var) so undo()
     # also clears the value the prepass writes straight into os.environ; ""
     # is falsy, so the prepass still reads the file.
     monkeypatch.setenv(_VAR, "")
-    monkeypatch.setenv(_VAR + "_FILE", str(path))
+    monkeypatch.setenv(_VAR + "_FILE", str(secret))
     importlib.reload(config)
 
 
@@ -32,9 +34,7 @@ def _reload_with_secret_file(monkeypatch, path):
     b"\xef\xbb\xbfsk-from-file\n",                 # UTF-8 with BOM
 ])
 def test_bom_files_yield_the_bare_secret(monkeypatch, tmp_path, data, restore_config):
-    secret = tmp_path / "key"
-    secret.write_bytes(data)
-    _reload_with_secret_file(monkeypatch, secret)
+    _reload_with_secret_file(monkeypatch, tmp_path, data)
     assert config.BOOTSTRAP_ADMIN_KEY == "sk-from-file"
 
 
@@ -44,23 +44,19 @@ def test_bom_files_yield_the_bare_secret(monkeypatch, tmp_path, data, restore_co
 ])
 def test_unusable_file_warns_instead_of_failing_import(
         monkeypatch, tmp_path, data, restore_config):
-    secret = tmp_path / "key"
-    secret.write_bytes(data)
-    _reload_with_secret_file(monkeypatch, secret)
+    _reload_with_secret_file(monkeypatch, tmp_path, data)
     assert any(m.startswith(_VAR + "_FILE=") and "could not be read" in m
                for m in config._ENV_WARNINGS), config._ENV_WARNINGS
     assert "sk" not in (config.BOOTSTRAP_ADMIN_KEY or "")
 
 
 def test_helper_leaves_no_secret_behind(tmp_path):
-    secret = tmp_path / "key"
-    secret.write_bytes(b"sk-from-file\n")
     before = os.environ.get(_VAR)
     with pytest.MonkeyPatch.context() as mp:
         mp.delenv(_VAR, raising=False)
         try:
             with pytest.MonkeyPatch.context() as inner:
-                _reload_with_secret_file(inner, secret)
+                _reload_with_secret_file(inner, tmp_path, b"sk-from-file\n")
                 assert config.BOOTSTRAP_ADMIN_KEY == "sk-from-file"
             assert _VAR not in os.environ
         finally:
