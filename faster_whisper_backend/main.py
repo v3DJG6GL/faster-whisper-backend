@@ -2961,7 +2961,10 @@ async def transcribe(
             # Pipeline rules scope by the OUTPUT text's language: a German
             # translate run must not get de-* rules applied to English.
             _detected_lang = _text_lang
-            full_text_str = pl_engine._postprocess_text(raw_full_text, model_name=resolved_model, trace=trace, ident=ident, language=_detected_lang)
+            _postprocess = functools.partial(
+                pl_engine._postprocess_text, model_name=resolved_model,
+                ident=ident, language=_detected_lang)
+            full_text_str = _postprocess(raw_full_text, trace=trace)
             # Captures-form text — same pipeline minus the captures-specific
             # exclude set (default-skips `de-dictation-map` + `capitalize-after-
             # terminator` so the stored text matches Whisper's raw output
@@ -2970,13 +2973,10 @@ async def transcribe(
             # case shouldn't pay a second pipeline walk. No trace: the trace
             # describes the user-facing pipeline.
             if will_capture:
-                training_text_str = pl_engine._postprocess_text(
+                training_text_str = _postprocess(
                     raw_full_text,
-                    model_name=resolved_model,
                     trace=None,
                     extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
-                    ident=ident,
-                    language=_detected_lang,
                 )
             # Per-language transcripts for the capture row, joined the same
             # way verbose_json joins them. Kept as a KEYED map, not a blob:
@@ -3240,9 +3240,7 @@ async def transcribe(
                 # out. Transcript only, like `text`: translate_to tracks have
                 # no slot in a single-language subtitle file.
                 _doc = _subtitles.render([
-                    (seg["start"], seg["end"], pl_engine._postprocess_text(
-                        seg["text"], model_name=resolved_model, ident=ident,
-                        language=_detected_lang))
+                    (seg["start"], seg["end"], _postprocess(seg["text"]))
                     for seg in segments_list], response_format)
                 _response_payload = _doc
                 # text/plain like OpenAI's srt / vtt answers, and like `text`:
