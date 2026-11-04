@@ -14,6 +14,7 @@ import time
 import pytest
 
 from faster_whisper_backend.admin import restart_service
+from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.settings import config
 
 # Bound at import, before the autouse _guard stubs the module attribute, so
@@ -153,7 +154,6 @@ def test_reexec_rereads_the_dotenv(monkeypatch):
 def test_reexec_does_not_restore_a_dotenv_hf_token(monkeypatch):
     """A bare HF_TOKEN from .env was recorded as the service environment's
     and put back, so removing it from .env never took effect on Restart."""
-    from faster_whisper_backend.pipeline import apply as pl_apply
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(config, "_ENV_FROM_DOTENV", {"HF_TOKEN"})
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_dotenv")
@@ -169,7 +169,6 @@ def test_reexec_drops_an_empty_hf_token_record(monkeypatch):
     Kept on exec, it blocked the record of a bare HF_TOKEN added to .env since
     (main.py only sets the record when absent), so clearing the config field
     later popped that .env token."""
-    from faster_whisper_backend.pipeline import apply as pl_apply
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(config, "_ENV_FROM_DOTENV", set())
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
@@ -184,7 +183,6 @@ def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
     reads. An exec that inherited the copy kept sending a token the operator
     had withdrawn (emptied secret file, field taken out of config): the new
     process promotes nothing and adopts the leftover as the environment's."""
-    from faster_whisper_backend.pipeline import apply as pl_apply
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
     monkeypatch.setenv("HF_TOKEN", "hf_promoted")
@@ -195,7 +193,6 @@ def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
 def test_reexec_restores_the_service_environments_hf_token(monkeypatch):
     """A token the service environment set (systemd Environment=) survives
     the restart even when a config token was promoted over it."""
-    from faster_whisper_backend.pipeline import apply as pl_apply
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_service")
     monkeypatch.setenv("HF_TOKEN", "hf_promoted")

@@ -1,6 +1,9 @@
 """/logs viewer: source pins for its page script (admin/logs_routes.py serves
 it), plus direct drives of logs_routes' stream generator and its re-auth."""
 
+import asyncio
+
+from faster_whisper_backend.admin import logs_routes
 from tests._page_helpers import js_body
 
 
@@ -115,8 +118,6 @@ def test_logs_page_reconnect_while_paused_shows_paused(client):
 def _tail_rig(app_module, monkeypatch, tmp_path, after_backlog):
     """Seed LOG_FILE with "first" and run `after_backlog(log)` right after the
     stream's backlog read; re-auth always passes. Returns the log path."""
-    from faster_whisper_backend.admin import logs_routes
-
     log = tmp_path / "live.log"
     log.write_text("first\n", encoding="utf-8")
     monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
@@ -142,10 +143,6 @@ def test_logs_stream_delivers_a_line_logged_during_the_backlog(
         app_module, monkeypatch, tmp_path):
     """A line logged after the backlog read but before the tail took its
     offset was in neither; the offset is now sampled before the read."""
-    import asyncio
-
-    from faster_whisper_backend.admin import logs_routes
-
     def _log_during(log):
         with open(log, "a", encoding="utf-8") as f:
             f.write("during\n")
@@ -170,10 +167,6 @@ def test_logs_stream_holds_back_a_half_written_line(app_module, monkeypatch, tmp
     """A poll landing mid-record sent the half line on its own and moved the
     offset past it, so the rest arrived as a second line; an umlaut cut at
     the boundary decoded to U+FFFD on both sides."""
-    import asyncio
-
-    from faster_whisper_backend.admin import logs_routes
-
     whole = "half of a läng line".encode("utf-8")
     cut = whole.index(b"\xc3") + 1          # inside the two-byte "ä"
 
@@ -212,10 +205,6 @@ def test_logs_stream_keeps_lines_logged_just_before_a_rotation(
     """On rotation the tail restarted at offset 0 of the new file, so lines
     written to the old one after the last poll (now only in LOG_FILE.1)
     never reached the live viewer."""
-    import asyncio
-
-    from faster_whisper_backend.admin import logs_routes
-
     def _rotate(log):
         with open(log, "a", encoding="utf-8") as f:
             f.write("before rollover\n")
@@ -247,7 +236,6 @@ def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
     import pytest
     from fastapi import HTTPException
 
-    from faster_whisper_backend.admin import logs_routes
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.settings import config
     from faster_whisper_backend.settings import version as settings_version
@@ -280,9 +268,6 @@ def test_logs_stream_rechecks_the_caller_before_the_backlog(
     absorbed: the backlog went out and the live tail ran on with the old
     identity for up to _REAUTH_INTERVAL_S. Driven directly (never through
     TestClient)."""
-    import asyncio
-
-    from faster_whisper_backend.admin import logs_routes
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.auth import dependencies as auth_dependencies
     from tests.conftest import bearer, fake_request
@@ -317,8 +302,6 @@ def test_logs_page_template_guards_every_localstorage_access():
     buttons). Read the template itself — the shared snippets substituted
     into the page are not this file's."""
     from pathlib import Path
-
-    from faster_whisper_backend.admin import logs_routes
 
     src = (Path(logs_routes.__file__).parent / "templates" / "log_viewer.html"
            ).read_text(encoding="utf-8")

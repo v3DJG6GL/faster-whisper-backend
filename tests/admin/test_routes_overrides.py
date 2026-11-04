@@ -10,7 +10,10 @@ import sys
 
 import pytest
 
+from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.pipeline import apply as pl_apply
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store, effective_config
 from tests._page_helpers import js_body, js_fn
 from tests.conftest import bearer
 
@@ -335,7 +338,6 @@ def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them
 def test_resolve_reports_a_binding_store_fault(client, make_user_key, monkeypatch):
     # A binding-fetch fault locks every field fail-closed with no owning
     # layer; binding_fault gives the explorer the reason.
-    from faster_whisper_backend.auth import api_keys_store
     _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("carol", is_admin=False)
     params = {"user_id": uid, "model": "whisper-1"}
@@ -386,7 +388,6 @@ def test_per_key_config_unknown_profile_400(client, make_user_key):
 
 
 def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
-    from faster_whisper_backend.auth import api_keys_store
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8)
     uid, _ = make_user_key("alice", is_admin=False)
@@ -420,8 +421,6 @@ def test_rename_profile_keeps_locks_while_the_cascade_commits(
     """The cascade commits bindings to the new name BEFORE the hot-apply
     installs it in the running cfg: in that window a bound identity must
     still resolve its profile (and the profile's locks), not drop the layer."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.settings import effective_config
     h, uid = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de",
                                  locks=["DEFAULT_LANGUAGE"])
 
@@ -450,10 +449,6 @@ def test_rename_profile_failed_cascade_keeps_the_old_name(
     it, so the bound identity keeps its profile layer and locks."""
     import sqlite3
 
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.settings import config as cfg
-    from faster_whisper_backend.settings import config_store
-    from faster_whisper_backend.settings import effective_config
     h, uid = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de",
                                  locks=["DEFAULT_LANGUAGE"])
 
@@ -483,9 +478,6 @@ def test_profile_save_waits_for_an_in_flight_rename(client, make_user_key, monke
     from fastapi import HTTPException
 
     from faster_whisper_backend.admin import overrides_routes
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.settings import config_store
-    from faster_whisper_backend.settings import effective_config
     from tests.conftest import fake_request
     h, uid = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de",
                                  locks=["DEFAULT_LANGUAGE"])
@@ -532,8 +524,6 @@ def test_rename_profile_env_pinned_409(client, make_user_key, monkeypatch):
     """An env-pinned OVERRIDE_PROFILES comes back at the next restart with
     only `old`: a cascaded rename would strand every binding on a missing
     profile (its locks gone). Refused before any save, alias or cascade."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.settings import config as cfg
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", BEAM_SIZE=8)
     before = dict(cfg.OVERRIDE_PROFILES)
@@ -565,7 +555,6 @@ def test_state_save_env_pinned_409(client, make_user_key, monkeypatch):
     """apply_hot_changes skips an env-pinned OVERRIDE_PROFILES, so an accepted
     save would report "saved" while the editor reloads the env value and
     config.local.json diverges. Refused like rename, nothing written."""
-    from faster_whisper_backend.settings import config_store
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", BEAM_SIZE=8)
     before = config_store.load_overrides()
@@ -605,7 +594,6 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key):
     """Profile keys are stored lowercase, so a mixed-case `old` from a direct
     API caller must still match (200, not a spurious 404) and reach the binding
     cascade lowercased."""
-    from faster_whisper_backend.auth import api_keys_store
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
@@ -752,9 +740,6 @@ def test_cancelled_profiles_save_still_finishes_under_the_lock(monkeypatch, writ
     import threading
 
     from faster_whisper_backend.admin import overrides_routes
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.settings import config as cfg
-    from faster_whisper_backend.settings import config_store
     from tests.conftest import fake_request
 
     in_save, release = threading.Event(), threading.Event()
