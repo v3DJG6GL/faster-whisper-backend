@@ -35,6 +35,17 @@ def _diar_model(monkeypatch, model="A", batch=4):
     return cfg
 
 
+def _offline_load_env(monkeypatch):
+    """An offline (LOCAL_FILES_ONLY) load starting with HF_HUB_OFFLINE unset,
+    both the env var and the hub's import-frozen flag."""
+    cfg = diarization.cfg
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    return cfg
+
+
 def _stub_turns(monkeypatch, turns, calls=None):
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
                             max_speakers=None, model_id=None,
@@ -246,11 +257,7 @@ def test_load_scopes_hf_hub_offline_to_the_load(monkeypatch):
     until a restart). The hub freezes the env var at import, so the module
     flag huggingface_hub.constants.HF_HUB_OFFLINE is what must flip (and
     flip back)."""
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
-    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
-    monkeypatch.setattr(diarization.cfg, "LOCAL_FILES_ONLY", True,
-                        raising=False)
+    _offline_load_env(monkeypatch)
     seen = {}
 
     def _fake_inner(model_id, device, batch_size):
@@ -275,11 +282,7 @@ def test_load_snapshots_local_files_only_for_the_whole_load(monkeypatch):
     """The flag is hot and the load runs for minutes: an admin flip mid-load
     must neither skip the restore (True → False would leak HF_HUB_OFFLINE=1
     process-wide) nor clobber a value this load never set (False → True)."""
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
-    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
-    cfg = diarization.cfg
-    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    cfg = _offline_load_env(monkeypatch)
 
     def _flip_off(model_id, device, batch_size):
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
@@ -311,11 +314,7 @@ def test_load_makes_hub_offline_mode_true_for_the_load(monkeypatch):
     """What the hub's request gates actually consult is
     constants.is_offline_mode(), which reads the frozen module flag — the
     offline load must make THAT report True, and only for its duration."""
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
-    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
-    monkeypatch.setattr(diarization.cfg, "LOCAL_FILES_ONLY", True,
-                        raising=False)
+    _offline_load_env(monkeypatch)
     seen = []
 
     def _fake_inner(model_id, device, batch_size):
