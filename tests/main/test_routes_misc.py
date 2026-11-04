@@ -7,6 +7,7 @@ import pytest
 from tests.conftest import bearer
 from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.transcription import catalog_routes as tx_catalog_routes
+from faster_whisper_backend.transcription import models as tx_models
 
 
 def test_v1_models_requires_a_user(client, make_user_key):
@@ -63,7 +64,6 @@ def test_v1_models_hides_a_resident_model_the_loader_refuses(
     # hit, and a hot config change evicts nothing: a withdrawn model can stay
     # resident, and must not be advertised as loaded:true when picking it
     # gets a 400.
-    from faster_whisper_backend.transcription import models as tx_models
     monkeypatch.chdir(tmp_path)
     (tmp_path / "models" / "my-ft").mkdir(parents=True)
     monkeypatch.setattr(tx_models, "_loaded_models", tx_models.OrderedDict(
@@ -92,7 +92,6 @@ def test_v1_models_hides_a_default_model_off_the_allowlist(
     # there like any other name: an allowlist hot-narrowed while the default
     # is resident must not keep it listed as loaded:true (a request with no
     # model / whisper-1 for it gets a 400).
-    from faster_whisper_backend.transcription import models as tx_models
     monkeypatch.setattr(tx_models, "_loaded_models", tx_models.OrderedDict(
         [("large-v3", object())]))
     monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "large-v3")
