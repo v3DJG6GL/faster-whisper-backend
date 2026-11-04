@@ -793,9 +793,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # alphabet as a batch progress id; malformed → the server's session
         # id, which the client never learns — its outcome then lands as a
         # stub session and the utterances are swept as unreported.
-        _req_job = conf.get("client_job")
-        usage_job_id = (_req_job if isinstance(_req_job, str)
-                        and tx_progress._PROGRESS_ID_RE.match(_req_job) else session_id)
+        usage_job_id = tx_progress._valid_progress_id(conf.get("client_job")) or session_id
         # The client DECLARES that it will translate this session's utterances
         # on a separate request: each per-utterance receipt is then held until
         # the translation lands, so the two halves read as one block (without a

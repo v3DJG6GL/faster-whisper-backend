@@ -83,6 +83,12 @@ def _progress_close(pid: "str | None") -> None:
 _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 
 
+def _valid_progress_id(value) -> "str | None":
+    """`value` when it is a well-formed progress id, else None (a malformed
+    id reads as absent)."""
+    return value if isinstance(value, str) and _PROGRESS_ID_RE.match(value) else None
+
+
 # progress_id → job id: handlers that registered a job in jobs.py bind their
 # progress_id here so every _progress_set call (all stages already flow
 # through it) mirrors stage/progress into the central registry for free.
@@ -100,7 +106,7 @@ def _claim_progress_id(progress_id) -> "str | None":
     cancel flag with (and let this caller cancel) another request. The
     owner stamp counts too: a cap eviction pops a live run's entry but keeps
     its stamp until _progress_close, so the entry alone undercounts."""
-    if not (isinstance(progress_id, str) and _PROGRESS_ID_RE.match(progress_id)):
+    if _valid_progress_id(progress_id) is None:
         return None
     if progress_id in _BATCH_PROGRESS or progress_id in _PROGRESS_OWNER:
         logger.info("[progress] id already in flight — progress/cancel "

@@ -132,9 +132,7 @@ async def translate_text(request: Request,
     # minted id the stream handshake carried as `client_job`). A stop-timing
     # one-shot claims no receipt, so this is the only handle that ties its
     # standalone receipt to the utterances it translated. Malformed → absent.
-    _cj = body.get("client_job")
-    _client_job = (_cj if isinstance(_cj, str) and tx_progress._PROGRESS_ID_RE.match(_cj)
-                   else None)
+    _client_job = tx_progress._valid_progress_id(body.get("client_job"))
 
     try:
         _text_translate_rate.hit(_inflight_key)
