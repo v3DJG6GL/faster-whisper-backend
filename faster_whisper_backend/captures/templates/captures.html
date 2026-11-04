@@ -1260,16 +1260,7 @@
     }
     _lastSelectId = row.id;
     _updateActionBar();
-    // Toggle the .selected class on every visible card without a full
-    // re-render so checkbox focus stays.
-    document.querySelectorAll('.capture-card').forEach(function(card) {
-      var cid = card.dataset.id;
-      if (!cid) return;
-      var inSel = _selection.has(cid);
-      card.classList.toggle('selected', inSel);
-      var cb = card.querySelector('.sel-checkbox');
-      if (cb) cb.checked = inSel;
-    });
+    _paintSelection();
   }
 
   // The rows a "select all" covers: exactly the shift-range set — every
@@ -1297,6 +1288,11 @@
     vis.forEach(function(r) { if (on) _selection.add(r.id); else _selection.delete(r.id); });
     _lastSelectId = null;
     _updateActionBar();
+    _paintSelection();
+  }
+  // Toggle the .selected class and checkbox on every visible card from
+  // _selection without a full re-render, so checkbox focus stays.
+  function _paintSelection() {
     document.querySelectorAll('.capture-card').forEach(function(card) {
       var cid = card.dataset.id; if (!cid) return;
       var inSel = _selection.has(cid);
@@ -1601,11 +1597,7 @@
     _selection.clear();
     _lastSelectId = null;
     _updateActionBar();
-    document.querySelectorAll('.capture-card.selected').forEach(function(c) {
-      c.classList.remove('selected');
-      var cb = c.querySelector('.sel-checkbox');
-      if (cb) cb.checked = false;
-    });
+    _paintSelection();
   }
 
   // absTime / relTime / fmtWhen / timeTick are injected via TIME_HELPERS_JS.
