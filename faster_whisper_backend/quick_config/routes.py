@@ -752,6 +752,12 @@ async def v1_get_my_usage(
     return {"username": user.get("username") or "", **doc}
 
 
+_PAGE_API_GATE = [
+    Depends(require_user_webui_host),
+    Depends(require_page("quick_config")),
+]
+
+
 @router.get(
     "",
     # HTML page is host-only — the login modal runs in this page's
@@ -770,10 +776,7 @@ async def get_quick_config_page() -> HTMLResponse:
 
 @router.get(
     "/state",
-    dependencies=[
-        Depends(require_user_webui_host),
-        Depends(require_page("quick_config")),
-    ],
+    dependencies=_PAGE_API_GATE,
 )
 async def get_state(
     user: dict[str, Any] = Depends(get_current_user),
@@ -854,10 +857,7 @@ async def get_state(
 
 @router.get(
     "/usage",
-    dependencies=[
-        Depends(require_user_webui_host),
-        Depends(require_page("quick_config")),
-    ],
+    dependencies=_PAGE_API_GATE,
 )
 async def get_my_usage(
     tz_midnight: float | None = None,
@@ -898,10 +898,7 @@ async def get_my_usage(
 
 @router.post(
     "/state",
-    dependencies=[
-        Depends(require_user_webui_host),
-        Depends(require_page("quick_config")),
-    ],
+    dependencies=_PAGE_API_GATE,
 )
 async def post_state(
     payload: QuickPatchPayload,
@@ -934,10 +931,7 @@ async def post_state(
 
 @router.post(
     "/reapply-rules",
-    dependencies=[
-        Depends(require_user_webui_host),
-        Depends(require_page("quick_config")),
-    ],
+    dependencies=_PAGE_API_GATE,
 )
 async def post_reapply_rules(
     user: dict[str, Any] = Depends(get_current_user),
@@ -951,10 +945,7 @@ async def post_reapply_rules(
 
 @router.get(
     "/reapply-rules/status",
-    dependencies=[
-        Depends(require_user_webui_host),
-        Depends(require_page("quick_config")),
-    ],
+    dependencies=_PAGE_API_GATE,
 )
 async def get_reapply_rules_status(
     user: dict[str, Any] = Depends(get_current_user),
@@ -972,10 +963,7 @@ async def get_reapply_rules_status(
 
 @router.get(
     "/recent",
-    dependencies=[
-        Depends(require_user_webui_host),
-        Depends(require_page("quick_config")),
-    ],
+    dependencies=_PAGE_API_GATE,
 )
 async def get_recent(
     request: Request,
@@ -1061,10 +1049,7 @@ class RecentSearchIn(BaseModel):
 
 @router.post(
     "/recent/search",
-    dependencies=[
-        Depends(require_user_webui_host),
-        Depends(require_page("quick_config")),
-    ],
+    dependencies=_PAGE_API_GATE,
 )
 async def post_recent_search(
     payload: RecentSearchIn,
