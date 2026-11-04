@@ -403,6 +403,12 @@ def write_wav(path, pcm, *, nchannels=1, sampwidth=2, rate=RATE):
     return path
 
 
+def read_wav_params(path):
+    with wave.open(path, "rb") as w:
+        return (w.getnchannels(), w.getsampwidth(), w.getframerate(),
+                w.getnframes())
+
+
 def write_bytes(path, data=b"x"):
     """Write `data` to `path`, creating its parent dirs; returns `path`."""
     os.makedirs(os.path.dirname(path), exist_ok=True)

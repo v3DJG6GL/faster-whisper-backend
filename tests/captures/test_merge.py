@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from faster_whisper_backend.captures import merge as audio_merge
-from tests.conftest import RATE
+from tests.conftest import RATE, read_wav_params
 from tests.conftest import write_wav as _write_wav
 
 
@@ -144,10 +144,7 @@ def test_merge_clean_two_file_shape(tmp_path):
     assert os.path.exists(out)
     assert not [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]
     assert res["bytes"] == os.path.getsize(out)
-    with wave.open(out, "rb") as w:
-        assert (w.getnchannels(), w.getsampwidth(), w.getframerate()) == (
-            1, 2, RATE)
-        assert w.getnframes() == res["n_samples"]
+    assert read_wav_params(out) == (1, 2, RATE, res["n_samples"])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")

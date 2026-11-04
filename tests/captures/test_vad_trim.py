@@ -6,18 +6,11 @@ real-Silero smoke test (Silero ships with faster-whisper, installed here).
 """
 
 import os
-import wave
 
 import pytest
 
 from faster_whisper_backend.captures import vad_trim as audio_vad_trim
-from tests.conftest import RATE
-
-
-def _read_wav_params(path):
-    with wave.open(path, "rb") as w:
-        return (w.getnchannels(), w.getsampwidth(), w.getframerate(),
-                w.getnframes())
+from tests.conftest import RATE, read_wav_params
 
 
 def test_trim_wav_removes_leading_trailing(fake_vad, wav_factory, tmp_path):
@@ -35,9 +28,7 @@ def test_trim_wav_removes_leading_trailing(fake_vad, wav_factory, tmp_path):
     assert res["new_duration_ms"] == 1200
     assert os.path.exists(dst)
     assert not [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]
-    ch, sw, rate, nframes = _read_wav_params(dst)
-    assert (ch, sw, rate) == (1, 2, RATE)
-    assert nframes == int(1200 * RATE / 1000)
+    assert read_wav_params(dst) == (1, 2, RATE, int(1200 * RATE / 1000))
 
 
 def test_trim_wav_margin_clamped_to_clip_inplace_identity(fake_vad,
@@ -155,5 +146,4 @@ def test_trim_wav_real_silero_smoke(wav_factory, tmp_path):
     assert res["trimmed"] is True
     assert res["new_duration_ms"] < res["orig_duration_ms"]
     assert os.path.exists(dst)
-    ch, sw, rate, _ = _read_wav_params(dst)
-    assert (ch, sw, rate) == (1, 2, RATE)
+    assert read_wav_params(dst)[:3] == (1, 2, RATE)
