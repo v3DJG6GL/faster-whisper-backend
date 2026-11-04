@@ -563,7 +563,7 @@ def test_trace_row_stashes_only_the_fields_its_readers_need(client, tmp_path):
       } catch (e) { if (e.message !== 'stop') throw e; }
       document.createElement = orig;
       out(JSON.parse(made[0].dataset.entry));
-    """, funcs=("renderTrace",))
+    """, funcs=("_el", "renderTrace"))
     assert res == {"request_id": "r1", "ts": 5, "tokens": ["a"], "bigrams": ["a b"]}
 
 

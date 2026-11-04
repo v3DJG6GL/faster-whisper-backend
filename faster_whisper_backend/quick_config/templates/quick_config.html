@@ -594,16 +594,14 @@ function renderCards() {
   _perCardSaveBtns = new Map();  // detach stale refs; GC takes the old DOM
   _lockedSlugs = new Set();
   if (!liveRules.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
+    const empty = _el('div', 'empty-state');
     empty.innerHTML = '<h2>Nothing to configure here yet</h2>'
       + '<p>No rules have been exposed by your admin yet.</p>';
     root.appendChild(empty);
     return;
   }
   for (const rule of liveRules) {
-    const card = document.createElement('div');
-    card.className = 'card';
+    const card = _el('div', 'card');
     if (rule.color) card.dataset.color = rule.color;
     const h3 = document.createElement('h3');
     const labelText = document.createTextNode(rule.label || rule.name);
@@ -621,8 +619,7 @@ function renderCards() {
     }
     card.appendChild(h3);
 
-    const enRow = document.createElement('label');
-    enRow.className = 'enabled-row';
+    const enRow = _el('label', 'enabled-row');
     const enCb = document.createElement('input');
     enCb.type = 'checkbox'; enCb.className = 'switch'; enCb.setAttribute('role', 'switch');
     enCb.checked = !!rule.enabled;
@@ -714,7 +711,7 @@ function _matchesSearch(entry) {
 function _el(tag, cls, text) {
   const e = document.createElement(tag);
   e.className = cls;
-  e.textContent = text;
+  if (text != null) e.textContent = text;
   return e;
 }
 
@@ -744,8 +741,7 @@ function fmtCount(n) {
 // One raw/final text block; clamps + "Show all · N chars" when long.
 function traceTextBlock(tagLabel, text, extraClass) {
   const wrap = document.createElement('div');
-  const div = document.createElement('div');
-  div.className = 'trace-text ' + extraClass;
+  const div = _el('div', 'trace-text ' + extraClass);
   const tag = _el('span', 'trace-tag', tagLabel);
   div.appendChild(tag);
   const span = _el('span', 'ws-region', text);
@@ -799,8 +795,7 @@ function wordDiffRegions(A, B) {
 // textContent throughout — trace text is untrusted.
 function diffExcerpt(A, B, region) {
   const as = region[0], ae = region[1], bs = region[2], be = region[3];
-  const el = document.createElement('div');
-  el.className = 'step-excerpt';
+  const el = _el('div', 'step-excerpt');
   const push = (cls, text) => {
     if (!text) return;
     const sp = document.createElement('span');
@@ -848,15 +843,12 @@ function traceRail(stages, audioDur) {
   const scale = Math.max(total, Number.isFinite(audio) && audio > 0 ? audio : 0);
   if (!(scale > 0) || !stages.length) return null;
 
-  const wrap = document.createElement('div');
-  wrap.className = 'trace-rail';
-  const track = document.createElement('div');
-  track.className = 'rail-track';
+  const wrap = _el('div', 'trace-rail');
+  const track = _el('div', 'rail-track');
   for (const st of stages) {
     const secs = Number(st.secs) || 0;
     if (secs <= 0) continue;
-    const seg = document.createElement('div');
-    seg.className = 'seg seg-' + String(st.name);
+    const seg = _el('div', 'seg seg-' + String(st.name));
     seg.style.width = (secs / scale * 100) + '%';
     seg.title = st.name + ' · ' + secs.toFixed(1) + 's'
       + (st.model ? ' · ' + String(st.model) : '');
@@ -868,10 +860,8 @@ function traceRail(stages, audioDur) {
   // Only worth a tick when the job actually outran its own audio; otherwise
   // the mark sits at the very end of the rail and says nothing.
   if (Number.isFinite(audio) && audio > 0 && audio < scale) {
-    const mark = document.createElement('div');
-    mark.className = 'rail-mark';
-    const tick = document.createElement('span');
-    tick.className = 'tick';
+    const mark = _el('div', 'rail-mark');
+    const tick = _el('span', 'tick');
     tick.style.left = (audio / scale * 100) + '%';
     tick.title = 'realtime — audio is ' + traceDur(audio);
     mark.appendChild(tick);
@@ -912,10 +902,8 @@ function renderTrace(entry) {
     });
   } catch (_) {}
 
-  const meta = document.createElement('div');
-  meta.className = 'trace-meta';
-  const ts = document.createElement('span');
-  ts.className = 'trace-ts';
+  const meta = _el('div', 'trace-meta');
+  const ts = _el('span', 'trace-ts');
   stampTs(ts, entry.ts || 0);
   meta.appendChild(ts);
   const addPill = (text, cls, title) => {
@@ -1008,8 +996,7 @@ function renderTrace(entry) {
       // seconds, so nothing about a stage becomes hover-only.
       const rail = traceRail(stages, entry.audio_s);
       if (rail) item.appendChild(rail);
-      const row = document.createElement('div');
-      row.className = 'trace-meta trace-stages';
+      const row = _el('div', 'trace-meta trace-stages');
       for (const st of stages) {
         const secs = Number(st.secs);
         const chip = _el('span', 'pill stage-chip stage-' + String(st.name), st.name +
@@ -1056,8 +1043,7 @@ function renderTrace(entry) {
         item.appendChild(teaser);
       }
     }
-    const det = document.createElement('details');
-    det.className = 'trace-steps';
+    const det = _el('details', 'trace-steps');
     if (startOpen) det.open = true;
     const sum = document.createElement('summary');
     const chev = _el('span', 'steps-chev', '\u25b8');
@@ -1109,8 +1095,7 @@ function renderTrace(entry) {
       // step that changed only whitespace then has no word regions at all.
       const A = (before || '').trim().split(/\s+/), B = (after || '').trim().split(/\s+/);
       const regions = wordDiffRegions(A, B);
-      const head = document.createElement('span');
-      head.className = 'step-label';
+      const head = _el('span', 'step-label');
       head.innerHTML = '\u25b8 ' + lblHtml
         + ' <span class="skipped-tag">' + (regions.length
           ? 'changed ' + fmtCount(regions.length)
@@ -1120,8 +1105,7 @@ function renderTrace(entry) {
       for (const r of regions.slice(0, TRACE_DIFF_SAMPLE)) {
         stepEl.appendChild(diffExcerpt(A, B, r));
       }
-      const foot = document.createElement('div');
-      foot.className = 'step-excerpt';
+      const foot = _el('div', 'step-excerpt');
       if (regions.length > TRACE_DIFF_SAMPLE) {
         const more = _el('span', 'dx-count',
                          '+ ' + fmtCount(regions.length - TRACE_DIFF_SAMPLE) + ' more \u00b7 ');
@@ -1149,8 +1133,7 @@ function renderTrace(entry) {
     item.appendChild(traceTextBlock('final', entry.final || '', 'trace-final'));
   }
 
-  const actions = document.createElement('div');
-  actions.className = 'trace-actions';
+  const actions = _el('div', 'trace-actions');
   const reportBtn = _el('button', 'trace-report-btn', 'Report a problem');
   reportBtn.type = 'button';
   reportBtn.title = 'For single-word fixes, edit the pipeline rules above. '
@@ -1283,8 +1266,7 @@ function _wordifyFinal(form, finalText) {
 }
 
 function _buildReportForm(entry) {
-  const form = document.createElement('div');
-  form.className = 'trace-report-form';
+  const form = _el('div', 'trace-report-form');
   form.innerHTML =
     '<div class="help rep-scope-hint">'
     + 'For a single wrong word, prefer editing the pipeline rules above. '
@@ -1397,8 +1379,7 @@ function _setReplacementInline(form, chip) {
     return;
   }
   if (!existing) {
-    existing = document.createElement('span');
-    existing.className = 'word-replacement';
+    existing = _el('span', 'word-replacement');
     anchor.parentNode.insertBefore(existing, anchor.nextSibling);
   }
   existing.textContent = text;
@@ -1500,8 +1481,7 @@ function _renderCorrections(form) {
   box.innerHTML = '';
   form._corrections.forEach(c => _setReplacementInline(form, c));
   form._corrections.forEach((c, i) => {
-    const chip = document.createElement('div');
-    chip.className = 'rep-correction';
+    const chip = _el('div', 'rep-correction');
     chip.dataset.idx = String(c.idx);
     const w = _el('span', 'rep-wrong', c.wrong);
     const a = _el('span', 'rep-arrow', '→');
