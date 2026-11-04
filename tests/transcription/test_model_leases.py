@@ -23,6 +23,13 @@ from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
 
+def _hub_response(status, repo):
+    """The Hub's HTTP reply to a model-info request for `repo`."""
+    import httpx2
+    return httpx2.Response(status, request=httpx2.Request(
+        "GET", f"https://huggingface.co/api/models/{repo}"))
+
+
 def test_drop_refuses_while_leased():
     _register("a", leases=1)
     assert tx_models._drop_loaded_model("a") is False
@@ -202,13 +209,11 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
     """The constructor's own snapshot_download (same arguments) would raise
     these too, so the load fails before the LRU loop instead of swallowing
     them as a best-effort pre-download failure."""
-    import httpx2
     from huggingface_hub import errors as hf_errors
     built = []
     _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
                max_loaded=1)
-    response = httpx2.Response(404, request=httpx2.Request(
-        "GET", "https://huggingface.co/api/models/org/nope"))
+    response = _hub_response(404, "org/nope")
 
     def _missing(**kw):
         raise getattr(hf_errors, err)("not found", response=response)
@@ -255,11 +260,9 @@ def test_concurrent_misses_share_one_hub_download(monkeypatch):
 
 def test_a_shared_hub_refusal_reaches_every_caller_and_is_retried(
         monkeypatch):
-    import httpx2
     from huggingface_hub import errors as hf_errors
     calls = []
-    response = httpx2.Response(404, request=httpx2.Request(
-        "GET", "https://huggingface.co/api/models/org/cold"))
+    response = _hub_response(404, "org/cold")
 
     def _missing(**kw):
         calls.append(kw["repo_id"])
@@ -285,11 +288,9 @@ def test_hub_refusal_of_an_existing_repo_points_at_the_token(
     private one without the right token: the client is told to check
     HF_TOKEN / access, not only to hunt a typo, and the start of the Hub's
     own text (log_safe caps it at LOG_FIELD_MAX) reaches the log."""
-    import httpx2
     from huggingface_hub import errors as hf_errors
     _stub_load(monkeypatch)
-    response = httpx2.Response(403, request=httpx2.Request(
-        "GET", "https://huggingface.co/api/models/org/gated"))
+    response = _hub_response(403, "org/gated")
 
     def _refused(**kw):
         raise getattr(hf_errors, err)("Access to model org/gated is "
@@ -313,14 +314,12 @@ def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
     RepositoryNotFoundError), on public repos too, and the constructor would
     send the same token: refused before the LRU loop with a pointer at the
     token. Any other HTTP error stays a best-effort pre-download failure."""
-    import httpx2
     from huggingface_hub import errors as hf_errors
     built = []
     _stub_load(monkeypatch,
                whisper_model=lambda path, **kw: built.append(path) or FakeModel(),
                max_loaded=1)
-    response = httpx2.Response(status, request=httpx2.Request(
-        "GET", "https://huggingface.co/api/models/org/public"))
+    response = _hub_response(status, "org/public")
 
     def _rejected(**kw):
         raise hf_errors.HfHubHTTPError("Invalid credentials in Authorization "
