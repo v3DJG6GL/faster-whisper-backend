@@ -10,11 +10,11 @@ reads back the action buttons it rendered into <main>."""
 import json
 import re
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_stdout
 
 
 _DOM_STUB = r"""
@@ -32,9 +32,7 @@ def _landing(whoami: dict, page: str) -> str:
           f"{web_common.NOT_ADMIN_LANDING_JS}\n"
           f"_renderNoAccessLanding({{ page: {json.dumps(page)} }});\n"
           "console.log(main.innerHTML);\n")
-    out = subprocess.run(["node", "-"], input=js, capture_output=True,
-                         text=True, encoding="utf-8", timeout=30, check=True)
-    return out.stdout
+    return node_stdout(js)
 
 
 def _buttons(html: str) -> list[str]:

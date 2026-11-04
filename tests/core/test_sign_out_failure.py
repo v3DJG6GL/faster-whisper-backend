@@ -14,11 +14,11 @@ answers whoami with a cached token S1 while the cookie carries S2."""
 
 import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_json
 from tests.core.test_whoami_unavailable_retry import _CHROME_STUB
 
 
@@ -68,10 +68,7 @@ def _sign_out(logout: list, clicks: int = 1, gap_ms: int = 0,
              f"const CSRF_COOKIE = {json.dumps(csrf_cookie)};\n"
              f"const WHOAMI_EXTRA = {json.dumps(whoami_extra or {})};\n"
              f"const ROTATE = {json.dumps(rotate)};\n")
-    out = subprocess.run(
-        ["node", "-"], input=given + _CHROME_STUB + _FETCH + js + _DRIVE,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(given + _CHROME_STUB + _FETCH + js + _DRIVE)
 
 
 @pytest.mark.parametrize("logout, expected", [

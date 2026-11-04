@@ -12,12 +12,12 @@ import json
 import pathlib
 import re
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.paths import REPO_ROOT
+from tests._page_helpers import node_json
 
 
 _CLOCK = r"""
@@ -81,10 +81,7 @@ def _run_chrome(statuses: list) -> dict:
     js = web_common.OPEN_MODE_BANNER_JS.strip()
     js = js[len("<script>"):-len("</script>")]
     given = f"const STATUSES = {json.dumps(statuses)};\n"
-    out = subprocess.run(
-        ["node", "-"], input=given + _CHROME_STUB + _CLOCK + js + _CHROME_DRIVE,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(given + _CHROME_STUB + _CLOCK + js + _CHROME_DRIVE)
 
 
 @pytest.mark.parametrize("first", [503, 429, "reject"])
@@ -162,10 +159,7 @@ def _hub_script() -> str:
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_hub_retries_until_whoami_answers_on_load(first):
     given = f"const STATUSES = {json.dumps([first, 200])};\n"
-    out = subprocess.run(
-        ["node", "-"], input=given + _HUB_STUB + _CLOCK + _hub_script() + _HUB_DRIVE,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    assert json.loads(out.stdout) == {
+    assert node_json(given + _HUB_STUB + _CLOCK + _hub_script() + _HUB_DRIVE) == {
         "body_hidden": False, "tile_on": True, "delays": [2000], "calls": 2,
     }
 
@@ -179,11 +173,7 @@ def _run_hub(statuses: list, extra: str, drive: str) -> dict:
     # getElementById so a hub that never painted reads as hidden, not a crash.
     drive = drive.replace(
         "els['hub-body'].hidden", "document.getElementById('hub-body').hidden")
-    out = subprocess.run(
-        ["node", "-"],
-        input=given + stub + _CLOCK + extra + _hub_script() + drive,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(given + stub + _CLOCK + extra + _hub_script() + drive)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
@@ -236,9 +226,6 @@ def test_chrome_announces_a_fresh_whoami():
         "const events = [];\n"
         "window.dispatchEvent = (e) => { events.push(e.type); };\n")
     drive = _CHROME_DRIVE.replace("gate, admin:", "events, gate, admin:")
-    out = subprocess.run(
-        ["node", "-"],
-        input="const STATUSES = [200];\n" + _CHROME_STUB + _CLOCK + events
-        + js + drive,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    assert json.loads(out.stdout)["events"] == ["whisper:whoami"]
+    res = node_json("const STATUSES = [200];\n" + _CHROME_STUB + _CLOCK + events
+                    + js + drive)
+    assert res["events"] == ["whisper:whoami"]

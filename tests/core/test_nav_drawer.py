@@ -5,13 +5,12 @@ The script runs under node against a minimal DOM stub (header with toggle,
 nav row and backdrop, plus a <main> sibling) — enough for open()/close() and
 the inert bookkeeping, no browser needed."""
 
-import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_json
 
 
 _DOM_STUB = r"""
@@ -64,9 +63,7 @@ global.window = {
 def _run(drive: str) -> dict:
     js = web_common.NAV_DRAWER_JS.strip()
     js = js[len("<script>"):-len("</script>")]
-    out = subprocess.run(["node", "-"], input=_DOM_STUB + js + drive,
-                         capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(_DOM_STUB + js + drive)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

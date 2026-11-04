@@ -7,13 +7,12 @@ and a missing config.json rule, no JS errors.
 
 import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests._page_helpers import TOP_CLOSE, js_body, js_upto
+from tests._page_helpers import TOP_CLOSE, js_body, js_upto, node_json
 
 
 def _html(client):
@@ -384,9 +383,7 @@ def _run_postfactory(html, drive, extra_fns=""):
            + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
            + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {")
            + extra_fns)
-    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
-                         encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(fns + drive)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

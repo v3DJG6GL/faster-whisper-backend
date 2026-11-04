@@ -5,13 +5,12 @@ rebuilds its cancel buttons / footer link from the markup and detaches the
 old nodes (blurring a focused one, like a browser), EventSource and fetch are
 fakes the drive script controls."""
 
-import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_json
 
 
 _DOM_STUB = r"""
@@ -105,10 +104,7 @@ const openPop = () => btn.listeners.click[0]({ stopPropagation() {} });
 def _run(drive: str) -> dict:
     js = web_common.ACTIVITY_CLUSTER_JS.strip()
     js = js[len("<script>"):-len("</script>")]
-    out = subprocess.run(["node", "-"],
-                         input=_DOM_STUB + js + "\n(async () => {" + drive + "})();",
-                         capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(_DOM_STUB + js + "\n(async () => {" + drive + "})();")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

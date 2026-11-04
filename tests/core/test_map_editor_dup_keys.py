@@ -8,11 +8,11 @@ The real _makeMapRow / _readMap run under node against a minimal DOM stub
 
 import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_json
 
 
 _DOM_STUB = r"""
@@ -57,9 +57,7 @@ def _editor_fns() -> str:
 
 
 def _run(drive: str) -> dict:
-    out = subprocess.run(["node", "-"], input=_DOM_STUB + _editor_fns() + drive,
-                         capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(_DOM_STUB + _editor_fns() + drive)
 
 
 _SETUP = r"""

@@ -11,7 +11,6 @@ The real editor functions run under node against a small DOM stub."""
 import json
 import os
 import shutil
-import subprocess
 
 import pytest
 
@@ -19,7 +18,7 @@ from faster_whisper_backend import paths
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests._page_helpers import js_fn
+from tests._page_helpers import js_fn, node_json
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
@@ -54,15 +53,9 @@ def _editor_js() -> str:
     return js[js.index("<script>") + len("<script>"):js.rindex("</script>")]
 
 
-def _node(script: str) -> dict:
-    out = subprocess.run(["node", "-"], input=script, capture_output=True, text=True,
-                         encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout.strip().splitlines()[-1])
-
-
 @needs_node
 def test_the_checkbox_round_trips_the_field():
-    res = _node(_DOM + _editor_js() + r"""
+    res = node_json(_DOM + _editor_js() + r"""
 const rule = { name: 'h', type: 'callback:upper', pattern: 'x' };
 let commits = 0;
 const box = renderTypeEditor(rule, () => commits++, { showRepeat: true });
@@ -82,8 +75,8 @@ console.log(JSON.stringify({ start, on, off, again }));
 
 @needs_node
 def test_only_the_admin_editor_shows_it_and_never_on_the_terminal_rule():
-    res = _node(_DOM + _editor_js() + r"""
-const has = (rule, opts) => !!find(renderTypeEditor(rule, () => {}, opts), 'rule-repeat-cb');
+    res = node_json(_DOM + _editor_js() + r"""
+const has =(rule, opts) => !!find(renderTypeEditor(rule, () => {}, opts), 'rule-repeat-cb');
 console.log(JSON.stringify({
   quick: has({ type: 'callback:upper', pattern: 'x' }, {}),
   terminal: has({ type: 'terminal' }, { showRepeat: true }),
@@ -110,7 +103,7 @@ def test_a_false_repeat_fingerprints_like_none_and_reads_unedited():
         "_sortDeep", "_withDefaults", "_ruleStrip", "_ruleContentEqual", "_ruleHash",
         "_factoryRule", "_ruleStatus"))
     base = {"name": "h", "label": "H", "type": "callback:upper", "pattern": "x"}
-    res = _node(js + "\nconst base = " + json.dumps(base) + r""";
+    res = node_json(js + "\nconst base = " + json.dumps(base) + r""";
 let factoryRules = [base];
 const rev = _ruleHash(base);
 const on = Object.assign({}, base, { repeat: true, config_rev: rev });

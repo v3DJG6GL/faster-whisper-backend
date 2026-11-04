@@ -9,11 +9,11 @@ wrapped so the page's own whoami "succeeds" right before the retry fires."""
 
 import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_json
 from tests.core.test_whoami_unavailable_retry import (
     _CHROME_DRIVE, _CHROME_STUB, _CLOCK,
 )
@@ -35,11 +35,7 @@ def test_rejected_retry_reapplies_a_cache_filled_meanwhile():
     js = web_common.OPEN_MODE_BANNER_JS.strip()
     js = js[len("<script>"):-len("</script>")]
     given = f"const STATUSES = {json.dumps([503, 'reject', 200])};\n"
-    out = subprocess.run(
-        ["node", "-"],
-        input=given + _CHROME_STUB + _CLOCK + _FILL_CACHE_ON_RETRY + js
-        + _CHROME_DRIVE,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    res = json.loads(out.stdout)
+    res = node_json(given + _CHROME_STUB + _CLOCK + _FILL_CACHE_ON_RETRY + js
+                    + _CHROME_DRIVE)
     assert (res["admin"], res["calls"], res["note_left"], res["gate"]) == (
         True, 2, False, 0)

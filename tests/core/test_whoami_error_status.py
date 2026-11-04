@@ -8,11 +8,11 @@ answers whoami with a chosen status, no browser needed."""
 
 import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_json
 
 
 _STUB = r"""
@@ -51,10 +51,7 @@ def _run(status: int, cached) -> dict:
     js = web_common.OPEN_MODE_BANNER_JS.strip()
     js = js[len("<script>"):-len("</script>")]
     given = f"const STATUS = {status}, CACHED = {json.dumps(cached)};\n"
-    out = subprocess.run(
-        ["node", "-"], input=given + _STUB + js + _DRIVE,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(given + _STUB + js + _DRIVE)
 
 
 _ADMIN = {"open_mode": False, "is_admin": True}

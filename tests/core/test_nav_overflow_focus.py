@@ -7,13 +7,12 @@ The script runs under node against a minimal DOM stub whose node moves blur
 a focused node like a browser does; widths are faked (10px per link, nav
 10*navCap+5px) so lowering navCap tucks links into the "more" list."""
 
-import json
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import node_json
 
 
 _DOM_STUB = r"""
@@ -98,9 +97,7 @@ const relayout = () => ros[0]();
 def _run(drive: str) -> dict:
     js = web_common.NAV_OVERFLOW_JS.strip()
     js = js[len("<script>"):-len("</script>")]
-    out = subprocess.run(["node", "-"], input=_DOM_STUB + js + drive,
-                         capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(out.stdout)
+    return node_json(_DOM_STUB + js + drive)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
