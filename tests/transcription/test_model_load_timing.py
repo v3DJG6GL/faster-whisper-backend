@@ -319,6 +319,11 @@ def test_vram_delta_is_sampled_on_the_load_device_index(monkeypatch):
 
 
 def _run_one_evictor_tick(monkeypatch):
+    """One _idle_evictor sweep with gc.collect stubbed; returns one entry per
+    gc.collect() call."""
+    import gc
+    collected = []
+    monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     calls = {"n": 0}
 
     async def _fake_sleep(_secs):
@@ -329,6 +334,7 @@ def _run_one_evictor_tick(monkeypatch):
     monkeypatch.setattr(tx_models.asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(tx_models.cfg, "MODEL_IDLE_TIMEOUT_S", 1, raising=False)
     asyncio.run(tx_models._idle_evictor())
+    return collected
 
 
 def _register_stale(name, leases=0):
@@ -340,7 +346,6 @@ def _register_stale(name, leases=0):
 def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
     """A lease taken between the pre-scan and the locked drop: the drop is
     refused, so no unload is logged and no full gc runs on the loop."""
-    import gc
     _register_stale("a")
     seen = {"n": 0}
 
@@ -352,10 +357,8 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
             tx_models._model_leases["a"] = 1
         return False
     monkeypatch.setattr(model_registry, "is_warm", _is_warm)
-    collected = []
-    monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        _run_one_evictor_tick(monkeypatch)
+        collected = _run_one_evictor_tick(monkeypatch)
     assert seen["n"] == 2, "the tick reached the locked drop"
     assert "a" in tx_models._loaded_models
     msgs = [r.getMessage() for r in caplog.records]
@@ -365,12 +368,9 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
 
 
 def test_evictor_prescan_skips_a_leased_model(monkeypatch, caplog):
-    import gc
     _register_stale("a", leases=1)
-    collected = []
-    monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        _run_one_evictor_tick(monkeypatch)
+        collected = _run_one_evictor_tick(monkeypatch)
     assert "a" in tx_models._loaded_models
     msgs = [r.getMessage() for r in caplog.records]
     assert not any("[idle-evict] unload" in m for m in msgs)
@@ -382,12 +382,9 @@ def test_evictor_prescan_skips_a_leased_model(monkeypatch, caplog):
 
 
 def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
-    import gc
     _register_stale("b")
-    collected = []
-    monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        _run_one_evictor_tick(monkeypatch)
+        collected = _run_one_evictor_tick(monkeypatch)
     assert "b" not in tx_models._loaded_models
     assert collected == [1]
     assert any("[idle-evict] unloaded b after 1s idle" == r.getMessage()
@@ -408,9 +405,7 @@ class _ImportRecorder:
 def test_evictor_does_not_cold_import_torch(monkeypatch):
     """A whisper-only process never imported torch: the unload must not pull
     libtorch + CUDA in on the event loop just to empty a cache it never had."""
-    import gc
     _register_stale("c")
-    monkeypatch.setattr(gc, "collect", lambda *a: None)
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     recorder = _ImportRecorder()
     monkeypatch.setattr(sys, "meta_path", [recorder, *sys.meta_path])
@@ -421,9 +416,7 @@ def test_evictor_does_not_cold_import_torch(monkeypatch):
 
 
 def test_evictor_empties_an_already_imported_torch_cache(monkeypatch):
-    import gc
     _register_stale("d")
-    monkeypatch.setattr(gc, "collect", lambda *a: None)
     emptied = []
     torch = types.ModuleType("torch")
     torch.cuda = types.SimpleNamespace(
