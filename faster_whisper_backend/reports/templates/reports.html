@@ -825,18 +825,7 @@
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       var fname = 'whisper-reports-' +
         new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19) + '.json';
-      var cd = resp.headers.get('Content-Disposition') || '';
-      var m = /filename="([^"]+)"/.exec(cd);
-      if (m) fname = m[1];
-      return resp.blob().then(function(blob) {
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url; a.download = fname;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-      });
+      return window._downloadResponse(resp, fname, 1000);
     }).catch(function(e) {
       if (e && e.message !== 'unauthorized') toast('Export failed: ' + e.message, true);
     });

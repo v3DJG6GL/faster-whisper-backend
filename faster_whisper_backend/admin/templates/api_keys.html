@@ -1884,23 +1884,9 @@
             throw new Error('signed out');
           }
           if (!r.ok) throw new Error('HTTP ' + r.status);
-          var cd = r.headers.get('Content-Disposition') || '';
-          var mm = cd.match(/filename="([^"]+)"/);
-          return r.blob().then(function (b) {
-            return { blob: b, name: mm ? mm[1] : 'client-settings.json' };
-          });
+          return window._downloadResponse(r, 'client-settings.json', 5000);
         })
-        .then(function (d) {
-          var url = URL.createObjectURL(d.blob);
-          var a = document.createElement('a');
-          a.href = url;
-          a.download = d.name;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-          showToast('Settings exported', 'ok');
-        })
+        .then(function () { showToast('Settings exported', 'ok'); })
         .catch(function (e) { showToast(String(e.message || e), 'err'); });
     };
     foot.appendChild(ex);

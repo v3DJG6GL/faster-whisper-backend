@@ -167,6 +167,9 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #   6. window.escapeHtml, the /captures, /reports and /quick-config escape. It
 #      differs from _escHtml by also escaping ', so its output is safe in a
 #      single-quoted attribute; the two are not interchangeable.
+#   7. window._downloadResponse(resp, fallback, revokeMs), saves a fetched
+#      Response as a browser download under its Content-Disposition filename,
+#      else `fallback`, and revokes the object URL after `revokeMs`.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -184,6 +187,14 @@ SCALE_BOOTSTRAP_HEAD = (
     "window.escapeHtml=function(s){var d=document.createElement('div');"
     "d.textContent=s==null?'':String(s);"
     "return d.innerHTML.replace(/\"/g,'&quot;').replace(/'/g,'&#39;');};"
+    "window._downloadResponse=function(resp,fallback,revokeMs){"
+    "var m=/filename=\"([^\"]+)\"/.exec(resp.headers.get('Content-Disposition')||'');"
+    "return resp.blob().then(function(blob){"
+    "var url=URL.createObjectURL(blob);"
+    "var a=document.createElement('a');"
+    "a.href=url;a.download=m?m[1]:fallback;"
+    "document.body.appendChild(a);a.click();a.remove();"
+    "setTimeout(function(){URL.revokeObjectURL(url);},revokeMs);});};"
     "(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"
