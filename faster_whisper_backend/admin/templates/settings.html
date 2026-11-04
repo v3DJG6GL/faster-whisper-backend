@@ -871,10 +871,7 @@ function renderServerIdent(ident) {
     const dt = document.createElement('dt');
     dt.textContent = label;
     dl.appendChild(dt);
-    const dd = document.createElement('dd');
-    if (cls) dd.className = cls;
-    dd.textContent = value || '';
-    dl.appendChild(dd);
+    dl.appendChild(_el('dd', cls, value || ''));
   }
   const pathsDt = document.createElement('dt');
   pathsDt.textContent = 'Data / models';
@@ -1038,8 +1035,7 @@ function _registerAdminListener(event, key, fn) {
 
 function makeBadges(name) {
   const d = fieldDef(name);
-  const wrap = document.createElement('div');
-  wrap.className = 'badges';
+  const wrap = _el('div', 'badges');
   if (d.restart_required) {
     wrap.innerHTML += '<span class="badge restart">restart</span>';
   } else {
@@ -1104,8 +1100,7 @@ function _button(className, text, title) {
 }
 
 function fieldRow(name) {
-  const row = document.createElement('div');
-  row.className = 'field';
+  const row = _el('div', 'field');
   row.dataset.field = name;   // used by jumpToGlobalRule() + the global admin:dirty handler
 
   if (FULLROW_FIELDS.has(name)) {
@@ -1122,15 +1117,13 @@ function fieldRow(name) {
     return row;
   }
 
-  const labelCol = document.createElement('div');
-  labelCol.className = 'label-col';
+  const labelCol = _el('div', 'label-col');
   const nameEl = _el('div', 'name', name);
   labelCol.appendChild(nameEl);
   labelCol.appendChild(makeBadges(name));
   row.appendChild(labelCol);
 
-  const inputCol = document.createElement('div');
-  inputCol.className = 'input-col';
+  const inputCol = _el('div', 'input-col');
   const editor = makeEditor(name);
   if (isEnvPinned(name)) {
     row.classList.add('env-pinned');
@@ -1145,8 +1138,7 @@ function fieldRow(name) {
   // Inline description: FIELD_DESCRIPTIONS, via /settings/state's per-field payload.
   const desc = fieldDef(name).description;
   if (desc) {
-    const help = document.createElement('div');
-    help.className = 'help';
+    const help = _helpDiv();
     setHelpText(help, desc);
     inputCol.appendChild(help);
   }
@@ -1162,8 +1154,7 @@ function fieldRow(name) {
     row.appendChild(inputCol);
     return row;
   }
-  const resetWrap = document.createElement('div');
-  resetWrap.className = 'reset-wrap';
+  const resetWrap = _el('div', 'reset-wrap');
   const resetBtn = _button('reset-link', '↺ Reset to default', 'Restore the in-repo default value');
   resetBtn.addEventListener('click', () => {
     const def = fieldDef(name).default_value;
@@ -1430,10 +1421,8 @@ function modelOverridesEditor(name, v) {
   // render AND the live refreshMarkers patch, which rewrites this in place).
   function fillInherits(el, v) {
     el.textContent = '';
-    const lbl = document.createElement('span');
-    lbl.className = 'lbl'; lbl.textContent = 'inherits';
-    const val = document.createElement('span');
-    val.className = 'val'; val.textContent = fmtValue(v);
+    const lbl = _el('span', 'lbl', 'inherits');
+    const val = _el('span', 'val', fmtValue(v));
     el.appendChild(lbl); el.appendChild(val);
   }
 
@@ -1487,12 +1476,9 @@ function modelOverridesEditor(name, v) {
     keepPinned();
   }
 
-  const wrap = document.createElement('div');
-  wrap.className = 'mo-wrap';
-  const sidebar = document.createElement('aside');
-  sidebar.className = 'mo-sidebar';
-  const mainpane = document.createElement('div');
-  mainpane.className = 'mo-mainpane';
+  const wrap = _el('div', 'mo-wrap');
+  const sidebar = _el('aside', 'mo-sidebar');
+  const mainpane = _el('div', 'mo-mainpane');
   wrap.appendChild(sidebar);
   wrap.appendChild(mainpane);
   // Every re-render builds fresh, enabled controls, and fieldRow() disables
@@ -1509,8 +1495,7 @@ function modelOverridesEditor(name, v) {
     const ids = Object.keys(overrides).sort(_coll.compare);
 
     // Top row: diff-mode toggle. The row is a <label>, so a click anywhere flips it.
-    const toggleWrap = document.createElement('label');
-    toggleWrap.className = 'mo-sidebar-toggle';
+    const toggleWrap = _el('label', 'mo-sidebar-toggle');
     toggleWrap.title = 'Dim per-model rows whose value equals the resolved global';
     const toggleCb = document.createElement('input');
     toggleCb.type = 'checkbox'; toggleCb.className = 'switch';
@@ -1528,8 +1513,7 @@ function modelOverridesEditor(name, v) {
     sidebar.appendChild(toggleWrap);
 
     for (const id of ids) {
-      const item = document.createElement('div');
-      item.className = 'mo-list-item';
+      const item = _el('div', 'mo-list-item');
       item.dataset.modelId = id;
       if (id === selectedId) item.classList.add('active');
       const n = countOverrides(id);
@@ -1537,14 +1521,11 @@ function modelOverridesEditor(name, v) {
       // typed into the UNSAVED ALLOWED_MODELS editor, which never passes the
       // server's ModelId pattern, so `id` is not a validated token here. Same
       // rule the /settings/pipeline test rows follow.
-      const dot = document.createElement('span');
-      dot.className = 'mo-dot';
+      const dot = _el('span', 'mo-dot');
       paintDot(dot, n > 0);
       // Long HF-style ids would blow the sidebar width — let CSS truncate.
-      const lbl = document.createElement('span');
-      lbl.className = 'mo-list-label';
+      const lbl = _el('span', 'mo-list-label', id);
       lbl.title = id;
-      lbl.textContent = id;
       const cnt = _el('span', 'mo-count', (n ? '(' + n + ')' : ''));
       // Collapse indicator; CSS shows it only on the .active row.
       const collapsed = (_lsGet('mo.detail.' + id) === '0');
@@ -1565,8 +1546,7 @@ function modelOverridesEditor(name, v) {
       sidebar.appendChild(item);
     }
 
-    const addRow = document.createElement('div');
-    addRow.className = 'mo-list-add';
+    const addRow = _el('div', 'mo-list-add');
     const free = allowed.filter(m => !overrides[m]);
     if (free.length > 0) {
       const sel = document.createElement('select');
@@ -1639,8 +1619,7 @@ function modelOverridesEditor(name, v) {
   }
 
   function renderModelEditView() {
-    const body = document.createElement('div');
-    body.className = 'mo-detail-body';
+    const body = _el('div', 'mo-detail-body');
     for (const sec of SECTIONS) {
       body.appendChild(renderSection(sec));
     }
@@ -1650,8 +1629,7 @@ function modelOverridesEditor(name, v) {
   }
 
   function renderSection(sec) {
-    const secEl = document.createElement('div');
-    secEl.className = 'mo-section';
+    const secEl = _el('div', 'mo-section');
     const h4 = document.createElement('h4');
     h4.textContent = sec.title;
     if (sec.id === 'hardware') {
@@ -1664,8 +1642,7 @@ function modelOverridesEditor(name, v) {
       secEl.appendChild(renderFieldRow(f));
     }
     if (sec.adv.length) {
-      const det = document.createElement('details');
-      det.className = 'subgroup-details mo-advanced';
+      const det = _el('details', 'subgroup-details mo-advanced');
       const sum = _el('summary', 'subgroup-summary', 'Advanced — ' + (sec.advTitle || 'more knobs'));
       det.appendChild(sum);
       const lsKey = 'mo.adv.' + sec.id;
@@ -1685,8 +1662,7 @@ function modelOverridesEditor(name, v) {
     const isOverridden = overrideVal !== undefined;
     const globalVal = globalValue(field);
 
-    const row = document.createElement('div');
-    row.className = 'mo-row';
+    const row = _el('div', 'mo-row');
     // data-mo-field, not data-field, so the page's data-field lookups for
     // global rows never match a per-model row.
     row.dataset.moField = field;
@@ -1695,8 +1671,7 @@ function modelOverridesEditor(name, v) {
     const matches = !isOverridden || JSON.stringify(overrideVal) === JSON.stringify(globalVal);
     row.dataset.matchesGlobal = matches ? 'true' : 'false';
 
-    const dot = document.createElement('span');
-    dot.className = 'mo-dot';
+    const dot = _el('span', 'mo-dot');
     paintDot(dot, isOverridden);
     row.appendChild(dot);
 
@@ -1709,20 +1684,17 @@ function modelOverridesEditor(name, v) {
     }
     row.appendChild(labelWrap);
 
-    const valueCell = document.createElement('span');
-    valueCell.className = 'mo-value-cell';
+    const valueCell = _el('span', 'mo-value-cell');
     if (isOverridden) {
       valueCell.appendChild(makeInputWidget(field, meta, overrideVal));
     } else {
-      const inh = document.createElement('span');
-      inh.className = 'mo-inherits';
+      const inh = _el('span', 'mo-inherits');
       fillInherits(inh, globalVal);
       valueCell.appendChild(inh);
     }
     row.appendChild(valueCell);
 
-    const ctrl = document.createElement('span');
-    ctrl.className = 'mo-row-ctrl';
+    const ctrl = _el('span', 'mo-row-ctrl');
     if (isOverridden) {
       const reset = _button('reset-link', '↶ reset',
                             'Restore inherited value (' + fmtValue(globalVal) + ')');
@@ -1837,8 +1809,7 @@ function modelOverridesEditor(name, v) {
   }
 
   function renderPipelineSection() {
-    const secEl = document.createElement('div');
-    secEl.className = 'mo-section';
+    const secEl = _el('div', 'mo-section');
     const h4 = document.createElement('h4');
     h4.textContent = 'Pipeline rules (scoping only)';
     secEl.appendChild(h4);
@@ -2014,11 +1985,9 @@ function modelMultiSelectEditor(name, v, lists) {
       if (!universe.includes(p)) universe.push(p);
     }
 
-    const list = document.createElement('div');
-    list.className = 'cb-list';
+    const list = _el('div', 'cb-list');
     for (const m of universe) {
-      const lbl = document.createElement('label');
-      lbl.className = 'cb-row';
+      const lbl = _el('label', 'cb-row');
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = preloadSet.has(m);
@@ -2062,14 +2031,11 @@ function translationTemplateEditor(name, v) {
   // (POST /settings/translation-test {preview:true}): render_prompt shares the
   // builder with real requests, so it can't drift. The template textarea stays
   // in the form for save/discard whatever the family.
-  const wrap = document.createElement('div');
-  wrap.className = 'prompt-lab';
+  const wrap = _el('div', 'prompt-lab');
 
-  const left = document.createElement('div');
-  left.className = 'lab-col';
+  const left = _el('div', 'lab-col');
   const mkRow = (labelText, ctrl) => {
-    const row = document.createElement('div');
-    row.className = 'lab-row';
+    const row = _el('div', 'lab-row');
     const l = document.createElement('label');
     l.textContent = labelText;
     row.appendChild(l); row.appendChild(ctrl);
@@ -2139,13 +2105,11 @@ function translationTemplateEditor(name, v) {
   left.appendChild(t);
   t.addEventListener('input', () => { setDirty(name, t.value); schedulePreview(); });
 
-  const testRow = document.createElement('div');
-  testRow.className = 'lab-row';
+  const testRow = _el('div', 'lab-row');
   const testBtn = _button('', '▶ Test this model',
                           'Run the sample through the selected model (loads it first if needed)');
   testRow.appendChild(testBtn);
-  const stage = document.createElement('div');
-  stage.className = 'lab-stage';
+  const stage = _el('div', 'lab-stage');
   testRow.appendChild(stage);
   left.appendChild(testRow);
   const results = document.createElement('div');
@@ -2156,15 +2120,12 @@ function translationTemplateEditor(name, v) {
   // textarea `t` is deliberately NOT marked; the pin still disables it.
   [modelSel, srcIn, tgtIn, sample, gloss, testBtn].forEach(c => { c.dataset.diagnostic = '1'; });
 
-  const right = document.createElement('div');
-  right.className = 'lab-col';
+  const right = _el('div', 'lab-col');
   const rHead = _el('div', 'lab-head', 'What the model receives');
-  const famChip = document.createElement('span');
-  famChip.className = 'lab-chip';
+  const famChip = _el('span', 'lab-chip');
   rHead.appendChild(famChip);
   right.appendChild(rHead);
-  const readout = document.createElement('div');
-  readout.className = 'lab-readout';
+  const readout = _el('div', 'lab-readout');
   right.appendChild(readout);
   const sampling = right.appendChild(_helpDiv());
 
@@ -2182,8 +2143,7 @@ function translationTemplateEditor(name, v) {
   const rawSum = document.createElement('summary');
   rawSum.textContent = 'View template (built-in · read-only)';
   rawDetails.appendChild(rawSum);
-  const rawPre = document.createElement('pre');
-  rawPre.className = 'tpl-preview';
+  const rawPre = _el('pre', 'tpl-preview');
   rawPre.style.whiteSpace = 'pre-wrap';
   rawDetails.appendChild(rawPre);
   right.appendChild(rawDetails);
@@ -2351,8 +2311,7 @@ function translationTemplateEditor(name, v) {
           const dsum = document.createElement('summary');
           dsum.textContent = 'Final prompt (debug)';
           dbg.appendChild(dsum);
-          const dpre = document.createElement('pre');
-          dpre.className = 'tpl-preview';
+          const dpre = _el('pre', 'tpl-preview');
           dpre.style.whiteSpace = 'pre-wrap';
           dpre.textContent = j.prompt.messages
             ? j.prompt.messages.map(m => m.role + ': ' + m.content).join('\n')
@@ -2486,13 +2445,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   opts = opts || {};
   const isChecklist = mode === 'checklist';
   let rules = JSON.parse(JSON.stringify(initialRules || []));
-  const wrap = document.createElement('div');
-  wrap.className = 'pipeline-rules-wrap';
+  const wrap = _el('div', 'pipeline-rules-wrap');
   if (isChecklist) wrap.classList.add('checklist-mode');
 
   if (!isChecklist) {
-    const advWarn = document.createElement('div');
-    advWarn.className = 'advanced-warn';
+    const advWarn = _el('div', 'advanced-warn');
     advWarn.innerHTML = '⚠ <strong>advanced</strong> — incorrect regex breaks transcription. '
       + 'Use the test panel below to dry-run before saving. “↓ Reset” on a rule brings back its config.json version if you get stuck.';
     wrap.appendChild(advWarn);
@@ -2500,24 +2457,20 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
   // Notice strip above the list: config.json rules this server does not have
   // (new in an update). Exists only when there is something to add.
-  const syncNotice = document.createElement('div');
-  syncNotice.className = 'sync-notice';
+  const syncNotice = _el('div', 'sync-notice');
   syncNotice.hidden = true;
   wrap.appendChild(syncNotice);
-  const syncBar = document.createElement('div');
-  syncBar.className = 'sync-bar';
+  const syncBar = _el('div', 'sync-bar');
   syncBar.hidden = true;
   wrap.appendChild(syncBar);
 
-  const list = document.createElement('div');
-  list.className = 'rule-list';
+  const list = _el('div', 'rule-list');
   wrap.appendChild(list);
 
   let dragSrcIdx = null;
   let dragSrcEl = null;     // the <div class="rule-row"> currently dragging
   // One shared placeholder: HTML5 DnD allows only one drag at a time per tab.
-  const placeholder = document.createElement('div');
-  placeholder.className = 'rule-placeholder';
+  const placeholder = _el('div', 'rule-placeholder');
   // Expanded-row state, keyed by slug. Survives full repaints and, in full
   // mode, page reloads via localStorage['pipeline.expanded'] (like the
   // subgroup/section collapse state).
@@ -2774,9 +2727,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (promoteOrderBtn) promoteOrderBtn.style.display = orderDirty ? '' : 'none';
     const _setCount = (btn, label, n) => {
       btn.textContent = label + ' ';
-      const c = document.createElement('span');
-      c.className = 'sync-count'; c.textContent = String(n);
-      btn.appendChild(c);
+      btn.appendChild(_el('span', 'sync-count', String(n)));
     };
     if (promoteAllBtn) {
       promoteAllBtn.style.display = nPromote ? '' : 'none';
@@ -2857,8 +2808,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   }
 
   function renderRow(rule, idx) {
-    const row = document.createElement('div');
-    row.className = 'rule-row';
+    const row = _el('div', 'rule-row');
     row.dataset.idx = idx;
     row.dataset.slug = rule.name || '';
 
@@ -2880,8 +2830,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
       if (isTerminal) row.classList.add('terminal');
 
-      const head = document.createElement('div');
-      head.className = 'row-header';
+      const head = _el('div', 'row-header');
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
@@ -2952,8 +2901,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (!isTerminal) {
         const rLangs = Array.isArray(rule.languages) ? rule.languages : [];
         if (rLangs.length) {
-          const langBadge = document.createElement('span');
-          langBadge.className = 'lang-badge';
+          const langBadge = _el('span', 'lang-badge');
           langBadge.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg> '
             + (rLangs.length <= 3 ? rLangs.join(' · ') : rLangs.length + ' langs');
           langBadge.title = 'Runs only when the detected language is one of: ' + rLangs.join(', ')
@@ -2984,8 +2932,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         head.appendChild(fiTag);
       }
 
-      const status = document.createElement('span');
-      status.className = 'rule-checklist-status';
+      const status = _el('span', 'rule-checklist-status');
       head.appendChild(status);
 
       // The row's inclusion state from (forcedOut, forcedIn), painted here and
@@ -3020,17 +2967,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // protection in one place) beside the main column (header + body).
     row.classList.add('rule-card');
     if (rule.color) row.dataset.color = rule.color;
-    const rail = document.createElement('div');
-    rail.className = 'rule-rail';
-    const cardMain = document.createElement('div');
-    cardMain.className = 'rule-main';
+    const rail = _el('div', 'rule-rail');
+    const cardMain = _el('div', 'rule-main');
 
     // Shared by `enabled` (line 1) and `user-editable` (line 2) so the two
     // read as a parallel pair.
     function _labelledToggle(text, checked, opts) {
       opts = opts || {};
-      const wrap = document.createElement('label');
-      wrap.className = 'toggle';
+      const wrap = _el('label', 'toggle');
       if (checked) wrap.classList.add('on');
       if (opts.title) wrap.title = opts.title;
       const cb = document.createElement('input');
@@ -3050,13 +2994,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     // Header = flex column: line 1 (identity) and line 2 (metadata). On one
     // line, 10+ inline controls truncated the rule label first.
-    const head = document.createElement('div');
-    head.className = 'row-header';
-    const headLine1 = document.createElement('div');
-    headLine1.className = 'row-header-line1';
+    const head = _el('div', 'row-header');
+    const headLine1 = _el('div', 'row-header-line1');
     head.appendChild(headLine1);
-    const headLine2 = document.createElement('div');
-    headLine2.className = 'row-header-line2';
+    const headLine2 = _el('div', 'row-header-line2');
 
     const drag = _el('span', 'drag-handle', '⠿');   // grip; lock state is shown by the rail padlock
     drag.title = 'Drag to reorder';
@@ -3143,8 +3084,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       }
       commitFull();
     }
-    const rankStepper = document.createElement('div');
-    rankStepper.className = 'rank-stepper';
+    const rankStepper = _el('div', 'rank-stepper');
     upBtn = document.createElement('button');
     upBtn.type = 'button'; upBtn.className = 'move-btn move-up';
     upBtn.innerHTML = MOVE_CHEV_UP;
@@ -3217,14 +3157,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // "↑ Promote"; both only open the review dialog, so a mis-click is safe.
     let syncSlot = null;
     if (rule.type !== 'terminal') {
-      const originBadge = document.createElement('span');
-      originBadge.className = 'rule-origin-badge';
+      const originBadge = _el('span', 'rule-origin-badge');
       _paintBadge(originBadge, _ruleStatus(rule));
       headLine1.appendChild(originBadge);
       // Mounted at the right end of the "applies to" line below: line 1 is
       // full (label, slug, type, badge) and squeezed the label to "DE: St…".
-      syncSlot = document.createElement('span');
-      syncSlot.className = 'rule-sync-slot';
+      syncSlot = _el('span', 'rule-sync-slot');
       // Position-diverged marker (rank differs from config.json, see _ruleMoved).
       // Toggled live by refreshControlsVisibility.
       const movedBadge = _el('span', 'rule-moved-badge', '⇅ moved');
@@ -3268,8 +3206,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Right-aligned action cluster: colour + edit/expand. Promote / reset sit
     // in the sync slot on the "applies to" line and delete in the body footer,
     // so the header stays scannable and stops jumping width as state changes.
-    const headActions = document.createElement('div');
-    headActions.className = 'head-actions';
+    const headActions = _el('div', 'head-actions');
     if (rule.type !== 'terminal') headActions.appendChild(colorBtn);
     headActions.appendChild(expandBtn);
     headLine1.appendChild(headActions);
@@ -3280,8 +3217,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // dismiss (sidesteps the auto-popover invoker double-toggle), and the 8
     // swatches get roving arrow-key navigation. Terminal rules have no colour.
     if (rule.type !== 'terminal') {
-      const colorPop = document.createElement('div');
-      colorPop.className = 'color-pop';
+      const colorPop = _el('div', 'color-pop');
       colorPop.setAttribute('popover', 'manual');
       colorPop.setAttribute('role', 'listbox');
       colorPop.setAttribute('aria-label', 'Card colour');
@@ -3360,11 +3296,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // "applies to:" language picker; terminal rules are always universal.
     let _langPicker = null;
     if (rule.type !== 'terminal') {
-      const headLineLang = document.createElement('div');
-      headLineLang.className = 'row-header-line2';
+      const headLineLang = _el('div', 'row-header-line2');
       headLineLang.style.gap = '0.4rem';
-      const langLbl = document.createElement('span');
-      langLbl.className = 'meta-label';
+      const langLbl = _el('span', 'meta-label');
       langLbl.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" style="vertical-align:-2px;opacity:0.5;margin-right:2px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>applies to:';
       headLineLang.appendChild(langLbl);
       _langPicker = window._renderLanguagePicker({
@@ -3389,8 +3323,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const tagsLbl = _el('span', 'meta-label', 'tags:');
       headLine2.appendChild(tagsLbl);
 
-      const tagWrap = document.createElement('span');
-      tagWrap.className = 'rule-tag-wrap';
+      const tagWrap = _el('span', 'rule-tag-wrap');
       const picker = window._renderTagPicker({
         initial: Array.isArray(rule.tags) ? rule.tags : [],
         available: _allRuleTags(),
@@ -3460,8 +3393,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Drop logic lives at list level (see top of makeRuleListEditor) —
     // the shared placeholder follows the cursor between rows there.
 
-    const body = document.createElement('div');
-    body.className = 'row-body';
+    const body = _el('div', 'row-body');
 
     // Label editor (terminal's label is hardcoded). A custom rule's slug
     // follows its label; the header spans update in place, with no repaint,
@@ -3475,10 +3407,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const savedSlugs = new Set((fieldDef(name).value || []).map(r => r && r.name));
     const slugFixed = r => r.seeded || _factoryHas(r.name) || savedSlugs.has(r.name);
     if (rule.type !== 'terminal') {
-      const labelWrap = document.createElement('div');
-      labelWrap.className = 'rule-label-edit';
-      const labelLbl = document.createElement('div');
-      labelLbl.className = 'help';
+      const labelWrap = _el('div', 'rule-label-edit');
+      const labelLbl = _helpDiv();
       labelLbl.textContent = slugFixed(rule)
         ? 'label: (slug stays fixed once saved or in config.json)'
         : 'label: (slug regenerates from label)';
@@ -3595,8 +3525,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // reads: edit → run test → delete.
     if (promoteBtnEl && syncSlot) syncSlot.appendChild(promoteBtnEl);
     if (_destructiveBtns.length) {
-      const footer = document.createElement('div');
-      footer.className = 'row-body-actions';
+      const footer = _el('div', 'row-body-actions');
       for (const btn of _destructiveBtns) footer.appendChild(btn);
       body.appendChild(footer);
     }
@@ -3664,8 +3593,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return wrap;
   }
 
-  const ctrls = document.createElement('div');
-  ctrls.className = 'rule-list-controls';
+  const ctrls = _el('div', 'rule-list-controls');
   ctrls.style.marginTop = '0.5rem';
   ctrls.style.display = 'flex';
   ctrls.style.gap = '0.5rem';
@@ -3708,8 +3636,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   });
   syncBar.appendChild(resetOrderBtn);
 
-  const syncSpacer = document.createElement('span');
-  syncSpacer.className = 'sync-spacer';
+  const syncSpacer = _el('span', 'sync-spacer');
   syncBar.appendChild(syncSpacer);
 
   const promoteOrderBtn = _button('sync-btn up', '↑ Promote order',
@@ -3738,8 +3665,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     syncNotice.textContent = '';
     syncNotice.hidden = missing.length === 0;
     if (!missing.length) return;
-    const txt = document.createElement('div');
-    txt.className = 'sync-notice-text';
+    const txt = _el('div', 'sync-notice-text');
     const b = document.createElement('b');
     b.textContent = 'config.json has ' + _count(missing.length, 'rule') + ' this server does not have yet.';
     const names = _el('div', 'sync-notice-names', missing.map(m => m.label || m.name).join(', '));
@@ -3752,15 +3678,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   wrap.appendChild(ctrls);
 
   function _openAddCustomDialog() {
-    const form = document.createElement('div');
-    form.className = 'rule-row';
+    const form = _el('div', 'rule-row');
     form.style.borderColor = 'var(--green)';
-    const head = document.createElement('div');
-    head.className = 'row-header';
+    const head = _el('div', 'row-header');
     head.innerHTML = '<strong>+ New custom rule</strong>';
     form.appendChild(head);
-    const body = document.createElement('div');
-    body.className = 'row-body';
+    const body = _el('div', 'row-body');
     body.style.display = 'block';
 
     const typeSel = document.createElement('select');
@@ -3846,15 +3769,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   }
   // Lightweight modal: {title, bodyEl, buttons:[{label, primary, onClick(close)}]}.
   function _modal(o) {
-    const backdrop = document.createElement('div');
-    backdrop.className = 'rule-modal-backdrop';
-    const panel = document.createElement('div');
-    panel.className = 'rule-modal';
+    const backdrop = _el('div', 'rule-modal-backdrop');
+    const panel = _el('div', 'rule-modal');
     const h = _el('div', 'rule-modal-title', o.title || '');
     panel.appendChild(h);
     if (o.bodyEl) panel.appendChild(o.bodyEl);
-    const btnRow = document.createElement('div');
-    btnRow.className = 'rule-modal-buttons';
+    const btnRow = _el('div', 'rule-modal-buttons');
     const _onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
     function close() {
       document.removeEventListener('keydown', _onKey);
@@ -3954,10 +3874,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return rows;
   }
   function _rvTable(rows, left, right) {
-    const wrapEl = document.createElement('div');
-    wrapEl.className = 'rv-tablewrap';
-    const t = document.createElement('table');
-    t.className = 'rv-table';
+    const wrapEl = _el('div', 'rv-tablewrap');
+    const t = _el('table', 'rv-table');
     const hr = document.createElement('tr');
     [['Field', ''], left, right].forEach(h => {
       const th = document.createElement('th');
@@ -3970,17 +3888,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const td = document.createElement('td');
       if (v === undefined) { td.className = cls + ' none'; td.textContent = '— not present'; return td; }
       td.className = cls;
-      const g = document.createElement('span');
-      g.className = 'rv-glyph'; g.textContent = glyph;
+      const g = _el('span', 'rv-glyph', glyph);
       td.appendChild(g); td.appendChild(document.createTextNode(v));
       return td;
     };
     rows.forEach(r => {
       const tr = document.createElement('tr');
-      const k = document.createElement('td');
-      k.className = 'k';
-      const kind = document.createElement('span');
-      kind.className = 'rv-kind'; kind.textContent = r.kind;
+      const k = _el('td', 'k');
+      const kind = _el('span', 'rv-kind', r.kind);
       k.appendChild(kind); k.appendChild(document.createTextNode(r.key));
       tr.appendChild(k); tr.appendChild(cell('o', '−', r.o)); tr.appendChild(cell('n', '+', r.n));
       t.appendChild(tr);
@@ -3996,24 +3911,18 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   //      onConfirm(selectedIds) }
   // Left column = what gets overwritten, right column = what it becomes.
   function _reviewDialog(o) {
-    const backdrop = document.createElement('div');
-    backdrop.className = 'rule-modal-backdrop';
-    const panel = document.createElement('div');
-    panel.className = 'rule-modal review';
+    const backdrop = _el('div', 'rule-modal-backdrop');
+    const panel = _el('div', 'rule-modal review');
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
     const h = _el('div', 'rule-modal-title', o.title);
     panel.appendChild(h);
 
-    const flow = document.createElement('div');
-    flow.className = 'rv-flow';
+    const flow = _el('div', 'rv-flow');
     const node = (n, cls, tag) => {
-      const b = document.createElement('div');
-      b.className = 'rv-node ' + cls;
-      const t = document.createElement('div');
-      t.className = 'rv-node-t'; t.textContent = n.t + '  ·  ' + tag;
-      const sub = document.createElement('div');
-      sub.className = 'rv-node-s'; sub.textContent = n.s;
+      const b = _el('div', 'rv-node ' + cls);
+      const t = _el('div', 'rv-node-t', n.t + '  ·  ' + tag);
+      const sub = _el('div', 'rv-node-s', n.s);
       b.appendChild(t); b.appendChild(sub);
       return b;
     };
@@ -4023,8 +3932,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     flow.appendChild(node(o.up ? _RV_CONFIG : _RV_SERVER, 'dst', 'gets changed'));
     panel.appendChild(flow);
 
-    const chips = document.createElement('div');
-    chips.className = 'rv-chips';
+    const chips = _el('div', 'rv-chips');
     panel.appendChild(chips);
     const same = _helpDiv('No differences — both sides are already identical. Nothing to do.');
     same.style.display = 'none';
@@ -4038,8 +3946,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     } else {
       const box = document.createElement('div');
       o.groups.forEach((g, i) => {
-        const det = document.createElement('details');
-        det.className = 'rv-grp';
+        const det = _el('details', 'rv-grp');
         det.open = g.open !== false && o.groups.length <= 3;
         const sum = document.createElement('summary');
         let cb = null;
@@ -4053,15 +3960,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           sum.appendChild(cb);
         }
         picks.push(cb ? { cb } : null);
-        const nm = document.createElement('span');
-        nm.className = 'rv-grp-name'; nm.textContent = g.name;
-        sum.appendChild(nm);
-        if (g.meta) {
-          const m = document.createElement('span');
-          m.className = 'rv-grp-meta'; m.textContent = g.meta;
-          sum.appendChild(m);
-        }
-        const sp = document.createElement('span'); sp.className = 'rv-grp-sp';
+        sum.appendChild(_el('span', 'rv-grp-name', g.name));
+        if (g.meta) sum.appendChild(_el('span', 'rv-grp-meta', g.meta));
+        const sp = _el('span', 'rv-grp-sp');
         const cnt = _el('span', 'rv-chip', _count(g.rows.length, 'change'));
         sum.appendChild(sp); sum.appendChild(cnt);
         det.appendChild(sum);
@@ -4071,13 +3972,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       panel.appendChild(box);
     }
     (o.extraEls || []).forEach(e => { if (e) panel.appendChild(e); });
-    if (o.warn) { const w = document.createElement('div'); w.className = 'rv-warn'; w.textContent = o.warn; panel.appendChild(w); }
-    if (o.lose) { const l = document.createElement('div'); l.className = 'rv-lose'; l.textContent = o.lose; panel.appendChild(l); }
+    if (o.warn) panel.appendChild(_el('div', 'rv-warn', o.warn));
+    if (o.lose) panel.appendChild(_el('div', 'rv-lose', o.lose));
     const note = _unsavedNoteEl();
     if (note && o.up) panel.appendChild(note);
 
-    const foot = document.createElement('div');
-    foot.className = 'rv-foot';
+    const foot = _el('div', 'rv-foot');
     const fn = _el('span', 'rv-foot-note', 'Esc closes. Nothing is written until you confirm.');
     const cancel = _button('sync-btn', 'Cancel');
     const ok = _button('sync-btn ' + o.confirmClass, '');
@@ -4089,7 +3989,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const c = { added: 0, removed: 0, changed: 0, moved: 0 };
       sel.forEach(g => g.rows.forEach(r => { c[r.kind] = (c[r.kind] || 0) + 1; }));
       chips.textContent = '';
-      const chip = (cls, text) => { const e = document.createElement('span'); e.className = 'rv-chip ' + cls; e.textContent = text; chips.appendChild(e); };
+      const chip = (cls, text) => { chips.appendChild(_el('span', 'rv-chip ' + cls, text)); };
       if (!single) chip('', sel.length + ' of ' + o.groups.length + ' rules selected');
       if (c.added) chip('added', '+ ' + c.added + ' added');
       if (c.removed) chip('removed', '− ' + c.removed + ' removed');
@@ -4248,8 +4148,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // Moved rules + new order for the promote dialogs. Positional order, never
   // collated: rule order is functional, not alphabetical.
   function _orderChangeEl() {
-    const d = document.createElement('div');
-    d.className = 'promote-change-line';
+    const d = _el('div', 'promote-change-line');
     const moved = rules.filter(r => r.type !== 'terminal' && _ruleMoved(r))
                        .map(r => r.label || r.name);
     if (!moved.length) {
@@ -4619,11 +4518,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
 function pipelineTestPanel() {
   // Dry run of the whole (unsaved) PIPELINE_RULES list against an editable sample.
-  const wrap = document.createElement('div');
-  wrap.className = 'regex-test-panel';
+  const wrap = _el('div', 'regex-test-panel');
 
-  const presetWrap = document.createElement('div');
-  presetWrap.className = 'preset-select';
+  const presetWrap = _el('div', 'preset-select');
   presetWrap.innerHTML = '<span class="help" style="margin-right:0.375rem">preset:</span>';
   const sel = document.createElement('select');
   for (const k of Object.keys(TEST_PRESETS)) {
@@ -4636,10 +4533,8 @@ function pipelineTestPanel() {
   // out the detected language, so the dry run must know it too. Defaults to
   // DEFAULT_LANGUAGE (what an un-hinted request is transcribed as); "any /
   // unknown" runs every rule, as the engine does before detection.
-  const langLbl = document.createElement('span');
-  langLbl.className = 'help';
+  const langLbl = _el('span', 'help', 'language:');
   langLbl.style.margin = '0 0.375rem 0 0.75rem';
-  langLbl.textContent = 'language:';
   presetWrap.appendChild(langLbl);
   const langSel = document.createElement('select');
   langSel.id = 'pipeline-test-language';
@@ -4676,8 +4571,7 @@ function pipelineTestPanel() {
   runBtn.style.marginTop = '0.375rem';
   wrap.appendChild(runBtn);
 
-  const out = document.createElement('div');
-  out.className = 'regex-test-out';
+  const out = _el('div', 'regex-test-out');
   wrap.appendChild(out);
 
   // Status tag next to a step's label. Built as an element (not an HTML
@@ -4722,8 +4616,7 @@ function pipelineTestPanel() {
       showErr(ej.error || ('test endpoint error (' + r.status + ')'));
       return;
     }
-    const tbl = document.createElement('table');
-    tbl.className = 'pipeline-test-table';
+    const tbl = _el('table', 'pipeline-test-table');
     const thead = document.createElement('tr');
     thead.innerHTML = '<th>#</th><th>label</th><th>type</th><th>output</th>';
     tbl.appendChild(thead);
@@ -4752,8 +4645,7 @@ function pipelineTestPanel() {
       else if (step.matches) badge = testBadge('ok', step.matches + ' matches'
         + (step.passes > 1 ? ' · ' + step.passes + ' passes' : ''));
       const changed = step.before !== step.after;
-      const outCell = document.createElement('td');
-      outCell.className = 'out';
+      const outCell = _el('td', 'out');
       if (step.error && !advisory && !step.not_run) {
         const err = _el('span', 'err', step.error);
         outCell.appendChild(err);
@@ -4800,8 +4692,7 @@ function pipelineTestPanel() {
 function nullableNumberEditor(name, v, fallback = 0) {
   // A number a button toggles to null (check skipped); re-enabling restores
   // the last number, or `fallback` if the field started out null.
-  const wrap = document.createElement('span');
-  wrap.className = 'nullable-wrap';
+  const wrap = _el('span', 'nullable-wrap');
   wrap.style.display = 'flex'; wrap.style.gap = '0.375rem'; wrap.style.alignItems = 'center';
 
   const i = document.createElement('input');
@@ -4983,8 +4874,7 @@ function buildSectionNav() {
   if (PIPELINE_ONLY) { refreshSectionToggleAllLabel(); return; }
   for (const g of state.groups) {
     const id = 'sec-' + slug(g.title);
-    const chip = document.createElement('a');
-    chip.className = 'sec-chip';
+    const chip = _el('a', 'sec-chip');
     chip.href = '#' + id;
     chip.dataset.target = id;
     chip.textContent = g.title;
@@ -5043,16 +4933,13 @@ function highlightNavChip(id) {
 }
 
 function pipelineMovedStub() {
-  const box = document.createElement('div');
-  box.className = 'pipeline-moved-stub';
+  const box = _el('div', 'pipeline-moved-stub');
   const txt = _el('div', 'pms-text',
     'The pipeline rule editor now has its own page — the global '
     + 'rule list, drag-reorder, lock, colour and the dry-run tester all live there. '
     + 'Per-model and capture rule scoping stay below.');
-  const a = document.createElement('a');
-  a.className = 'pms-link';
+  const a = _el('a', 'pms-link', 'Open the Pipeline page →');
   a.href = '/settings/pipeline';
-  a.textContent = 'Open the Pipeline page →';
   box.appendChild(txt);
   box.appendChild(a);
   return box;
@@ -5067,8 +4954,7 @@ function render() {
     sec.id = 'sec-' + slug(g.title);
     // The section folds as a native <details>, open by default. dataset.lsKey
     // lets expand/collapse-all persist it without re-deriving the key.
-    const secDet = document.createElement('details');
-    secDet.className = 'section-details';
+    const secDet = _el('details', 'section-details');
     const secKey = 'sec.global.' + g.title;
     secDet.dataset.lsKey = secKey;
     secDet.open = _lsGet(secKey) !== '0';
@@ -5076,14 +4962,12 @@ function render() {
       _lsSet(secKey, secDet.open ? '1' : '0');
       refreshSectionToggleAllLabel();
     });
-    const secSum = document.createElement('summary');
-    secSum.className = 'section-summary';
+    const secSum = _el('summary', 'section-summary');
     const h = document.createElement('h2');
     h.textContent = g.title;
     secSum.appendChild(h);
     secDet.appendChild(secSum);
-    const body = document.createElement('div');
-    body.className = 'section-body';
+    const body = _el('div', 'section-body');
     secDet.appendChild(body);
     // On /settings the global Pipeline editor is replaced by a link to the
     // dedicated /settings/pipeline page (PIPELINE_RULES stays in state.fields
@@ -5097,15 +4981,13 @@ function render() {
     // A titled subgroup (the long-tail "Advanced —" ones) folds into a
     // <details>, closed by default; an untitled one gets no subheader.
     for (const sub of g.subgroups) {
-      const fieldsWrap = document.createElement('div');
-      fieldsWrap.className = 'group-fields';
+      const fieldsWrap = _el('div', 'group-fields');
       for (const fname of sub.fields) {
         try {
           fieldsWrap.appendChild(fieldRow(fname));
         } catch (err) {
           console.error('failed to render field', fname, err);
-          const errRow = document.createElement('div');
-          errRow.className = 'field';
+          const errRow = _el('div', 'field');
           errRow.innerHTML = '<div class="label-col"><div class="name">' + fname
             + '</div></div><div class="input-col"><div class="err">'
             + 'render failed: ' + (err.message || err) + '</div></div>';
@@ -5113,8 +4995,7 @@ function render() {
         }
       }
       if (sub.title) {
-        const det = document.createElement('details');
-        det.className = 'subgroup-details';
+        const det = _el('details', 'subgroup-details');
         const sum = _el('summary', 'subgroup-summary', sub.title);
         det.appendChild(sum);
         det.appendChild(fieldsWrap);

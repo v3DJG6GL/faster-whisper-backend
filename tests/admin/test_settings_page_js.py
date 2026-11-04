@@ -35,7 +35,7 @@ def _make_editor_src(html, *builders):
         _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
         _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
         _block(html, "function makeEditor(name) {", "\n}\n"),
-        *(_block(html, f"function {b}(", "\n}\n") for b in builders),
+        *(_block(html, f"function {b}(", "\n}\n") for b in ("_el", *builders)),
     ])
 
 
@@ -256,6 +256,7 @@ def _model_pipeline_harness(html, body):
     """The MODEL_OVERRIDES per-model pipeline checklist with
     makeRuleListEditor stubbed out: `editor.opts` is what the rows call."""
     section = (_block(html, "function _helpDiv(text) {", "\n}\n")
+               + _block(html, "function _el(", "\n}\n")
                + _block(html, "  function renderPipelineSection() {"))
     return _FAKE_DOM + """
 const state = {};
@@ -416,7 +417,9 @@ def _label_editor_harness(html, body):
     editor = _block(html, "    // Membership in config.json — not the seeded flag",
                     "      body.appendChild(labelWrap);\n    }\n")
     helpers = (_block(html, "function _slugify(s) {", "\n}\n")
-               + _block(html, "function _ensureUniqueSlug(slug, existing) {", "\n}\n"))
+               + _block(html, "function _ensureUniqueSlug(slug, existing) {", "\n}\n")
+               + _block(html, "function _helpDiv(text) {", "\n}\n")
+               + _block(html, "function _el(", "\n}\n"))
     return _FAKE_DOM + helpers + """
 const name = 'PIPELINE_RULES';
 const saved = [{ name: 'my-rule', label: 'My rule', type: 'regex' }];
@@ -639,7 +642,9 @@ def test_nullable_number_survives_a_partial_number(client):
     """A number input reads '' while it holds '-' (LOG_PROB_THRESHOLD is
     always negative) or is cleared to retype; that nulled the field and
     disabled the input under the cursor."""
-    fn = _block(_html(client), "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n")
+    html = _html(client)
+    fn = (_block(html, "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n")
+          + _block(html, "function _el(", "\n}\n"))
     out = _node(_FAKE_DOM + """
 const state = { LOG_PROB_THRESHOLD: -1.0 };
 function currentValue(n) { return state[n]; }
@@ -959,7 +964,7 @@ def test_view_link_expands_the_rule_card_on_the_pipeline_page(client):
     jumped-to rule stayed collapsed."""
     html = _html(client, "/settings/pipeline")
     # The fake card below mirrors renderRow's nesting.
-    assert "cardMain.className = 'rule-main';" in html
+    assert "const cardMain = _el('div', 'rule-main');" in html
     assert "cardMain.appendChild(head);" in html
     assert "row.appendChild(cardMain);" in html
     assert "head.appendChild(headLine1);" in html
