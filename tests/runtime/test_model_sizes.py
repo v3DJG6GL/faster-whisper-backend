@@ -24,6 +24,12 @@ def _symlink_or_skip(src, dst):
         pytest.skip("no symlink support")
 
 
+def _hf_repo(tmp_path, monkeypatch, repo):
+    """Point HF_HOME at tmp_path/hf; return its hub/models--repo dir (not created)."""
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    return tmp_path / "hf" / "hub" / f"models--{repo}"
+
+
 @pytest.fixture
 def ledger(model_sizes_ledger):
     """The conftest model_sizes_ledger (PATH + the def-time path defaults)."""
@@ -216,12 +222,11 @@ def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
 
 
 def test_disk_size_sums_a_hf_repo_dir(ledger, tmp_path, monkeypatch):
-    hf = tmp_path / "hf"
-    d = hf / "hub" / "models--pyannote--speaker-diarization-3.1" / "blobs"
+    d = _hf_repo(tmp_path, monkeypatch,
+                 "pyannote--speaker-diarization-3.1") / "blobs"
     d.mkdir(parents=True)
     (d / "a").write_bytes(b"x" * 1000)
     (d / "b").write_bytes(b"x" * 2000)
-    monkeypatch.setenv("HF_HOME", str(hf))
 
     assert model_sizes.disk_size("pyannote:pyannote/speaker-diarization-3.1") == 3000
 
@@ -229,14 +234,12 @@ def test_disk_size_sums_a_hf_repo_dir(ledger, tmp_path, monkeypatch):
 def test_disk_size_counts_snapshot_symlinks_once(ledger, tmp_path, monkeypatch):
     """A hub cache's snapshots/<rev>/* are symlinks into blobs/; following
     them as well would double every weight."""
-    hf = tmp_path / "hf"
-    repo = hf / "hub" / "models--org--repo"
+    repo = _hf_repo(tmp_path, monkeypatch, "org--repo")
     (repo / "blobs").mkdir(parents=True)
     (repo / "snapshots" / "rev").mkdir(parents=True)
     (repo / "blobs" / "a").write_bytes(b"x" * 1000)
     _symlink_or_skip(os.path.join("..", "..", "blobs", "a"),
                      repo / "snapshots" / "rev" / "a")
-    monkeypatch.setenv("HF_HOME", str(hf))
 
     assert model_sizes.disk_size("pyannote:org/repo") == 1000
 
@@ -275,12 +278,11 @@ def test_disk_size_sizes_only_the_requested_gguf_quant(ledger, tmp_path,
                                                        monkeypatch):
     """An operator who ever fetched a second quant of the same repo must
     not be charged for both files when sizing either one."""
-    hf = tmp_path / "hf"
-    snap = hf / "hub" / "models--tencent--HY-MT1.5-7B-GGUF" / "snapshots" / "rev"
+    snap = _hf_repo(tmp_path, monkeypatch,
+                    "tencent--HY-MT1.5-7B-GGUF") / "snapshots" / "rev"
     snap.mkdir(parents=True)
     (snap / "HY-MT1.5-7B-Q4_K_M.gguf").write_bytes(b"x" * 1000)
     (snap / "HY-MT1.5-7B-Q8_0.gguf").write_bytes(b"x" * 2000)
-    monkeypatch.setenv("HF_HOME", str(hf))
 
     assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:Q4_K_M") == 1000
     assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:q8_0") == 2000
@@ -297,8 +299,7 @@ def test_disk_size_finds_a_gguf_quant_cached_in_an_older_snapshot(
         ledger, tmp_path, monkeypatch):
     """translation.engine resolves a quant across every cached revision, so
     a quant fetched before the repo moved on must keep its disk prior."""
-    hf = tmp_path / "hf"
-    snaps = hf / "hub" / "models--org--x" / "snapshots"
+    snaps = _hf_repo(tmp_path, monkeypatch, "org--x") / "snapshots"
     (snaps / "A").mkdir(parents=True)
     (snaps / "B").mkdir()
     (snaps / "A" / "x-Q4_K_M.gguf").write_bytes(b"x" * 1000)
@@ -306,7 +307,6 @@ def test_disk_size_finds_a_gguf_quant_cached_in_an_older_snapshot(
     # Dated by their newest file, like scan_cache_dir dates a revision.
     os.utime(snaps / "A" / "x-Q4_K_M.gguf", (1_000_000, 1_000_000))
     os.utime(snaps / "B" / "x-Q8_0.gguf", (2_000_000, 2_000_000))
-    monkeypatch.setenv("HF_HOME", str(hf))
 
     assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 1000
     assert model_sizes.disk_size("gguf:org/x:Q8_0") == 2000
@@ -326,7 +326,7 @@ def test_disk_size_sizes_the_gguf_the_loader_opens_after_a_rename(
     then the newest: a file renamed upstream (old-Q4_K_M in an old
     revision, new-Q4_K_M in main) loads fine and must keep its disk prior
     rather than read as "no single match" -> fits() size_unknown forever."""
-    repo = tmp_path / "hf" / "hub" / "models--org--x"
+    repo = _hf_repo(tmp_path, monkeypatch, "org--x")
     blobs = repo / "blobs"
     blobs.mkdir(parents=True)
     for rev, name, size, t in (("a" * 40, "old-Q4_K_M.gguf", 1000, 1_000_000),
@@ -339,7 +339,6 @@ def test_disk_size_sizes_the_gguf_the_loader_opens_after_a_rename(
         os.utime(blob, (t, t))
     (repo / "refs").mkdir()
     (repo / "refs" / "main").write_text("b" * 40)
-    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 2000
     assert model_sizes.disk_size("gguf:org/x") == 2000
@@ -357,11 +356,9 @@ def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
 
 def test_estimate_falls_back_to_disk_then_prefers_a_measurement(
         ledger, tmp_path, monkeypatch):
-    hf = tmp_path / "hf"
-    d = hf / "hub" / "models--openai--whisper-tiny"
+    d = _hf_repo(tmp_path, monkeypatch, "openai--whisper-tiny")
     d.mkdir(parents=True)
     (d / "model.bin").write_bytes(b"x" * 8192)
-    monkeypatch.setenv("HF_HOME", str(hf))
     # The whisper branch checks <DOWNLOAD_ROOT> first; the real default
     # ("/models") may hold a real whisper-tiny on a deployment box.
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
@@ -549,16 +546,14 @@ def test_a_live_disk_walk_beats_the_exact_placements_disk_row(
     only for a model no longer on disk; a measurement still wins
     outright."""
     import shutil
-    hf = tmp_path / "hf"
-    blobs = hf / "hub" / "models--org--repo" / "blobs"
+    blobs = _hf_repo(tmp_path, monkeypatch, "org--repo") / "blobs"
     blobs.mkdir(parents=True)
     (blobs / "a").write_bytes(b"x" * 3000)
-    monkeypatch.setenv("HF_HOME", str(hf))
     model_sizes.record("pyannote:org/repo", "cuda", "float32", 30_000,
                        measured=False)
     got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
     assert (got["bytes"], got["src"]) == (3000, "disk")
-    shutil.rmtree(hf)
+    shutil.rmtree(tmp_path / "hf")
     got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
     assert (got["bytes"], got["src"]) == (30_000, "disk")
     model_sizes.record("pyannote:org/repo", "cuda", "float32", 50_000)
