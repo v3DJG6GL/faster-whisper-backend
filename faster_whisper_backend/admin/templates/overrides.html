@@ -855,14 +855,7 @@ window._renderWaterfall = (function () {
         btn.dataset.val = o[0]; btn.dataset.tone = o[2]; btn.textContent = o[1];
         btn.setAttribute('role', 'radio');
         btn.setAttribute('aria-checked', o[0] === state ? 'true' : 'false');
-        btn.onclick = function () {
-          if (btn.classList.contains('active')) return;
-          grp.querySelectorAll('.status-btn').forEach(function (x) {
-            x.classList.remove('active'); x.setAttribute('aria-checked', 'false');
-          });
-          btn.classList.add('active'); btn.setAttribute('aria-checked', 'true');
-          setRule(p, r.name, o[0]);
-        };
+        btn.onclick = function () { if (window._segSelect(grp, btn)) setRule(p, r.name, o[0]); };
         grp.appendChild(btn);
       });
       row.appendChild(grp); s.body.appendChild(row);

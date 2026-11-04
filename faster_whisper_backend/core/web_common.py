@@ -170,6 +170,9 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #   7. window._downloadResponse(resp, fallback, revokeMs), saves a fetched
 #      Response as a browser download under its Content-Disposition filename,
 #      else `fallback`, and revokes the object URL after `revokeMs`.
+#   8. window._segSelect(grp, btn), the click step of a .status-btn radio group:
+#      moves .active and aria-checked to `btn`; true when the selection changed,
+#      so the caller fires its callback only then.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -195,6 +198,10 @@ SCALE_BOOTSTRAP_HEAD = (
     "a.href=url;a.download=m?m[1]:fallback;"
     "document.body.appendChild(a);a.click();a.remove();"
     "setTimeout(function(){URL.revokeObjectURL(url);},revokeMs);});};"
+    "window._segSelect=function(grp,btn){if(btn.classList.contains('active'))return false;"
+    "grp.querySelectorAll('.status-btn').forEach(function(x){"
+    "x.classList.remove('active');x.setAttribute('aria-checked','false');});"
+    "btn.classList.add('active');btn.setAttribute('aria-checked','true');return true;};"
     "(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"

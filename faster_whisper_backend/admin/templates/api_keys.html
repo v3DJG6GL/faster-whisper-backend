@@ -1362,14 +1362,7 @@
       btn.textContent = label;
       btn.setAttribute('role', 'radio');
       btn.setAttribute('aria-checked', val === current ? 'true' : 'false');
-      btn.onclick = function () {
-        if (btn.classList.contains('active')) return;
-        grp.querySelectorAll('.status-btn').forEach(function (x) {
-          x.classList.remove('active'); x.setAttribute('aria-checked', 'false');
-        });
-        btn.classList.add('active'); btn.setAttribute('aria-checked', 'true');
-        onpick(val);
-      };
+      btn.onclick = function () { if (window._segSelect(grp, btn)) onpick(val); };
       grp.appendChild(btn);
     });
     return grp;

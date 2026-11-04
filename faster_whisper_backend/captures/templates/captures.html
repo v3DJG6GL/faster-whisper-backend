@@ -1155,13 +1155,7 @@
       b.setAttribute('aria-checked', String(on));
       if (on) b.classList.add('active');
       b.addEventListener('click', function() {
-        if (b.classList.contains('active')) return;
-        buttons.forEach(function(other) {
-          other.classList.remove('active');
-          other.setAttribute('aria-checked', 'false');
-        });
-        b.classList.add('active');
-        b.setAttribute('aria-checked', 'true');
+        if (!window._segSelect(root, b)) return;
         try { onChange(opt.value); } catch (e) { /* swallow handler errors */ }
       });
       buttons.set(opt.value, b);
