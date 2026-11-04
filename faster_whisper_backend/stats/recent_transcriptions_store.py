@@ -115,19 +115,16 @@ def init_db(path: str) -> None:
             ("words_count", "words"),
             ("steps_json", "steps"), ("tokens_json", "tokens"),
             ("bigrams_json", "bigrams"), ("stages_json", "stages")))
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(recent_transcriptions)")}
-        # Pre-`source` DBs: the 'file' default makes old rows read as
-        # file-upload transcriptions.
-        if "source" not in cols:
-            conn.execute(
-                "ALTER TABLE recent_transcriptions ADD COLUMN source TEXT NOT NULL DEFAULT 'file'")
-        # Nullable, additive columns. `kind` NULL reads as a transcription
-        # (resolved via `source`); `stages` = per-stage timing list;
-        # `key_label` snapshots the key's label at record time because labels
-        # are mutable / deletable, so resolving at read time would lie about
-        # history; `wait_s` = GPU queue wait; `error_class` / `error_stage` =
-        # why and where a job failed (metrics.ERROR_CLASSES).
         store_common.add_missing_columns(conn, "recent_transcriptions", (
+            # Pre-`source` DBs: the 'file' default makes old rows read as
+            # file-upload transcriptions.
+            ("source", "TEXT NOT NULL DEFAULT 'file'"),
+            # Nullable, additive columns. `kind` NULL reads as a transcription
+            # (resolved via `source`); `stages` = per-stage timing list;
+            # `key_label` snapshots the key's label at record time because labels
+            # are mutable / deletable, so resolving at read time would lie about
+            # history; `wait_s` = GPU queue wait; `error_class` / `error_stage` =
+            # why and where a job failed (metrics.ERROR_CLASSES).
             ("kind", "TEXT"),
             ("stages", "TEXT"),
             ("key_label", "TEXT"),
