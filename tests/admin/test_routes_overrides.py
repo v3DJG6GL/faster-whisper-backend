@@ -47,6 +47,15 @@ def _bind_key(client, h, uid, kid, **config):
     return r
 
 
+def _alice_on_clinic_de(client, make_user_key, **fields):
+    """Admin headers + non-admin alice bound to one "clinic-de" profile = fields; return (h, uid)."""
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", **fields)
+    uid, _ = make_user_key("alice", is_admin=False)
+    _bind_user(client, h, uid, profiles=["clinic-de"])
+    return h, uid
+
+
 def test_overrides_page_renders(client):
     import re
     r = client.get(OV)
@@ -180,10 +189,7 @@ def test_delete_guard_refuses_null_profiles_payload(client, make_user_key):
     # sentinel: it deletes EVERY profile. The in-use guard must treat it as
     # "all profiles removed", not skip the check because the value isn't a
     # dict — otherwise a curl POST wipes in-use profiles and their locks.
-    _, _, h = _admin(make_user_key)
-    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
-    uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, profiles=["clinic-de"])
+    h, _ = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de")
 
     r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": None})
     assert r.status_code == 409
@@ -196,10 +202,7 @@ def test_settings_state_refuses_override_profiles(client, make_user_key):
     # The in-use guard lives on /settings/overrides/state only, so the
     # generic /settings/state save must not accept OVERRIDE_PROFILES at all:
     # a null or {} there would delete a bound profile and its locks.
-    _, _, h = _admin(make_user_key)
-    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
-    uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, profiles=["clinic-de"])
+    h, _ = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de")
 
     for body in ({"OVERRIDE_PROFILES": None}, {"OVERRIDE_PROFILES": {}}):
         r = client.post("/settings/state", headers=h, json=body)
@@ -416,11 +419,8 @@ def test_rename_profile_keeps_locks_while_the_cascade_commits(
     still resolve its profile (and the profile's locks), not drop the layer."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.settings import effective_config
-    _, _, h = _admin(make_user_key)
-    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
-                  locks=["DEFAULT_LANGUAGE"])
-    uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, profiles=["clinic-de"])
+    h, uid = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de",
+                                 locks=["DEFAULT_LANGUAGE"])
 
     real = api_keys_store.rename_profile_refs
     seen = {}
@@ -452,11 +452,8 @@ def test_rename_profile_failed_cascade_keeps_the_old_name(
     from faster_whisper_backend.settings import config as cfg
     from faster_whisper_backend.settings import config_store
     from faster_whisper_backend.settings import effective_config
-    _, _, h = _admin(make_user_key)
-    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
-                  locks=["DEFAULT_LANGUAGE"])
-    uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, profiles=["clinic-de"])
+    h, uid = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de",
+                                 locks=["DEFAULT_LANGUAGE"])
 
     def _locked(old, new):
         raise sqlite3.OperationalError("database is locked")
@@ -489,11 +486,8 @@ def test_profile_save_waits_for_an_in_flight_rename(client, make_user_key, monke
     from faster_whisper_backend.settings import config_store
     from faster_whisper_backend.settings import effective_config
     from tests.conftest import fake_request
-    _, _, h = _admin(make_user_key)
-    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
-                  locks=["DEFAULT_LANGUAGE"])
-    uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, profiles=["clinic-de"])
+    h, uid = _alice_on_clinic_de(client, make_user_key, DEFAULT_LANGUAGE="de",
+                                 locks=["DEFAULT_LANGUAGE"])
 
     in_cascade, release, stale_saved = (threading.Event() for _ in range(3))
     real_cascade = api_keys_store.rename_profile_refs
