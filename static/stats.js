@@ -1553,12 +1553,11 @@ const DOW_LONG = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Satur
 // Parts of the day as hour ranges (the title phrase says "Wed 12–18",
 // not "Wednesday afternoons").
 const DAY_PARTS = [['06–12', 6, 12], ['12–18', 12, 18], ['18–24', 18, 24], ['00–06', 0, 6]];
-// How many times each weekday occurs in the window (epoch day 0 was a
-// Thursday), so a cell's sum can be said per occurrence.
-function weekdayCounts(from, to) {
-  const out = [0, 0, 0, 0, 0, 0, 0];
-  if (!(from <= to)) return out;
-  for (let d = from; d <= to; d++) out[(d + 3) % 7]++;
+// How many days of the window land in each of n slots, so a cell's sum can
+// be said per occurrence.
+function tallyDays(n, from, to, slot) {
+  const out = new Array(n).fill(0);
+  for (let d = from; d <= to; d++) out[slot(d)]++;
   return out;
 }
 // The phrase in the title: one slot holding 50 %+ of the measure, else the
@@ -1606,8 +1605,7 @@ function rhythmLayout(mode, rg) {
     const [fy, fm] = ymOfDay(from), [ty, tm] = ymOfDay(to);
     const oneMonth = fy === ty && fm === tm;
     const cols = oneMonth ? new Date(Date.UTC(fy, fm + 1, 0)).getUTCDate() : 31;
-    const occ = new Array(cols).fill(0);
-    for (let d = from; d <= to; d++) occ[ymOfDay(d)[2] - 1]++;
+    const occ = tallyDays(cols, from, to, d => ymOfDay(d)[2] - 1);
     return { rows: 24, cols, rowLabel: r => ('0' + r).slice(-2), rowLong: r => ('0' + r).slice(-2) + '–' + ('0' + (r + 1)).slice(-2),
       colLabel: c => String(c + 1), colLong: c => 'the ' + ordinal(c + 1) + (oneMonth ? ' of ' + MON[fm] : ' of each month'),
       cellName: i => 'the ' + ordinal(i % cols + 1) + (oneMonth ? ' ' + MON[fm] : '') + ' ' + ('0' + Math.floor(i / cols)).slice(-2) + '–' + ('0' + (Math.floor(i / cols) + 1)).slice(-2),
@@ -1618,8 +1616,8 @@ function rhythmLayout(mode, rg) {
   if (mode === 'months') {
     const [y0] = ymOfDay(from), [y1] = ymOfDay(to);
     const years = y1 - y0 + 1;
-    const occ = new Array(years * 12).fill(0);   // days per month; 0 = month outside the window
-    for (let d = from; d <= to; d++) { const [y, m] = ymOfDay(d); occ[(y - y0) * 12 + m]++; }
+    // Days per month; 0 = month outside the window.
+    const occ = tallyDays(years * 12, from, to, d => { const [y, m] = ymOfDay(d); return (y - y0) * 12 + m; });
     return { rows: years, cols: 12, cellOcc: occ, rowLabel: r => String(y0 + r), rowLong: r => String(y0 + r),
       colLabel: c => MON[c], colLong: c => MON_LONG[c],
       cellName: i => MON[i % 12] + ' ' + (y0 + Math.floor(i / 12)),
@@ -1725,7 +1723,7 @@ function renderHours() {
   };
   // Weekday occurrences per row, read only in hours mode (how many Tuesdays,
   // for the per-weekday average); days / months count theirs in colOcc / cellOcc.
-  const occ = mode === 'hours' ? weekdayCounts(rg.from, rg.to) : new Array(L.rows).fill(1);
+  const occ = mode === 'hours' ? tallyDays(7, rg.from, rg.to, dowOfDay) : new Array(L.rows).fill(1);
   const colOcc = L.colOcc || null;           // days: how often each day of month occurs
   const cellIn = i => mode === 'days' ? colOcc[i % L.cols] > 0 : mode === 'months' ? L.cellOcc[i] > 0 : occ[Math.floor(i / L.cols)] > 0;
   const colIn = c => mode === 'days' ? colOcc[c] > 0 : mode === 'months' ? L.cellOcc.some((o, i) => o > 0 && i % L.cols === c) : true;
