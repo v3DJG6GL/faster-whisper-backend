@@ -9,6 +9,7 @@ instead of the old hard-coded 150rem / 68.75rem caps.
 import re
 
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import js_upto
 
 
 _CLASSES = {"col-read", "col-form", "col-data", "col-fluid"}
@@ -66,8 +67,7 @@ def test_scale_picker_survives_blocked_storage_and_a_stale_value():
     assert js.count("try{") >= js.count("localStorage.") > 0
     assert "var saved=null;try{saved=localStorage.getItem(KEY);}catch(e){}" in js
     assert "[].some.call(sel.options" in js
-    sync = js[js.index("function sync()"):]
-    sync = sync[:sync.index("}")]
+    sync = js_upto(js, "function sync()", "}")
     assert "var o=sel.options[sel.selectedIndex];if(cyc&&o)" in sync
     head = web_common.SCALE_BOOTSTRAP_HEAD
     assert "(function(){try{" in head and "}catch(e){}})();" in head

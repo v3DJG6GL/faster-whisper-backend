@@ -10,7 +10,7 @@ import re
 
 from faster_whisper_backend.core import home_routes
 from faster_whisper_backend.core import web_common
-from tests._page_helpers import js_body
+from tests._page_helpers import js_body, js_upto
 
 
 def _rule(css: str, selector: str) -> str:
@@ -63,8 +63,7 @@ def test_hot_pills_carry_no_dead_border_colour():
 
 def test_popovers_fall_back_when_the_positioner_is_missing():
     for js in (web_common.PICK_LIST_JS, web_common.ACTIVITY_CLUSTER_JS):
-        placer = js[js.index("function placer()"):]
-        placer = placer[:placer.index("return ctl;")]
+        placer = js_upto(js, "function placer()", "return ctl;")
         assert "window._anchorPopover" in placer
         assert "pop.removeAttribute('popover')" in placer
 
@@ -75,12 +74,10 @@ def test_activity_popover_holds_its_markup_while_a_pointer_is_down():
     cancel button and dropped the click; logout must close the popover
     through closePop so the placement controller hides too."""
     js = web_common.ACTIVITY_CLUSTER_JS
-    render = js[js.index("function renderPop()"):]
-    render = render[:render.index("pop.innerHTML = h;")]
+    render = js_upto(js, "function renderPop()", "pop.innerHTML = h;")
     assert "if (pop._held) return;" in render
     assert "pop.addEventListener('pointerdown'" in js
-    sync = js[js.index("function syncAllowed()"):]
-    sync = sync[:sync.index("var header =")]
+    sync = js_upto(js, "function syncAllowed()", "var header =")
     assert "closePop();" in sync and "pop.hidden = true" not in sync
 
 
@@ -140,5 +137,4 @@ def test_activity_cluster_stops_on_a_401_or_403():
     assert onerr.index("fetch(") < onerr.index("setTimeout(")
     opener = js[js.index("function openStream()"):js.index("es = new EventSource")]
     assert "denied) return;" in opener
-    auth = js[js.index("'whisper:auth-changed'"):]
-    assert "denied = false;" in auth[:auth.index("syncAllowed();")]
+    assert "denied = false;" in js_upto(js, "'whisper:auth-changed'", "syncAllowed();")
