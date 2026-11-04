@@ -6,9 +6,14 @@ TestClient keeps an httpx cookie jar across requests on the same instance,
 so a login() call leaves the session + CSRF cookies in place for the
 follow-up requests — exactly like a browser."""
 
+import sqlite3
+
 import pytest
 from starlette.testclient import TestClient
 
+from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend.auth import sessions_store
+from faster_whisper_backend.settings import version as settings_version
 from tests.auth._store_helpers import count_rebuilds, failing_conn, load_sessions_store_copy
 from tests.conftest import bearer
 
@@ -46,7 +51,6 @@ def test_login_open_mode_off_admin_allowlist_issues_a_session(app_module):
     # therefore run the real key exchange for that host, not the open-mode
     # no-op, or a valid key loops the gate forever with no cookie.
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
-        from faster_whisper_backend.auth import api_keys_store
         uid = api_keys_store.create_user("alice", is_admin=False)
         api_keys_store.set_user_permissions(uid, {"pages": {"stats": "all"}})
         raw, _rec = api_keys_store.create_key(uid)
@@ -138,8 +142,6 @@ def test_logout_keeps_cookies_when_the_revoke_fails(client, make_user_key,
     row stays live and logout must keep both cookies: clearing them would
     make the client's retry a cookie-less no-op 200 while the session stays
     valid for its TTL."""
-    import sqlite3
-    from faster_whisper_backend.auth import sessions_store
     tok = _login_root(client, make_user_key)
     cookie = client.cookies.get("whisper_session")
     real = sessions_store.revoke_session
@@ -167,7 +169,6 @@ def test_logout_keeps_cookies_when_the_revoke_fails(client, make_user_key,
 
 
 def test_expired_session_is_rejected(client, make_user_key):
-    from faster_whisper_backend.auth import sessions_store
     _login_root(client, make_user_key)
     assert client.get("/settings/state").status_code == 200
     # purge_expired also rebuilds the in-memory index, so the cookie stops resolving.
@@ -180,7 +181,6 @@ def test_expired_session_is_rejected(client, make_user_key):
 
 def test_active_session_does_not_move_expiry(client, make_user_key):
     import time
-    from faster_whisper_backend.auth import sessions_store
     _login_root(client, make_user_key)
     before = sessions_store._require_conn().execute(
         "SELECT created_ts, expires_ts FROM sessions"
@@ -195,7 +195,6 @@ def test_active_session_does_not_move_expiry(client, make_user_key):
 
 def _fake_clock_store(tmp_path, monkeypatch, clock):
     import types
-    from faster_whisper_backend.auth import sessions_store
     monkeypatch.setattr(sessions_store, "time",
                         types.SimpleNamespace(time=lambda: clock[0],
                                               monotonic=lambda: clock[0]))
@@ -257,7 +256,6 @@ def test_legacy_slid_session_is_capped_at_the_configured_ttl(
 
 
 def test_revoked_user_session_dies(client, make_user_key):
-    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
@@ -272,7 +270,6 @@ def test_revoked_key_session_dies(client, make_user_key):
     """Revoking the LOGIN KEY must cut its sessions, not widen them: a revoked
     key_id resolves to the empty key binding (default-allow gates), so a
     surviving session would shed the key's per-key restrictions."""
-    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
@@ -289,7 +286,6 @@ def test_pre_migration_session_without_key_still_works(client, make_user_key):
     """A session created before login stamped key_id (key_id NULL in the DB)
     keeps authenticating with the old no-key-layer behaviour."""
     from faster_whisper_backend.settings import config
-    from faster_whisper_backend.auth import sessions_store
     make_user_key("root", is_admin=True)
     uid, _raw = make_user_key("alice", pages={"quick_config": "own"})
     raw_token, _csrf = sessions_store.create_session(uid, 3600.0)  # no key_id
@@ -302,7 +298,6 @@ def test_session_use_touches_key_last_used(client, make_user_key):
     already attribute to the stamped key, so last_used_ts must move too —
     otherwise the key looks dormant on /settings/api-keys while its usage
     numbers grow."""
-    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     kid = api_keys_store.list_keys(uid)[0]["id"]
@@ -366,7 +361,6 @@ def test_cookie_mutation_resolves_the_session_once(client, make_user_key,
     # The CSRF middleware already looked the cookie up; it hands the row to
     # auth.user_from_session_cookie via request.state.session_record so the
     # dependency does not hit the sessions store a second time.
-    from faster_whisper_backend.auth import sessions_store
     tok = _login_root(client, make_user_key)
     calls = []
     real = sessions_store.lookup_session
@@ -588,8 +582,6 @@ def test_revoke_failing_on_the_counter_leaves_no_half_revoked_session(tmp_path):
     counter were two commits: a failure on the second left the row revoked
     while this worker's index still honoured the cookie. Now one transaction,
     and the local index drops the token whatever happens."""
-    import sqlite3
-
     db = str(tmp_path / "sessions.db")
     w = _worker("sessions_store_revoke_fail", db)
     raw, _csrf = w.create_session("u", 3600.0)
@@ -672,7 +664,6 @@ def test_revoke_session_bumps_config_version(client, make_user_key):
     streaming socket re-authenticates only on that counter
     (streaming.routes._refresh_ident), so without the bump it kept decoding
     for the signed-out identity."""
-    from faster_whisper_backend.settings import version as settings_version
     tok = _login_root(client, make_user_key)
     # The raw counter, not config_version(): its sibling probe also bumps for
     # the logout's revocation counter once its 0.25 s throttle has passed, so
@@ -697,9 +688,7 @@ def test_revoke_unknown_session_does_not_bump(client, make_user_key):
     """/auth/logout is unauthenticated: a junk cookie (plus a junk bearer and
     no Origin, which passes the CSRF middleware) must not move the global
     config version — every live stream re-resolves auth on each move."""
-    from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.settings import config as cfg
-    from faster_whisper_backend.settings import version as settings_version
     make_user_key("root", is_admin=True)
     v0 = settings_version._CONFIG_VERSION
     sessions_store.revoke_session("junk")
@@ -714,7 +703,6 @@ def test_failed_reinit_fails_session_lookup_closed(tmp_path):
     """A re-init whose schema step raises must not leave the previous DB's
     tokens authenticating from the stale in-memory index (mirrors
     api_keys_store's _KEY_INDEX reset + _DB_READY gate)."""
-    import sqlite3
     w = _worker("sessions_store_reinit", str(tmp_path / "a.sqlite3"))
     raw, _csrf = w.create_session("u", 3600.0)
     assert w.lookup_session(raw) is not None
@@ -737,9 +725,6 @@ def test_sibling_logout_bumps_config_version(tmp_path, monkeypatch):
     and sessions live in their own DB file, so api_keys.db's data_version
     never moves for it. The probe must watch the revocation counter too, or a
     cookie-authenticated stream on worker A keeps decoding after sign-out."""
-    from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.auth import sessions_store
-    from faster_whisper_backend.settings import version as settings_version
     a, b = _worker_pair(tmp_path, "sessions_store_gen")
     # Worker A's probe reads its own sessions module; the keys half is held still.
     monkeypatch.setattr(sessions_store, "revocation_generation",
