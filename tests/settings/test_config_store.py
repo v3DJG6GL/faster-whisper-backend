@@ -626,8 +626,7 @@ def test_save_overrides_guard_slugs_reaches_the_validator(tmp_path):
     # validator reads, and omitting it must keep the full-list probe.
     bad = _regex("legacy-boom", pattern="(n|d|nd)+#", replacement="X")
     good = _regex("harmless", pattern="Komma", replacement=",")
-    p = str(tmp_path / "config.local.json")
-    _write_json(p, {"PIPELINE_RULES": [bad, good, _terminal()]})
+    p = str(_seed_local(tmp_path, {"PIPELINE_RULES": [bad, good, _terminal()]}))
 
     edited = _regex("harmless", pattern="Komma", replacement=";")
     changed = cs.save_overrides({"PIPELINE_RULES": [bad, edited, _terminal()]},
@@ -1171,7 +1170,6 @@ def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
     monkeypatch.setattr(cs, "load_factory_rules", lambda path=None: factory)
     monkeypatch.setattr(cs, "_canonical_rule_slugs",
                         lambda: {"factory-rule", "trim-edges", "my-local-rule"})
-    p = tmp_path / "config.local.json"
     local = {
         "PIPELINE_RULES": [
             {"name": "my-local-rule", "label": "mine", "type": "regex-list",
@@ -1180,7 +1178,7 @@ def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["my-local-rule"]}},
     }
-    _write_json(p, local)
+    p = _seed_local(tmp_path, local)
     before = p.read_text(encoding="utf-8")
     with pytest.raises(ValidationError, match="my-local-rule"):
         cs.save_overrides({"PIPELINE_RULES": None}, str(p))
@@ -1723,12 +1721,10 @@ def test_origins_with_userinfo_or_junk_port_refused_on_save(tmp_path, bad):
 def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
     # A stored file from before wildcard hosts were rejected must not wipe
     # every other override at boot: only the inert wildcard entries go.
-    p = str(tmp_path / "config.local.json")
-    _write_json(p, {"TRUSTED_ORIGINS": ["https://*.example.com"],
-                    "CORS_ALLOW_ORIGINS": ["*", "https://*.example.com",
-                                           "https://app.example.com"],
-                    "BEAM_SIZE": 7})
-    out = cs.load_overrides(p)
+    out = load_saved(tmp_path, {"TRUSTED_ORIGINS": ["https://*.example.com"],
+                                "CORS_ALLOW_ORIGINS": ["*", "https://*.example.com",
+                                                       "https://app.example.com"],
+                                "BEAM_SIZE": 7})
     assert out["BEAM_SIZE"] == 7
     assert "TRUSTED_ORIGINS" not in out            # list emptied → key dropped
     assert out["CORS_ALLOW_ORIGINS"] == ["*", "https://app.example.com"]
@@ -1737,10 +1733,9 @@ def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
 def test_load_overrides_drops_blank_map_key_keeps_rest(tmp_path):
     # The old map-key pattern accepted " "; a file stored then must lose only
     # that key, not every override — and must stay saveable.
-    p = str(tmp_path / "config.local.json")
     rule = {"name": "m", "label": "m", "type": "callback:map",
             "map": {" ": "x", "Komma": ","}, "map_meta": {" ": 1, "Komma": 2}}
-    _write_json(p, {"PIPELINE_RULES": [rule, _terminal()], "BEAM_SIZE": 7})
+    p = str(_seed_local(tmp_path, {"PIPELINE_RULES": [rule, _terminal()], "BEAM_SIZE": 7}))
     out = cs.load_overrides(p)
     assert out["BEAM_SIZE"] == 7
     assert out["PIPELINE_RULES"][0]["map"] == {"Komma": ","}
