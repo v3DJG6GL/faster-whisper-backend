@@ -157,14 +157,19 @@ def test_remap_time_ms():
     assert cr._remap_time_ms(5000, segs) == 1100
 
 
+def _hi_yo(hi, yo, yo_audio_s):
+    """Members a ("hi") and b ("yo"), given each word's (start, end)."""
+    return [
+        {"id": "a", "words": [{"word": "hi", "start": hi[0], "end": hi[1]}],
+         "final": "hi", "audio_s": 2.0},
+        {"id": "b", "words": [{"word": "yo", "start": yo[0], "end": yo[1]}],
+         "final": "yo", "audio_s": yo_audio_s},
+    ]
+
+
 def test_build_merged_words_per_member(identity_align):
     cr = _routes()
-    members = [
-        {"id": "a", "words": [{"word": "hi", "start": 0.2, "end": 0.5}],
-         "final": "hi", "audio_s": 2.0},
-        {"id": "b", "words": [{"word": "yo", "start": 0.1, "end": 0.3}],
-         "final": "yo", "audio_s": 1.5},
-    ]
+    members = _hi_yo((0.2, 0.5), (0.1, 0.3), 1.5)
     trims = {
         "a": {"lead_ms": 150, "new_duration_ms": 1100,
               "segments": [[150, 550, 0], [1450, 1850, 700]]},
@@ -186,12 +191,7 @@ def test_build_merged_words_uniform_offset(identity_align):
     # Uniform-silence layout: each member carries an absolute `offset_ms`,
     # so word times are offset_ms + remapped-local (NOT cum+i*silence).
     cr = _routes()
-    members = [
-        {"id": "a", "words": [{"word": "hi", "start": 0.25, "end": 0.45}],
-         "final": "hi", "audio_s": 2.0},
-        {"id": "b", "words": [{"word": "yo", "start": 1.55, "end": 1.75}],
-         "final": "yo", "audio_s": 2.0},
-    ]
+    members = _hi_yo((0.25, 0.45), (1.55, 1.75), 2.0)
     # edge 300 leading → m0 body at 300ms; m0 body 300ms; join 300 → m1 at 900ms.
     trims = {
         "a": {"lead_ms": 200, "new_duration_ms": 300,
@@ -245,12 +245,7 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
 
 def test_build_merged_words_legacy(identity_align):
     cr = _routes()
-    members = [
-        {"id": "a", "words": [{"word": "hi", "start": 0.2, "end": 0.5}],
-         "final": "hi", "audio_s": 2.0},
-        {"id": "b", "words": [{"word": "yo", "start": 0.1, "end": 0.3}],
-         "final": "yo", "audio_s": 1.5},
-    ]
+    members = _hi_yo((0.2, 0.5), (0.1, 0.3), 1.5)
     # Empty trims → legacy flat-offset timeline using full durations.
     out = cr._build_merged_words(members, 300, member_trims={})
     assert out[0]["start"] == pytest.approx(0.2)
