@@ -336,6 +336,12 @@
   // The line's own text, for the search filter: textContent would also
   // match the "Show all · N chars" button label on a clamped line.
   const _lineText = new WeakMap();
+  function _el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
   // One line element, shared by the live tail and the "Load older" batch so
   // the two can never render the same text differently. Content always via
   // textContent — never innerHTML — which is what keeps a transcript
@@ -353,29 +359,21 @@
     // at 32 either way, except for a key long enough to overflow it. Table rows
     // (Pipeline, Segments) start with a digit or '#' and must stay whole.
     if (stage && !/\brule\b/.test(cls) && /^ {4,6}[^\s\d#]/.test(txt) && txt.length > 32) {
-      const k = document.createElement('span');
-      k.textContent = txt.slice(0, 32);
-      const v = document.createElement('span');
-      v.className = 'v';
-      v.textContent = txt.slice(32) + '\n';
+      const k = _el('span', null, txt.slice(0, 32));
+      const v = _el('span', 'v', txt.slice(32) + '\n');
       el.appendChild(k); el.appendChild(v);
       return el;
     }
     if (/\b(raw|final|before|after|pipe)\b/.test(cls) && txt.length > _CLIP_CHARS) {
-      const body = document.createElement('span');
-      body.className = 'clip';
-      body.textContent = txt;
+      const body = _el('span', 'clip', txt);
       const label = 'Show all · ' + txt.length.toLocaleString() + ' chars ▾';
-      const btn = document.createElement('button');
+      const btn = _el('button', 'clip-btn', label);
       btn.type = 'button';
-      btn.className = 'clip-btn';
-      btn.textContent = label;
       btn.addEventListener('click', () => {
         const clipped = body.classList.toggle('clip');
         btn.textContent = clipped ? label : 'Show less ▴';
       });
-      const nl = document.createElement('span');
-      nl.textContent = '\n';
+      const nl = _el('span', null, '\n');
       el.appendChild(body); el.appendChild(btn); el.appendChild(nl);
       return el;
     }
@@ -411,26 +409,21 @@
   // kind: 'seg' (segment rows, revealed 50 at a time or all at once) or
   // 'pipe' (pipeline step lines — 3-line groups, so only "show all").
   function makeFoldCtl(kind) {
-    const el = document.createElement('span');
-    el.className = 'line fold-ctl';
+    const el = _el('span', 'line fold-ctl');
     el.dataset.noun = kind === 'pipe' ? 'pipeline lines' : 'segment rows';
-    const lbl = document.createElement('span');
-    lbl.textContent = '    ▸ more ' + el.dataset.noun;
+    const lbl = _el('span', null, '    ▸ more ' + el.dataset.noun);
     el.appendChild(lbl);
     if (kind !== 'pipe') {
-      const b50 = document.createElement('button');
+      const b50 = _el('button', null, 'show ' + _SEG_STEP);
       b50.type = 'button';
-      b50.textContent = 'show ' + _SEG_STEP;
       b50.addEventListener('click', () => _unfold(el, _SEG_STEP));
       el.appendChild(b50);
     }
-    const ball = document.createElement('button');
+    const ball = _el('button', null, 'show all');
     ball.type = 'button';
-    ball.textContent = 'show all';
     ball.addEventListener('click', () => _unfold(el, 1e9));
     el.appendChild(ball);
-    const nl = document.createElement('span');
-    nl.textContent = '\n';
+    const nl = _el('span', null, '\n');
     el.appendChild(nl);
     return el;
   }
