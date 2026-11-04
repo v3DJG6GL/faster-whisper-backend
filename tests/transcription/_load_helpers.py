@@ -2,6 +2,10 @@
 (test_model_leases, test_model_load_timing).
 
 Import as ``from tests.transcription._load_helpers import ...``.
+
+The conftest reset hook already gives each test empty caches, no leases and
+a fresh _model_load_lock; only a test that runs a second asyncio.run() after
+a contended one needs its own lock.
 """
 
 import sys

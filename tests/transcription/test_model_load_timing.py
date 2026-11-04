@@ -22,9 +22,6 @@ from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
 def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
     _stub_load(monkeypatch, max_loaded=4)
-    # A throwaway lock: contending the production global inside this test's
-    # own asyncio.run() loop would leave it bound to a closed loop.
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     recorded = {}
     monkeypatch.setattr(tx_models.metrics, "record_model_load",
                         lambda name, secs: recorded.__setitem__(name, secs))
@@ -49,7 +46,6 @@ def test_load_in_progress_covers_the_conversion_outside_the_lock(monkeypatch):
     _model_load_lock free; load_in_progress() must still report it, or a
     preload is admitted and the job's constructor queues behind the warm-up."""
     _stub_load(monkeypatch, max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     seen = []
 
     async def _converting(name):
@@ -78,7 +74,6 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
     the lease the cancelled caller will never release is given back."""
     import threading
     _stub_load(monkeypatch, max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     entered, go = threading.Event(), threading.Event()
     real_register = model_registry.register_loaded_model
 
@@ -122,7 +117,6 @@ def test_cancel_while_register_is_queued_still_registers(monkeypatch):
     import concurrent.futures
     import threading
     _stub_load(monkeypatch, max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     gate, queued = threading.Event(), []
 
     def _record_then_busy_the_pool(name, secs):
@@ -167,7 +161,6 @@ def test_cancelled_load_holds_the_lock_until_its_queued_register_lands(
     import concurrent.futures
     import threading
     _stub_load(monkeypatch, max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     gate, queued = threading.Event(), []
 
     def _record_then_busy_the_pool(name, secs):
@@ -222,7 +215,6 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
         go.wait(5)
         return FakeModel()
     _stub_load(monkeypatch, whisper_model=_slow_model, max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
 
     async def run():
         a = asyncio.create_task(tx_models._get_or_load_model("x", lease=True))
@@ -263,7 +255,6 @@ def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
     import huggingface_hub
     from faster_whisper_backend.runtime import download_progress
     _stub_load(monkeypatch, max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
                         raising=False)
     seen = {}
@@ -303,7 +294,6 @@ def test_hardware_change_during_a_queued_load_reaches_the_constructor(
     _stub_load(monkeypatch,
                whisper_model=lambda path, **kw: built.append(kw) or FakeModel(),
                max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "MODEL_DEVICE", "cpu", raising=False)
 
     async def run():
@@ -327,7 +317,6 @@ def test_vram_delta_is_sampled_on_the_load_device_index(monkeypatch):
     sampling GPU 0 would record ~0 (or another process's usage) as the
     model's measured footprint."""
     _stub_load(monkeypatch, max_loaded=4)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "DEVICE_INDEX", 1, raising=False)
     reads = {0: iter([500, 500]), 1: iter([1000, 4000])}
     monkeypatch.setattr(tx_models.system_stats, "gpu_mem_used_bytes",
@@ -363,7 +352,6 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
     refused, so no unload is logged and no full gc runs on the loop."""
     import gc
     _register_stale("a")
-    tx_models._model_leases.pop("a", None)
     seen = {"n": 0}
 
     def _is_warm(name):
@@ -406,7 +394,6 @@ def test_evictor_prescan_skips_a_leased_model(monkeypatch, caplog):
 def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
     import gc
     _register_stale("b")
-    tx_models._model_leases.pop("b", None)
     collected = []
     monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     with caplog.at_level(logging.INFO, logger="whisper-api"):
@@ -433,7 +420,6 @@ def test_evictor_does_not_cold_import_torch(monkeypatch):
     libtorch + CUDA in on the event loop just to empty a cache it never had."""
     import gc
     _register_stale("c")
-    tx_models._model_leases.pop("c", None)
     monkeypatch.setattr(gc, "collect", lambda *a: None)
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     recorder = _ImportRecorder()
@@ -447,7 +433,6 @@ def test_evictor_does_not_cold_import_torch(monkeypatch):
 def test_evictor_empties_an_already_imported_torch_cache(monkeypatch):
     import gc
     _register_stale("d")
-    tx_models._model_leases.pop("d", None)
     monkeypatch.setattr(gc, "collect", lambda *a: None)
     emptied = []
     torch = types.ModuleType("torch")

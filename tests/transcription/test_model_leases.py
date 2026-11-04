@@ -22,16 +22,6 @@ from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
 
-@pytest.fixture(autouse=True)
-def _clean_cache():
-    """These cases seed the model cache directly; each starts and ends with it empty."""
-    tx_models._loaded_models.clear()
-    model_registry._loaded_models.clear()
-    yield
-    tx_models._loaded_models.clear()
-    model_registry._loaded_models.clear()
-
-
 def test_drop_refuses_while_leased():
     _register("a", leases=1)
     assert tx_models._drop_loaded_model("a") is False
@@ -486,7 +476,6 @@ def test_a_failed_register_leaves_no_lease_a_cache_hit_took_meanwhile(
     # holder's release must not leave a count behind that pins the next load
     # of "a" (a miss for "b" overflowed the cap until restart).
     _stub_load(monkeypatch, max_loaded=1)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     entered, go = threading.Event(), threading.Event()
     real_register = model_registry.register_loaded_model
 
