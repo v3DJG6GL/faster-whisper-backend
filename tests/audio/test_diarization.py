@@ -11,6 +11,8 @@ import pytest
 
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import hf_cache
+from tests._transcription_helpers import (
+    assert_cancelled_load_listed as _assert_cancelled_load_listed)
 from tests._transcription_helpers import blocked_register as _blocked_register
 from tests._transcription_helpers import (
     cancel_while_register_held as _cancel_while_register_held)
@@ -530,18 +532,13 @@ def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch
     """The register thread writes "pyannote:<id>" even when the awaiting
     caller is cancelled; with no cached pipeline that row was a phantom
     _drop_locked (early return on no pipeline) never unregistered."""
-    from faster_whisper_backend.runtime import model_registry
     _diar_model(monkeypatch)
     pipe = object()
     monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: pipe)
     entered, gate = _blocked_register(monkeypatch)
     _cancel_while_register_held(
         lambda: diarization._get_pipeline(lease=True), entered, gate)
-    assert diarization._pipeline is pipe
-    assert diarization._leases == {}   # the cancelled caller never releases
-    assert "pyannote:A" in model_registry._loaded_models
-    assert diarization._drop_locked() is True
-    assert "pyannote:A" not in model_registry._loaded_models
+    _assert_cancelled_load_listed(diarization, "_pipeline", pipe, "pyannote:A")
 
 
 def test_cancel_while_register_is_queued_still_lists_the_pipeline(monkeypatch):
@@ -549,17 +546,12 @@ def test_cancel_while_register_is_queued_still_lists_the_pipeline(monkeypatch):
     its workers busy the register write is still queued when the cancel
     lands, and a plain cancelled to_thread future drops the queued item.
     The cached pipeline must still get its "pyannote:<id>" row."""
-    from faster_whisper_backend.runtime import model_registry
     _diar_model(monkeypatch)
     pipe = object()
     loaded = _record_loads(monkeypatch, diarization, lambda: pipe)
     _cancel_with_register_queued(
         monkeypatch, loaded, lambda: diarization._get_pipeline(lease=True))
-    assert diarization._pipeline is pipe
-    assert diarization._leases == {}   # the cancelled caller never releases
-    assert "pyannote:A" in model_registry._loaded_models
-    assert diarization._drop_locked() is True
-    assert "pyannote:A" not in model_registry._loaded_models
+    _assert_cancelled_load_listed(diarization, "_pipeline", pipe, "pyannote:A")
 
 
 def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):

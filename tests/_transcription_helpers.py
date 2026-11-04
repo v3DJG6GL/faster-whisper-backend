@@ -2,7 +2,7 @@
 (the stub upload, a plain / verbose_json post, a 200-checked body fetch, a profile-bound non-admin key,
 the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a _load_blocking recorder, a gated model_registry write, a cancel while that
-write is held or queued).
+write is held or queued, its post-condition).
 Import as ``from tests._transcription_helpers import ...``."""
 
 import io
@@ -199,3 +199,15 @@ def cancel_while_register_held(make_coro, entered, gate):
         asyncio.run(_main())
     finally:
         gate.set()
+
+
+def assert_cancelled_load_listed(module, attr, obj, row):
+    """After a cancel during a load's register: `obj` stays cached under
+    module.`attr`, its stats `row` is listed, the cancelled caller holds no
+    lease, and the drop takes the row with it."""
+    from faster_whisper_backend.runtime import model_registry
+    assert getattr(module, attr) is obj
+    assert module._leases == {}
+    assert row in model_registry._loaded_models
+    assert module._drop_locked() is True
+    assert row not in model_registry._loaded_models

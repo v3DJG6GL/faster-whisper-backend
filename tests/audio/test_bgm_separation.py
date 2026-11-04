@@ -10,7 +10,7 @@ import pytest
 from faster_whisper_backend.audio import bgm_separation
 from tests._transcription_helpers import (
     bind_profile, blocked_register, cancel_while_register_held,
-    cancel_with_register_queued, record_loads)
+    assert_cancelled_load_listed, cancel_with_register_queued, record_loads)
 from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 
@@ -425,18 +425,13 @@ def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatc
     request is cancelled; the separator must be cached by then, or the row
     is a phantom _drop_locked (which returns early on no separator) never
     unregisters."""
-    from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch)
     sep = object()
     monkeypatch.setattr(bgm_separation, "_load_blocking", lambda m, d: sep)
     entered, gate = blocked_register(monkeypatch)
     cancel_while_register_held(
         lambda: bgm_separation._get_separator("Foo", lease=True), entered, gate)
-    assert bgm_separation._separator is sep
-    assert bgm_separation._leases == {}   # dropped for the caller, which never got it
-    assert "uvr:Foo.onnx" in model_registry._loaded_models
-    assert bgm_separation._drop_locked() is True
-    assert "uvr:Foo.onnx" not in model_registry._loaded_models
+    assert_cancelled_load_listed(bgm_separation, "_separator", sep, "uvr:Foo.onnx")
 
 
 def test_cancel_while_register_is_queued_still_lists_the_separator(monkeypatch):
@@ -444,18 +439,13 @@ def test_cancel_while_register_is_queued_still_lists_the_separator(monkeypatch):
     still queued when the cancel lands, and a plain cancelled to_thread
     future drops the queued item. The cached separator must still get its
     stats row."""
-    from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch)
     sep = object()
     loaded = record_loads(monkeypatch, bgm_separation, lambda: sep)
     cancel_with_register_queued(
         monkeypatch, loaded,
         lambda: bgm_separation._get_separator("Foo", lease=True))
-    assert bgm_separation._separator is sep
-    assert bgm_separation._leases == {}   # dropped for the caller, which never got it
-    assert "uvr:Foo.onnx" in model_registry._loaded_models
-    assert bgm_separation._drop_locked() is True
-    assert "uvr:Foo.onnx" not in model_registry._loaded_models
+    assert_cancelled_load_listed(bgm_separation, "_separator", sep, "uvr:Foo.onnx")
 
 
 def test_failed_reload_redoes_the_free_an_orphan_deferred_to_it(monkeypatch):
