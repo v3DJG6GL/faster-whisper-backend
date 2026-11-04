@@ -43,6 +43,11 @@ function _reEl(tag, cls, text) {
   if (text != null) e.textContent = text;
   return e;
 }
+function _reBtn(cls, text) {
+  const b = _reEl('button', cls, text);
+  b.type = 'button';
+  return b;
+}
 
 const _PIPELINE_TYPES = [
   { type: 'regex-list',                  pill: 'regex[]' },
@@ -152,8 +157,7 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   vi.addEventListener('input', rebuild);
   _bindEnterCommit(ki, onEnter);
   _bindEnterCommit(vi, onEnter);
-  const del = document.createElement('button');
-  del.type = 'button'; del.textContent = '×';
+  const del = _reBtn('', '×');
   del.addEventListener('click', () => {
     const parent = tr.parentNode;
     tr.remove();
@@ -265,8 +269,7 @@ const MOVE_CHEV_UP = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="no
 const MOVE_CHEV_DOWN = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 5.5 8 10l4.5-4.5"/></svg>';
 // One ↑ (delta < 0) or ↓ move button; click runs onMove(delta) unless disabled.
 function _moveBtn(cls, delta, onMove) {
-  const b = document.createElement('button');
-  b.type = 'button'; b.className = cls;
+  const b = _reBtn(cls);
   b.innerHTML = delta < 0 ? MOVE_CHEV_UP : MOVE_CHEV_DOWN;
   b.title = delta < 0 ? 'Move up one position' : 'Move down one position';
   b.setAttribute('aria-label', b.title);
@@ -397,8 +400,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   ni.value = entry.note || '';  // textarea keeps real newlines — no _esc
   ni.addEventListener('input', () => { rebuild(); paintNote(); });
   noteWrap.appendChild(ni);
-  const noteBtn = document.createElement('button');
-  noteBtn.type = 'button'; noteBtn.className = 'rl-notebtn';
+  const noteBtn = _reBtn('rl-notebtn');
   let noteOpen = !!entry.note;
   function paintNote() {
     noteWrap.style.display = noteOpen ? 'block' : 'none';
@@ -407,8 +409,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     noteBtn.classList.toggle('has-note', has);
   }
   noteBtn.addEventListener('click', () => { noteOpen = !noteOpen; paintNote(); });
-  const del = document.createElement('button');
-  del.type = 'button'; del.className = 'rl-del'; del.textContent = '×';
+  const del = _reBtn('rl-del', '×');
   del.title = 'delete entry';
   del.addEventListener('click', () => {
     const parent = row.parentNode;
@@ -540,9 +541,7 @@ function renderTypeEditor(rule, commitData, opts) {
     });
     box.appendChild(entriesBox);
     _renumberEntries(entriesBox);
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.textContent = '+ add entry';
+    const addBtn = _reBtn('', '+ add entry');
     addBtn.style.flex = '1';
     addBtn.addEventListener('click', () => {
       if (!rule.entries) rule.entries = [];
@@ -603,9 +602,7 @@ function renderTypeEditor(rule, commitData, opts) {
     const hiddenCount = (collapseAfter && rows.length > collapseAfter)
       ? rows.length - collapseAfter : 0;
     if (hiddenCount) {
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'map-toggle';
+      const toggle = _reBtn('map-toggle');
       let shown = false;
       const paint = () => {
         tbl.classList.toggle('show-all', shown);
@@ -625,9 +622,7 @@ function renderTypeEditor(rule, commitData, opts) {
       tbl.appendChild(tr);
     });
     box.appendChild(tbl);
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.textContent = '+ add entry';
+    const addBtn = _reBtn('', '+ add entry');
     addBtn.style.flex = '1';
     addBtn.addEventListener('click', () => {
       // Append directly (no re-render) so the row body stays expanded and
