@@ -177,8 +177,7 @@ def test_coarse_pointer_input_font_floor_beats_component_rules():
     specific component rule (#login-gate #lg-input, header .subbar input,
     .tag-picker-input ...), so focusing them on an iPhone still zoomed."""
     css = web_common.NAV_CSS
-    start = css.index("@media (pointer: coarse) {")
-    block = css[start:css.index("\n}\n", start)]
+    block = js_upto(css, "@media (pointer: coarse) {", "\n}\n")
     rule = re.search(r"\n  input, select, textarea \{([^}]*)\}", block).group(1)
     assert "font-size: max(1rem, 16px) !important" in rule
     # the overriding component rules this floor has to win against

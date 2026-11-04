@@ -9,6 +9,7 @@ import re
 from faster_whisper_backend.core import home_routes
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.paths import REPO_ROOT
+from tests._page_helpers import js_upto
 
 _RECT = re.compile(r'<rect\b([^>]*)/?>')
 _ATTR = re.compile(r'\b(x|y|width|height|rx|fill|stroke|stroke-width)="([^"]*)"')
@@ -32,11 +33,6 @@ def _read(*rel):
         return fh.read()
 
 
-def _mark(text: str, start_marker: str) -> str:
-    i = text.index(start_marker)
-    return text[i:text.index("</svg>", i)]
-
-
 def test_every_inline_brand_mark_copy_has_the_canonical_geometry():
     canonical = _geometry(_read("docs", "brand", "icon.svg"))
     rects, stops, skew = canonical
@@ -45,9 +41,10 @@ def test_every_inline_brand_mark_copy_has_the_canonical_geometry():
     login_gate_js = web_common.OPEN_MODE_BANNER_JS.replace("'\n  +", "").replace("'", "")
     copies = {
         "header (_BRAND_MARK_SVG)": web_common._BRAND_MARK_SVG,
-        "login gate": _mark(login_gate_js, 'class="lg-mark"'),
-        "hub hero": _mark(home_routes._HUB_HTML, 'class="mark"'),
-        "docs/brand/logo.html": _mark(_read("docs", "brand", "logo.html"), '<svg viewBox="0 0 120 120"'),
+        "login gate": js_upto(login_gate_js, 'class="lg-mark"', "</svg>"),
+        "hub hero": js_upto(home_routes._HUB_HTML, 'class="mark"', "</svg>"),
+        "docs/brand/logo.html": js_upto(
+            _read("docs", "brand", "logo.html"), '<svg viewBox="0 0 120 120"', "</svg>"),
         # The generator of the committed logo-{dark,light}.svg.
         "docs/brand/gen-logo-svg.py": _read("docs", "brand", "gen-logo-svg.py")
         .split('BE_MARK = """', 1)[1].split('"""', 1)[0],
