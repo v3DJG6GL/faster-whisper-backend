@@ -6,6 +6,7 @@ import re
 import pytest
 
 from tests._page_helpers import js_upto
+from tests.conftest import bearer
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
@@ -309,8 +310,6 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
     save must report 0. It also keeps the page's silent re-apply kick (fired on
     captures_count > 0) shut, since POST /reapply-rules is admin-only and would
     leave a permanent "Re-apply failed: HTTP 403" strip."""
-    from tests.conftest import bearer
-
     slug = _expose_first_regex_list_rule(app_module)
     app_module.cfg.CAPTURES_RECORDING_ENABLED = True
 
@@ -347,8 +346,6 @@ def test_state_carries_locked_and_role_for_nonadmin(client, app_module,
     """The /quick-config page renders a locked rule read-only for a non-admin,
     so the state payload must carry both signals it gates on: `locked` on each
     rule and the caller's `role`."""
-    from tests.conftest import bearer
-
     slug = _expose_first(app_module, "regex-list", locked=True)
     assert slug is not None
 
@@ -430,8 +427,6 @@ def test_hidden_rule_validation_error_is_fully_redacted(
     """A 422 caused by a rule the caller may not see must not leak the slug,
     its list position, or its rule type — a plain Pydantic field error carries
     all three in its dotted loc."""
-    from tests.conftest import bearer
-
     slug = _expose_first_regex_list_rule(app_module)
     assert slug is not None
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
@@ -463,8 +458,6 @@ def test_hidden_rule_guard_error_keeps_sentinel_for_page(
     dropped the only token the page's doSave keys on — so the admin rule's
     regex error was shown verbatim as an actionable toast. The sentinel must
     survive; the ordinal and the slug must not."""
-    from tests.conftest import bearer
-
     slug = _expose_first_regex_list_rule(app_module)
     assert slug is not None
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
@@ -786,7 +779,7 @@ def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import routes as qc
     from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
-    from tests.conftest import bearer, fake_request
+    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "all"})
@@ -832,7 +825,7 @@ def test_stream_recent_rechecks_the_caller_before_the_replay(
 
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import routes as qc
-    from tests.conftest import bearer, fake_request
+    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "all"})
@@ -896,8 +889,6 @@ def test_concurrent_patches_do_not_lose_an_update(client, app_module,
 def test_state_reported_chips_carry_the_stored_comment(client, make_user_key):
     """The page seeds the report form from reported_chips; without the comment
     a resubmit from the re-opened form overwrote it with an empty textarea."""
-    from tests.conftest import bearer
-
     _uid, raw = make_user_key("alice", is_admin=True)
     h = bearer(raw)
     r = client.post("/quick-config/reports/api/submit",
@@ -913,7 +904,6 @@ def test_state_lists_the_callers_closed_reports(client, make_user_key):
     them a resolved report kept its badge, and Remove deleted the triaged
     row."""
     from faster_whisper_backend.reports import store as reports_store
-    from tests.conftest import bearer
 
     make_user_key("admin", is_admin=True)  # lock down: no open-mode user
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
@@ -935,8 +925,6 @@ def test_state_lists_the_callers_closed_reports(client, make_user_key):
 def test_state_carries_the_callers_user_id(client, make_user_key):
     """The page keys its localStorage "reported" hint on it, so one account
     on a shared browser never reads another's."""
-    from tests.conftest import bearer
-
     make_user_key("admin", is_admin=True)  # lock down: no open-mode user
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     body = client.get("/quick-config/state", headers=bearer(raw)).json()
