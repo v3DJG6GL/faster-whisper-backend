@@ -489,7 +489,7 @@ def test_package_unknown_id_404_and_disabled_403_and_no_ffmpeg_503(
     monkeypatch.setattr(pk, "ffmpeg_capabilities",
                         lambda: pk.FfmpegCaps(False, False, False, "no ffmpeg binary", None))
     r = _package(client, _ID, {"container": "mkv"})
-    assert r.status_code == 503 and "ffmpeg" in r.json()["detail"]
+    _assert_refused(r, 503, "ffmpeg")
     body = client.get("/v1/me").json()
     assert body["media_package_enabled"] is False
     assert body["media_package"]["reason"] == "no ffmpeg binary"
@@ -526,10 +526,9 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
             assert time.monotonic() < deadline, "the first package never started"
             time.sleep(0.02)
         r = _package(client, mid, {"container": "mkv"})
-        assert r.status_code == 429
         # The in-flight guard's wording — the rate limiter's 429 also says
         # "video export".
-        assert "running" in r.json()["detail"]
+        _assert_refused(r, 429, "running")
     finally:
         if os.path.exists(latch):
             os.unlink(latch)

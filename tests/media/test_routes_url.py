@@ -744,7 +744,7 @@ def test_on_demand_audio_errors(client, url_enabled, monkeypatch):
     _download_raises(monkeypatch,
                      UrlDownloadError("this media is unavailable or has been removed"))
     r = client.post("/v1/audio/url-media/audio", json={"url": _URL})
-    assert r.status_code == 400 and "unavailable" in r.json()["detail"]
+    _assert_refused(r, 400, "unavailable")
 
     _download_raises(monkeypatch, url_download.UrlCancelled())
     assert client.post("/v1/audio/url-media/audio",
@@ -841,7 +841,7 @@ def test_subtitles_happy_path_never_leaks_the_source(client, subs_enabled, caplo
 def test_subtitles_probe_rejection_is_400(client, subs_enabled, monkeypatch):
     _probe_raises(monkeypatch, UrlDownloadError("this video is private"))
     r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
-    assert r.status_code == 400 and "private" in r.json()["detail"]
+    _assert_refused(r, 400, "private")
 
 
 @pytest.mark.parametrize("route,extra,detail", [
@@ -888,14 +888,14 @@ def _before_detect(monkeypatch, model, hook):
 def test_language_check_undecodable_audio_is_400(client, url_enabled):
     # url_enabled's download writes bytes no demuxer reads.
     r = client.post("/v1/audio/url-language", json={"url": _URL})
-    assert r.status_code == 400 and "decoded" in r.json()["detail"]
+    _assert_refused(r, 400, "decoded")
 
 
 def test_language_check_refuses_a_bad_model_before_downloading(
         client, url_enabled, downloads, monkeypatch):
     monkeypatch.setattr(url_enabled.cfg, "ALLOWED_MODELS", {"small"}, raising=False)
     r = client.post("/v1/audio/url-language", json={"url": _URL, "model": "large-v3"})
-    assert r.status_code == 400 and "allowed list" in r.json()["detail"]
+    _assert_refused(r, 400, "allowed list")
     assert downloads == [] and url_media_store._REG == {}
 
 
@@ -903,7 +903,7 @@ def test_language_check_refuses_a_dot_en_model_before_downloading(
         client, url_enabled, downloads, monkeypatch):
     monkeypatch.setattr(url_enabled.cfg, "ALLOWED_MODELS", {"small.en"}, raising=False)
     r = client.post("/v1/audio/url-language", json={"url": _URL, "model": "small.en"})
-    assert r.status_code == 400 and "multilingual" in r.json()["detail"]
+    _assert_refused(r, 400, "multilingual")
     assert downloads == [] and url_media_store._REG == {}
 
 
@@ -911,7 +911,7 @@ def test_language_check_english_only_model_is_400(client, url_enabled, lang_chec
     import types
     lang_check.model = types.SimpleNamespace(is_multilingual=False)
     r = client.post("/v1/audio/url-language", json={"url": _URL})
-    assert r.status_code == 400 and "multilingual" in r.json()["detail"]
+    _assert_refused(r, 400, "multilingual")
     assert lang_check.released == [url_enabled.cfg.DEFAULT_MODEL]
 
 
@@ -1077,7 +1077,7 @@ _ROUTE_BODIES = {"url-preview": {}, "url-subtitles": {"tracks": ["m-de"]},
 @pytest.mark.parametrize("route", list(_ROUTE_BODIES))
 def test_route_403_when_url_download_is_off(client, route):
     r = client.post(f"/v1/audio/{route}", json={"url": _URL, **_ROUTE_BODIES[route]})
-    assert r.status_code == 403 and "not enabled" in r.json()["detail"]
+    _assert_refused(r, 403, "not enabled")
 
 
 @pytest.mark.parametrize("route,switch,what", [
@@ -1089,7 +1089,7 @@ def test_route_403_when_its_switch_is_off(client, url_enabled, monkeypatch,
                                           route, switch, what):
     monkeypatch.setattr(url_enabled.cfg, switch, False, raising=False)
     r = client.post(f"/v1/audio/{route}", json={"url": _URL, **_ROUTE_BODIES[route]})
-    assert r.status_code == 403 and what in r.json()["detail"]
+    _assert_refused(r, 403, what)
 
 
 @pytest.mark.parametrize("route,knob,setup", [
