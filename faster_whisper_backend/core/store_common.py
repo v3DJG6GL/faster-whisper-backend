@@ -264,8 +264,11 @@ def close_quietly(conn: sqlite3.Connection | None) -> None:
             pass
 
 
-def unlink_quietly(path: str) -> None:
-    """Best-effort os.unlink: any OSError (incl. already gone) is ignored."""
+def unlink_quietly(path: str | None) -> None:
+    """Best-effort os.unlink: no path is a no-op; any OSError (incl. already
+    gone) is ignored."""
+    if not path:
+        return
     try:
         os.unlink(path)
     except OSError:

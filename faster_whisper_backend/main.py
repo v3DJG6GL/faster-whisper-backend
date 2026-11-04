@@ -2360,9 +2360,8 @@ async def transcribe(
                                     _log_safe(str(_te)),
                                     "skipping separation" if _refused else
                                     "separator will decode the original")
-                                if _sep_wav is not None:
-                                    store_common.unlink_quietly(_sep_wav)
-                                    _sep_wav = None
+                                store_common.unlink_quietly(_sep_wav)
+                                _sep_wav = None
                                 if _refused:
                                     # Never hand a refused input to the
                                     # separator: its own decoders (libsndfile,
@@ -2400,8 +2399,7 @@ async def transcribe(
                             # The intermediate WAV is ours alone — unlink it
                             # even on cancel/failure (it's ~10× the source;
                             # leaking one per request adds up fast).
-                            if _sep_wav is not None:
-                                store_common.unlink_quietly(_sep_wav)
+                            store_common.unlink_quietly(_sep_wav)
                         store_common.unlink_quietly(tmp_path)
                         tmp_path = _vocals_path
                         logger.info("[bgm] separated in %.1fs",
@@ -3451,10 +3449,8 @@ async def transcribe(
                     _close_after_attach = True
                 else:
                     tx_progress._progress_close(_pid)
-            if tmp_path:
-                store_common.unlink_quietly(tmp_path)
-            if _retained_upload:
-                store_common.unlink_quietly(_retained_upload)
+            store_common.unlink_quietly(tmp_path)
+            store_common.unlink_quietly(_retained_upload)
             # URL flow: the private download dir (partials, fragments) goes
             # on every path — cancel, 4xx, 500 included. The retained copy
             # (url_media_store) has its own TTL lifecycle. Off the loop and

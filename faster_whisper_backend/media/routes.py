@@ -683,8 +683,7 @@ async def upload_media(request: Request,
             raise HTTPException(status_code=507,
                                 detail="the server's media store is full")
     finally:
-        if part:
-            store_common.unlink_quietly(part)
+        store_common.unlink_quietly(part)
     logger.info("[package] upload retained (%.1f MB, %s)", received / 1e6, ext)
     return {"media_id": media_id, "expires_at": url_media_store.expires_at_unix(media_id),
             "bytes": received}
