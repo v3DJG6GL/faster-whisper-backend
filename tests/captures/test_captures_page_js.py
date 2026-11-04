@@ -2562,21 +2562,26 @@ console.log(JSON.stringify([
                      ("你好", "「是」"))]
 
 
+# A word in the strip at content row `top`; `calls` logs its scrollIntoView.
+_STRIP_WORD_JS = r"""
+var calls = [];
+function word(top, i) {
+  return { classList: { add: function() {}, remove: function() {} },
+    scrollIntoView: function(o) { calls.push([i, o.block, o.inline]); },
+    getBoundingClientRect: function() {
+      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
+    } };
+}
+"""
+
+
 @needs_node
 def test_karaoke_highlight_scrolls_only_the_word_strip(page, tmp_path):
     """The active word was brought on screen with scrollIntoView, which also
     scrolls the page and the merge modal: a playing card pulled the view
     back to itself on every word."""
     fns = _js_functions(page, "_scrollStripTo", "_setActiveWord")
-    out = _run_node(tmp_path, fns + r"""
-var calls = 0;
-function word(top) {
-  return { classList: { add: function() {}, remove: function() {} },
-    scrollIntoView: function() { calls++; },
-    getBoundingClientRect: function() {
-      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
-    } };
-}
+    out = _run_node(tmp_path, fns + _STRIP_WORD_JS + r"""
 // The strip shows content rows 0..100 when scrollTop is 0.
 var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
   getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
@@ -2587,7 +2592,7 @@ var tops = [];
   _setActiveWord(state, i);
   tops.push(strip.scrollTop);
 });
-console.log(JSON.stringify([calls, tops]));
+console.log(JSON.stringify([calls.length, tops]));
 """)
     # Visible: no scroll; below the strip: down to its bottom edge; above
     # the strip's top: back up to it; visible again: left alone.
@@ -2600,20 +2605,12 @@ def test_keyboard_cursor_scrolls_only_the_word_strip(page, tmp_path):
     Save / Regenerate / Lock reply repaints the cursor: a user who had
     scrolled away from the card was pulled back to it."""
     fns = _js_functions(page, "_scrollStripTo", "_redrawCursor")
-    out = _run_node(tmp_path, fns + r"""
-var calls = 0;
-function word(top) {
-  return { classList: { add: function() {}, remove: function() {} },
-    scrollIntoView: function() { calls++; },
-    getBoundingClientRect: function() {
-      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
-    } };
-}
+    out = _run_node(tmp_path, fns + _STRIP_WORD_JS + r"""
 var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
   getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
 var state = { stripEl: strip, cursorIdx: 1, wordEls: [word(510), word(650)] };
 _redrawCursor(state);
-console.log(JSON.stringify([calls, strip.scrollTop]));
+console.log(JSON.stringify([calls.length, strip.scrollTop]));
 """)
     assert out == [0, 69]
 
@@ -2625,19 +2622,11 @@ def test_keyboard_cursor_move_scrolls_the_page_to_the_cursor(page, tmp_path):
     partly below the window the cursor moved off screen and the page did
     not follow."""
     fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor")
-    out = _run_node(tmp_path, fns + r"""
-var calls = [];
-function word(i, top) {
-  return { classList: { add: function() {}, remove: function() {} },
-    scrollIntoView: function(o) { calls.push([i, o.block, o.inline]); },
-    getBoundingClientRect: function() {
-      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
-    } };
-}
+    out = _run_node(tmp_path, fns + _STRIP_WORD_JS + r"""
 var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
   getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
 var state = { stripEl: strip, cursorIdx: 0,
-  wordEls: [word(0, 510), word(1, 560), word(2, 650)] };
+  wordEls: [word(510, 0), word(560, 1), word(650, 2)] };
 _moveCursor(state, 1);
 _moveCursor(state, 2);
 console.log(JSON.stringify([calls, strip.scrollTop]));
@@ -2651,47 +2640,22 @@ def test_first_focus_of_the_strip_leaves_the_page_alone(page, tmp_path):
     the cursor on word 0 with a page scroll: with the strip's top above the
     window the page jumped before mouseup, and the click on a word further
     down was lost."""
-    fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor",
-                        "_bindStripKeyboard")
-    out = _run_node(tmp_path, fns + r"""
-var calls = 0, handlers = {};
-function word() {
-  return { classList: { add: function() {}, remove: function() {} },
-    scrollIntoView: function() { calls++; },
-    getBoundingClientRect: function() { return { top: 510, bottom: 530 }; } };
-}
-var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100, parentNode: null,
-  setAttribute: function() {},
-  classList: { add: function() {}, remove: function() {} },
-  addEventListener: function(t, h) { handlers[t] = h; },
-  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
-global.document = { createElement: function() {
-  return { classList: { add: function() {}, remove: function() {} } }; } };
-var state = { stripEl: strip, words: ['a', 'b'], cursorIdx: -1,
-  wordEls: [word(), word()] };
-_bindStripKeyboard(state);
+    out = _run_node(tmp_path, _strip_focus_harness(page, 0) + r"""
 handlers.focus();
-console.log(JSON.stringify([state.cursorIdx, calls]));
+console.log(JSON.stringify([state.cursorIdx, calls.length]));
 """)
     assert out == [0, 0]
 
 
-def _strip_focus_harness(page):
-    """_bindStripKeyboard on a strip scrolled down by 200px (playback or the
-    wheel), so word 0 sits above its visible top; `handlers` holds the
-    strip's listeners."""
+def _strip_focus_harness(page, scroll_top=200):
+    """_bindStripKeyboard on a strip scrolled down by `scroll_top` px (playback
+    or the wheel; the default leaves word 0 above its visible top); `handlers`
+    holds the strip's listeners."""
     fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor",
                         "_bindStripKeyboard")
-    return fns + r"""
+    return fns + _STRIP_WORD_JS + r"""
 var handlers = {};
-function word(top) {
-  return { classList: { add: function() {}, remove: function() {} },
-    scrollIntoView: function() {},
-    getBoundingClientRect: function() {
-      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
-    } };
-}
-var strip = { scrollTop: 200, clientTop: 1, clientHeight: 100, parentNode: null,
+var strip = { scrollTop: """ + str(scroll_top) + r""", clientTop: 1, clientHeight: 100, parentNode: null,
   setAttribute: function() {},
   classList: { add: function() {}, remove: function() {} },
   addEventListener: function(t, h) { handlers[t] = h; },
