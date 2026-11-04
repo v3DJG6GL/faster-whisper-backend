@@ -1294,8 +1294,7 @@
     var meta = (ovState().field_meta || {})[name] || { kind: 'str' };
     var el;
     if (meta.kind === 'bool') {
-      el = document.createElement('input'); el.type = 'checkbox';
-      el.className = 'switch'; el.setAttribute('role', 'switch'); el.checked = !!val;
+      el = window._switchInput(!!val);
       el.onchange = function () { onchange(el.checked); };
     } else if (meta.kind === 'enum') {
       el = document.createElement('select');
@@ -1509,10 +1508,8 @@
       var noProf = (opts.scope === 'key' && b.apply_no_profiles === true);
       if (opts.scope === 'key') {
         var npRow = _el('div', 'cfg-noprof-row');
-        var npCb = document.createElement('input');
-        npCb.type = 'checkbox'; npCb.className = 'switch'; npCb.setAttribute('role', 'switch');
+        var npCb = window._switchInput(noProf);
         npCb.id = npId;
-        npCb.checked = noProf;
         npCb.onchange = function () { b.apply_no_profiles = npCb.checked ? true : null; rerender(); };
         var npLbl = _el('label', null, 'Apply no profiles');
         npLbl.setAttribute('for', npId);

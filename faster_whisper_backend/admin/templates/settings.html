@@ -1093,10 +1093,7 @@ function _option(value, text) {
 }
 
 function _switch(checked) {
-  const cb = document.createElement('input');
-  cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
-  cb.checked = checked;
-  return cb;
+  return window._switchInput(checked);
 }
 
 function fieldRow(name) {

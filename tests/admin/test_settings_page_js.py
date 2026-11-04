@@ -107,6 +107,7 @@ def _captures_harness(html, body, real_list=False):
     branch = _block(html, "  if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {")
     if real_list:
         rle = _fns(html, "makeRuleListEditor", "_helpDiv", "_el", "_button", "_option", "_switch")
+        rle += "\nconst window = {};\n" + _block(html, "window._switchInput=function", "return c;};")
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
 function _lsGet() { return null; }

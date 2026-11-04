@@ -643,10 +643,8 @@ window._renderWaterfall = (function () {
   function accessSection(p) {
     var s = makeSection('Access', 'who may apply this profile');
     var row = _el('div', 'ov-access-row');
-    var cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
+    var cb = window._switchInput(p.requestable !== false);
     cb.id = 'ov-requestable';
-    cb.checked = p.requestable !== false;
     cb.onchange = function () {
       if (cb.checked) delete p.requestable; else p.requestable = false;
       refreshButtons(); renderSide();
@@ -752,9 +750,7 @@ window._renderWaterfall = (function () {
   function makeWidget(name, meta, val, onchange) {
     var el;
     if (meta.kind === 'bool') {
-      el = document.createElement('input'); el.type = 'checkbox';
-      el.className = 'switch'; el.setAttribute('role', 'switch');
-      el.checked = !!val;
+      el = window._switchInput(!!val);
       el.onchange = function () { onchange(el.checked); };
     } else if (meta.kind === 'enum') {
       el = document.createElement('select');

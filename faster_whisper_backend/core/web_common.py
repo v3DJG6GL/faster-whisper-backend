@@ -197,6 +197,8 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #  11. window._segBtn(label, on), one fresh .status-btn radio button with the
 #      initial .active / aria-checked state _segSelect later moves. Its dataset,
 #      tone, children and click wiring stay at the call site.
+#  12. window._switchInput(checked), one on/off switch: a role=switch checkbox
+#      with class .switch. Its id and change wiring stay at the call site.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -229,6 +231,8 @@ SCALE_BOOTSTRAP_HEAD = (
     "window._segBtn=function(label,on){var b=document.createElement('button');b.type='button';"
     "b.className='status-btn'+(on?' active':'');b.textContent=label;"
     "b.setAttribute('role','radio');b.setAttribute('aria-checked',on?'true':'false');return b;};"
+    "window._switchInput=function(on){var c=document.createElement('input');c.type='checkbox';"
+    "c.className='switch';c.setAttribute('role','switch');c.checked=on;return c;};"
     "window._csrfStamp=function(method,h){if(method!=='GET'&&method!=='HEAD')"
     "h['X-CSRF-Token']=window._csrfToken?window._csrfToken():'';};"
     "window._apiFetch=function(method,path,body){var h={Accept:'application/json'};"
