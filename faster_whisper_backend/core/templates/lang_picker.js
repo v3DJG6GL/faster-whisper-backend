@@ -75,20 +75,18 @@
       if (popCtl) popCtl.hide();
     }
 
-    function _fire() { if (opts.onChange) opts.onChange(codes.slice()); }
+    function _commit() { _renderPills(); if (opts.onChange) opts.onChange(codes.slice()); }
 
     function _addCode(c) {
       if (codes.indexOf(c) >= 0) return;
       codes.push(c);
       codes.sort();
-      _renderPills();
-      _fire();
+      _commit();
     }
     function _removeCode(c) {
       var i = codes.indexOf(c);
       if (i >= 0) codes.splice(i, 1);
-      _renderPills();
-      _fire();
+      _commit();
     }
     function _toggleCode(c) {
       if (codes.indexOf(c) >= 0) _removeCode(c); else _addCode(c);
@@ -147,7 +145,7 @@
             + (allIn ? '✓ ' : '') + g + '</span>'
             + '<span class="lp-code">' + gc.join(', ') + '</span>';
           opt.addEventListener('click', function() {
-            // One _fire for the whole family: a per-code _addCode /
+            // One _commit for the whole family: a per-code _addCode /
             // _removeCode loop would commit every half-applied list.
             if (allIn) {
               codes = codes.filter(function(c) { return gc.indexOf(c) < 0; });
@@ -155,8 +153,7 @@
               gc.forEach(function(c) { if (codes.indexOf(c) < 0) codes.push(c); });
               codes.sort();
             }
-            _renderPills();
-            _fire();
+            _commit();
             _renderDropdown(searchInp ? searchInp.value : '');
           });
           dropContent.appendChild(opt);
