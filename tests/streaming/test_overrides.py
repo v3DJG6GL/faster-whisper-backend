@@ -11,7 +11,7 @@ import pytest
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
     config_drain, config_frame, const_pcm, handshake, speak_and_stop, ws_drain)
-from tests._transcription_helpers import bind_profile
+from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -230,11 +230,7 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     text (it can carry the model dir / filesystem path); the detail is logged
     server-side instead."""
     _, raw_alice = make_user_key("alice")
-
-    async def _boom(name, *, lease=False):
-        raise RuntimeError("/srv/models/secret-path missing")
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _boom)
+    fail_model_load(monkeypatch, RuntimeError("/srv/models/secret-path missing"))
 
     msgs = config_drain(client, raw_alice)
 
@@ -250,11 +246,7 @@ def _refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, gon
     (``gone_send`` replaces Starlette's WebSocket.send); returns the ledger
     rows and the ERROR records the handler wrote."""
     _, raw_alice = make_user_key("alice")
-
-    async def _boom(name, *, lease=False):
-        raise RuntimeError("/srv/models/secret-path missing")
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _boom)
+    fail_model_load(monkeypatch, RuntimeError("/srv/models/secret-path missing"))
 
     from starlette.websockets import WebSocket as _WS
     monkeypatch.setattr(_WS, "send", gone_send(_WS.send))
@@ -343,11 +335,8 @@ def test_model_load_failure_records_a_classified_error_row(
     so it writes its own: a CUDA OOM on a live dictation shows on /stats as
     cuda_oom, like the identical batch failure."""
     _, raw_alice = make_user_key("alice")
-
-    async def _oom(name, *, lease=False):
-        raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _oom)
+    fail_model_load(monkeypatch,
+                    RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"))
     from faster_whisper_backend.stats import metrics
     rows = []
     monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))

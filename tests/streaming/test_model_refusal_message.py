@@ -5,7 +5,7 @@ route returns, while a genuine load failure keeps the generic text."""
 from fastapi import HTTPException
 
 from tests._streaming_helpers import config_drain
-from faster_whisper_backend.transcription import models as tx_models
+from tests._transcription_helpers import fail_model_load
 
 
 def _handshake_errors(client, raw_key):
@@ -15,11 +15,7 @@ def _handshake_errors(client, raw_key):
 def test_refused_model_reports_the_refusal_detail(client, make_user_key, monkeypatch):
     _, raw_alice = make_user_key("alice")
     detail = "Model 'large-v3' is not in the allowed list. Allowed: ['large-v3-turbo']"
-
-    async def _refuse(name, *, lease=False):
-        raise HTTPException(status_code=400, detail=detail)
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _refuse)
+    fail_model_load(monkeypatch, HTTPException(status_code=400, detail=detail))
 
     errors = _handshake_errors(client, raw_alice)
     assert errors, "expected a model_load_failed frame"
@@ -30,12 +26,8 @@ def test_refused_model_reports_the_refusal_detail(client, make_user_key, monkeyp
 def test_server_side_http_failure_keeps_the_generic_message(
         client, make_user_key, monkeypatch):
     _, raw_alice = make_user_key("alice")
-
-    async def _timeout(name, *, lease=False):
-        raise HTTPException(status_code=503,
-                            detail="Auto-convert of '/srv/models/x' timed out")
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _timeout)
+    fail_model_load(monkeypatch, HTTPException(
+        status_code=503, detail="Auto-convert of '/srv/models/x' timed out"))
 
     errors = _handshake_errors(client, raw_alice)
     assert errors, "expected a model_load_failed frame"
@@ -50,11 +42,7 @@ def test_long_refusal_detail_reaches_the_client_whole(client, make_user_key, mon
               "['Systran/faster-whisper-large-v3', "
               "'deepdml/faster-whisper-large-v3-turbo-ct2', 'small']")
     assert len(detail) > 120
-
-    async def _refuse(name, *, lease=False):
-        raise HTTPException(status_code=400, detail=detail)
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _refuse)
+    fail_model_load(monkeypatch, HTTPException(status_code=400, detail=detail))
 
     errors = _handshake_errors(client, raw_alice)
     assert errors, "expected a model_load_failed frame"
