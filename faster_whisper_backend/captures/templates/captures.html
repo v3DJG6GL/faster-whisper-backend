@@ -2085,15 +2085,9 @@
         'Click a word, or use ← / → and type, to mark '
       + 'and correct it; shift-click extends a range; Enter accepts, Del removes.');
     var strip = _el('div', 'word-strip');
-    state.words.forEach(function(w, i) {
-      var sp = _el('span', 'word');
-      _paintWordSpan(sp, w, ' ');
-      sp.addEventListener('click', function(e) {
-        onWordClick(state, i, !!e.shiftKey);
-      });
-      strip.appendChild(sp);
-      state.wordEls.push(sp);
-    });
+    state.wordEls = _renderWordStrip(strip, state.words, function(i, sh) {
+      onWordClick(state, i, sh);
+    }, ' ');
     corrSec.appendChild(strip);
     state.stripEl = strip;
     if (typeof state.cursorIdx !== 'number') state.cursorIdx = -1;
@@ -3559,13 +3553,13 @@
   }
 
   // onClick (optional): function(idx, shiftKey), called on a click on a
-  // word span.
-  function _renderWordStrip(stripEl, words, onClick) {
+  // word span. `lead` goes to _paintWordSpan.
+  function _renderWordStrip(stripEl, words, onClick, lead) {
     stripEl.innerHTML = '';
     var els = [];
     words.forEach(function(w, i) {
       var sp = _el('span', 'word');
-      _paintWordSpan(sp, w, ' ');
+      _paintWordSpan(sp, w, lead);
       if (onClick) {
         sp.addEventListener('click', function(e) {
           onClick(i, !!e.shiftKey);
@@ -4153,7 +4147,7 @@
         _previewActivePanel = panel;
         state.wordEls = _renderWordStrip(stripEl, wordsArr, function(i, sh) {
           onWordClick(state, i, sh);
-        });
+        }, ' ');
         _bindStripKeyboard(state);
         // Read by the karaoke binding and the batch-card keyboard/focus code.
         panel._state = state;
@@ -5213,20 +5207,17 @@
           // below must not leave the card "unsaved" for a heal.
           sampleState.saveBlocked = !!d.is_locked && !_isAdmin;
 
-          strip.innerHTML = '';
+          sampleState.wordEls = _renderWordStrip(strip, sampleState.words, function(i, sh) {
+            onWordClick(sampleState, i, sh);
+          }, ' ');
           var prevMember = -1;
-          sampleState.words.forEach(function(w, i) {
-            var sp = _el('span', 'word ' + ((w.member_idx % 2 === 0) ? 'mem-even' : 'mem-odd'));
-            if (w.member_idx !== prevMember && prevMember !== -1) {
+          sampleState.wordEls.forEach(function(sp, i) {
+            var member = sampleState.words[i].member_idx;
+            sp.classList.add(member % 2 === 0 ? 'mem-even' : 'mem-odd');
+            if (member !== prevMember && prevMember !== -1) {
               sp.style.marginLeft = '0.4rem';
             }
-            prevMember = w.member_idx;
-            _paintWordSpan(sp, w, ' ');
-            sp.addEventListener('click', function(e) {
-              onWordClick(sampleState, i, !!e.shiftKey);
-            });
-            strip.appendChild(sp);
-            sampleState.wordEls.push(sp);
+            prevMember = member;
           });
           // Repaint the keyboard cursor on the new spans: a mid-edit reload keeps it.
           if (typeof _redrawCursor === 'function') _redrawCursor(sampleState);
