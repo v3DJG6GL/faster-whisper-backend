@@ -923,8 +923,7 @@ def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
     assert [r["en"] for r in res[4:]] == [_xlate(t) for t in live]
     # 8 (mismatch) → 6: [4 blanks + 2 live], then k grows back to 8 over
     # the rest (8, 8, 8, 2) — not 14 pairs at k = 2.
-    sizes = [len(c.split("\n\n", 1)[1].splitlines()) for c in calls]
-    assert sizes == [4, 2, 8, 8, 8, 2]
+    assert _batch_sizes(calls) == [4, 2, 8, 8, 8, 2]
 
 
 def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
@@ -948,8 +947,7 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
         _segs(*live), ["en"], source_lang="de", mode="faithful"))
     assert warns == []
     assert [r["en"] for r in res] == [_xlate(t) for t in live]
-    sizes = [len(c.split("\n\n", 1)[1].splitlines()) for c in calls]
-    assert sizes == [8, 4, 8, 8, 8, 4]
+    assert _batch_sizes(calls) == [8, 4, 8, 8, 8, 4]
 
 
 def _numbered_fake(calls, fails):
