@@ -435,6 +435,7 @@
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 1.25rem;
   }
+  .modal .actions, #merge-modal .actions, #propose-modal .actions { display: flex; gap: 0.5rem; }
   /* Clear-all confirm modal. Also the themed _confirm dialog, which opens
      over the merge and propose modals (z-index 1000), so it sits above them. */
   .modal { background: rgba(0,0,0,0.65); z-index: 1100; }
@@ -444,10 +445,7 @@
   .modal input {
     padding: 0.35rem 0.5rem; font-family: var(--font-mono); margin-top: 0.5rem;
   }
-  .modal .actions {
-    display: flex; gap: 0.5rem; justify-content: flex-end;
-    margin-top: 0.875rem;
-  }
+  .modal .actions { justify-content: flex-end; margin-top: 0.875rem; }
 
   #toast {
     position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
@@ -523,9 +521,7 @@
     flex-wrap: wrap;
   }
   #merge-modal label { font-size: var(--fs-sm); color: var(--help); }
-  #merge-modal .actions {
-    display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;
-  }
+  #merge-modal .actions { justify-content: flex-end; margin-top: 1rem; }
   #merge-modal .seam-marker {
     display: inline-block; margin: 0 0.15rem;
     color: var(--magenta); font-weight: 700;
@@ -551,10 +547,7 @@
     margin-bottom: 0.25rem;
   }
   #propose-modal .propose-top h3 { flex: 1; }
-  #propose-modal .actions {
-    display: flex; gap: 0.5rem; align-items: center;
-    margin-top: 0.75rem;
-  }
+  #propose-modal .actions { align-items: center; margin-top: 0.75rem; }
   #propose-modal .actions .spacer { flex: 1; }
   #propose-modal .empty {
     color: var(--dim); font-size: var(--fs-sm); padding: 1rem 0;
