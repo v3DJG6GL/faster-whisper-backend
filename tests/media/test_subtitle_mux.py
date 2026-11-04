@@ -252,7 +252,6 @@ def test_ffmpeg_capabilities_parses_listings(monkeypatch):
     monkeypatch.setattr(subprocess, "run", _missing)
     caps = pk.ffmpeg_capabilities()
     assert not caps.available and "no ffmpeg" in caps.reason
-    pk._reset_for_tests()
 
 
 def test_a_timed_out_ffmpeg_probe_is_not_cached(monkeypatch):
@@ -286,7 +285,6 @@ def test_a_timed_out_ffmpeg_probe_is_not_cached(monkeypatch):
     slow["left"] = 1
     assert pk.ffmpeg_has_bsf("filter_units") is False
     assert pk.ffmpeg_has_bsf("filter_units") is True
-    pk._reset_for_tests()
 
 
 def test_a_retried_ffmpeg_probe_is_single_flight_and_off_the_caller(monkeypatch):
@@ -321,7 +319,6 @@ def test_a_retried_ffmpeg_probe_is_single_flight_and_off_the_caller(monkeypatch)
     pk._caps_state["thread"].join(timeout=5)
     assert pk.ffmpeg_capabilities() == ok
     assert len(probes) == 1
-    pk._reset_for_tests()
 
 
 def test_a_retry_thread_that_cannot_start_frees_the_probe_slot(monkeypatch):
@@ -343,7 +340,6 @@ def test_a_retry_thread_that_cannot_start_frees_the_probe_slot(monkeypatch):
     assert pk.ffmpeg_capabilities() is pk._CAPS_PENDING  # a probe starts
     pk._caps_state["thread"].join(timeout=5)
     assert pk.ffmpeg_capabilities() == ok
-    pk._reset_for_tests()
 
 
 def test_a_spawn_failure_is_not_cached_but_a_missing_binary_is(monkeypatch):
@@ -364,7 +360,6 @@ def test_a_spawn_failure_is_not_cached_but_a_missing_binary_is(monkeypatch):
     assert pk._caps_cache == [caps]
     assert pk.ffmpeg_has_bsf("filter_units") is False
     assert pk._bsf_cache == {"filter_units": False}
-    pk._reset_for_tests()
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
