@@ -10,6 +10,7 @@ import numpy as np
 
 from tests._streaming_helpers import handshake
 from tests.conftest import RATE, FakeSegment, FakeWord
+from faster_whisper_backend.streaming import routes as sr
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from tests._transcription_helpers import post_transcription, post_verbose
@@ -288,63 +289,54 @@ def _speech_then_silence(speech_sec: float, silence_sec: float) -> np.ndarray:
     return audio
 
 
+def _stream_kwargs(model, final):
+    return sr._build_transcribe_kwargs(
+        "some-model", final=final, prompt="", want_words=False, model_obj=model)
+
+
 def test_tail_trim_cuts_trailing_silence(fake_vad):
-    from faster_whisper_backend.streaming import routes as sr
     audio = _speech_then_silence(1.0, 2.0)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out.shape[0] == RATE + (300 * RATE) // 1000
 
 
 def test_tail_trim_no_speech_returns_unchanged(fake_vad):
-    from faster_whisper_backend.streaming import routes as sr
     audio = np.zeros(2 * RATE, dtype=np.float32)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out.shape[0] == audio.shape[0]
 
 
 def test_tail_trim_disabled_by_zero_pad(fake_vad):
-    from faster_whisper_backend.streaming import routes as sr
     audio = _speech_then_silence(1.0, 2.0)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=0, threshold=0.5)
     assert out is audio
 
 
 def test_tail_trim_speech_to_the_end_untouched(fake_vad):
-    from faster_whisper_backend.streaming import routes as sr
     audio = np.full(2 * RATE, 0.1, dtype=np.float32)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out.shape[0] == audio.shape[0]
 
 
 def test_tail_trim_vad_unavailable_returns_unchanged(no_vad):
-    from faster_whisper_backend.streaming import routes as sr
     audio = _speech_then_silence(1.0, 2.0)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out is audio
 
 
 def test_streaming_final_conditioning_off_by_default(app_module, fake_model):
-    from faster_whisper_backend.streaming import routes as sr
-    kw = sr._build_transcribe_kwargs(
-        "some-model", final=True, prompt="",
-        want_words=False, model_obj=fake_model)
+    kw = _stream_kwargs(fake_model, final=True)
     assert kw["condition_on_previous_text"] is False
 
 
 def test_streaming_final_conditioning_config_on(app_module, fake_model):
     app_module.cfg.STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT = True
-    from faster_whisper_backend.streaming import routes as sr
-    kw = sr._build_transcribe_kwargs(
-        "some-model", final=True, prompt="",
-        want_words=False, model_obj=fake_model)
+    kw = _stream_kwargs(fake_model, final=True)
     assert kw["condition_on_previous_text"] is True
 
 
 def test_streaming_partial_conditioning_unaffected(app_module, fake_model):
-    from faster_whisper_backend.streaming import routes as sr
-    kw = sr._build_transcribe_kwargs(
-        "some-model", final=False, prompt="",
-        want_words=False, model_obj=fake_model)
+    kw = _stream_kwargs(fake_model, final=False)
     # Partials keep their own knob (default off) and stay vad_filter-less.
     assert kw["condition_on_previous_text"] is False
     assert kw["vad_filter"] is False
