@@ -23,11 +23,6 @@ def _a_default_model(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", set())
 
 
-def _profiles(client, h, profiles):
-    r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": profiles})
-    assert r.status_code == 200, r.text
-
-
 def _key_id(client, h, uid):
     r = client.get(f"{PERMS}/{uid}/keys", headers=h)
     assert r.status_code == 200, r.text
@@ -40,7 +35,14 @@ def _set_key_binding(client, h, uid, kid, **binding):
     assert r.status_code == 200, r.text
 
 
-def _bound_alice(client, make_user_key, h, **binding):
+def _bound_alice(client, make_user_key, *, define=None, **binding):
+    """A new admin posts the OVERRIDE_PROFILES `define` (if any), then binds a
+    new key "alice"; returns alice's headers."""
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    if define:
+        r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": define})
+        assert r.status_code == 200, r.text
     uid, raw = make_user_key("alice")
     _set_key_binding(client, h, uid, _key_id(client, h, uid), **binding)
     return bearer(raw)
@@ -119,11 +121,9 @@ def test_refused_model_is_400(client, app_module, monkeypatch):
 
 
 def test_bound_profile_is_account_and_locks(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"studio": {"BEAM_SIZE": 4, "DEFAULT_PROMPT": "Studio",
-                                     "locks": ["BEAM_SIZE", "DEFAULT_PROMPT"]}})
-    ah = _bound_alice(client, make_user_key, h, profiles=["studio"])
+    ah = _bound_alice(client, make_user_key, profiles=["studio"],
+                      define={"studio": {"BEAM_SIZE": 4, "DEFAULT_PROMPT": "Studio",
+                                         "locks": ["BEAM_SIZE", "DEFAULT_PROMPT"]}})
     j = client.get(URL, headers=ah).json()
     beam = j["settings"]["beam_size"]
     assert beam["value"] == 4
@@ -140,19 +140,15 @@ def test_bound_profile_is_account_and_locks(client, make_user_key):
 
 def test_lock_without_value_keeps_the_inherited_source(client, make_user_key, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "BEAM_SIZE", 9)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    ah = _bound_alice(client, make_user_key, h, locks=["BEAM_SIZE"])
+    ah = _bound_alice(client, make_user_key, locks=["BEAM_SIZE"])
     beam = client.get(URL, headers=ah).json()["settings"]["beam_size"]
     assert beam == {"value": 9, "source": "server", "label": "global default", "locked": True}
 
 
 def test_request_profile_layers_under_identity(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 2, "BEST_OF": 2},
-                          "internal": {"BEAM_SIZE": 1, "requestable": False}})
-    ah = _bound_alice(client, make_user_key, h, overrides={"BEST_OF": 6})
+    ah = _bound_alice(client, make_user_key, overrides={"BEST_OF": 6},
+                      define={"fast": {"BEAM_SIZE": 2, "BEST_OF": 2},
+                              "internal": {"BEAM_SIZE": 1, "requestable": False}})
     j = client.get(URL, params={"override_profile": "fast"}, headers=ah).json()
     assert j["profile_applied"] == "fast"
     assert j["settings"]["beam_size"]["value"] == 2
@@ -167,9 +163,7 @@ def test_request_profile_layers_under_identity(client, make_user_key):
 
 
 def test_decode_gate_off_locks_every_key(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    ah = _bound_alice(client, make_user_key, h, allow_request_decode_overrides=False)
+    ah = _bound_alice(client, make_user_key, allow_request_decode_overrides=False)
     j = client.get(URL, headers=ah).json()
     assert all(e["locked"] for e in j["settings"].values())
 
@@ -194,11 +188,9 @@ def test_translation_context_segments_entry(client, app_module, make_user_key, m
     j = client.get(URL).json()
     assert j["translation"] == {"context_segments": {
         "value": 3, "source": "server", "label": "global default", "locked": False}}
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"ctx": {"TRANSLATION_CONTEXT_SEGMENTS": 0,
-                                  "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]}})
-    ah = _bound_alice(client, make_user_key, h, profiles=["ctx"])
+    ah = _bound_alice(client, make_user_key, profiles=["ctx"],
+                      define={"ctx": {"TRANSLATION_CONTEXT_SEGMENTS": 0,
+                                      "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]}})
     entry = client.get(URL, headers=ah).json()["translation"]["context_segments"]
     assert entry["value"] == 0 and entry["locked"] is True
     assert entry["source"] == "account"
@@ -239,15 +231,12 @@ def test_run_defaults_per_model(client, app_module, monkeypatch):
 
 def test_run_defaults_per_profile(client, app_module, make_user_key, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "SEPARATE_BGM", False)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {
+    ah = _bound_alice(client, make_user_key, profiles=["studio"], define={
         "studio": {"SEPARATE_BGM": True, "DIARIZE": True,
                    "DIARIZATION_MODEL": "pyannote/speaker-diarization-3.1",
                    "BGM_SEPARATION_UVR_MODEL": "Kim_Vocal_2",
                    "locks": ["DIARIZE"]},
         "en": {"DEFAULT_LANGUAGE": "en"}})
-    ah = _bound_alice(client, make_user_key, h, profiles=["studio"])
     j = client.get(URL, headers=ah).json()
     assert j["separate_bgm"]["value"] is True
     assert j["separate_bgm"]["source"] == "account"
