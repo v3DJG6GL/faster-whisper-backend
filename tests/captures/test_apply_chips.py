@@ -9,7 +9,6 @@ with node so the /captures preview is pinned to the same output.
 
 import json
 import pathlib
-import shutil
 import time
 
 import pytest
@@ -17,7 +16,7 @@ import pytest
 from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.pipeline import engine as pl_engine
-from tests._page_helpers import node_json
+from tests._page_helpers import needs_node, node_json
 
 _CASES = [
     # A chip on the second "the" leaves the first alone.
@@ -324,9 +323,6 @@ def _js_function(src, name):
     raise AssertionError(name + " has no closing brace")
 
 
-_NODE = shutil.which("node")
-
-
 def _run_js_twin(cases):
     """_applyChipsToText(text, chips, words) for each [text, chips, words]."""
     src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
@@ -338,7 +334,7 @@ def _run_js_twin(cases):
     return node_json(script)
 
 
-@pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
+@needs_node
 def test_js_twin_matches_server_chip_application():
     cases = ([[t, c, None] for t, c, _ in _CASES]
              + [[t, c, w] for t, c, w, _ in _WORD_CASES])
@@ -346,7 +342,7 @@ def test_js_twin_matches_server_chip_application():
                                    + [e for *_, e in _WORD_CASES])
 
 
-@pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
+@needs_node
 def test_js_twin_with_many_chips_on_a_long_spaced_text_stays_fast():
     # Timed inside node (its start-up does not count); the text is built
     # there too, as an argument this long would pass the OS limit.
@@ -406,7 +402,7 @@ def test_apply_chips_places_a_chip_with_aligned_words(
     assert capture_samples._apply_chips_to_text(final, [chip], words) == expected
 
 
-@pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
+@needs_node
 def test_js_twin_places_a_chip_with_aligned_words(monkeypatch):
     cases = [[final, [chip], _aligned_words(monkeypatch, raw, mapping, final)]
              for raw, mapping, final, chip, _ in _ALIGNED_CASES]
