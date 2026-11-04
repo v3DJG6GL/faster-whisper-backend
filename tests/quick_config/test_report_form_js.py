@@ -294,7 +294,7 @@ _SAVE_STUBS = r"""
 
 def _run_save_js(client, tmp_path, body):
     """_run_js on _doSave alone, with the page state it touches stubbed."""
-    return _run_js(client, tmp_path, _SAVE_STUBS + body, funcs=("_doSave",))
+    return _run_js(client, tmp_path, _SAVE_STUBS + body, funcs=("_doSave", "_redrawRules"))
 
 
 @pytest.mark.parametrize("server_chips", [
@@ -317,7 +317,7 @@ def test_state_load_keeps_hint_ids_the_server_set_misses(client, tmp_path, serve
         removeBtn: form.querySelector('.rep-remove').style.display,
       });
     """ % server_chips, funcs=_REPORT_FUNCS + (
-        "markReported", "syncReportedBadges", "applyState",
+        "markReported", "syncReportedBadges", "applyState", "_redrawRules",
     ))
     assert res == {"rid1": True, "badge": "inline-flex", "removeBtn": "inline-flex"}
 
@@ -344,7 +344,9 @@ def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path)
         asB, legacyKey: _REPORTED_KEY in _ls,
         asA: { rid1: isReported('rid1'), rid3: isReported('rid3') },
       });
-    """, funcs=_REPORT_FUNCS + ("markReported", "syncReportedBadges", "applyState"))
+    """, funcs=_REPORT_FUNCS + (
+        "markReported", "syncReportedBadges", "applyState", "_redrawRules",
+    ))
     assert res == {
         "asB": {"rid1": False, "rid9": False, "badge": "none", "removeBtn": "none"},
         "legacyKey": False,
@@ -368,7 +370,9 @@ def test_state_load_drops_hint_ids_of_reports_an_admin_closed(client, tmp_path):
         badge: badge.style.display,
         removeBtn: form.querySelector('.rep-remove').style.display,
       });
-    """, funcs=_REPORT_FUNCS + ("markReported", "syncReportedBadges", "applyState"))
+    """, funcs=_REPORT_FUNCS + (
+        "markReported", "syncReportedBadges", "applyState", "_redrawRules",
+    ))
     assert res == {
         "rid1": False, "rid2": True, "rid3": True,
         "badge": "none", "removeBtn": "none",

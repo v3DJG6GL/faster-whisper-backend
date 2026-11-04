@@ -653,6 +653,9 @@ function renderCards() {
   }
 }
 
+// updateButtons re-syncs the save buttons renderCards just rebuilt.
+function _redrawRules() { renderCards(); updateButtons(); }
+
 // Recent transcriptions panel + autocomplete. /quick-config/stream replays
 // the freshest server-configured page on connect (oldest-first), then pushes
 // new traces as `event: trace`; the durable store backs the "Load older"
@@ -2254,8 +2257,7 @@ function applyState(j) {
     catch (_) {}
   }
   syncReportedBadges();
-  renderCards();
-  updateButtons();
+  _redrawRules();
   loadMyUsage();   // fire-and-forget; populates the subbar self-usage banner
 }
 
@@ -2424,8 +2426,7 @@ async function _doSave(patch, fingerprints) {
     const clashed = [];
     const restored = [];
     _reapplyDiffs(diffs, clashed, restored);   // skips rules that no longer exist
-    renderCards();
-    updateButtons();
+    _redrawRules();
     showToast(msg + ' — rules reloaded; your other edits were kept'
               + mergeNotes(clashed, restored, (s, n) => ' (on ' + s + ' ' + n + ')')
               + ', review and Save again.', 'err');
@@ -2464,13 +2465,11 @@ async function _doSave(patch, fingerprints) {
     const restored = [];
     const merged = _reapplyDiffs(diffsBySlug, clashed, restored);
     if (_reapplyDiffs(inflight, clashed, restored) && !merged) {
-      renderCards();
-      updateButtons();
+      _redrawRules();
     }
 
     if (merged) {
-      renderCards();
-      updateButtons();
+      _redrawRules();
       const prefix = saved.length ? 'Saved ' + saved.length + '. ' : '';
       const clean = conflictSlugs.filter(s => !clashed.includes(s) && !restored.includes(s));
       showToast(prefix
@@ -2504,8 +2503,7 @@ async function _doSave(patch, fingerprints) {
   const clashed = [];
   const restored = [];
   if (_reapplyDiffs(inflight, clashed, restored)) {
-    renderCards();
-    updateButtons();
+    _redrawRules();
   }
   if (clashed.length || restored.length) {
     showToast('Saved. '
@@ -2620,8 +2618,7 @@ async function startReapplyJobSilent(n) {
 function doDiscard() {
   liveRules = JSON.parse(JSON.stringify(initialRules));
   dirty = new Set();
-  renderCards();
-  updateButtons();
+  _redrawRules();
 }
 
 document.getElementById('save-btn').addEventListener('click', doSave);
