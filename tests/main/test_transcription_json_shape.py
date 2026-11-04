@@ -5,7 +5,7 @@ map — none of them should require verbose_json to be seen."""
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
-from tests.conftest import bearer
+from tests.conftest import FakeSegment, bearer
 from tests._translation_helpers import enable_translation, stub_translate
 from tests._transcription_helpers import bind_profile, post_transcription
 
@@ -87,7 +87,6 @@ def test_joined_translations_glue_unspaced_pieces(client, app_module, fake_model
                                                   monkeypatch, created_captures):
     # A fluent zh group cut back across two cues must rejoin with no space
     # inside 商店 ("store"), in the joined field and the capture row.
-    from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment("I went to the store", 0.0, 1.0),
                             FakeSegment("to buy some bread today.", 1.0, 2.0)]
     enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True)
@@ -111,7 +110,6 @@ def test_joined_translations_glue_a_digit_to_han_only_for_a_zh_target(
         client, app_module, fake_model, monkeypatch, created_captures):
     # The joined field and the capture row are built per target: zh glues
     # '3' | '个', while an en target quoting the same pieces keeps its space.
-    from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment("I bought 3", 0.0, 1.0),
                             FakeSegment("apples.", 1.0, 2.0)]
     enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True)
