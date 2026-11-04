@@ -1,7 +1,7 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
 (the stub upload, a plain / verbose_json post, a 200-checked body fetch, a profile-bound non-admin key,
 the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
-receipt's guard line, a gated model_registry write, a cancel while that
+receipt's guard line, a _load_blocking recorder, a gated model_registry write, a cancel while that
 write is held or queued).
 Import as ``from tests._transcription_helpers import ...``."""
 
@@ -107,6 +107,15 @@ def guard_line(caplog, knob):
     block = "\n".join(r.getMessage() for r in caplog.records
                       if "Post-decode guards" in r.getMessage())
     return next(l for l in block.splitlines() if knob in l).rstrip()
+
+
+def record_loads(monkeypatch, module, make=object):
+    """Stub module._load_blocking to return make(); return the list of
+    requested model names."""
+    loads = []
+    monkeypatch.setattr(module, "_load_blocking",
+                        lambda m, *_: loads.append(m) or make())
+    return loads
 
 
 def blocked_register(monkeypatch):

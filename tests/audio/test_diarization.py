@@ -18,6 +18,7 @@ from tests._transcription_helpers import (
     cancel_with_register_queued as _cancel_with_register_queued)
 from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
+from tests._transcription_helpers import record_loads as _record_loads
 
 
 @pytest.fixture
@@ -551,12 +552,7 @@ def test_cancel_while_register_is_queued_still_lists_the_pipeline(monkeypatch):
     from faster_whisper_backend.runtime import model_registry
     _diar_model(monkeypatch)
     pipe = object()
-    loaded = []
-
-    def _load(m, d, b):
-        loaded.append(m)
-        return pipe
-    monkeypatch.setattr(diarization, "_load_blocking", _load)
+    loaded = _record_loads(monkeypatch, diarization, lambda: pipe)
     _cancel_with_register_queued(
         monkeypatch, loaded, lambda: diarization._get_pipeline(lease=True))
     assert diarization._pipeline is pipe
@@ -652,9 +648,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
     _diar_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("p/a", "cpu", 4), {"p/a": 1})
-    loads: list = []
-    monkeypatch.setattr(diarization, "_load_blocking",
-                        lambda m, d, b: loads.append(m) or object())
+    loads = _record_loads(monkeypatch, diarization)
 
     assert asyncio.run(diarization.load_unleased("p/b")) is False
     assert loads == []
@@ -675,9 +669,7 @@ def test_a_zombie_inference_makes_the_singleton_busy(monkeypatch):
     _diar_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("p/a", "cpu", 4))
-    loads: list = []
-    monkeypatch.setattr(diarization, "_load_blocking",
-                        lambda m, d, b: loads.append(m) or object())
+    loads = _record_loads(monkeypatch, diarization)
     assert diarization.busy("p/b") is False
     diarization._infer_mutex.acquire()
     try:

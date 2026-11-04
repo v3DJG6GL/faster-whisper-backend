@@ -10,7 +10,7 @@ import pytest
 from faster_whisper_backend.audio import bgm_separation
 from tests._transcription_helpers import (
     bind_profile, blocked_register, cancel_while_register_held,
-    cancel_with_register_queued)
+    cancel_with_register_queued, record_loads)
 from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 
@@ -447,12 +447,7 @@ def test_cancel_while_register_is_queued_still_lists_the_separator(monkeypatch):
     from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch)
     sep = object()
-    loaded = []
-
-    def _load(m, d):
-        loaded.append(m)
-        return sep
-    monkeypatch.setattr(bgm_separation, "_load_blocking", _load)
+    loaded = record_loads(monkeypatch, bgm_separation, lambda: sep)
     cancel_with_register_queued(
         monkeypatch, loaded,
         lambda: bgm_separation._get_separator("Foo", lease=True))
@@ -555,9 +550,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_separator(
     _foo_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("Bar.onnx", "cpu"), {"Bar.onnx": 1})
-    loads: list = []
-    monkeypatch.setattr(bgm_separation, "_load_blocking",
-                        lambda m, d: loads.append(m) or object())
+    loads = record_loads(monkeypatch, bgm_separation)
 
     assert asyncio.run(bgm_separation.load_unleased("Foo")) is False
     assert loads == []
@@ -574,9 +567,7 @@ def test_a_zombie_separation_makes_the_singleton_busy(monkeypatch):
     _foo_model(monkeypatch)
     held = object()
     _seed(monkeypatch, held, ("Bar.onnx", "cpu"))
-    loads: list = []
-    monkeypatch.setattr(bgm_separation, "_load_blocking",
-                        lambda m, d: loads.append(m) or object())
+    loads = record_loads(monkeypatch, bgm_separation)
     assert bgm_separation.busy("Foo.onnx") is False
     bgm_separation._separate_mutex.acquire()
     try:
