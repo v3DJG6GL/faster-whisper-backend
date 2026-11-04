@@ -12,6 +12,8 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.runtime import preload_routes
+from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.translation import engine as translation
 
 from tests.conftest import bearer
@@ -158,7 +160,6 @@ def test_a_blank_stage_model_id_is_never_allowed(client, app_module,
     """An unset configured model used to put "" on the allowlist, so a
     whitespace-only id (it passes min_length, then strips to "") joined the
     plan, could never be warmed and held its /stats row open until the TTL."""
-    from faster_whisper_backend.runtime import preload_routes
     _enable(app_module, monkeypatch, DIARIZATION_MODEL="",
             BGM_SEPARATION_UVR_MODEL="")
     assert preload_routes._allowed("diarization", "", {}) is False
@@ -192,7 +193,6 @@ def test_identity_effective_stage_model_is_not_reported_not_allowed(
     # The batch handler admits the caller's EFFECTIVE stage model (identity
     # profile / MODEL_OVERRIDES) as admin policy; the preload route must too,
     # or the up-front warm silently does nothing for exactly those users.
-    from faster_whisper_backend.settings import effective_config
     _enable(app_module, monkeypatch, DIARIZATION_ALLOWED_MODELS=[],
             DIARIZATION_MODEL="p/global")
     real = effective_config.cfg_for
@@ -234,7 +234,6 @@ def test_a_locked_stage_model_admits_only_the_effective_value(
     # different request is only reported ignored), so a preload of another
     # allowlisted model would load something this caller's job never uses —
     # and in a singleton family drop the one it does.
-    from faster_whisper_backend.settings import effective_config
     _enable(app_module, monkeypatch,
             DIARIZATION_ALLOWED_MODELS=["p/A", "p/B"], DIARIZATION_MODEL="p/A")
     # Unlocked, the allowlist admits both.
@@ -256,7 +255,6 @@ def test_a_refused_whisper_id_does_not_unlock_a_locked_stage_model(
     # A refused whisper id only drops the per-model layer; the caller's
     # ident locks still hold, or one bogus id in the body would admit any
     # allowlisted model in place of the locked one.
-    from faster_whisper_backend.settings import effective_config
     _enable(app_module, monkeypatch,
             DIARIZATION_ALLOWED_MODELS=["p/A", "p/B"], DIARIZATION_MODEL="p/A")
     monkeypatch.setattr(
@@ -277,7 +275,6 @@ def test_a_locked_empty_translation_model_admits_the_default(monkeypatch):
     # A locked TRANSLATION_MODEL with no value (config.json ships "", and an
     # identity binding fault locks every field) still runs the server default
     # in the job, so the preload must admit — and warm — exactly that ref.
-    from faster_whisper_backend.runtime import preload_routes
     from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
                         "org/repo-GGUF:Q4_K_M", raising=False)
