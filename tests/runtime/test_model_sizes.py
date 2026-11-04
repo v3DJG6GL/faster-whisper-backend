@@ -12,6 +12,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.core import atomic_json
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.settings import config as cfg
+from tests.conftest import write_bytes
 
 
 GB = 1024 ** 3
@@ -213,9 +214,7 @@ def test_a_nonsense_count_reads_as_zero(ledger):
 
 def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
     root = tmp_path / "dl"
-    (root / "audio-separator").mkdir(parents=True)
-    blob = root / "audio-separator" / "UVR-MDX-NET-Inst_HQ_4.onnx"
-    blob.write_bytes(b"x" * 4096)
+    write_bytes(root / "audio-separator" / "UVR-MDX-NET-Inst_HQ_4.onnx", b"x" * 4096)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(root), raising=False)
 
     assert model_sizes.disk_size("uvr:UVR-MDX-NET-Inst_HQ_4") == 4096
@@ -226,9 +225,8 @@ def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
 def test_disk_size_sums_a_hf_repo_dir(ledger, tmp_path, monkeypatch):
     d = _hf_repo(tmp_path, monkeypatch,
                  "pyannote--speaker-diarization-3.1") / "blobs"
-    d.mkdir(parents=True)
-    (d / "a").write_bytes(b"x" * 1000)
-    (d / "b").write_bytes(b"x" * 2000)
+    write_bytes(d / "a", b"x" * 1000)
+    write_bytes(d / "b", b"x" * 2000)
 
     assert model_sizes.disk_size("pyannote:pyannote/speaker-diarization-3.1") == 3000
 
@@ -237,9 +235,8 @@ def test_disk_size_counts_snapshot_symlinks_once(ledger, tmp_path, monkeypatch):
     """A hub cache's snapshots/<rev>/* are symlinks into blobs/; following
     them as well would double every weight."""
     repo = _hf_repo(tmp_path, monkeypatch, "org--repo")
-    (repo / "blobs").mkdir(parents=True)
     (repo / "snapshots" / "rev").mkdir(parents=True)
-    (repo / "blobs" / "a").write_bytes(b"x" * 1000)
+    write_bytes(repo / "blobs" / "a", b"x" * 1000)
     _symlink_or_skip(os.path.join("..", "..", "blobs", "a"),
                      repo / "snapshots" / "rev" / "a")
 
@@ -253,10 +250,8 @@ def test_disk_size_counts_a_symlink_that_points_out_of_the_tree(ledger,
     links would size only config.json."""
     model = tmp_path / "model"
     elsewhere = tmp_path / "elsewhere"
-    model.mkdir()
-    elsewhere.mkdir()
-    (elsewhere / "model.bin").write_bytes(b"x" * 100_000)
-    (model / "config.json").write_bytes(b"{}  ")
+    write_bytes(elsewhere / "model.bin", b"x" * 100_000)
+    write_bytes(model / "config.json", b"{}  ")
     _symlink_or_skip(elsewhere / "model.bin", model / "model.bin")
     assert model_sizes.disk_size(str(model)) == 100_004
 
@@ -266,10 +261,9 @@ def test_disk_size_sizes_an_all_symlink_dir(ledger, tmp_path):
     links into ../../blobs: it has a size, not None (size_unknown)."""
     blobs = tmp_path / "blobs"
     rev = tmp_path / "snapshots" / "rev"
-    blobs.mkdir()
     rev.mkdir(parents=True)
-    (blobs / "a").write_bytes(b"x" * 1000)
-    (blobs / "b").write_bytes(b"x" * 24)
+    write_bytes(blobs / "a", b"x" * 1000)
+    write_bytes(blobs / "b", b"x" * 24)
     _symlink_or_skip(blobs / "a", rev / "model.bin")
     _symlink_or_skip(blobs / "b", rev / "config.json")
     _symlink_or_skip(tmp_path / "gone", rev / "dangling")   # skipped, not fatal
@@ -282,9 +276,8 @@ def test_disk_size_sizes_only_the_requested_gguf_quant(ledger, tmp_path,
     not be charged for both files when sizing either one."""
     snap = _hf_repo(tmp_path, monkeypatch,
                     "tencent--HY-MT1.5-7B-GGUF") / "snapshots" / "rev"
-    snap.mkdir(parents=True)
-    (snap / "HY-MT1.5-7B-Q4_K_M.gguf").write_bytes(b"x" * 1000)
-    (snap / "HY-MT1.5-7B-Q8_0.gguf").write_bytes(b"x" * 2000)
+    write_bytes(snap / "HY-MT1.5-7B-Q4_K_M.gguf", b"x" * 1000)
+    write_bytes(snap / "HY-MT1.5-7B-Q8_0.gguf", b"x" * 2000)
 
     assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:Q4_K_M") == 1000
     assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:q8_0") == 2000
@@ -302,10 +295,8 @@ def test_disk_size_finds_a_gguf_quant_cached_in_an_older_snapshot(
     """translation.engine resolves a quant across every cached revision, so
     a quant fetched before the repo moved on must keep its disk prior."""
     snaps = _hf_repo(tmp_path, monkeypatch, "org--x") / "snapshots"
-    (snaps / "A").mkdir(parents=True)
-    (snaps / "B").mkdir()
-    (snaps / "A" / "x-Q4_K_M.gguf").write_bytes(b"x" * 1000)
-    (snaps / "B" / "x-Q8_0.gguf").write_bytes(b"x" * 2000)
+    write_bytes(snaps / "A" / "x-Q4_K_M.gguf", b"x" * 1000)
+    write_bytes(snaps / "B" / "x-Q8_0.gguf", b"x" * 2000)
     # Dated by their newest file, like scan_cache_dir dates a revision.
     os.utime(snaps / "A" / "x-Q4_K_M.gguf", (1_000_000, 1_000_000))
     os.utime(snaps / "B" / "x-Q8_0.gguf", (2_000_000, 2_000_000))
@@ -330,11 +321,9 @@ def test_disk_size_sizes_the_gguf_the_loader_opens_after_a_rename(
     rather than read as "no single match" -> fits() size_unknown forever."""
     repo = _hf_repo(tmp_path, monkeypatch, "org--x")
     blobs = repo / "blobs"
-    blobs.mkdir(parents=True)
     for rev, name, size, t in (("a" * 40, "old-Q4_K_M.gguf", 1000, 1_000_000),
                                ("b" * 40, "new-Q4_K_M.gguf", 2000, 2_000_000)):
-        blob = blobs / rev[:8]
-        blob.write_bytes(b"x" * size)
+        blob = write_bytes(blobs / rev[:8], b"x" * size)
         snap = repo / "snapshots" / rev
         snap.mkdir(parents=True)
         _symlink_or_skip(os.path.join("..", "..", "blobs", rev[:8]), snap / name)
@@ -359,8 +348,7 @@ def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
 def test_estimate_falls_back_to_disk_then_prefers_a_measurement(
         ledger, tmp_path, monkeypatch):
     d = _hf_repo(tmp_path, monkeypatch, "openai--whisper-tiny")
-    d.mkdir(parents=True)
-    (d / "model.bin").write_bytes(b"x" * 8192)
+    write_bytes(d / "model.bin", b"x" * 8192)
     # The whisper branch checks <DOWNLOAD_ROOT> first; the real default
     # ("/models") may hold a real whisper-tiny on a deployment box.
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
@@ -380,8 +368,7 @@ def test_disk_size_uvr_falls_back_to_tempdir_without_download_root(
         ledger, tmp_path, monkeypatch):
     """bgm_separation loads from <tempdir>/audio-separator when DOWNLOAD_ROOT
     is unset — the sizing must look in the same place, not give up."""
-    (tmp_path / "audio-separator").mkdir()
-    (tmp_path / "audio-separator" / "Foo.onnx").write_bytes(b"x" * 2048)
+    write_bytes(tmp_path / "audio-separator" / "Foo.onnx", b"x" * 2048)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
     monkeypatch.setattr(model_sizes.tempfile, "gettempdir",
                         lambda: str(tmp_path))
@@ -447,8 +434,7 @@ def test_disk_size_defaults_to_the_hub_cache_without_any_root(
     hub = tmp_path / ".cache" / "huggingface" / "hub"
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
     d = hub / "models--org--repo" / "snapshots" / "rev"
-    d.mkdir(parents=True)
-    (d / "x.gguf").write_bytes(b"x" * 1234)
+    write_bytes(d / "x.gguf", b"x" * 1234)
 
     assert model_sizes.disk_size("gguf:org/repo") == 1234
 
@@ -462,8 +448,7 @@ def test_disk_size_finds_whisper_under_download_root(
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     d = tmp_path / "models--Systran--faster-whisper-large-v3"
-    d.mkdir()
-    (d / "model.bin").write_bytes(b"x" * 5000)
+    write_bytes(d / "model.bin", b"x" * 5000)
 
     assert model_sizes.disk_size("large-v3") == 5000
     assert model_sizes.disk_size("Systran/faster-whisper-large-v3") == 5000
@@ -547,8 +532,7 @@ def test_a_live_disk_walk_beats_the_exact_placements_disk_row(
     outright."""
     import shutil
     blobs = _hf_repo(tmp_path, monkeypatch, "org--repo") / "blobs"
-    blobs.mkdir(parents=True)
-    (blobs / "a").write_bytes(b"x" * 3000)
+    write_bytes(blobs / "a", b"x" * 3000)
     model_sizes.record("pyannote:org/repo", "cuda", "float32", 30_000,
                        measured=False)
     assert _bytes_src("pyannote:org/repo", "cuda", "float32") == (3000, "disk")
