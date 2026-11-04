@@ -2,6 +2,8 @@
 partial-committed text, and the ledger row must say the decode failed (an
 error row, classified like the identical batch failure), not a success."""
 
+from faster_whisper_backend.stats import recent_transcriptions_store
+from faster_whisper_backend.streaming import routes as s_routes
 from tests._streaming_helpers import dictate_session
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
@@ -13,15 +15,12 @@ def _oom(*a, **kw):
 
 
 def _stream_rows():
-    from faster_whisper_backend.stats import recent_transcriptions_store
     return [r for r in recent_transcriptions_store.list_recent(limit=10)
             if r.get("source") == "stream"]
 
 
 def test_failed_final_decode_is_recorded_as_a_classified_error(
         client, app_module, monkeypatch, energy_vad):
-    from faster_whisper_backend.streaming import routes as s_routes
-
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
 
     msgs = dictate_session(client)
@@ -39,8 +38,6 @@ def test_failed_final_decode_receipt_says_the_decode_failed(
     """The decode never ran, so the receipt must not call the fallback
     utterance "[!] empty output" or advise loosening the thresholds."""
     import logging
-
-    from faster_whisper_backend.streaming import routes as s_routes
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
@@ -67,8 +64,6 @@ def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
     """The common shape of a real fault: the previews fail too, so nothing is
     committed and the session drops the utterance. No `final` goes out, but
     the error row must still land."""
-    from faster_whisper_backend.streaming import routes as s_routes
-
     real_kwargs = s_routes._build_transcribe_kwargs
 
     def _kwargs(*a, final, **kw):
@@ -85,7 +80,6 @@ def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
     assert any(m["type"] == "utterance" and m.get("reason") == "error" for m in msgs), msgs
     # No text, so no trace half (and no source tag): the error-path row
     # alone, like a failed batch job's — found by its kind.
-    from faster_whisper_backend.stats import recent_transcriptions_store
     rows = [r for r in recent_transcriptions_store.list_recent(limit=10)
             if r.get("kind") == "dictate"]
     assert rows, "the dropped utterance wrote no ledger row"
@@ -100,7 +94,6 @@ def test_failed_final_decode_broadcasts_an_error_entry(
     """The live /quick-config entry must carry the same status as the row a
     reload reads, not a hard-coded "ok"."""
     from faster_whisper_backend.quick_config import recent_feed
-    from faster_whisper_backend.streaming import routes as s_routes
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     q = recent_feed.subscribe()
