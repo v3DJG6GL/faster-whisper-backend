@@ -5,13 +5,13 @@ test_group_trim.py.
 """
 
 import difflib
-import os
 import random
 
 import pytest
 
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.captures import merge_proposer as P
+from tests.captures._store_helpers import insert_capture
 
 
 @pytest.mark.parametrize("inp,out", [
@@ -322,15 +322,9 @@ def test_eligible_accepts_raw_only_text():
 
 def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
                      language="de", user_id="u1", status="new", task=None):
-    rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
-    cs._require_conn().execute(
-        "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " text_for_training, words, segments, status, user_id, task)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (cid, ts, None, "m", language, dur, rel, "wav", "raw", "final",
-         text, "[]", "[]", status, user_id, task),
-    )
+    insert_capture(cs._require_conn(), cid, created_ts=ts, language=language,
+                   audio_s=dur, raw_text="raw", final_text="final",
+                   text_for_training=text, status=status, user_id=user_id, task=task)
 
 
 @pytest.fixture

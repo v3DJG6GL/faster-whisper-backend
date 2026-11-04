@@ -6,6 +6,7 @@ import os
 import pytest
 
 from faster_whisper_backend.captures import samples as capture_samples
+from tests.captures._store_helpers import insert_capture
 from tests.conftest import waits_on as _waits_on, write_bytes as _touch
 
 
@@ -29,17 +30,10 @@ def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
 
 def _insert_capture(cs, cid, *, sample_id=None, sample_order=None, language="de",
                     user_id="u1", created_ts=1.0, corrections="[]"):
-    rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
-    cs._require_conn().execute(
-        "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " words, segments, corrections, status, user_id,"
-        " sample_id, sample_order)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (cid, created_ts, None, "m", language, 2.0, rel, "wav", "raw",
-         "final", "[]", "[]", corrections, "new", user_id,
-         sample_id, sample_order),
-    )
+    insert_capture(cs._require_conn(), cid, created_ts=created_ts, language=language,
+                   audio_s=2.0, raw_text="raw", final_text="final",
+                   corrections=corrections, user_id=user_id,
+                   sample_id=sample_id, sample_order=sample_order)
 
 
 def test_relpath_for_fanout(groups_store_db):

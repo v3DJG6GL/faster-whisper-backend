@@ -20,6 +20,7 @@ from faster_whisper_backend.captures import reapply as captures_reapply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
+from tests.captures._store_helpers import insert_capture
 
 # The module's canonical idle state (mirrors reapply._reset_for_tests).
 _IDLE = {
@@ -149,11 +150,8 @@ def fake_pipeline(monkeypatch):
 
 
 def _insert(conn, cid, *, language, raw="hello", final="hello"):
-    conn.execute(
-        "INSERT INTO captures (id, created_ts, model, language, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,1.0,'m',?,'x.wav','wav',?,?,'[]','[]',"
-        "'[]','new','alice')", (cid, language, raw, final))
+    insert_capture(conn, cid, language=language, audio_relpath="x.wav",
+                   raw_text=raw, final_text=final, user_id="alice")
 
 
 def _insert_sample(conn, gs, sid, *, locked=0):

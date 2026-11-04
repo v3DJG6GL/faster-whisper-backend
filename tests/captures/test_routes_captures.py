@@ -22,6 +22,7 @@ from faster_whisper_backend.core import text_corrections
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 from tests._page_helpers import js_body, js_upto
+from tests.captures._store_helpers import insert_capture
 from tests.conftest import bearer, install_fake_wav_transcode, write_bytes, write_wav
 
 
@@ -179,18 +180,9 @@ def _insert_sample(conn, gs, sid, *, locked, user_id="alice", ts=1.0):
 def _insert_member(conn, cid, sid, user_id="alice", request_id=None, **cols):
     """Insert a captures row (optionally a member of sample `sid`) directly;
     `cols` override column values."""
-    row = {"id": cid, "created_ts": 1.0, "request_id": request_id,
-           "model": "m", "language": "de", "audio_s": 2.0,
-           "audio_relpath": captures_store._relpath_for(cid, "wav"),
-           "audio_format": "wav", "raw_text": "r", "final_text": "f",
-           "words": "[]", "segments": "[]", "corrections": "[]",
-           "status": "new", "user_id": user_id, "sample_id": sid,
-           "sample_order": 0, **cols}
-    conn.execute(
-        f"INSERT INTO captures ({', '.join(row)})"
-        f" VALUES ({', '.join('?' * len(row))})",
-        tuple(row.values()),
-    )
+    insert_capture(conn, cid, **{
+        "request_id": request_id, "language": "de", "audio_s": 2.0,
+        "user_id": user_id, "sample_id": sid, "sample_order": 0, **cols})
 
 
 def _root_and_alice(make_user_key):
