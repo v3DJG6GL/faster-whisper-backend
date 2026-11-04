@@ -125,10 +125,11 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _fetch(fetch, dest, **kw):
-    """`fetch` (udl.download / udl.download_video) of the stand-in link into
-    `dest`, with a 10 kB cap and a 30 s timeout unless `kw` overrides them."""
-    return _run(fetch("https://example.com/v", dest_dir=str(dest),
+def _fetch(fetch, dest, *, url="https://example.com/v", **kw):
+    """`fetch` (udl.download / udl.download_video) of `url` (the stand-in link
+    unless given) into `dest`, with a 10 kB cap and a 30 s timeout unless `kw`
+    overrides them."""
+    return _run(fetch(url, dest_dir=str(dest),
                       **{"max_bytes": 10_000, "timeout": 30, **kw}))
 
 
@@ -1006,9 +1007,7 @@ sys.exit(1)
 """)
     with caplog.at_level("WARNING", logger="whisper-api"):
         with pytest.raises(udl.UrlDownloadError):
-            _run(udl.download("https://alice:s3cret@nas.example.com/p",
-                              dest_dir=str(tmp_path), max_bytes=10_000,
-                              timeout=30))
+            _fetch(udl.download, tmp_path, url="https://alice:s3cret@nas.example.com/p")
     rec = [r.getMessage() for r in caplog.records if "yt-dlp exited" in r.getMessage()]
     assert rec and "https://***@nas.example.com/p" in rec[0]
     assert "s3cret" not in caplog.text
@@ -2172,8 +2171,8 @@ def test_download_video_over_cap_phrase_in_the_site_id_is_not_the_size_limit(tmp
     """The generic extractor prints the URL's last path segment as the id:
     a finished download of …/larger%20than%20max-filesize.mp4 is not refused."""
     _patch_video_argv(monkeypatch, _OVER_CAP_PHRASE_IN_ID_SCRIPT)
-    out = _run(udl.download_video("https://example.com/larger%20than%20max-filesize.mp4",
-                                  dest_dir=str(tmp_path), max_bytes=10_000, timeout=30))
+    out = _fetch(udl.download_video, tmp_path,
+                 url="https://example.com/larger%20than%20max-filesize.mp4")
     assert os.path.basename(out) == "media.mp4"
 
 
@@ -2191,9 +2190,8 @@ def test_download_video_forged_over_cap_line_does_not_refuse_a_finished_download
     """%0A in the URL's last path segment puts a newline into the generic id,
     so site text can print a whole over-cap line: a found result wins."""
     _patch_video_argv(monkeypatch, _OVER_CAP_LINE_FORGED_BY_ID_SCRIPT)
-    out = _run(udl.download_video(
-        "https://example.com/a%0A%5Bdownload%5D%20File%20is%20larger.mp4",
-        dest_dir=str(tmp_path), max_bytes=10_000, timeout=30))
+    out = _fetch(udl.download_video, tmp_path,
+                 url="https://example.com/a%0A%5Bdownload%5D%20File%20is%20larger.mp4")
     assert os.path.basename(out) == "media.mp4"
 
 
@@ -2222,8 +2220,8 @@ open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
 def test_download_video_accepts_a_single_muxed_file(tmp_path, monkeypatch):
     # A direct .mp4 link: no merge happens, so the container flag is moot.
     _patch_video_argv(monkeypatch, _SINGLE_MUXED_SCRIPT)
-    out = _run(udl.download_video("https://example.com/v.mp4", dest_dir=str(tmp_path),
-                                  max_bytes=10_000, timeout=30, container="mkv"))
+    out = _fetch(udl.download_video, tmp_path, url="https://example.com/v.mp4",
+                 container="mkv")
     assert os.path.basename(out) == "media.mp4"
 
 
@@ -2256,8 +2254,7 @@ open(os.path.join(r"__DEST__", "media.MP3"), "wb").write(b"x" * 64)
 
 def test_download_returns_an_uppercase_extension_file(tmp_path, monkeypatch):
     _patch_argv(monkeypatch, _UPPERCASE_EXT_SCRIPT)
-    out = _run(udl.download("https://example.com/AUDIO.MP3", dest_dir=str(tmp_path),
-                            max_bytes=10_000, timeout=30))
+    out = _fetch(udl.download, tmp_path, url="https://example.com/AUDIO.MP3")
     assert os.path.basename(out) == "media.MP3"
 
 
