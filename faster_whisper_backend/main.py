@@ -176,6 +176,7 @@ if sys.platform == "win32":
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # Auth dep used by /v1/audio/transcriptions and /translations. In open mode
@@ -750,7 +751,6 @@ app.mount(
 # same-origin with the session cookie).
 from faster_whisper_backend.auth.dependencies import require_admin as _require_admin
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
-from fastapi.responses import JSONResponse as _JSONResponse
 
 
 @app.get(
@@ -759,7 +759,7 @@ from fastapi.responses import JSONResponse as _JSONResponse
     dependencies=[Depends(auth_hosts.require_admin_webui_host), Depends(_require_admin)],
 )
 async def _openapi_json():
-    return _JSONResponse(app.openapi())
+    return JSONResponse(app.openapi())
 
 
 @app.get("/docs", include_in_schema=False, dependencies=[Depends(auth_hosts.require_admin_webui_host)])
@@ -853,7 +853,6 @@ async def _csrf_mw(request: Request, call_next):
     request carries (or none, in open mode).
     """
     if request.method.upper() not in _CSRF_SAFE_METHODS:
-        from fastapi.responses import JSONResponse
         if not auth_hosts._origin_is_allowed(request):
             auth_hosts._log_origin_rejected(request)
             return JSONResponse(
@@ -998,7 +997,6 @@ async def _max_body_mw(request: Request, call_next):
                 cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > max_body:
-        from fastapi.responses import JSONResponse
         return JSONResponse({"detail": "request body too large"}, status_code=413)
 
     # Count bytes as they stream in. Past the cap the receive channel reports
@@ -1180,7 +1178,6 @@ async def _rate_limited_handler(request: Request, exc: _rl.RateLimited):
     RateLimited is an HTTPException. Without it the default handler would emit
     {"detail": …} and drop error.param/error.retry_after.
     """
-    from fastapi.responses import JSONResponse
     return JSONResponse(exc.body(), status_code=429,
                         headers={"Retry-After": str(exc.retry_after)})
 
@@ -1196,7 +1193,6 @@ def _encodable_json_response(content, status_code: int, headers=None):
     surrogate goes back as its \\udXXX escape) with each non-finite float as
     the string "NaN", "Infinity" or "-Infinity".
     """
-    from fastapi.responses import JSONResponse, Response
     try:
         return JSONResponse(content, status_code=status_code, headers=headers)
     except ValueError:   # UnicodeEncodeError is one
@@ -1228,7 +1224,6 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     quotes a raw JSON-body string (a model name, say) can carry a lone
     surrogate (see _encodable_json_response). _rate_limited_handler still wins
     for its subclass — Starlette looks handlers up along the MRO."""
-    from fastapi.responses import Response
     from fastapi.utils import is_body_allowed_for_status_code
     headers = getattr(exc, "headers", None)
     if not is_body_allowed_for_status_code(exc.status_code):
@@ -3259,7 +3254,6 @@ async def transcribe(
             if response_format == "text":
                 # A bare str return is JSON-encoded by FastAPI (quotes, \n
                 # escapes, application/json); OpenAI answers the raw text.
-                from fastapi.responses import PlainTextResponse
                 _response_payload = full_text_str
                 return PlainTextResponse(full_text_str)
 
@@ -3271,7 +3265,6 @@ async def transcribe(
                 # and the output wrappers (a dictation prefix/suffix) stay
                 # out. Transcript only, like `text`: translate_to tracks have
                 # no slot in a single-language subtitle file.
-                from fastapi.responses import PlainTextResponse
                 _doc = _subtitles.render([
                     (seg["start"], seg["end"], pl_engine._postprocess_text(
                         seg["text"], model_name=resolved_model, ident=ident,
