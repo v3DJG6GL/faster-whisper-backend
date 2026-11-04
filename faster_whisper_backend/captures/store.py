@@ -39,6 +39,7 @@ import time
 import uuid
 from typing import Any, Callable
 
+from faster_whisper_backend.captures import samples_store as capture_samples_store
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import text_corrections
 
@@ -1074,7 +1075,6 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     # samples_store.dissolve_sample: the stores share one autocommit
     # connection, so a samples_store.update_sample from a rebuild thread
     # would otherwise join this transaction and be rolled back with it.
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     with capture_samples_store._lock, _lock:
         prev: list[sqlite3.Row] = []
         for chunk, marks in store_common.id_chunks(ids):
@@ -1114,7 +1114,6 @@ def delete_capture(cid: str, *, refuse_locked: bool = False) -> bool:
     refuse_locked: raise SampleLockedError instead when the parent sample
     is locked, read under the samples lock its is_locked writes take (a
     non-admin caller's pre-check may be stale)."""
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     conn = _require_conn()
     # Samples-then-captures, the order clear_all / dissolve_sample use.
     with (capture_samples_store._lock if refuse_locked
@@ -1138,7 +1137,6 @@ def delete_capture(cid: str, *, refuse_locked: bool = False) -> bool:
     _unlink_row_audio(row)
     if sid:
         try:
-            from faster_whisper_backend.captures import samples_store as capture_samples_store
             capture_samples_store.dissolve_sample(sid)
             logger.info(
                 "[captures] auto-dissolved sid=%s after member %s delete",
@@ -1166,7 +1164,6 @@ def clear_all(reporter_host: str = "") -> int:
     conn = _require_conn()
     audio_dir = _require_audio_dir()
     n_groups = 0
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     try:
         n_groups = capture_samples_store.clear_all_samples()
     except Exception as _e:
@@ -1342,7 +1339,6 @@ def sweep_retention() -> int:
     # Before taking _lock: dissolve_sample takes the samples lock and then
     # this module's, so calling it under _lock would invert that order.
     try:
-        from faster_whisper_backend.captures import samples_store as capture_samples_store
         capture_samples_store.expire_samples_older_than(cutoff)
     except Exception as e:  # noqa: BLE001 - retention must not die on this
         logger.warning("[captures] sample retention pass failed: %s", e)
