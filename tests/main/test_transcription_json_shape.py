@@ -6,7 +6,7 @@ map — none of them should require verbose_json to be seen."""
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import bearer
-from tests._translation_helpers import enable_translation
+from tests._translation_helpers import enable_translation, stub_translate
 from tests._transcription_helpers import bind_profile, post_transcription
 
 
@@ -75,16 +75,11 @@ def test_plain_json_translation_meta_names_kept_originals(client, app_module,
 def test_plain_json_translation_meta_kept_is_explicit_empty(client, app_module,
                                                             monkeypatch):
     enable_translation(app_module, monkeypatch)
-
-    async def _fake(segments, targets, **kwargs):
-        per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "de",
-                             "mode": "fluent"}
-    monkeypatch.setattr(translation, "translate_segments", _fake)
+    stub_translate(monkeypatch)
     r = _post(client, translate_to="en")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["translations"] == {"en": "XLATED-en"}
+    assert body["translations"] == {"en": "hallo welt-en"}
     assert body["translation"]["kept"] == {}
 
 

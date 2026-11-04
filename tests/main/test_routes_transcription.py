@@ -7,7 +7,7 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 import pytest
 
 from tests.conftest import FakeModel, FakeSegment, bearer, write_wav
-from tests._translation_helpers import enable_translation
+from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import capture_receipt
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
@@ -688,22 +688,14 @@ def test_translate_task_cascades_from_english_text(client, app_module,
     # one: the T2T stage must be told "en", or translate_to=de on German
     # audio short-circuits as same-language and copies the English text.
     enable_translation(app_module, monkeypatch)
-    seen: dict = {}
-
-    async def _fake(segments, targets, **kwargs):
-        seen["source_lang"] = kwargs.get("source_lang")
-        per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
-        return per_seg, [], {"model": "org/d:Q4",
-                             "source": kwargs.get("source_lang"),
-                             "mode": "fluent"}
-    monkeypatch.setattr(app_module._tr, "translate_segments", _fake)
+    calls = stub_translate(monkeypatch)
     assert fake_model._info.language == "de"
     r = _post(client, response_format="json", task="translate",
               translate_to="de")
     assert r.status_code == 200, r.text
-    assert seen["source_lang"] == "en"
+    assert calls[-1]["source_lang"] == "en"
     body = r.json()
-    assert body["translations"] == {"de": "XLATED-de"}
+    assert body["translations"] == {"de": "hallo welt-de"}
     assert body["translation"]["source"] == "en"
 
 
@@ -727,12 +719,8 @@ def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module
     # A multipart field can carry ~1 MiB of codes: the walk stops early and
     # the over-MAX_TARGETS warning never echoes the whole field back.
     enable_translation(app_module, monkeypatch)
-
-    async def _fake(segments, targets, **kwargs):
-        return ([{t: "x" for t in targets} for _ in segments], [],
-                {"model": "org/d:Q4", "source": "de", "mode": "fluent"})
-    monkeypatch.setattr(app_module._tr, "translate_segments", _fake)
-    codes = ",".join(f"aa-{i:05d}" for i in range(50_000))
+    stub_translate(monkeypatch)
+    codes =",".join(f"aa-{i:05d}" for i in range(50_000))
     r = _post(client, response_format="verbose_json", translate_to=codes)
     assert r.status_code == 200, r.text
     dropped = [w for w in r.json().get("warnings", []) if "were dropped" in w]

@@ -7,7 +7,7 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import get_progress, post_cancel, post_verbose as _post, record_runs
-from tests._translation_helpers import enable_translation
+from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import must_not_run
 
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -214,15 +214,9 @@ def test_in_flight_progress_id_is_treated_as_absent(client, app_module, caplog):
 
 def test_text_translations_in_flight_progress_id_is_treated_as_absent(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.translation import engine as translation
     enable_translation(app_module, monkeypatch,
                        TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4")
-
-    async def _fake(segments, targets, **kw):
-        return ([{t: "x" for t in targets} for _ in segments], [],
-                {"model": "org/default-GGUF:Q4", "source": "de",
-                 "mode": "fluent"})
-    monkeypatch.setattr(translation, "translate_segments", _fake)
+    stub_translate(monkeypatch)
     tx_progress._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": "other", "updated": 0}
     r = client.post("/v1/text/translations", json={
