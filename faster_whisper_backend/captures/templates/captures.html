@@ -1163,8 +1163,7 @@
   // on server round-trip echo so the user's click doesn't trigger a second
   // save).
   function buildStatusButtonGroup(options, current, onChange) {
-    var root = document.createElement('div');
-    root.className = 'status-btn-group';
+    var root = _el('div', 'status-btn-group');
     root.setAttribute('role', 'radiogroup');
     var buttons = new Map();
     options.forEach(function(opt) {
@@ -1173,8 +1172,7 @@
       b.className = 'status-btn';
       b.dataset.value = opt.value;
       b.textContent = opt.label;
-      var cnt = document.createElement('span');
-      cnt.className = 'cnt';
+      var cnt = _el('span', 'cnt');
       b.appendChild(cnt);
       b.setAttribute('role', 'radio');
       var on = (opt.value === current);
@@ -1889,13 +1887,11 @@
   }
 
   function renderCard(r) {
-    var card = document.createElement('div');
-    card.className = 'capture-card';
+    var card = _el('div', 'capture-card');
     card.dataset.id = r.id;
     if (_selection.has(r.id)) card.classList.add('selected');
 
-    var head = document.createElement('div');
-    head.className = 'cc-head';
+    var head = _el('div', 'cc-head');
     var cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.className = 'sel-checkbox';
@@ -1953,8 +1949,7 @@
     preview.textContent = _capturePreviewText(r, r.words);
     card.appendChild(preview);
 
-    var body = document.createElement('div');
-    body.className = 'cc-body';
+    var body = _el('div', 'cc-body');
     card.appendChild(body);
 
     head.addEventListener('click', function() { toggleExpand(card, r); });
@@ -2094,8 +2089,7 @@
          ['original', audioUrl + '?original=1', 'Download the untrimmed WAV (what the decode received)']]
       : [['wav', audioUrl, 'Download the WAV']];
     dls.forEach(function(d) {
-      var a = document.createElement('a');
-      a.className = 'compact-player-btn compact-player-dl';
+      var a = _el('a', 'compact-player-btn compact-player-dl');
       a.href = d[1]; a.title = d[2];
       a.setAttribute('download', '');
       a.setAttribute('aria-label', d[2]);
@@ -2127,11 +2121,9 @@
     var corrSec = _ccSection('cc-section', 'Corrections',
         'Click a word, or use ← / → and type, to mark '
       + 'and correct it; shift-click extends a range; Enter accepts, Del removes.');
-    var strip = document.createElement('div');
-    strip.className = 'word-strip';
+    var strip = _el('div', 'word-strip');
     state.words.forEach(function(w, i) {
-      var sp = document.createElement('span');
-      sp.className = 'word';
+      var sp = _el('span', 'word');
       var dw = _dispWord(w);
       sp.textContent = (dw || '').replace(/^\s+/, ' ');
       if (_dispRemoved(w)) {
@@ -2159,8 +2151,7 @@
     audio.addEventListener('timeupdate', onTimeUpdate);
 
     function textLine(klass, label, value) {
-      var row = document.createElement('div');
-      row.className = 'cc-textline ' + klass;
+      var row = _el('div', 'cc-textline ' + klass);
       var tag = _el('span', 'tag', label);
       row.appendChild(tag);
       var v = _el('span', 'val' + (value ? ' ws-region' : ''), value || '(empty)');
@@ -2180,8 +2171,7 @@
     }
 
     // Chips join the Corrections section above, as in the group view.
-    var chipBox = document.createElement('div');
-    chipBox.className = 'cc-corrections';
+    var chipBox = _el('div', 'cc-corrections');
     corrSec.appendChild(chipBox);
     body.appendChild(corrSec);
     state.chipBox = chipBox;
@@ -2204,8 +2194,7 @@
     var trs = r.translations || {};
     var trLangs = Object.keys(trs);
     if (trLangs.length) {
-      var trSec = document.createElement('div');
-      trSec.className = 'cc-section';
+      var trSec = _el('div', 'cc-section');
       // Match by BASE subtag: an `en-US` target is stored under that key.
       var enKey = null;
       for (var ei = 0; ei < trLangs.length; ei++) {
@@ -2238,8 +2227,7 @@
       trLangs.sort();
       for (var ti = 0; ti < trLangs.length; ti++) {
         var lg = trLangs[ti];
-        var trRow = document.createElement('div');
-        trRow.className = 'cc-tr-row';
+        var trRow = _el('div', 'cc-tr-row');
         var tag = _el('span', 'cc-tr-lang' + (eligible && lg === enKey ? ' cc-tr-eligible' : ''), lg.toUpperCase());
         if (!(eligible && lg === enKey)) tag.title = 'review only — not training data';
         var val = _readonlyBox('cc-ground cc-tr-text');
@@ -2261,8 +2249,7 @@
     notesSec.appendChild(notesArea);
     body.appendChild(notesSec);
 
-    var actions = document.createElement('div');
-    actions.className = 'cc-actions';
+    var actions = _el('div', 'cc-actions');
     var statusLbl = _el('span', 'cc-status-label', 'status ');
     var statusGrp = buildStatusButtonGroup(
       EDIT_STATUS_OPTS,
@@ -2316,8 +2303,7 @@
     actions.appendChild(dirty);
     state.dirtyEl = dirty;
 
-    var spc = document.createElement('span');
-    spc.className = 'spacer';
+    var spc = _el('span', 'spacer');
     actions.appendChild(spc);
 
     // Picks up rule edits without waiting for the bulk reapply job.
@@ -2398,8 +2384,7 @@
       return;
     }
     if (!existing) {
-      existing = document.createElement('span');
-      existing.className = 'word-replacement';
+      existing = _el('span', 'word-replacement');
       anchor.parentNode.insertBefore(existing, anchor.nextSibling);
     }
     existing.textContent = text;
@@ -3650,8 +3635,7 @@
     stripEl.innerHTML = '';
     var els = [];
     words.forEach(function(w, i) {
-      var sp = document.createElement('span');
-      sp.className = 'word';
+      var sp = _el('span', 'word');
       var dw = _dispWord(w);
       sp.textContent = (dw || '').replace(/^\s+/, ' ');
       if (_dispRemoved(w)) {
@@ -3958,8 +3942,7 @@
     audio.removeAttribute('controls');
     audio.classList.add('audio-hidden');
 
-    var wrap = document.createElement('div');
-    wrap.className = 'compact-player';
+    var wrap = _el('div', 'compact-player');
 
     var btn = document.createElement('button');
     btn.type = 'button';
@@ -3974,8 +3957,7 @@
     scrub.disabled = true;
 
     var timeEl = _el('span', 'compact-player-time', '0:00');
-    var sep = document.createElement('span');
-    sep.className = 'compact-player-time-sep'; sep.textContent = '/';
+    var sep = _el('span', 'compact-player-time-sep', '/');
     var totalEl = _el('span', 'compact-player-time', '0:00');
 
     wrap.appendChild(btn);
@@ -4087,8 +4069,7 @@
     var iconEl = document.createElement('span');
     iconEl.style.display = 'inline-flex';
     _setBtnIcon(iconEl, 'play');
-    var durEl = document.createElement('span');
-    durEl.className = 'dur';
+    var durEl = _el('span', 'dur');
     toggleBtn.appendChild(iconEl);
     toggleBtn.appendChild(durEl);
     if (opts.inlinePlayer) {
@@ -4120,21 +4101,18 @@
     };
     toggleBtn._refreshDur();
 
-    var panel = document.createElement('div');
-    panel.className = 'merge-preview-panel';
+    var panel = _el('div', 'merge-preview-panel');
     // Inline-player cards show the seek bar (with its left-edge ▶) up front;
     // the Corrections/Final sections stay hidden until the first play loads
     // the words. Other callers keep the whole panel hidden until ▶ is clicked.
     panel.hidden = !opts.inlinePlayer;
-    var controls = document.createElement('div');
-    controls.className = 'compact-player';
+    var controls = _el('div', 'compact-player');
     var scrub = document.createElement('input');
     scrub.type = 'range'; scrub.min = '0'; scrub.max = '1000'; scrub.value = '0';
     scrub.className = 'compact-player-scrub';
     scrub.disabled = true;
     var timeEl = _el('span', 'compact-player-time', '0:00');
-    var sep = document.createElement('span');
-    sep.className = 'compact-player-time-sep'; sep.textContent = '/';
+    var sep = _el('span', 'compact-player-time-sep', '/');
     var totalEl = _el('span', 'compact-player-time', '0:00');
     if (opts.inlinePlayer) controls.appendChild(toggleBtn);
     controls.appendChild(scrub);
@@ -4148,11 +4126,9 @@
         'Click a word to mark it; shift-click another to '
       + 'extend the range; type the corrected text in the chip below. '
       + 'Edits save automatically to the source captures.');
-    var stripEl = document.createElement('div');
-    stripEl.className = 'merge-preview-strip word-strip';
+    var stripEl = _el('div', 'merge-preview-strip word-strip');
     corrSec.appendChild(stripEl);
-    var chipBox = document.createElement('div');
-    chipBox.className = 'cc-corrections';
+    var chipBox = _el('div', 'cc-corrections');
     corrSec.appendChild(chipBox);
 
     var gtArea;
@@ -4386,11 +4362,9 @@
   }
 
   function _buildProposalCard(p) {
-    var card = document.createElement('div');
-    card.className = 'proposal';
+    var card = _el('div', 'proposal');
 
-    var row1 = document.createElement('div');
-    row1.className = 'row1';
+    var row1 = _el('div', 'row1');
 
     var n = Math.round((p.composite_score || 0) * 100);
     var score = _el('span', 'score tier-' + _scoreTier(n), n + ' / 100');
@@ -4403,10 +4377,8 @@
 
     var meterWrap = document.createElement('span');
     meterWrap.title = 'Total packed duration vs ' + SAMPLE_CAP_S + ' s cap';
-    var meterBar = document.createElement('span');
-    meterBar.className = 'meter-bar';
-    var fill = document.createElement('span');
-    fill.className = 'fill';
+    var meterBar = _el('span', 'meter-bar');
+    var fill = _el('span', 'fill');
     var pct = Math.min(100, Math.round((p.total_duration_s / SAMPLE_CAP_S) * 100));
     fill.style.width = pct + '%';
     meterBar.appendChild(fill);
@@ -4426,8 +4398,7 @@
     row1.appendChild(lang);
 
     if (p.username || p.user_id) {
-      var spk = document.createElement('span');
-      spk.className = 'speaker-pill';
+      var spk = _el('span', 'speaker-pill');
       spk.title = 'speaker';
       spk.textContent = p.username || String(p.user_id).slice(0, 8);
       row1.appendChild(spk);
@@ -4444,8 +4415,7 @@
     sp.style.flex = '1';
     row1.appendChild(sp);
 
-    var accept = document.createElement('button');
-    accept.className = 'primary';
+    var accept = _el('button', 'primary');
     accept.type = 'button';
     accept.textContent = 'Accept';
     accept.addEventListener('click', function() { _acceptProposal(p, accept); });
@@ -4457,18 +4427,15 @@
 
     card.appendChild(previewCtl.panel);
 
-    var members = document.createElement('div');
-    members.className = 'members';
+    var members = _el('div', 'members');
     // Per-line speaker only when it differs from the proposal's (cannot
     // happen today: proposals are per speaker; defensive).
     var allSameSpeaker = (p.member_previews || []).every(function(m) {
       return (m.user_id || '') === (p.user_id || '');
     });
     (p.member_previews || []).forEach(function(m) {
-      var line = document.createElement('div');
-      line.className = 'm';
-      var ts = document.createElement('span');
-      ts.className = 'ts';
+      var line = _el('div', 'm');
+      var ts = _el('span', 'ts');
       stampTs(ts, m.created_ts || 0);
       line.appendChild(ts);
       var dur = _el('span', 'dur', (m.duration_s || 0).toFixed(1) + 's');
@@ -4477,8 +4444,7 @@
         var spk = _el('span', 'm-spk', m.username || String(m.user_id).slice(0, 8));
         line.appendChild(spk);
       }
-      var txt = document.createElement('span');
-      txt.className = 'm-text';
+      var txt = _el('span', 'm-text');
       txt.title = m.preview || '';
       txt.textContent = m.preview || '(no transcript)';
       line.appendChild(txt);
@@ -4727,14 +4693,12 @@
   }
 
   function _renderBatchDone(host) {
-    var done = document.createElement('div');
-    done.className = 'batch-done';
+    var done = _el('div', 'batch-done');
     done.innerHTML = '<h4>All done.</h4>'
       + '<div class="summary"><span class="count">' + _batchAccepted
       + '</span> accepted · <span class="count">' + _batchDismissed
       + '</span> dismissed</div>';
-    var acts = document.createElement('div');
-    acts.className = 'actions';
+    var acts = _el('div', 'actions');
     var refreshBtn = document.createElement('button');
     refreshBtn.type = 'button'; refreshBtn.className = 'primary';
     refreshBtn.textContent = 'Refresh batch';
@@ -4975,10 +4939,8 @@
 
   // Sample cards: packed fine-tune training samples.
   function _renderSampleCard(g) {
-    var card = document.createElement('div');
-    card.className = 'capture-card is-group';
-    var head = document.createElement('div');
-    head.className = 'cc-head';
+    var card = _el('div', 'capture-card is-group');
+    var head = _el('div', 'cc-head');
     head.innerHTML =
       '<span class="expand-arrow">›</span>' +
       '<span class="when"></span>' +
@@ -5012,8 +4974,7 @@
     preview.textContent = g.transcript || '(empty)';
     card.appendChild(preview);
 
-    var body = document.createElement('div');
-    body.className = 'cc-body';
+    var body = _el('div', 'cc-body');
     card.appendChild(body);
     head.addEventListener('click', function() { _toggleSampleExpand(card, g); });
     return card;
@@ -5091,8 +5052,7 @@
 
         // Per-member raw / post-processing rows (single-capture textLine shape).
         function _textLine(klass, label, value) {
-          var row = document.createElement('div');
-          row.className = 'cc-textline ' + klass;
+          var row = _el('div', 'cc-textline ' + klass);
           var tag = _el('span', 'tag', label);
           row.appendChild(tag);
           var v = _el('span', 'val' + (value ? ' ws-region' : ' dim'), value || '(empty)');
@@ -5130,12 +5090,10 @@
             'Click a word, or use ← / → and type, to '
           + 'mark and correct it; shift-click extends a range; Enter '
           + 'accepts, Del removes.');
-        var staleHint = document.createElement('div');
-        staleHint.className = 'help';
+        var staleHint = _el('div', 'help');
         staleHint.style.color = 'var(--cyan)';
         corrSec.appendChild(staleHint);
-        var strip = document.createElement('div');
-        strip.className = 'word-strip';
+        var strip = _el('div', 'word-strip');
         corrSec.appendChild(strip);
         sampleState.stripEl = strip;
         if (typeof sampleState.cursorIdx !== 'number') sampleState.cursorIdx = -1;
@@ -5147,8 +5105,7 @@
           _setActiveWord(sampleState, _wordIdxAt(sampleState.words, audio.currentTime));
         });
 
-        var chipBox = document.createElement('div');
-        chipBox.className = 'cc-corrections';
+        var chipBox = _el('div', 'cc-corrections');
         corrSec.appendChild(chipBox);
         body.appendChild(corrSec);
         sampleState.chipBox = chipBox;
@@ -5160,12 +5117,10 @@
         gtSec.appendChild(ta);
         body.appendChild(gtSec);
 
-        var settingsSec = document.createElement('div');
-        settingsSec.className = 'cc-section';
+        var settingsSec = _el('div', 'cc-section');
         settingsSec.style.cssText = 'display:flex;gap:1rem;align-items:center;'
           + 'flex-wrap:wrap;margin-top:0.5rem;';
-        var settingsHint = document.createElement('span');
-        settingsHint.className = 'help';
+        var settingsHint = _el('span', 'help');
         settingsSec.appendChild(settingsHint);
         body.appendChild(settingsSec);
 
@@ -5189,8 +5144,7 @@
         notesSec.appendChild(notesArea);
         body.appendChild(notesSec);
 
-        var actions = document.createElement('div');
-        actions.className = 'cc-actions';
+        var actions = _el('div', 'cc-actions');
         var statusLbl = _el('span', 'cc-status-label', 'status ');
         var statusGrp = buildStatusButtonGroup(
           EDIT_STATUS_OPTS,
@@ -5228,8 +5182,7 @@
         var dirtyEl = _el('span', 'dirty hidden', 'unsaved');
         actions.appendChild(dirtyEl);
         sampleState.dirtyEl = dirtyEl;
-        var spc = document.createElement('span');
-        spc.className = 'spacer';
+        var spc = _el('span', 'spacer');
         actions.appendChild(spc);
         var saveTBtn = document.createElement('button');
         saveTBtn.textContent = 'Save';
@@ -5245,8 +5198,7 @@
         actions.appendChild(dissolveBtn);
         body.appendChild(actions);
 
-        var membersDiv = document.createElement('div');
-        membersDiv.className = 'group-members';
+        var membersDiv = _el('div', 'group-members');
         body.appendChild(membersDiv);
 
         // On a failed fetch a missing-audio banner replaces the player; its
@@ -5637,8 +5589,7 @@
       if (!_samplesNext || _filtStatus === 'audio_missing') return;
       // Auto-triggers when scrolled into view; the button covers browsers
       // without IntersectionObserver and lists too short to scroll.
-      var more = document.createElement('div');
-      more.className = 'load-more-wrap';
+      var more = _el('div', 'load-more-wrap');
       var btn = document.createElement('button');
       btn.id = 'btn-load-more-samples';
       btn.textContent = _samplesLoading
@@ -5666,8 +5617,7 @@
     }
 
     if (combined.length === 0) {
-      var empty = document.createElement('div');
-      empty.className = 'empty-state';
+      var empty = _el('div', 'empty-state');
       empty.innerHTML = _allCaptures.length === 0
         ? '<strong>No captures yet.</strong> Enable <em>CAPTURES_RECORDING_ENABLED</em> in /settings and send a transcription request.'
         : 'No captures match the current filters.';
