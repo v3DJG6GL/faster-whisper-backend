@@ -565,7 +565,7 @@ def test_held_receipt_survives_a_gpu_queue_with_a_resident_model(
     progress meanwhile. The receipt must outlive that queue."""
     from faster_whisper_backend.transcription import models as tx_models
 
-    _enable(app_module, monkeypatch)
+    _enable_stubbed(app_module, monkeypatch)
     monkeypatch.setattr(tr_routes, "_HOLD_HEARTBEAT_S", 0.05)
     monkeypatch.setattr(translation, "_resolve_device", lambda: "cuda")
     monkeypatch.setattr(translation, "is_resident", lambda ref: True)
@@ -579,7 +579,6 @@ def test_held_receipt_survives_a_gpu_queue_with_a_resident_model(
             swept.extend(receipt_hold.sweep())
         yield
     monkeypatch.setattr(tx_models, "get_inference_semaphore", _busy_gate)
-    _stub_translate(monkeypatch)
     _park("cap-q", hold_s=0.2)
     r = client.post(URL, json=_body(captured_id="cap-q"))
     assert r.status_code == 200, r.text
@@ -916,12 +915,7 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     """A translate that names no captured_id (a stop-timing one-shot, a
     plain API caller) still gets ONE receipt block with the model, targets
     and identity — not just the progress lines."""
-    _enable(app_module, monkeypatch)
-
-    async def _fake(segments, targets, *, progress_cb=None, download_cb=None,
-                    **kwargs):
-        return _echo_result(segments, targets)
-    monkeypatch.setattr(translation, "translate_segments", _fake)
+    _enable_stubbed(app_module, monkeypatch)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.post(URL, json=_body(client_job="a" * 32))
