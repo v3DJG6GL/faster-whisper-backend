@@ -265,18 +265,25 @@ def test_finish_without_trace_is_none():
     assert dt.finish(None, [], FakeInfo()) is None
 
 
+_SEG = {"id": 0, "start": 0.02, "end": 1.72, "alp": -0.44, "nsp": 0.01,
+        "cr": 0.64, "temp": 0.0, "text": "Erzinkontinenz", "dropped": False}
+
+
+def _block(seg=_SEG, label="stream utt#3", duration=2.2, **kw):
+    """The receipt block of a beam-10 stream utterance with one seg_diag row."""
+    return tx_receipt._format_request_block(
+        file_label=label, model_name="m", info=FakeInfo(duration=duration),
+        kwargs={"beam_size": 10}, seg_diag=[seg], raw="", final="", **kw)
+
+
 def test_receipt_renders_the_section_and_stays_unchanged_without_it(app_module):
-    seg = [{"id": 0, "start": 0.02, "end": 1.72, "alp": -0.44, "nsp": 0.01,
-            "cr": 0.64, "temp": 0.0, "text": "Erzinkontinenz", "dropped": False}]
-    base = dict(file_label="stream utt#3", model_name="m", info=FakeInfo(duration=2.2),
-                kwargs={"beam_size": 10}, seg_diag=seg, raw="", final="")
-    plain = tx_receipt._format_request_block(**base)
+    plain = _block()
     assert "Decode trace" not in plain
-    assert tx_receipt._format_request_block(**base, decode_trace=None) == plain
-    assert tx_receipt._format_request_block(**base, decode_trace={"windows": []}) == plain
+    assert _block(decode_trace=None) == plain
+    assert _block(decode_trace={"windows": []}) == plain
 
     t = _run(dt.install(_incident_model()))
-    block = tx_receipt._format_request_block(**base, decode_trace=t)
+    block = _block(decode_trace=t)
     assert "Decode trace  (2 windows · 7 generate calls · 2645 tokens" in block
     assert "kept · 1 segment" in block
     assert "retry · cr " in block and "> 2.4" in block
@@ -484,14 +491,8 @@ def test_stop_needs_a_capture_to_be_armed():
 
 
 def test_receipt_shows_the_refused_window_and_the_guard_row(app_module):
-    seg = [{"id": 0, "start": 0.02, "end": 1.72, "alp": -0.44, "nsp": 0.01,
-            "cr": 0.64, "temp": 0.0, "text": "Erzinkontinenz", "dropped": False}]
     _, t = _run_stop(dt.install(_incident_model()), skip_residual=True)
-    base = dict(file_label="stream utt#3", model_name="m", info=FakeInfo(duration=2.2),
-                kwargs={"beam_size": 10}, seg_diag=seg, raw="", final="",
-                decode_trace=t)
-    block = tx_receipt._format_request_block(
-        **base, guards={"skip_residual_windows": True})
+    block = _block(decode_trace=t, guards={"skip_residual_windows": True})
     assert "Decode trace  (2 windows · 1 generate call · 5 tokens" in block
     assert "· 1 residual skipped)" in block
     row = next(l for l in block.splitlines() if "skipped · previous window" in l)
@@ -499,8 +500,7 @@ def test_receipt_shows_the_refused_window_and_the_guard_row(app_module):
     assert "1.73s" in row and "0.47s" in row
     guard = next(l for l in block.splitlines() if "skip_residual_windows" in l)
     assert guard.rstrip().endswith("true"), "default on: no non-default marker"
-    off = tx_receipt._format_request_block(
-        **base, guards={"skip_residual_windows": False})
+    off = _block(decode_trace=t, guards={"skip_residual_windows": False})
     assert next(l for l in off.splitlines()
                 if "skip_residual_windows" in l).rstrip().endswith("false *")
 
@@ -595,17 +595,14 @@ def test_receipt_shows_the_cap_and_the_guard_row(app_module):
     lines = tx_receipt._format_decode_trace_section(t)
     text = "\n".join(lines)
     assert "[cap 101]" in text and "hit cap" in text
-    seg = [{"id": 0, "start": 0.0, "end": 7.0, "alp": -0.22, "nsp": 0.01,
-            "cr": 0.8, "temp": 0.2, "text": "x", "dropped": False}]
-    base = dict(file_label="stream utt#4", model_name="m",
-                info=FakeInfo(duration=7.06), kwargs={"beam_size": 10},
-                seg_diag=seg, raw="", final="", decode_trace=t)
-    block = tx_receipt._format_request_block(
-        **base, guards={"token_cap_per_second": 10.0})
+    seg = {"id": 0, "start": 0.0, "end": 7.0, "alp": -0.22, "nsp": 0.01,
+           "cr": 0.8, "temp": 0.2, "text": "x", "dropped": False}
+    block = _block(seg, "stream utt#4", 7.06, decode_trace=t,
+                   guards={"token_cap_per_second": 10.0})
     guard = next(l for l in block.splitlines() if "token_cap_per_second" in l)
     assert guard.rstrip().endswith("10.0"), "default 10: no non-default marker"
-    off = tx_receipt._format_request_block(
-        **base, guards={"token_cap_per_second": 0.0})
+    off = _block(seg, "stream utt#4", 7.06, decode_trace=t,
+                 guards={"token_cap_per_second": 0.0})
     assert next(l for l in off.splitlines()
                 if "token_cap_per_second" in l).rstrip().endswith("0.0 *")
 
