@@ -15,11 +15,9 @@ _URL = "https://www.youtube.com/watch?v=abc123xyz"
 
 
 @pytest.fixture
-def url_enabled(app_module, tmp_path, monkeypatch):
+def url_enabled(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", True,
                         raising=False)
-    monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR",
-                        str(tmp_path / "url_media"), raising=False)
     url_media_store.startup_reset()
 
     async def _probe(url, *, timeout):

@@ -877,19 +877,17 @@ def test_batch_capture_gate_reads_the_store_off_the_event_loop(
     assert on_loop == [False]
 
 
-def _retain_on(app_module, monkeypatch, tmp_path):
+def _retain_on(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", True,
                         raising=False)
-    monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR",
-                        str(tmp_path / "url_media"), raising=False)
 
 
 def test_retain_media_over_the_store_cap_is_declined_with_a_warning(
-        client, app_module, monkeypatch, tmp_path):
+        client, app_module, monkeypatch):
     """A store cap below MEDIA_MAX_BYTES: an upload the store would drop at
     once is never copied or registered, and the response says why instead
     of silently omitting source_media_id."""
-    _retain_on(app_module, monkeypatch, tmp_path)
+    _retain_on(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "RETAINED_MEDIA_MAX_BYTES", 4,
                         raising=False)
     calls = []
@@ -907,10 +905,10 @@ def test_retain_media_over_the_store_cap_is_declined_with_a_warning(
 
 @pytest.mark.parametrize("fmt", ["text", "srt", "vtt"])
 def test_retain_media_with_a_body_that_cannot_name_it_is_refused(
-        client, app_module, monkeypatch, tmp_path, fmt):
+        client, app_module, monkeypatch, fmt):
     """A plain-text or subtitle body has no field for source_media_id: the
     retained copy could never be addressed, so no copy is staged at all."""
-    _retain_on(app_module, monkeypatch, tmp_path)
+    _retain_on(app_module, monkeypatch)
     calls = []
     monkeypatch.setattr(media_store, "make_pipeline_copy",
                         lambda *a, **kw: calls.append("copy"))
@@ -920,9 +918,8 @@ def test_retain_media_with_a_body_that_cannot_name_it_is_refused(
     assert calls == []
 
 
-def test_retain_media_refused_by_register_says_so(client, app_module,
-                                                  monkeypatch, tmp_path):
-    _retain_on(app_module, monkeypatch, tmp_path)
+def test_retain_media_refused_by_register_says_so(client, app_module, monkeypatch):
+    _retain_on(app_module, monkeypatch)
     monkeypatch.setattr(media_store, "register", lambda *a, **kw: None)
     r = _post(client, response_format="json", retain_media="true")
     assert r.status_code == 200, r.text
@@ -931,12 +928,11 @@ def test_retain_media_refused_by_register_says_so(client, app_module,
     assert any(w.startswith("retain_media:") for w in body["warnings"])
 
 
-def test_retain_media_staging_failure_says_so(client, app_module,
-                                              monkeypatch, tmp_path):
+def test_retain_media_staging_failure_says_so(client, app_module, monkeypatch):
     """make_pipeline_copy returns None when both the hardlink and the copy
     fail: the register block never runs, so the response must say why
     instead of silently omitting source_media_id."""
-    _retain_on(app_module, monkeypatch, tmp_path)
+    _retain_on(app_module, monkeypatch)
     calls = []
     monkeypatch.setattr(media_store, "register",
                         lambda *a, **kw: calls.append("register"))
