@@ -8,7 +8,10 @@ import os
 
 import pytest
 
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.core import atomic_json
 from faster_whisper_backend.runtime import model_sizes
+from faster_whisper_backend.settings import config as cfg
 
 
 GB = 1024 ** 3
@@ -201,7 +204,6 @@ def test_a_nonsense_count_reads_as_zero(ledger):
 # deadlock covers every model, silently.
 
 def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
-    from faster_whisper_backend.settings import config as cfg
     root = tmp_path / "dl"
     (root / "audio-separator").mkdir(parents=True)
     blob = root / "audio-separator" / "UVR-MDX-NET-Inst_HQ_4.onnx"
@@ -355,7 +357,6 @@ def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
 
 def test_estimate_falls_back_to_disk_then_prefers_a_measurement(
         ledger, tmp_path, monkeypatch):
-    from faster_whisper_backend.settings import config as cfg
     hf = tmp_path / "hf"
     d = hf / "hub" / "models--openai--whisper-tiny"
     d.mkdir(parents=True)
@@ -380,7 +381,6 @@ def test_disk_size_uvr_falls_back_to_tempdir_without_download_root(
         ledger, tmp_path, monkeypatch):
     """bgm_separation loads from <tempdir>/audio-separator when DOWNLOAD_ROOT
     is unset — the sizing must look in the same place, not give up."""
-    from faster_whisper_backend.settings import config as cfg
     (tmp_path / "audio-separator").mkdir()
     (tmp_path / "audio-separator" / "Foo.onnx").write_bytes(b"x" * 2048)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
@@ -393,10 +393,6 @@ def test_disk_size_uvr_falls_back_to_tempdir_without_download_root(
 def test_uvr_path_matches_the_separator_model_dir(tmp_path, monkeypatch):
     """model_sizes mirrors bgm_separation.model_file_dir() instead of
     importing it; this keeps the two from drifting apart."""
-    import os
-
-    from faster_whisper_backend.audio import bgm_separation
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(model_sizes.tempfile, "gettempdir",
                         lambda: str(tmp_path))
     for root in (str(tmp_path / "dl"), ""):
@@ -409,8 +405,6 @@ def test_uvr_dir_expands_a_tilde_download_root(tmp_path, monkeypatch):
     """A .env DOWNLOAD_ROOT=~/models reaches cfg unexpanded; Separator
     makedirs model_file_dir as given, so the UVR models must land under the
     home dir like the whisper/HF ones, not in a literal '<cwd>/~' tree."""
-    from faster_whisper_backend.audio import bgm_separation
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser on Windows
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "~/models", raising=False)
@@ -449,7 +443,6 @@ def test_disk_size_defaults_to_the_hub_cache_without_any_root(
     prior must look where the hub itself writes (its HF_HUB_CACHE, frozen at
     import) instead of giving up."""
     from huggingface_hub import constants
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
     hub = tmp_path / ".cache" / "huggingface" / "hub"
@@ -467,7 +460,6 @@ def test_disk_size_finds_whisper_under_download_root(
     cache_dir and maps 'large-v3' through faster_whisper's _MODELS table — the
     prior must look where the bytes actually land."""
     pytest.importorskip("faster_whisper")
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     d = tmp_path / "models--Systran--faster-whisper-large-v3"
@@ -498,7 +490,6 @@ def test_record_merges_a_peer_workers_row_instead_of_clobbering_it(ledger):
 
 
 def test_record_holds_the_cross_process_save_lock(ledger, monkeypatch):
-    from faster_whisper_backend.core import atomic_json
     entered = []
     real = atomic_json.save_lock
 
@@ -632,7 +623,6 @@ def test_tilde_roots_resolve_under_the_home_dir(ledger, tmp_path,
     """The hub expands "~" in HF_HOME and in an explicit cache_dir; a .env
     value is not expanded by python-dotenv, so the lookup must do it."""
     from faster_whisper_backend.runtime import hf_cache
-    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HF_HOME", "~/hf")
@@ -653,7 +643,6 @@ def test_app_module_keeps_record_off_the_default_ledger(app_module, tmp_path,
     # record() is reached through a model_registry registration (a positive
     # VRAM delta is a measurement); its lock, read and write must all land
     # on app_module's tmp ledger, never on the import-time default path.
-    from faster_whisper_backend.core import atomic_json
     from faster_whisper_backend.runtime import model_registry
     written = []
     real = atomic_json.atomic_write_json
