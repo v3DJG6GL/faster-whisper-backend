@@ -7,11 +7,13 @@ test_factory_rules.py.
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from faster_whisper_backend.pipeline import regex_guard
 from faster_whisper_backend.settings import config as cs_config
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
@@ -526,7 +528,6 @@ def test_pipeline_bad_backref_reported():
 def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
     # The structural screen refuses a catastrophic-backtracking pattern on save
     # before any timed probe runs; the shortened timeout only bounds a regression.
-    from faster_whisper_backend.pipeline import regex_guard
     monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 0.5)
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=regex_list_rules("boom", "(.*a)+$", ""))
@@ -582,7 +583,6 @@ def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
     # so a normal config load never spawns the helper and never hangs on a
     # stored pattern. A pattern that only the BACKTRACKING probe would flag
     # (compiles fine; pathological only against real input) validates cleanly.
-    from faster_whisper_backend.pipeline import regex_guard
     calls = {"n": 0}
 
     def _spy(*a, **k):
@@ -655,7 +655,6 @@ def test_pipeline_bad_backref_rejected_on_load_without_subprocess(monkeypatch):
     # against one group has to fail-safe at LOAD, not load cleanly and then
     # raise re.error on every request at match time. And detecting it must
     # not need the subprocess helper.
-    from faster_whisper_backend.pipeline import regex_guard
 
     def _boom(*a, **k):
         raise AssertionError("subprocess guard must not run on load")
@@ -726,7 +725,6 @@ def test_regex_list_nested_fixed_counts_refused_before_the_template_sub():
     # `(?:(?:a{0}){N}){N}` loops N*N times even on "", so 1e5 x 1e5 never
     # returned. The counts are refused match-free first. Run in a thread
     # so a regression fails here instead of hanging the suite.
-    import threading
     out = {}
 
     def _validate():
@@ -1252,10 +1250,8 @@ def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch)
     # applied override at save time but the bare default at load time, so a
     # save passed and the next restart's load failed it and silently dropped
     # EVERY override on disk.
-    from faster_whisper_backend.settings import config as _cfg
-
-    monkeypatch.setattr(_cfg, "CAPTURES_PROPOSER_TARGET_S", 5.0, raising=False)
-    assert _cfg._BASELINE["CAPTURES_PROPOSER_TARGET_S"] > 6.0
+    monkeypatch.setattr(cs_config, "CAPTURES_PROPOSER_TARGET_S", 5.0, raising=False)
+    assert cs_config._BASELINE["CAPTURES_PROPOSER_TARGET_S"] > 6.0
 
     # TARGET absent: the 26.0 baseline is outside 1..6; the live 5.0 would pass.
     _bad(CAPTURES_SAMPLE_MIN_DURATION_S=1.0, CAPTURES_SAMPLE_MAX_DURATION_S=6.0)
@@ -1310,10 +1306,9 @@ def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,
     """A save must see the env-pinned sibling that will be in force: with env
     KEEP_S=12 pinned, TRIM_S=11 passed against the baseline KEEP_S=10, ran
     inconsistent, and the next restart reverted the env value."""
-    from faster_whisper_backend.settings import config as _cfg
     monkeypatch.setattr(cs, "env_pinned_fields", lambda: {
         "STREAMING_BUFFER_TRIM_KEEP_S": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_S"})
-    monkeypatch.setattr(_cfg, "STREAMING_BUFFER_TRIM_KEEP_S", 12.0)
+    monkeypatch.setattr(cs_config, "STREAMING_BUFFER_TRIM_KEEP_S", 12.0)
     p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
         cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 11}, p)
@@ -1329,12 +1324,11 @@ def test_save_overrides_refuses_a_file_only_an_env_pin_makes_valid(tmp_path,
     EVERY override when it fails (at boot and in the hot-apply right after a
     save). A save consistent only thanks to an env-pinned sibling must 422
     instead of being written and then thrown away with the rest of the file."""
-    from faster_whisper_backend.settings import config as _cfg
     monkeypatch.setattr(cs, "env_pinned_fields", lambda: {
         "MEDIA_MAX_BYTES": "WHISPER_MEDIA_MAX_BYTES",
         "STREAMING_BUFFER_TRIM_KEEP_S": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_S"})
-    monkeypatch.setattr(_cfg, "MEDIA_MAX_BYTES", 2_000_000_000)
-    monkeypatch.setattr(_cfg, "STREAMING_BUFFER_TRIM_KEEP_S", 5.0)
+    monkeypatch.setattr(cs_config, "MEDIA_MAX_BYTES", 2_000_000_000)
+    monkeypatch.setattr(cs_config, "STREAMING_BUFFER_TRIM_KEEP_S", 5.0)
     p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
         cs.save_overrides({"MAX_REQUEST_BYTES": 3_000_000_000}, p)
@@ -1439,19 +1433,18 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
     would stop an admin's edit from ever reaching the live cfg."""
     import importlib
 
-    from faster_whisper_backend.settings import config
     try:
         monkeypatch.setenv("WHISPER_BEAM_SIZE", "9999")   # fails Field(le=...)
         monkeypatch.setenv("WHISPER_BEST_OF", "3")        # valid
-        importlib.reload(config)
-        assert "BEAM_SIZE" in config._ENV_REJECTED
-        assert "BEST_OF" not in config._ENV_REJECTED
+        importlib.reload(cs_config)
+        assert "BEAM_SIZE" in cs_config._ENV_REJECTED
+        assert "BEST_OF" not in cs_config._ENV_REJECTED
         pinned = cs.env_pinned_fields()
         assert "BEAM_SIZE" not in pinned
         assert pinned.get("BEST_OF") == "WHISPER_BEST_OF"
     finally:
         monkeypatch.undo()
-        importlib.reload(config)  # restore from the clean environment
+        importlib.reload(cs_config)  # restore from the clean environment
 
 
 def test_format_validation_errors_shape():
@@ -1478,8 +1471,6 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     parked inside its window and only released once the fast save has run to
     completion, which is the exact interleaving that lost the update.
     """
-    import threading
-
     p = str(tmp_path / "config.local.json")
     cs.save_overrides({"BEAM_SIZE": 5}, p)
 
@@ -1549,8 +1540,6 @@ def test_save_lock_timeout_surfaces_as_oserror(tmp_path, monkeypatch):
     """Callers wrap save_overrides in `except OSError`. A same-process peer
     holding the save lock trips the in-process threading.Lock timeout, which
     must surface as an OSError naming the peer save."""
-    import threading
-
     p = str(tmp_path / "config.local.json")
     monkeypatch.setattr(atomic_json, "SAVE_LOCK_TIMEOUT_S", 0.05)
     holder_in = threading.Event()
