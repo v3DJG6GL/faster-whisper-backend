@@ -154,6 +154,10 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         getattr(cfg, "URL_DOWNLOAD_ENABLED", False))
     if caps["url_download_enabled"]:
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
+
+    def _url_flag(field: str) -> bool:
+        return bool(caps["url_download_enabled"] and getattr(cfg, field, False))
+
     # The transcription ceiling (an upload or a link's audio for a run), so
     # the client can size its own local copies and refuse an oversized file
     # before sending it. Always present: uploads are capped too.
@@ -167,20 +171,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # Whether a link's VIDEO can be kept/fetched (keep_video on the
     # transcription form, POST /v1/audio/url-media/video). Always present;
     # the detail key rides only when on — same discipline as yt_dlp_version.
-    caps["url_video_enabled"] = bool(
-        caps["url_download_enabled"] and getattr(cfg, "URL_VIDEO_ENABLED", False))
+    caps["url_video_enabled"] = _url_flag("URL_VIDEO_ENABLED")
     if caps["url_video_enabled"]:
         # No server default: null = best available (a client's
         # video_max_height is still clamped, media/video.py).
         caps["url_video_default_max_height"] = None
     # Gates POST /v1/audio/url-language.
-    caps["url_language_check_enabled"] = bool(
-        caps["url_download_enabled"]
-        and getattr(cfg, "URL_LANGUAGE_CHECK_ENABLED", False))
+    caps["url_language_check_enabled"] = _url_flag("URL_LANGUAGE_CHECK_ENABLED")
     # Gates the preview's subtitle-track list and POST /v1/audio/url-subtitles.
-    caps["url_subtitles_enabled"] = bool(
-        caps["url_download_enabled"]
-        and getattr(cfg, "URL_SUBTITLES_ENABLED", False))
+    caps["url_subtitles_enabled"] = _url_flag("URL_SUBTITLES_ENABLED")
     # The durable job resource (GET/DELETE /v1/jobs*).
     caps["jobs_enabled"] = tx_progress._jobs_enabled()
     if caps["jobs_enabled"]:
