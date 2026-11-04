@@ -1927,9 +1927,11 @@ async def transcribe(
             # model.transcribe as None: an empty initial_prompt triggers the
             # failure mode the tnfru/primeline model cards warn about.
             ignored: "list[str]" = []
-            _prompt = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "DEFAULT_PROMPT", "prompt", prompt,
+            # Every per-request knob below runs the same ladder against this
+            # request's model / identity / ignored list.
+            _knob = functools.partial(effective_config._resolve_request_knob,
+                                      resolved_model, ident, ignored)
+            _prompt = _knob("DEFAULT_PROMPT", "prompt", prompt,
                 default=effective_config._NO_DEFAULT)
             initial_prompt_arg = _prompt if _prompt else None
 
@@ -1949,14 +1951,10 @@ async def transcribe(
             # first-30s auto-detect an empty DEFAULT_LANGUAGE is documented to
             # mean. (`_decode_language`, not the `_language` ledger field above:
             # that one stays None until the decode has actually run.)
-            _decode_language = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "DEFAULT_LANGUAGE", "language", language,
+            _decode_language = _knob("DEFAULT_LANGUAGE", "language", language,
                 default=effective_config._NO_DEFAULT)
             # Task: the same absent-inherits / locked-wins ladder as `language`.
-            _task = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "TASK", "task", task, default="transcribe")
+            _task = _knob("TASK", "task", task, default="transcribe")
             _task_now = _task
             # task=translate makes Whisper emit ENGLISH text while
             # info.language stays the SPOKEN language. Everything that
@@ -1966,9 +1964,7 @@ async def transcribe(
                               else (_decode_language or None))
             # The capacity gate (DIARIZATION_ENABLED) is checked at the
             # stage itself and soft-fails into `warnings`.
-            _diarize = bool(effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "DIARIZE", "diarize", _form_bool(diarize), default=False))
+            _diarize = bool(_knob("DIARIZE", "diarize", _form_bool(diarize), default=False))
             _spk = {}
             # Who set each hint: 2 = a lock, 1 = the client, 0 = inherited.
             _spk_rank = {}
@@ -2093,18 +2089,14 @@ async def transcribe(
                                  _log_safe(str(e)))
                     _stage_soft_failed(stage, t0, model, e, fallback)
 
-            _separate = bool(effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "SEPARATE_BGM", "separate_bgm", _form_bool(separate_bgm),
+            _separate = bool(_knob("SEPARATE_BGM", "separate_bgm", _form_bool(separate_bgm),
                 default=False))
             # Per-request stage models (pyannote pipeline id / UVR model): a
             # client value the allowlist misses soft-fails by skipping THAT
             # stage — before its enabled gate, so the warning names the
             # actual reason.
             _dm_req = (diarization_model or "").strip() or None
-            _diarization_model = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "DIARIZATION_MODEL", "diarization_model", _dm_req)
+            _diarization_model = _knob("DIARIZATION_MODEL", "diarization_model", _dm_req)
             # The allowlist constrains only the CLIENT-requested value (a
             # config/identity-inherited model is admin policy and always
             # passes) and always admits the configured default (global AND
@@ -2121,9 +2113,7 @@ async def transcribe(
                       "server (DIARIZATION_ALLOWED_MODELS)")
                 _diarize = False
             _sm_req = (separation_model or "").strip() or None
-            _separation_model = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "BGM_SEPARATION_UVR_MODEL", "separation_model", _sm_req)
+            _separation_model = _knob("BGM_SEPARATION_UVR_MODEL", "separation_model", _sm_req)
             if (_separate and _sm_req is not None
                     and _separation_model == _sm_req
                     and not preload.stage_model_allowed(
@@ -2139,9 +2129,7 @@ async def transcribe(
             # `_warnings`. Present-but-empty is an explicit "no targets" (overrides an
             # inherited TRANSLATE_TO); only an ABSENT field inherits.
             _tt_req = translate_to.strip() if translate_to is not None else None
-            _tt_raw = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "TRANSLATE_TO", "translate_to", _tt_req)
+            _tt_raw = _knob("TRANSLATE_TO", "translate_to", _tt_req)
             # csv → deduped ordered list of well-formed codes. Malformed
             # entries drop silently (the sloppy-caller stance of the clamped
             # knobs); the MAX_TARGETS clamp warns, naming what it dropped.
@@ -2158,30 +2146,23 @@ async def transcribe(
                     + ", ".join(_translate_to[_translation_max_targets:]))
                 _translate_to = _translate_to[:_translation_max_targets]
             _tm_req = (translation_model or "").strip() or None
-            _translation_model = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "TRANSLATION_MODEL", "translation_model", _tm_req)
+            _translation_model = _knob("TRANSLATION_MODEL", "translation_model", _tm_req)
             # The identity/per-model effective model: echoing (or being
             # locked to) it is not a client choice the allowlist gates.
             _tm_inherited = (effective_config.cfg_for(resolved_model, "TRANSLATION_MODEL",
                                      ident) or "").strip() or None
-            _translation_mode = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "TRANSLATION_MODE", "translation_mode", translation_mode,
+            _translation_mode = _knob("TRANSLATION_MODE", "translation_mode", translation_mode,
                 default="fluent")
             # Present-but-empty is an explicit "no glossary" (overrides an
             # inherited TRANSLATION_GLOSSARY); only an ABSENT field inherits.
-            _translation_glossary = effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
-                "TRANSLATION_GLOSSARY", "translation_glossary",
-                translation_glossary)
+            _translation_glossary = _knob("TRANSLATION_GLOSSARY", "translation_glossary",
+                                          translation_glossary)
             # The config field is Field(max_length=4000); cap the raw client
             # value to the same bound rather than 422ing a sloppy caller.
             _translation_glossary = (_translation_glossary or "")[:4000]
             # Context segments: the same ladder; a request value is clamped
             # to the field's range like the text route does.
-            _translation_context = int(effective_config._resolve_request_knob(
-                resolved_model, ident, ignored,
+            _translation_context = int(_knob(
                 "TRANSLATION_CONTEXT_SEGMENTS", "context_segments",
                 tx_models._clamp_context_segments(context_segments),
                 default=effective_config._NO_DEFAULT) or 0)
