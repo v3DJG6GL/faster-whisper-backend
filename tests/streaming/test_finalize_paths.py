@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
-    dictate_session, handshake as _config, speak_and_stop, stop_and_drain, stream_ws,
+    dictate_session, handshake as _config, ready_ws, speak_and_stop, stop_and_drain,
     timed_final, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamSession
@@ -186,8 +186,7 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
     from faster_whisper_backend.stats import recent_transcriptions_store
 
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
-        with client.websocket_connect(_STREAM_URL) as ws:
-            assert _config(ws)["type"] == "ready"
+        with ready_ws(client) as ws:
             _gate_second_utterance(monkeypatch, ws)
             msgs, _code = stop_and_drain(ws)
     finals = [m for m in msgs if m["type"] == "final"]
@@ -216,8 +215,7 @@ def test_gate_skipped_utterance_receipt_says_no_final_decode(
     """The gate-skipped utterance's receipt says "no final decode", not
     "[!] empty output" blaming the decode thresholds: its RAW line holds text."""
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
-        with client.websocket_connect(_STREAM_URL) as ws:
-            assert _config(ws)["type"] == "ready"
+        with ready_ws(client) as ws:
             _gate_second_utterance(monkeypatch, ws)
             stop_and_drain(ws)
     receipts = [r.getMessage() for r in caplog.records
@@ -249,8 +247,7 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
         counted["before"] = recent_transcriptions_store.count()
         api_keys_store.revoke_user(uid)
 
-    with stream_ws(client, raw_alice) as ws:
-        assert _config(ws)["type"] == "ready"
+    with ready_ws(client, raw_alice) as ws:
         _gate_second_utterance(monkeypatch, ws, before_second=revoke)
         ws.send_bytes(_pcm(0, 200))
         try:
@@ -335,8 +332,7 @@ def test_turning_capture_recording_off_mid_session_stops_recording(
     written to the captures store."""
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert _config(ws)["type"] == "ready"
+    with ready_ws(client) as ws:
         monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", False,
                             raising=False)
         msgs, _code = speak_and_stop(ws)
@@ -413,8 +409,7 @@ def test_cap_refusal_closes_after_accept_with_4429(client, app_module, monkeypat
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 1, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0, raising=False)
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert _config(ws)["type"] == "ready"
+    with ready_ws(client):
         with pytest.raises(WebSocketDisconnect) as ei:
             with client.websocket_connect(_STREAM_URL) as ws2:
                 ws2.receive_json()
@@ -464,8 +459,7 @@ def test_multilingual_override_reaches_the_final_decode(app_module, fake_model):
 def test_running_dictate_job_names_its_model(client, app_module):
     from faster_whisper_backend.core import jobs
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert _config(ws)["type"] == "ready"
+    with ready_ws(client):
         rows = [r for r in jobs.jobs_snapshot() if r["kind"] == "dictate"]
         assert rows, "no running dictate job"
         assert rows[0]["model"] == tx_models._resolve_model_name("whisper-1")
@@ -494,8 +488,7 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(
 
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
     with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.routes"):
-        with client.websocket_connect(_STREAM_URL) as ws:
-            assert _config(ws)["type"] == "ready"
+        with ready_ws(client) as ws:
             ws.send_bytes(_pcm(8000, 200))
             ws.send_json({"type": "flush"})   # pump held here
             for _ in range(100):
