@@ -3733,6 +3733,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     document.body.appendChild(t);
     setTimeout(() => { if (t.parentNode) t.parentNode.removeChild(t); }, 4500);
   }
+  function _commitUnsaved(what) {
+    commitFull();
+    _toast(what + ' — press Save to apply it on this server.');
+  }
   // Lightweight modal: {title, bodyEl, buttons:[{label, primary, onClick(close)}]}.
   function _modal(o) {
     const backdrop = _el('div', 'rule-modal-backdrop');
@@ -4027,8 +4031,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         const i = rules.findIndex(r => r.name === rule.name);
         if (i === -1) return;
         rules[i] = JSON.parse(JSON.stringify(base));
-        commitFull();
-        _toast((behind ? 'Updated “' : 'Reset “') + label + '” — press Save to apply it on this server.');
+        _commitUnsaved((behind ? 'Updated “' : 'Reset “') + label + '”');
       },
     });
   }
@@ -4061,8 +4064,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         const pick = new Set(ids);
         rules = rules.map(r => pick.has(r.name)
           ? JSON.parse(JSON.stringify(_factoryRule(r.name))) : r);
-        commitFull();
-        _toast('Reset ' + _count(ids.length, 'rule') + ' — press Save to apply it on this server.');
+        _commitUnsaved('Reset ' + _count(ids.length, 'rule'));
       },
     });
   }
@@ -4105,8 +4107,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           if (at === -1) at = rules.length;
           rules.splice(at, 0, JSON.parse(JSON.stringify(b)));
         });
-        commitFull();
-        _toast('Added ' + _count(ids.length, 'rule') + ' — press Save to apply it on this server.');
+        _commitUnsaved('Added ' + _count(ids.length, 'rule'));
       },
     });
   }
