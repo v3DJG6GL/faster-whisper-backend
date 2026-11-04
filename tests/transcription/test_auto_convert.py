@@ -67,11 +67,7 @@ def test_local_dir_is_reconverted_once_its_weights_change(
     retrain into the same dir must be reconverted, not answered by the
     model.bin of the previous fine-tune. An unchanged dir keeps the cache."""
     converted = _stub_local_conversion(monkeypatch, tmp_path)
-    src = tmp_path / "my-ft"
-    src.mkdir()
-    (src / "config.json").write_text("{}")
-    weights = src / "model.safetensors"
-    weights.write_bytes(b"old")
+    src, weights = _local_ft(tmp_path, b"old")
     out_dir = tx_models._converted_dir_for(str(src), "float16")
     os.makedirs(out_dir)
     cached = os.path.join(out_dir, "model.bin")
@@ -116,16 +112,23 @@ def _stub_local_conversion(monkeypatch, tmp_path, during_convert=None):
     return converted
 
 
+def _local_ft(tmp_path, data):
+    """A local HF-format fine-tune dir (config.json + model.safetensors =
+    `data`); returns (src, weights)."""
+    src = tmp_path / "my-ft"
+    src.mkdir()
+    (src / "config.json").write_text("{}")
+    weights = src / "model.safetensors"
+    weights.write_bytes(data)
+    return src, weights
+
+
 def test_local_dir_swapped_in_with_older_mtimes_is_reconverted(
         monkeypatch, tmp_path):
     """rsync -a / tar keep the source mtime: new weights older than the
     conversion's model.bin are still a change, not the cached fine-tune."""
     converted = _stub_local_conversion(monkeypatch, tmp_path)
-    src = tmp_path / "my-ft"
-    src.mkdir()
-    (src / "config.json").write_text("{}")
-    weights = src / "model.safetensors"
-    weights.write_bytes(b"v1")
+    src, weights = _local_ft(tmp_path, b"v1")
     out_dir = tx_models._converted_dir_for(str(src), "float16")
     cached = os.path.join(out_dir, "model.bin")
 
@@ -148,11 +151,7 @@ def test_local_dir_written_during_conversion_is_reconverted(
     """Weights saved while a conversion runs are older than the model.bin it
     writes at the end; the conversion of the earlier weights must not count
     as current."""
-    src = tmp_path / "my-ft"
-    src.mkdir()
-    (src / "config.json").write_text("{}")
-    weights = src / "model.safetensors"
-    weights.write_bytes(b"mid")
+    src, weights = _local_ft(tmp_path, b"mid")
     os.utime(weights, (1_000, 1_000))
     first = []
 
