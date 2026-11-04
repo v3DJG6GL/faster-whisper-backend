@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
-    handshake as _config, speak_and_stop, stream_ws, ws_drain as _drain)
+    dictate_session, handshake as _config, speak_and_stop, stream_ws, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
@@ -280,10 +280,7 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        ready = _config(ws, translate_expect={"targets": ["en"], "per_utterance": True})
-        assert ready["type"] == "ready"
-        msgs, _code = speak_and_stop(ws)
+    msgs = dictate_session(client, translate_expect={"targets": ["en"], "per_utterance": True})
     assert any(m["type"] == "final" for m in msgs)
     assert not any(m.get("type") == "captured" for m in msgs), msgs
     assert receipt_hold.pending() == 0
@@ -299,10 +296,7 @@ def test_translate_expect_parks_when_translation_is_enabled(
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        ready = _config(ws, translate_expect={"targets": ["en"], "per_utterance": True})
-        assert ready["type"] == "ready"
-        msgs, _code = speak_and_stop(ws)
+    msgs = dictate_session(client, translate_expect={"targets": ["en"], "per_utterance": True})
     assert any(m.get("type") == "captured" for m in msgs), msgs
     assert receipt_hold.pending() >= 1
 
@@ -320,9 +314,7 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
     # Not a store full of "ready" rows (the real DB state must not decide).
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert _config(ws)["type"] == "ready"
-        msgs, _code = speak_and_stop(ws)
+    msgs = dictate_session(client)
     assert any(m["type"] == "final" for m in msgs)
     assert len(created_captures) == 1
 
@@ -336,9 +328,7 @@ def test_a_store_full_of_ready_captures_skips_the_stream_capture(
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
 
-    with client.websocket_connect(_STREAM_URL) as ws:
-        assert _config(ws)["type"] == "ready"
-        msgs, _code = speak_and_stop(ws)
+    msgs = dictate_session(client)
     assert any(m["type"] == "final" for m in msgs)
     assert created_captures == []
 
