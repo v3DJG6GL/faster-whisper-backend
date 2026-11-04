@@ -10,6 +10,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile
 from tests._transcription_helpers import post_verbose as _post
+from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import watch_progress
 from tests._translation_helpers import enable_translation
 from tests.conftest import bearer
@@ -42,9 +43,7 @@ def test_translation_stage_populates_segments_and_response(
         client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch)
     calls = _stub_translate(monkeypatch)
-    r = _post(client, translate_to="en,fr")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, translate_to="en,fr")
     assert body["segments"][0]["translations"] == {"en": "XLATED-en",
                                                    "fr": "XLATED-fr"}
     assert body["translations"] == {"en": "XLATED-en", "fr": "XLATED-fr"}
@@ -103,9 +102,7 @@ def test_translation_disabled_soft_fails_with_progress_skip(
     # names the skipped stage the moment it is declined.
     calls = _stub_translate(monkeypatch)
     seen = watch_progress(monkeypatch, _PID)
-    r = _post(client, translate_to="en", progress_id=_PID)
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, translate_to="en", progress_id=_PID)
     assert calls == []
     assert "translations" not in body
     assert any("TRANSLATION_ENABLED is off" in w for w in body["warnings"])
@@ -120,9 +117,7 @@ def test_translation_allowlist_miss_soft_fails(client, app_module, monkeypatch):
                         {"org/allowed-GGUF:Q4"}, raising=False)
     calls = _stub_translate(monkeypatch)
 
-    r = _post(client, translate_to="en", translation_model="org/other-GGUF:Q4")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, translate_to="en", translation_model="org/other-GGUF:Q4")
     assert calls == []
     assert "translations" not in body
     assert any("TRANSLATION_ALLOWED_MODELS" in w for w in body["warnings"])
@@ -145,9 +140,7 @@ def test_translate_to_clamped_to_max_targets_with_warning(
     # Ask for 5 (+ a malformed entry and a duplicate, both dropped silently
     # BEFORE the clamp).
     calls = _stub_translate(monkeypatch)
-    r = _post(client, translate_to="en,NOT_A_CODE,fr,en,it,es,pt")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, translate_to="en,NOT_A_CODE,fr,en,it,es,pt")
     assert calls[0]["targets"] == ["en", "fr", "it"]
     assert body["translation"]["targets"] == ["en", "fr", "it"]
     assert any("TRANSLATION_MAX_TARGETS" in w and "es, pt" in w
@@ -162,9 +155,7 @@ def test_locked_translate_to_ignores_client_param(client, app_module,
         client, make_user_key, "de-only",
         {"TRANSLATE_TO": "de", "locks": ["TRANSLATE_TO"]})
 
-    r = _post(client, bearer(raw_alice), translate_to="en")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, bearer(raw_alice), translate_to="en")
     assert calls[0]["targets"] == ["de"]           # locked value wins
     assert "translate_to" in body["overrides_ignored"]
 
@@ -187,9 +178,7 @@ def test_translation_error_becomes_warning(client, app_module, monkeypatch):
             "translation dependencies are not installed on this server — "
             "pip install -r requirements-translate.txt")
     monkeypatch.setattr(translation, "translate_segments", _boom)
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, translate_to="en")
     assert body["text"]                           # transcript survives
     assert "translations" not in body
     assert any("requirements-translate" in w for w in body["warnings"])
@@ -244,18 +233,14 @@ def test_plain_json_carries_translations_and_warnings(client, app_module,
     verbose_json to see either. Additive keys, like source_media_id."""
     enable_translation(app_module, monkeypatch)
     _stub_translate(monkeypatch)
-    r = _post(client, translate_to="en", response_format="json")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, translate_to="en", response_format="json")
     assert body["translations"] == {"en": "XLATED-en"}
     assert body["translation"]["targets"] == ["en"]
 
     # Soft-fail (stage disabled): the warning reaches the plain-json caller.
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False,
                         raising=False)
-    r = _post(client, translate_to="en", response_format="json")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, translate_to="en", response_format="json")
     assert "translations" not in body
     assert any("TRANSLATION_ENABLED" in w for w in body["warnings"])
 

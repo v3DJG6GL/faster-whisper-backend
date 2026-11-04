@@ -1,5 +1,5 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
-(the stub upload, a plain / verbose_json post, a profile-bound non-admin key,
+(the stub upload, a plain / verbose_json post, a 200-checked body fetch, a profile-bound non-admin key,
 the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a gated model_registry write, a cancel while that
 write is held or queued).
@@ -26,6 +26,13 @@ def post_transcription(client, headers=None, **data):
 def post_verbose(client, headers=None, **data):
     data.setdefault("response_format", "verbose_json")
     return post_transcription(client, headers, **data)
+
+
+def post_verbose_ok(client, headers=None, **data):
+    """post_verbose that must answer 200; return the parsed body."""
+    r = post_verbose(client, headers, **data)
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 def bind_profile(client, make_user_key, name, fields, user="alice"):

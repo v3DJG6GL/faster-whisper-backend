@@ -12,6 +12,7 @@ from tests._transcription_helpers import (
     bind_profile, blocked_register, cancel_while_register_held,
     cancel_with_register_queued)
 from tests._transcription_helpers import post_verbose as _post
+from tests._transcription_helpers import post_verbose_ok as _post_ok
 
 
 @pytest.fixture
@@ -147,9 +148,7 @@ def test_separate_wav_input_skips_transcode(
 
 def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
     calls, _ = _stub_separate(monkeypatch)
-    r = _post(client, separate_bgm="true")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, separate_bgm="true")
     assert body["text"]                        # transcript survives
     assert any("not enabled" in w for w in body["warnings"])
     assert calls == []
@@ -161,9 +160,7 @@ def test_separate_error_becomes_warning(client, monkeypatch, fake_model, bgm_on)
             "music-separation dependencies are not installed on this "
             "server (pip install -r requirements-bgm.txt)")
     monkeypatch.setattr(bgm_separation, "separate", _boom)
-    r = _post(client, separate_bgm="1")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, separate_bgm="1")
     assert body["text"]                    # original audio transcribed
     assert any("requirements-bgm" in w for w in body["warnings"])
 

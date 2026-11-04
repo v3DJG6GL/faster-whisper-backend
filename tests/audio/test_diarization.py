@@ -17,6 +17,7 @@ from tests._transcription_helpers import (
 from tests._transcription_helpers import (
     cancel_with_register_queued as _cancel_with_register_queued)
 from tests._transcription_helpers import post_verbose as _post
+from tests._transcription_helpers import post_verbose_ok as _post_ok
 
 
 @pytest.fixture
@@ -72,9 +73,7 @@ def _stub_turns(monkeypatch, turns=_ONE_TURN):
 def test_diarize_labels_segments_and_lists_speakers(client, monkeypatch, diar_on):
     _stub_turns(monkeypatch, [(0.0, 0.6, "SPEAKER_00"),
                               (0.6, 1.0, "SPEAKER_01")])
-    r = _post(client, diarize="true")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, diarize="true")
     # FakeModel returns one segment spanning 0..1 — SPEAKER_00 covers more.
     assert body["segments"][0]["speaker"] == "SPEAKER_00"
     assert body["speakers"] == ["SPEAKER_00"]
@@ -84,9 +83,7 @@ def test_diarize_labels_segments_and_lists_speakers(client, monkeypatch, diar_on
 def test_diarize_disabled_server_soft_fails(client, app_module, monkeypatch):
     # DIARIZATION_ENABLED defaults off, so this test leaves it unset.
     called = _stub_turns(monkeypatch)
-    r = _post(client, diarize="true")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, diarize="true")
     assert "speaker" not in body["segments"][0]
     assert "speakers" not in body
     assert any("not enabled" in w for w in body["warnings"])
@@ -120,9 +117,7 @@ def test_diarization_error_becomes_warning(client, monkeypatch, diar_on):
             "diarization dependencies are not installed on this server "
             "(pip install -r requirements-diarize.txt)")
     monkeypatch.setattr(diarization, "diarize", _boom)
-    r = _post(client, diarize="1")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _post_ok(client, diarize="1")
     assert body["text"]                       # transcript survives
     assert "speakers" not in body
     assert any("requirements-diarize" in w for w in body["warnings"])
