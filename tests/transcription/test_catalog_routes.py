@@ -6,6 +6,7 @@ The identity layer is stood in for by wrapping effective_config.cfg_for
 overrides is covered in tests/settings/test_per_identity_overrides.py."""
 
 from faster_whisper_backend.settings import effective_config
+from tests._translation_helpers import enable_translation
 
 
 def _identity_value(monkeypatch, field, value):
@@ -31,10 +32,9 @@ def test_me_stage_models_lead_with_the_callers_own_default(client, app_module,
 
 def test_me_translation_models_lead_with_the_callers_effective_model(
         client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL", "org/d:Q4")
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
-                        {"org/a:Q4"})
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_DEFAULT_MODEL="org/d:Q4",
+                       TRANSLATION_ALLOWED_MODELS={"org/a:Q4"})
     _identity_value(monkeypatch, "TRANSLATION_MODEL", "org/x:Q4")
     j = client.get("/v1/me").json()
     assert [m["id"] for m in j["translation_models"]] == [

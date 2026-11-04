@@ -15,6 +15,7 @@ import time
 import pytest
 
 from faster_whisper_backend.transcription import receipt_hold
+from tests._translation_helpers import enable_translation, text_translation_body
 
 
 @pytest.fixture(autouse=True)
@@ -180,27 +181,23 @@ def test_validation_reject_releases_the_parked_receipt(client, app_module,
     from faster_whisper_backend.transcription import receipt as tx_receipt
     logged = []
     monkeypatch.setattr(tx_receipt, "_log_held_receipts", logged.extend)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     receipt_hold.park("capX", _kwargs(), hold_s=90)
-    r = client.post("/v1/text/translations", json={
-        "segments": [{"id": 0, "text": "Hallo"}],
-        "targets": "not-a-list",            # 422 in the validation ladder
-        "captured_id": "capX"})
+    r = client.post("/v1/text/translations", json=text_translation_body(
+        targets="not-a-list",               # 422 in the validation ladder
+        captured_id="capX"))
     assert r.status_code == 422
     assert receipt_hold.pending() == 0
     assert [e["file_label"] for e in logged] == ["utt#1"]
     assert any("request rejected" in n for n in logged[0]["skipped"])
 
     # A rejected model (400) releases too.
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
-                        {"org/only-GGUF:Q4"}, raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
-                        "org/only-GGUF:Q4", raising=False)
+    enable_translation(app_module, monkeypatch,
+                       TRANSLATION_ALLOWED_MODELS={"org/only-GGUF:Q4"},
+                       TRANSLATION_DEFAULT_MODEL="org/only-GGUF:Q4")
     receipt_hold.park("capY", _kwargs(2), hold_s=90)
-    r = client.post("/v1/text/translations", json={
-        "segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
-        "translation_model": "org/evil-GGUF:Q8", "captured_id": "capY"})
+    r = client.post("/v1/text/translations", json=text_translation_body(
+        translation_model="org/evil-GGUF:Q8", captured_id="capY"))
     assert r.status_code == 400
     assert receipt_hold.pending() == 0
     assert [e["file_label"] for e in logged] == ["utt#1", "utt#2"]
