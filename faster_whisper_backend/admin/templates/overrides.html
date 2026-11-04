@@ -443,7 +443,7 @@ window._renderWaterfall = (function () {
 
   // Inline editor (input + ✓ / ✕) shared by create and rename.
   function inlineInput(value, onCommit, onCancel) {
-    var wrap = document.createElement('span'); wrap.className = 'ov-inline-edit';
+    var wrap = _el('span', 'ov-inline-edit');
     var inp = document.createElement('input'); inp.type = 'text';
     inp.className = 'ov-edit-input'; inp.value = value || ''; inp.maxLength = 32;
     inp.setAttribute('aria-label', 'profile name');
@@ -466,15 +466,14 @@ window._renderWaterfall = (function () {
   function renderSide() {
     listEl.innerHTML = '';
     var names = profileNames();
-    var hdr = document.createElement('div'); hdr.className = 'ov-side-h';
+    var hdr = _el('div', 'ov-side-h');
     hdr.innerHTML = '<span>Profiles</span><span class="ov-count">' + names.length + '</span>';
     listEl.appendChild(hdr);
     names.forEach(function (name) {
       var p = profiles[name];
       var isSel = name === sel;
       var cnt = overrideCount(p);
-      var item = document.createElement('div');
-      item.className = 'ov-item' + (isSel ? ' active' : '');
+      var item = _el('div', 'ov-item' + (isSel ? ' active' : ''));
       if (isSel && uiRenaming) {
         item.innerHTML = dotHtml(cnt);
         item.appendChild(inlineInput(name,
@@ -502,13 +501,12 @@ window._renderWaterfall = (function () {
       listEl.appendChild(e);
     }
     if (uiAdding) {
-      var addWrap = document.createElement('div'); addWrap.className = 'ov-inline';
+      var addWrap = _el('div', 'ov-inline');
       addWrap.appendChild(inlineInput('', commitNew,
         function () { uiAdding = false; setStatus(''); render(); }));
       listEl.appendChild(addWrap);
     }
-    var acts = document.createElement('div');
-    acts.className = 'ov-side-actions';
+    var acts = _el('div', 'ov-side-actions');
     var nb = _el('button', 'ghost', '+ New');
     nb.onclick = function () {
       uiAdding = true; uiRenaming = false; uiConfirmDel = false; setStatus(''); render();
@@ -520,7 +518,7 @@ window._renderWaterfall = (function () {
       var db = _el('button', 'ghost', '⧉ Duplicate');
       db.onclick = duplicateProfile; acts.appendChild(db);
       if (uiConfirmDel) {
-        var cf = document.createElement('span'); cf.className = 'ov-confirm';
+        var cf = _el('span', 'ov-confirm');
         cf.appendChild(document.createTextNode('Delete?'));
         var yes = _el('button', 'danger', '✓ Yes');
         yes.onclick = confirmDelete; cf.appendChild(yes);
@@ -634,10 +632,10 @@ window._renderWaterfall = (function () {
   function render() { renderGlobals(); renderSide(); renderMain(); }
 
   function makeSection(title, sub) {
-    var sec = document.createElement('div'); sec.className = 'ov-sec';
+    var sec = _el('div', 'ov-sec');
     sec.innerHTML = '<h4>' + esc(title)
       + (sub ? ' <span class="ov-sec-sub">' + esc(sub) + '</span>' : '') + '</h4>';
-    var body = document.createElement('div'); body.className = 'ov-sec-b';
+    var body = _el('div', 'ov-sec-b');
     sec.appendChild(body);
     return { sec: sec, body: body };
   }
@@ -650,7 +648,7 @@ window._renderWaterfall = (function () {
     }
     var p = profiles[sel];
     var cnt = overrideCount(p);
-    var head = document.createElement('div'); head.className = 'ov-pane-head';
+    var head = _el('div', 'ov-pane-head');
     head.innerHTML = dotHtml(cnt) + '<span class="pname">' + esc(sel) + '</span>';
     mainEl.appendChild(head);
     mainEl.appendChild(accessSection(p));
@@ -671,7 +669,7 @@ window._renderWaterfall = (function () {
   // Default = requestable; storing requestable:false opts it out globally.
   function accessSection(p) {
     var s = makeSection('Access', 'who may apply this profile');
-    var row = document.createElement('div'); row.className = 'ov-access-row';
+    var row = _el('div', 'ov-access-row');
     var cb = document.createElement('input');
     cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
     cb.id = 'ov-requestable';
@@ -685,7 +683,7 @@ window._renderWaterfall = (function () {
     lbl.textContent = 'Requestable by clients';
     row.appendChild(cb); row.appendChild(lbl);
     s.body.appendChild(row);
-    var help = document.createElement('div'); help.className = 'ov-help';
+    var help = _el('div', 'ov-help');
     help.innerHTML = 'Clients may name this profile in a per-request '
       + '<code>override_profile</code> (subject to per-user / per-key allowlists). '
       + 'Off = admin-applied only.';
@@ -724,13 +722,12 @@ window._renderWaterfall = (function () {
 
   function fieldRow(p, name) {
     var meta = (S.field_meta || {})[name] || { kind: 'str' };
-    var row = document.createElement('div');
-    row.className = 'ov-row' + (isSet(p, name) ? ' is-set' : '');
+    var row = _el('div', 'ov-row' + (isSet(p, name) ? ' is-set' : ''));
     var dot = dotHtml(isSet(p, name));
     row.innerHTML = dot + '<span class="ov-name" title="' + esc(name) + '">' + esc(name) + '</span>';
-    var valCell = document.createElement('span'); valCell.className = 'ov-val';
-    var lockCell = document.createElement('button'); lockCell.className = 'ov-lock';
-    var ctrl = document.createElement('span'); ctrl.className = 'ov-ctrl';
+    var valCell = _el('span', 'ov-val');
+    var lockCell = _el('button', 'ov-lock');
+    var ctrl = _el('span', 'ov-ctrl');
 
     var locks = p.locks || [];
     var locked = locks.indexOf(name) >= 0;
@@ -755,8 +752,7 @@ window._renderWaterfall = (function () {
       ctrl.appendChild(rb);
     } else {
       var dv = (S.defaults || {})[name];
-      var inh = document.createElement('span');
-      inh.className = 'ov-inherits';
+      var inh = _el('span', 'ov-inherits');
       // Split label from value so "inherits" reads as a subordinate tag, not
       // part of the value: dim italic sans label + brighter upright mono value.
       var inhLbl = _el('span', 'lbl', 'inherits');
@@ -845,7 +841,7 @@ window._renderWaterfall = (function () {
     var exc = p.PIPELINE_RULES_EXCLUDE || [];
     var inc = p.PIPELINE_RULES_INCLUDE || [];
     (S.rules || []).forEach(function (r) {
-      var row = document.createElement('div'); row.className = 'ov-rule';
+      var row = _el('div', 'ov-rule');
       var state = exc.indexOf(r.name) >= 0 ? 'off' : (inc.indexOf(r.name) >= 0 ? 'on' : 'inherit');
       var langs = Array.isArray(r.languages) ? r.languages : [];
       // Language-scoped rule: the amber badge says a force-"On" here still only
@@ -868,7 +864,7 @@ window._renderWaterfall = (function () {
         + '<span class="rl">' + esc(r.label)
         + ' <span class="slug">' + esc(r.name) + (r.enabled ? '' : ' (off)') + '</span>'
         + tagChips + langBadge + '</span>';
-      var grp = document.createElement('span'); grp.className = 'status-btn-group';
+      var grp = _el('span', 'status-btn-group');
       grp.setAttribute('role', 'radiogroup');
       [['inherit', 'Inherit (' + (r.enabled ? 'on' : 'off') + ')', 'inherit'],
        ['on', 'On', 'allow'], ['off', 'Off', 'deny']].forEach(function (o) {

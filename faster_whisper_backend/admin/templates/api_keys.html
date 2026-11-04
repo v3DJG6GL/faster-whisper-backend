@@ -721,8 +721,7 @@
     // Per-exposed-rule tag lists for the client-side "Will see: N of M" preview.
     var exposedRuleTags = j.exposed_rule_tags || [];
 
-    var table = document.createElement('table');
-    table.className = 'perm-matrix';
+    var table = _el('table', 'perm-matrix');
     var thead = document.createElement('thead');
     var headRow = document.createElement('tr');
     var thUser = document.createElement('th');
@@ -789,8 +788,7 @@
         tdTags.textContent = '—';
         tdTags.title = 'admins see every rule regardless of tags';
       } else {
-        var preview = document.createElement('div');
-        preview.className = 'tag-preview';
+        var preview = _el('div', 'tag-preview');
         function _refreshPreview(userTags) {
           var total = exposedRuleTags.length;
           var seen = 0;
@@ -937,20 +935,17 @@
   }
 
   function renderUser(u, nUsers) {
-    var card = document.createElement('div');
-    card.className = 'card user';
+    var card = _el('div', 'card user');
     if (isUserOpen(u.id, nUsers)) card.classList.add('open');
 
-    var head = document.createElement('h3');
-    head.className = 'user-head';
+    var head = _el('h3', 'user-head');
     var chev = _el('span', 'uchev', '▸');
     head.appendChild(chev);
     // User-level dot: u.last_used_ts is the server-computed max over the
     // user's non-revoked keys; data-used-ts opts it into the refreshKeyDots()
     // decay timer like the per-key dots.
     var udotCls = dotClassFor(u.last_used_ts);
-    var udot = document.createElement('span');
-    udot.className = 'kdot ' + udotCls;
+    var udot = _el('span', 'kdot ' + udotCls);
     if (u.last_used_ts) udot.setAttribute('data-used-ts', u.last_used_ts);
     udot.title = udotCls === 'live'
       ? 'a key was used in the last 15 min' : 'no recent key use';
@@ -987,12 +982,10 @@
     };
     card.appendChild(head);
 
-    var userBody = document.createElement('div');
-    userBody.className = 'user-body';
+    var userBody = _el('div', 'user-body');
     card.appendChild(userBody);
 
-    var tb = document.createElement('div');
-    tb.className = 'toolbar';
+    var tb = _el('div', 'toolbar');
     var labelInp = document.createElement('input');
     labelInp.type = 'text';
     labelInp.placeholder = 'key label — required';
@@ -1112,22 +1105,19 @@
     var hasLabel = !!(k.label && k.label.trim());
     var keyUsage = (window.__usage && window.__usage.by_key || {})[k.id];
 
-    var kc = document.createElement('div');
-    kc.className = 'kcard' + (revoked ? ' revoked' : '');
+    var kc = _el('div', 'kcard' + (revoked ? ' revoked' : ''));
 
     var dotCls = revoked ? 'dead' : dotClassFor(k.last_used_ts);
     var dotTitle = revoked ? 'revoked'
       : (dotCls === 'live' ? 'used in the last 15 min' : 'no recent use');
-    var rail = document.createElement('div');
-    rail.className = 'krail';
+    var rail = _el('div', 'krail');
     rail.innerHTML = KEY_ICON_SVG
       + '<span class="kdot ' + dotCls + '"'
       + (revoked ? '' : ' data-used-ts="' + (k.last_used_ts || 0) + '"')
       + ' title="' + dotTitle + '"></span>';
     kc.appendChild(rail);
 
-    var body = document.createElement('div');
-    body.className = 'kbody';
+    var body = _el('div', 'kbody');
     body.innerHTML =
       '<div class="ktitle">'
         + '<span class="kname' + (hasLabel ? '' : ' none') + '">'
@@ -1150,16 +1140,14 @@
     body.querySelector('.kmeta').appendChild(usageWrap.firstChild);
     kc.appendChild(body);
 
-    var acts = document.createElement('div');
-    acts.className = 'kacts';
+    var acts = _el('div', 'kacts');
     var kdraw = document.createElement('div');  // overrides drawer holder
     if (!revoked) {
       var renameBtn = _el('button', 'ghost', '✎ Rename');
       var renameRow = null;
       renameBtn.onclick = function () {
         if (renameRow) { renameRow.remove(); renameRow = null; return; }
-        renameRow = document.createElement('div');
-        renameRow.className = 'krename';
+        renameRow = _el('div', 'krename');
         var inp = document.createElement('input');
         inp.type = 'text'; inp.maxLength = 128;
         inp.value = hasLabel ? k.label : '';
@@ -1386,8 +1374,7 @@
   // visuals (so it works whether or not the callback rerenders) then calls
   // onpick(value). Shared .status-btn-group styling from web_common.NAV_CSS.
   function _ovSeg(options, current, onpick) {
-    var grp = document.createElement('span');
-    grp.className = 'status-btn-group';
+    var grp = _el('span', 'status-btn-group');
     grp.setAttribute('role', 'radiogroup');
     options.forEach(function (o) {
       var val = o[0], label = o[1], tone = o[2];
@@ -1418,7 +1405,7 @@
   function buildBindingDrawer(opts) {
     var b = opts.binding;
     var npId = 'cfg-apply-no-profiles-' + (++_bindingDrawerSeq);
-    var root = document.createElement('div'); root.className = 'cfg-drawer';
+    var root = _el('div', 'cfg-drawer');
     function rerender() { root.innerHTML = ''; draw(); }
     // Dirty-gating: snapshot the binding on open and keep "Save overrides"
     // disabled until the live binding actually differs from it (mirrors the
@@ -1458,8 +1445,8 @@
     var restrictOpen = false;
 
     function _ovCard(title, caption, hintText) {
-      var card = document.createElement('div'); card.className = 'ov-card';
-      var head = document.createElement('div'); head.className = 'ohead';
+      var card = _el('div', 'ov-card');
+      var head = _el('div', 'ohead');
       var t = _el('span', 't', title);
       head.appendChild(t);
       if (caption) {
@@ -1474,8 +1461,8 @@
     }
 
     function _triRow(label, slug, hint, val, set) {
-      var row = document.createElement('div'); row.className = 'gaterow';
-      var gl = document.createElement('span'); gl.className = 'gl';
+      var row = _el('div', 'gaterow');
+      var gl = _el('span', 'gl');
       gl.title = hint; gl.appendChild(document.createTextNode(label));
       var sub = _el('span', 'sub', slug);
       gl.appendChild(sub); row.appendChild(gl);
@@ -1508,8 +1495,8 @@
       if (dataMode === 'inherit' || dataMode === 'all') restrictOpen = false;
       else if (dataMode === 'restrict') restrictOpen = true;
       var mode = (restrictOpen && dataMode === 'none') ? 'restrict' : dataMode;
-      var arow = document.createElement('div'); arow.className = 'gaterow';
-      var agl = document.createElement('span'); agl.className = 'gl';
+      var arow = _el('div', 'gaterow');
+      var agl = _el('span', 'gl');
       agl.appendChild(document.createTextNode('Requestable profiles'));
       var asub = _el('span', 'sub', 'allowed_override_profiles'); agl.appendChild(asub);
       arow.appendChild(agl);
@@ -1538,7 +1525,7 @@
         var names = Object.keys(live).concat(al.filter(function (n) {
           return n !== '*' && !Object.prototype.hasOwnProperty.call(live, n);
         })).sort();
-        var box = document.createElement('div'); box.className = 'ov-checks';
+        var box = _el('div', 'ov-checks');
         if (!names.length) {
           var e = _el('span', 'lbl', '(no profiles defined — create them on the Overrides page)');
           box.appendChild(e);
@@ -1574,7 +1561,7 @@
       // request gate (lives here, not in the gates card) and not gated globally.
       var noProf = (opts.scope === 'key' && b.apply_no_profiles === true);
       if (opts.scope === 'key') {
-        var npRow = document.createElement('div'); npRow.className = 'cfg-noprof-row';
+        var npRow = _el('div', 'cfg-noprof-row');
         var npCb = document.createElement('input');
         npCb.type = 'checkbox'; npCb.className = 'switch'; npCb.setAttribute('role', 'switch');
         npCb.id = npId;
@@ -1590,10 +1577,9 @@
           : 'Force plain defaults for this key: ignore every profile (key, user-level, and per-request).');
         pcard.appendChild(npHint);
       }
-      var chips = document.createElement('div');
-      chips.className = noProf ? 'cfg-chips cfg-prof-dim' : 'cfg-chips';
+      var chips = _el('div', noProf ? 'cfg-chips cfg-prof-dim' : 'cfg-chips');
       b.profiles.forEach(function (name, i) {
-        var c = document.createElement('span'); c.className = 'cfg-chip';
+        var c = _el('span', 'cfg-chip');
         c.innerHTML = '<span class="num">' + (i + 1) + '</span>' + escapeHtml(name);
         var up = document.createElement('button'); up.textContent = '↑'; up.title = 'earlier';
         up.onclick = function () { if (i > 0) { var t = b.profiles[i - 1]; b.profiles[i - 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } };
@@ -1621,13 +1607,13 @@
       var dcard = _ovCard('Direct overrides', 'pin a field value',
         'Force a config value for this identity; lock to stop clients overriding it.');
       Object.keys(b.overrides).sort().forEach(function (name) {
-        var row = document.createElement('div'); row.className = 'cfg-ovr-row';
+        var row = _el('div', 'cfg-ovr-row');
         var nm = _el('span', 'nm', name); row.appendChild(nm);
         var vc = document.createElement('span');
         vc.appendChild(_cfgWidget(name, b.overrides[name], function (v) { if (v !== null) b.overrides[name] = v; _syncSave(); }));
         row.appendChild(vc);
         var on = b.locks.indexOf(name) >= 0;
-        var lk = document.createElement('button'); lk.className = 'lk' + (on ? ' on' : '');
+        var lk = _el('button', 'lk' + (on ? ' on' : ''));
         lk.innerHTML = on ? '\u{1F512}' : '\u{1F513}'; lk.title = 'lock — client cannot override this field';
         lk.onclick = function () { var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); else b.locks.push(name); rerender(); };
         row.appendChild(lk);
@@ -1636,16 +1622,16 @@
         row.appendChild(rm); dcard.appendChild(row);
       });
       var avf = _cfgAvailFields().filter(function (n) { return !(n in b.overrides); });
-      var addwrap = document.createElement('div'); addwrap.className = 'cfg-chips';
+      var addwrap = _el('div', 'cfg-chips');
       var addsel = document.createElement('select'); addsel.innerHTML = '<option value="">+ add field…</option>';
       avf.forEach(function (n) { var o = document.createElement('option'); o.value = n; o.textContent = n; addsel.appendChild(o); });
       addsel.onchange = function () { if (addsel.value) { b.overrides[addsel.value] = _cfgDefault(addsel.value); rerender(); } };
       addwrap.appendChild(addsel); dcard.appendChild(addwrap);
       root.appendChild(dcard);
 
-      var foot = document.createElement('div'); foot.className = 'ov-footer';
+      var foot = _el('div', 'ov-footer');
       var prev = _el('button', 'ghost', '⟲ Preview effective');
-      var spacer = document.createElement('span'); spacer.className = 'spacer';
+      var spacer = _el('span', 'spacer');
       var save = _el('button', 'primary', 'Save overrides');
       _saveBtn = save;
       save.disabled = _ovUnavailable() || (_sig(b) === _baseline);
@@ -1680,7 +1666,7 @@
               var fr = j.fields[f];
               if (!fr.winner_layer || fr.winner_layer === 'global' || fr.winner_layer === 'per-model') return;
               any = true;
-              var row = document.createElement('div'); row.className = 'ef';
+              var row = _el('div', 'ef');
               row.innerHTML = '<span class="nm">' + escapeHtml(f) + '</span>'
                 + '<span class="v">' + escapeHtml(JSON.stringify(fr.winner_value)) + '</span>'
                 + '<span class="src">' + escapeHtml(fr.winner_layer) + '</span>'
@@ -1846,12 +1832,9 @@
 
   function buildCsDrawer(u) {
     var meta = csMetaFor(u.id);
-    var root = document.createElement('div');
-    root.className = 'cfg-drawer';
-    var card = document.createElement('div');
-    card.className = 'ov-card';
-    var head = document.createElement('div');
-    head.className = 'ohead';
+    var root = _el('div', 'cfg-drawer');
+    var card = _el('div', 'ov-card');
+    var head = _el('div', 'ohead');
     var t = _el('span', 't', 'Synced settings');
     head.appendChild(t);
     var c = _el('span', 'c', meta ? 'v' + meta.version + ' on the server'
@@ -1860,8 +1843,7 @@
     card.appendChild(head);
 
     if (meta) {
-      var grid = document.createElement('div');
-      grid.className = 'cs-meta';
+      var grid = _el('div', 'cs-meta');
       function cell(k, vHtml) {
         var d = document.createElement('div');
         d.innerHTML = '<div class="ck">' + k + '</div><div class="cv">' + vHtml + '</div>';
@@ -1888,13 +1870,11 @@
     }
     root.appendChild(card);
 
-    var foot = document.createElement('div');
-    foot.className = 'ov-footer';
+    var foot = _el('div', 'ov-footer');
 
     // Export — two-press guard: the file is exactly what the desktop stored,
     // which can include the account's saved API keys.
-    var ex = document.createElement('button');
-    ex.className = 'ghost';
+    var ex = _el('button', 'ghost');
     var EX_LABEL = '⤓ Export';
     ex.textContent = EX_LABEL;
     ex.disabled = !meta;
@@ -2032,8 +2012,7 @@
   // Shared construction for the synced-settings cards that belong to no
   // listed user (open mode, revoked accounts).
   function appendCsOnlyCard(ct, opts) {
-    var card = document.createElement('div');
-    card.className = 'card';
+    var card = _el('div', 'card');
     var h = document.createElement('h3');
     h.appendChild(document.createTextNode(opts.heading + ' '));
     var pill = _el('span', 'pill sync', '⇅ v' + opts.version);
