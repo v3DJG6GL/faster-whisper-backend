@@ -34,15 +34,13 @@ def _streams(**kw):
 
 
 @pytest.fixture
-def package_enabled(app_module, tmp_path, monkeypatch):
+def package_enabled(app_module, monkeypatch):
     """Packaging on, the store under tmp, ffmpeg + PyAV stubbed: the argv
     becomes a python script that copies the source and appends a marker."""
     monkeypatch.setattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", True, raising=False)
     # URL download stays OFF (the shipped default): packaging ids must be
     # fetchable through /v1/audio/url-media without the link feature.
     monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", False, raising=False)
-    monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR", str(tmp_path / "url_media"),
-                        raising=False)
     ums.startup_reset()
     pk._reset_for_tests()
     monkeypatch.setattr(pk, "ffmpeg_capabilities",

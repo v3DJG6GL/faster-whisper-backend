@@ -80,12 +80,10 @@ def _download_raises(monkeypatch, exc):
 
 
 @pytest.fixture
-def url_enabled(app_module, tmp_path, monkeypatch):
+def url_enabled(app_module, monkeypatch):
     """Feature on + retention rooted in a temp dir + happy-path stubs."""
     monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", True,
                         raising=False)
-    monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR",
-                        str(tmp_path / "url_media"), raising=False)
     # No allowlist, and a faster-whisper size for the DEFAULT_MODEL app_module
     # blanks: the language check's up-front model gate refuses "" (the factory
     # list does too), as the loader would.
