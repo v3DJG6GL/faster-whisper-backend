@@ -1391,18 +1391,14 @@ def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch, restore
     _stub_stored(monkeypatch, {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
-    # A hyphenated model id is not a Python identifier: no **env kwarg.
-    monkeypatch.setenv("WHISPER_MODEL_OVERRIDE__large-v3__BEST_OF", "3")
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, **{"WHISPER_MODEL_OVERRIDE__large-v3__BEST_OF": "3"})
     entry = config.MODEL_OVERRIDES.get("large-v3", {})
     assert entry.get("BEST_OF") == 3 and entry.get("BEAM_SIZE") == 3
     assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
         config._ENV_WARNINGS
     # An env-supplied exclude naming an unknown rule is still refused.
-    monkeypatch.setenv(
-        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
-        "another-missing-rule")
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, **{
+        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE": "another-missing-rule"})
     assert "another-missing-rule" not in (
         config.MODEL_OVERRIDES.get("large-v3", {}).get(
             "PIPELINE_RULES_EXCLUDE") or [])
@@ -1417,10 +1413,8 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch, rest
     _stub_stored(monkeypatch, {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_INCLUDE": ["no-such-rule"]}}})
-    monkeypatch.setenv(
-        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
-        "capitalize-after-terminator")
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, **{
+        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE": "capitalize-after-terminator"})
     entry = config.MODEL_OVERRIDES.get("large-v3", {})
     assert entry.get("PIPELINE_RULES_EXCLUDE") == [
         "capitalize-after-terminator"]
@@ -1428,10 +1422,8 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch, rest
     assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
         config._ENV_WARNINGS
     # An env exclude naming an unknown rule is still refused.
-    monkeypatch.setenv(
-        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
-        "another-missing-rule")
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, **{
+        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE": "another-missing-rule"})
     entry = config.MODEL_OVERRIDES.get("large-v3", {})
     assert "another-missing-rule" not in (
         entry.get("PIPELINE_RULES_EXCLUDE") or [])
@@ -1533,6 +1525,5 @@ def test_prefixed_cookie_name_without_secure_warns_at_load(monkeypatch, restore_
     assert [m for m in config._ENV_WARNINGS
             if m.startswith("SESSION_COOKIE_NAME '__Host-s' (from "
                             "WHISPER_SESSION_COOKIE_NAME)")], config._ENV_WARNINGS
-    monkeypatch.setenv("WHISPER_SESSION_COOKIE_SECURE", "true")
-    importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_SESSION_COOKIE_SECURE="true")
     assert not [m for m in config._ENV_WARNINGS if "__Host-/__Secure-" in m]
