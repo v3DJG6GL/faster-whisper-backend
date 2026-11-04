@@ -419,7 +419,7 @@ function syncUrl() {
   try { history.replaceState(null, '', url); } catch (_) {}
 }
 function isFiltered() {
-  return Q.range !== '30' || filterCount() > 0 || Q.compare !== 'off';
+  return Q.range !== DEFAULTS.range || filterCount() > 0 || Q.compare !== DEFAULTS.compare;
 }
 // How many narrowing filters are on (kinds, stages, users, keys):
 // the card window chips show it so a screenshot still says "filtered".
@@ -579,9 +579,9 @@ function wireScopeBar() {
   });
   onPick('sb-filters', '.chip', (c) => {
     if (c.id === 'sb-clear') {
-      Object.assign(Q, { range: '30', from: null, to: null, compare: 'off', kinds: [],
+      Object.assign(Q, { range: DEFAULTS.range, from: null, to: null, compare: DEFAULTS.compare, kinds: [],
                          with: [], users: [], keys: [] });
-      setSeg('sb-range', '30'); setSeg('sb-compare', 'off');
+      setSeg('sb-range', DEFAULTS.range); setSeg('sb-compare', DEFAULTS.compare);
     } else if (c.dataset.dim) {
       Q[c.dataset.dim] = [];
     }
