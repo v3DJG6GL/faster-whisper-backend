@@ -364,6 +364,8 @@ const Q = {
   kinds: [], with: [], users: [], keys: [],
   bucket: 'auto', metric: 'audio_s', by: 'kind', rhythm: 'hours',
 };
+// The narrowing lists -> their scope-bar controls; this order is the URL's.
+const FILTER_CTL = { kinds: 'sb-kind', with: 'sb-with', users: 'sb-who', keys: 'sb-keys' };
 // Display names for picked user / key ids (from the picker or the
 // leaderboard), so the filter sentences and the recent-jobs table can say
 // who was picked without another round trip.
@@ -401,7 +403,7 @@ function pageQueryParams() {
   for (const k of ['compare', 'bucket', 'metric', 'by', 'rhythm']) {
     if (Q[k] !== DEFAULTS[k]) p.set(k, Q[k]);
   }
-  for (const k of ['kinds', 'with', 'users', 'keys']) if (Q[k].length) p.set(k, Q[k].join(','));
+  for (const k in FILTER_CTL) if (Q[k].length) p.set(k, Q[k].join(','));
   return p;
 }
 function syncUrl() {
@@ -415,8 +417,7 @@ function isFiltered() {
 // How many narrowing filters are on (kinds, stages, users, keys):
 // the card window chips show it so a screenshot still says "filtered".
 function filterCount() {
-  return (Q.kinds.length ? 1 : 0) + (Q.with.length ? 1 : 0) + (Q.users.length ? 1 : 0)
-    + (Q.keys.length ? 1 : 0);
+  return Object.keys(FILTER_CTL).filter(k => Q[k].length).length;
 }
 const kindsLabel = () => Q.kinds.map(k => KIND_LABEL[k] || k).join(' + ');
 const pickLabel = (dim, id) => pickLabels[dim][id] || id;
@@ -1013,7 +1014,7 @@ function renderWindowChips() {
   // The filter VALUES, not their count: swapping one kind / user / stage
   // for another re-slices every usage card just as adding one does.
   const sig = [Q.range, Q.from, Q.to, Q.compare,
-               ...[Q.kinds, Q.with, Q.users, Q.keys].map(a => a.join(','))].join('|');
+               ...Object.keys(FILTER_CTL).map(k => Q[k].join(','))].join('|');
   const pulse = _winSig != null && sig !== _winSig;
   _winSig = sig;
   const html = windowChipHtml(), title = ($('sb-summary') || {}).textContent || '';
@@ -1031,10 +1032,7 @@ function renderWindowChips() {
 function flashFilters(only) {
   const active = [];
   if (!only) active.push('sb-range');
-  if (Q.kinds.length) active.push('sb-kind');
-  if (Q.with.length) active.push('sb-with');
-  if (Q.users.length) active.push('sb-who');
-  if (Q.keys.length) active.push('sb-keys');
+  for (const k in FILTER_CTL) if (Q[k].length) active.push(FILTER_CTL[k]);
   const ids = only ? only.filter(id => active.includes(id)) : active;
   (ids.length ? ids : (only || ['sb-range'])).forEach(flashCtl);
 }
