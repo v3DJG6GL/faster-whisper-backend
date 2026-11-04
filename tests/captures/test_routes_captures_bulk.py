@@ -3,6 +3,9 @@ the bulk status / delete endpoints (the summary strip + bulk bar backend)."""
 
 import time
 
+from faster_whisper_backend.captures import routes as captures_routes
+from faster_whisper_backend.captures import samples_store as gs
+from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import _insert_member, _insert_sample
 from tests.conftest import bearer, write_bytes
 
@@ -24,8 +27,6 @@ def test_stats_empty_queue(client):
 
 
 def test_stats_arithmetic_median_ready_week_oldest_new(client, make_user_key):
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, _ = make_user_key("alice", pages={"captures": "own"})
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
@@ -55,8 +56,6 @@ def test_stats_arithmetic_median_ready_week_oldest_new(client, make_user_key):
 
 
 def test_stats_scoped_to_caller_and_admin_only_override(client, make_user_key):
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
@@ -79,8 +78,6 @@ def test_stats_scoped_to_caller_and_admin_only_override(client, make_user_key):
 
 
 def test_stats_folds_speakers_past_eight_into_others(client, make_user_key):
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     conn = captures_store._require_conn()
     for i in range(10):
@@ -99,8 +96,6 @@ def test_stats_folds_speakers_past_eight_into_others(client, make_user_key):
 
 
 def test_list_user_id_accepts_several_speakers(client, make_user_key):
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
@@ -125,8 +120,6 @@ def test_list_user_id_accepts_several_speakers(client, make_user_key):
 def test_list_user_id_rejects_an_oversized_speaker_list(client, make_user_key):
     """Every id is one SQL bind variable in four queries; an uncapped list
     ends in sqlite's "too many SQL variables" (a 500), so it is a 422."""
-    from faster_whisper_backend.captures import routes as captures_routes
-
     _root, raw_root = make_user_key("root", is_admin=True)
     cap = captures_routes._MAX_OWNER_FILTER_IDS
     ok = ",".join(f"u{i}" for i in range(cap))
@@ -142,9 +135,6 @@ def test_list_user_id_rejects_an_oversized_speaker_list(client, make_user_key):
 def test_samples_user_id_accepts_several_speakers(client, make_user_key):
     """/captures/api/samples scopes like the list: each comma-separated
     speaker is its own id, not one `user_id = ?` string that matches nothing."""
-    from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
@@ -167,8 +157,6 @@ def test_samples_user_id_accepts_several_speakers(client, make_user_key):
 
 
 def test_bulk_status_updates_and_reports_prev(client, make_user_key):
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -198,8 +186,6 @@ def test_bulk_status_keeps_reviewed_ts_of_rows_already_at_the_target(
         client, make_user_key):
     """A mixed selection marked ready must not re-stamp a row that has been
     ready for months — stats() would count it as "ready this week"."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -226,8 +212,6 @@ def test_single_patch_keeps_reviewed_ts_when_status_is_unchanged(
     """A PATCH that resends the unchanged status with a chip or note edit
     must not re-stamp reviewed_ts, or a note on a months-old ready capture
     moves it into "ready this week"."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -252,8 +236,6 @@ def test_single_patch_on_audio_missing_row_saves_edits_but_not_status(
         client, make_user_key):
     """audio_missing is system-set: chips/notes still save, but a status
     PATCH is refused like the bulk route's audio_missing skip."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -282,8 +264,6 @@ def test_audio_missing_row_with_restored_file_can_be_retriaged(
     (late mount, restore) before the next boot, both the single and the bulk
     status PATCH accept the row again instead of locking it out of the
     export."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -306,9 +286,6 @@ def test_audio_missing_row_with_restored_file_can_be_retriaged(
 
 
 def test_bulk_status_skips_locked_member_for_nonadmin_only(client, make_user_key):
-    from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -329,8 +306,6 @@ def test_bulk_status_skips_locked_member_for_nonadmin_only(client, make_user_key
 
 
 def test_bulk_status_foreign_and_missing_are_both_not_found(client, make_user_key):
-    from faster_whisper_backend.captures import store as captures_store
-
     make_user_key("root", is_admin=True)
     uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
     uid_b, _ = make_user_key("bob", pages={"captures": "own"})
@@ -347,8 +322,6 @@ def test_bulk_status_foreign_and_missing_are_both_not_found(client, make_user_ke
 
 
 def test_bulk_status_skips_audio_missing_rows(client, make_user_key):
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -386,9 +359,6 @@ def test_bulk_routes_require_captures_page_when_locked(client, make_user_key):
 
 
 def test_bulk_delete_removes_rows_and_skips_locked(client, make_user_key):
-    from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as captures_store
-
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -413,8 +383,6 @@ def test_bulk_guard_never_loads_the_full_capture_row(client, make_user_key,
     """Admission reads id / user_id / status / sample_id (plus audio_relpath,
     to tell a restored audio_missing row) via get_captures_light. get_capture
     json.loads the words + segments blobs — per id, up to 1000 times."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -437,9 +405,6 @@ def test_bulk_guard_never_loads_the_full_capture_row(client, make_user_key,
 
 def test_bulk_guard_looks_a_shared_sample_lock_up_once(client, make_user_key,
                                                        monkeypatch):
-    from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as captures_store
-
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
@@ -468,8 +433,6 @@ def test_bulk_status_reports_a_row_deleted_after_the_guard(client, make_user_key
     """updated + skipped must account for every submitted id: a row that
     vanishes between admission and the write is `not_found`, as in
     bulk-delete — not silently absent from both lists."""
-    from faster_whisper_backend.captures import store as captures_store
-
     _root, raw_root = make_user_key("root", is_admin=True)
     uid_a, _ = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
