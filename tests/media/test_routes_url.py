@@ -891,6 +891,16 @@ def lang_check(url_enabled, monkeypatch, fake_model):
     return fake_model
 
 
+def _before_detect(monkeypatch, model, hook):
+    """hook(audio, kw) runs before every real detect_language call."""
+    real = type(model).detect_language
+
+    def _detect(self, audio=None, **kw):
+        hook(audio, kw)
+        return real(self, audio=audio, **kw)
+    monkeypatch.setattr(type(model), "detect_language", _detect)
+
+
 def test_language_check_undecodable_audio_is_400(client, url_enabled):
     # url_enabled's download writes bytes no demuxer reads.
     r = client.post("/v1/audio/url-language", json={"url": _URL})
@@ -925,12 +935,8 @@ def test_language_check_votes_and_keeps_the_audio(client, url_enabled, lang_chec
                                                   monkeypatch):
     monkeypatch.setattr(url_enabled.cfg, "INFERENCE_CONCURRENCY", 1, raising=False)
     held: list = []
-    real = type(lang_check).detect_language
-
-    def _detect(self, audio=None, **kw):
-        held.append((tx_models.get_inference_semaphore().locked(), kw))
-        return real(self, audio=audio, **kw)
-    monkeypatch.setattr(type(lang_check), "detect_language", _detect)
+    _before_detect(monkeypatch, lang_check, lambda audio, kw: held.append(
+        (tx_models.get_inference_semaphore().locked(), kw)))
     lang_check.heard = [("de", 0.9), ("de", 0.8), ("en", 0.88)]
     r = client.post("/v1/audio/url-language",
                     json={"url": _URL, "model": "whisper-1", "progress_id": _PID})
@@ -965,12 +971,8 @@ def test_language_check_places_pieces_by_the_downloaded_files_length(
 
 def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
                                               monkeypatch):
-    real = type(lang_check).detect_language
-
-    def _detect(self, audio=None, **kw):
-        tx_progress._BATCH_CANCELLED.add(_PID)       # the cancel route's flag
-        return real(self, audio=audio, **kw)
-    monkeypatch.setattr(type(lang_check), "detect_language", _detect)
+    _before_detect(monkeypatch, lang_check,     # the cancel route's flag
+                   lambda audio, kw: tx_progress._BATCH_CANCELLED.add(_PID))
     r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
     assert r.status_code == 499
     assert lang_check.detect_calls == 1 and len(lang_check.released) == 1
@@ -1024,12 +1026,8 @@ def hls_link(url_enabled, lang_check, fake_capped_get, monkeypatch):
         link.downloads.append(url)
         return await full(url, **kw)
     monkeypatch.setattr(url_download, "download", _download)
-    real = type(lang_check).detect_language
-
-    def _detect(self, audio=None, **kw):
-        link.heard.append(len(audio))
-        return real(self, audio=audio, **kw)
-    monkeypatch.setattr(type(lang_check), "detect_language", _detect)
+    _before_detect(monkeypatch, lang_check,
+                   lambda audio, kw: link.heard.append(len(audio)))
     return link
 
 
