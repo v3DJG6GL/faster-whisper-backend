@@ -19,10 +19,8 @@ def _stream_rows():
 
 
 def test_failed_final_decode_is_recorded_as_a_classified_error(
-        client, app_module, monkeypatch):
+        client, app_module, monkeypatch, energy_vad):
     from faster_whisper_backend.streaming import routes as s_routes
-
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
 
@@ -39,14 +37,12 @@ def test_failed_final_decode_is_recorded_as_a_classified_error(
 
 
 def test_failed_final_decode_receipt_says_the_decode_failed(
-        client, app_module, monkeypatch, caplog):
+        client, app_module, monkeypatch, caplog, energy_vad):
     """The decode never ran, so the receipt must not call the fallback
     utterance "[!] empty output" or advise loosening the thresholds."""
     import logging
 
     from faster_whisper_backend.streaming import routes as s_routes
-
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
@@ -62,8 +58,7 @@ def test_failed_final_decode_receipt_says_the_decode_failed(
     assert "thresholds suppressed" not in receipts[0]
 
 
-def test_decoded_utterance_stays_an_ok_row(client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+def test_decoded_utterance_stays_an_ok_row(client, app_module, monkeypatch, energy_vad):
     with client.websocket_connect(_STREAM_URL) as ws:
         assert handshake(ws)["type"] == "ready"
         speak_and_stop(ws)
@@ -74,13 +69,11 @@ def test_decoded_utterance_stays_an_ok_row(client, app_module, monkeypatch):
 
 
 def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
-        client, app_module, monkeypatch):
+        client, app_module, monkeypatch, energy_vad):
     """The common shape of a real fault: the previews fail too, so nothing is
     committed and the session drops the utterance. No `final` goes out, but
     the error row must still land."""
     from faster_whisper_backend.streaming import routes as s_routes
-
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
 
     real_kwargs = s_routes._build_transcribe_kwargs
 
@@ -110,13 +103,12 @@ def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
     assert row["error_stage"] == "transcribing"
 
 
-def test_failed_final_decode_broadcasts_an_error_entry(client, app_module, monkeypatch):
+def test_failed_final_decode_broadcasts_an_error_entry(
+        client, app_module, monkeypatch, energy_vad):
     """The live /quick-config entry must carry the same status as the row a
     reload reads, not a hard-coded "ok"."""
     from faster_whisper_backend.quick_config import recent_feed
     from faster_whisper_backend.streaming import routes as s_routes
-
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
     q = recent_feed.subscribe()

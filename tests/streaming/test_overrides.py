@@ -52,8 +52,7 @@ def test_ready_frame_reports_locked_handshake_override(client, make_user_key):
 
 
 def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
-                                        app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+                                        app_module, monkeypatch, energy_vad):
     _, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 7})
 
     with client.websocket_connect(
@@ -67,11 +66,10 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
 
 
 def test_stream_request_override_profile_applies(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """A per-request `override_profile` named in the WS handshake is
     honoured — echoed as `profile_applied` in the ready frame and its decode
     params reach the final decode (least-specific layer, no admin lock)."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
     _profile(client, h, "fast", BEAM_SIZE=9)
@@ -88,11 +86,10 @@ def test_stream_request_override_profile_applies(
 
 
 def test_stream_picks_up_binding_change_without_reconnect(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """A binding change made WHILE a dictation WebSocket is open applies from
     the next decode: ident is re-resolved when the config version changes, not
     frozen at the handshake until reconnect."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
     # Both profiles in ONE save — a second POST would replace OVERRIDE_PROFILES.
@@ -120,12 +117,11 @@ def test_stream_picks_up_binding_change_without_reconnect(
 
 
 def test_final_drops_low_confidence_hallucination_segment(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """A final-decode segment that is BOTH very low confidence AND fell through
     the temperature ladder (a hallucination on near-silence) is dropped from the
     committed text; a normal segment in the same decode is kept."""
     from tests.conftest import FakeSegment
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)               # lock down
     _, raw_alice = make_user_key("alice")
 
@@ -147,11 +143,10 @@ def test_final_drops_low_confidence_hallucination_segment(
 
 
 def test_stream_prompt_sentinel_inherit_clear_value(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """The WS handshake prompt is a present-vs-absent sentinel. Absent → inherit
     DEFAULT_PROMPT; explicit "" → CLEAR (no initial_prompt); a value → used verbatim.
     The first utterance's final decode is seeded straight from base_prompt."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "DEFAULT_PROMPT", "SERVER PROMPT", raising=False)
     make_user_key("admin", is_admin=True)
     _, raw_alice = make_user_key("alice")
@@ -169,13 +164,12 @@ def test_stream_prompt_sentinel_inherit_clear_value(
 
 
 def test_stream_handshake_drops_lone_surrogates(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """A JSON handshake can carry a lone UTF-16 surrogate (half an emoji a
     client cut with a UTF-16 slice). Kept in the prompt it would make
     faster-whisper's tokenizer raise on every decode of the connection, so
     nothing gets typed, and in an output wrapper it would break the UTF-8
     frame, so it is dropped."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
@@ -194,11 +188,10 @@ def test_stream_handshake_drops_lone_surrogates(
 
 
 def test_setup_window_error_delivers_internal_error_and_closes(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """A failure in the handshake→loop setup window (after the audio consumer task
     has started, before the receive loop's own cleanup is armed) must still deliver
     an `internal` error frame and close without hanging."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
 
     real_cfg_for = effective_config.cfg_for
@@ -378,13 +371,12 @@ def test_partial_model_load_failure_row_names_the_partial_model(
 
 
 def test_handshake_drops_unknown_decode_override_keys(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """Unknown `decode_overrides` keys are discarded at the handshake: the
     narrowed req_overrides the decode closures hold for the connection's life
     (and re-walk per partial; spied via _client_stream_values) keeps only
     known keys, the honoured key still reaches the final decode, and the junk
     keys never reach the transcribe kwargs."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
 
     from faster_whisper_backend.streaming import routes as streaming_routes
@@ -414,11 +406,10 @@ def test_handshake_drops_unknown_decode_override_keys(
 
 @pytest.mark.parametrize("language", ["en\nFAKE log record", "x" * 5000])
 def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
-        client, make_user_key, fake_model, app_module, monkeypatch, language):
+        client, make_user_key, fake_model, app_module, monkeypatch, language, energy_vad):
     """The handshake `language` reaches the usage row and faster-whisper, which
     logs it raw (CR/LF included) on every partial of an English-only model.
     A value not shaped like a language code is dropped at the handshake."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
     _, raw_alice = make_user_key("alice")
 
@@ -459,8 +450,8 @@ def test_handshake_language_reduces_to_a_whisper_code(raw, expected):
 
 @pytest.mark.parametrize("language,expected", [("EN", "en"), ("en-US", "en"), ("xx", None)])
 def test_handshake_language_reaches_the_model_as_a_whisper_code(
-        client, make_user_key, fake_model, app_module, monkeypatch, language, expected):
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+        client, make_user_key, fake_model, app_module, monkeypatch, language, expected,
+        energy_vad):
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
     _, raw_alice = make_user_key("alice")
 
@@ -484,14 +475,13 @@ _drain_with_code = ws_drain   # _drain, but also returns the server's close code
 
 
 def test_stream_closes_when_key_is_revoked_mid_session(
-        client, make_user_key, app_module, monkeypatch):
+        client, make_user_key, app_module, monkeypatch, energy_vad):
     """Revoking the user mid-stream cuts the session: no further transcripts,
     an `unauthorized` notice, and a 4401 close. revoke_user bumps the config
     version, which is the signal _refresh_ident already consumes."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
     uid, raw_alice = make_user_key("alice")
 
@@ -521,7 +511,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
 
 
 def test_revoked_session_closes_without_a_further_client_frame(
-        client, make_user_key, app_module, monkeypatch):
+        client, make_user_key, app_module, monkeypatch, energy_vad):
     """Once a decode latches the revocation, the PUMP closes the socket itself —
     a client that then goes silent (sends no further frame) must not keep the
     revoked session open until the idle timeout; the producer's own
@@ -529,7 +519,6 @@ def test_revoked_session_closes_without_a_further_client_frame(
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
     uid, raw_alice = make_user_key("alice")
 
@@ -550,7 +539,7 @@ def test_revoked_session_closes_without_a_further_client_frame(
 
 
 def test_revocation_during_the_handshake_still_closes_with_4401(
-        client, make_user_key, app_module, monkeypatch):
+        client, make_user_key, app_module, monkeypatch, energy_vad):
     """A revocation landing between authentication and the end of the handshake
     (the config message, a cold model load) still closes the connection: the
     version snapshot predates authentication, so _refresh_ident sees the
@@ -559,7 +548,6 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
     from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
     uid, raw_alice = make_user_key("alice")
 
@@ -593,10 +581,9 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
 
 
 def test_stream_survives_an_unrelated_config_bump(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """The other direction: a settings save bumps the same config version, and
     the still-valid credential must NOT be treated as revoked."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     h, raw_alice = bind_profile(client, make_user_key, "p", {"BEAM_SIZE": 3})
 
     with client.websocket_connect(
@@ -617,13 +604,12 @@ def test_stream_survives_an_unrelated_config_bump(
 
 
 def test_stream_does_not_reauthenticate_without_a_version_bump(
-        client, make_user_key, app_module, monkeypatch):
+        client, make_user_key, app_module, monkeypatch, energy_vad):
     """The re-auth hangs off the SAME version-bump branch as the ident refresh,
     so the steady state costs exactly nothing: one authenticate_ws call, at the
     handshake, no matter how many partial/final decodes run."""
     from faster_whisper_backend.streaming import routes as streaming_routes
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)
     _, raw_alice = make_user_key("alice")
 
@@ -642,14 +628,13 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
 
 
 def test_stream_closes_when_session_cookie_is_revoked_mid_session(
-        client, make_user_key, app_module, monkeypatch):
+        client, make_user_key, app_module, monkeypatch, energy_vad):
     """The cookie-authenticated dictation page (no bearer) must lose its
     stream on sign-out: sessions_store.revoke_session (/auth/logout) bumps the
     config version, which is the only signal _refresh_ident consumes."""
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
     _uid, raw_alice = make_user_key("alice")
     assert client.post("/auth/login", json={"key": raw_alice}).status_code == 200
@@ -678,7 +663,7 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
 
 
 def test_revocation_during_the_closing_drain_still_closes_with_4401(
-        client, make_user_key, app_module, monkeypatch):
+        client, make_user_key, app_module, monkeypatch, energy_vad):
     """Revoke AFTER the pump's last decode but BEFORE the client's stop, with
     an utterance still in flight: the drain in session.close() runs
     decode_final → _refresh_ident → _CredentialRevoked outside the pump. It
@@ -688,7 +673,6 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     from faster_whisper_backend.stats import metrics
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
     uid, raw_alice = make_user_key("alice")
     rows = []
@@ -905,9 +889,8 @@ def test_stream_knobs_master_gate_off(client, app_module, monkeypatch):
 
 
 def test_stream_client_output_wrappers_survive_a_refresh(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     # _refresh_ident recomputes the wrappers; it must keep the client's.
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
     _, raw_admin = make_user_key("admin", is_admin=True)
     uid, raw_alice = make_user_key("alice")
@@ -930,11 +913,10 @@ def test_stream_client_output_wrappers_survive_a_refresh(
 
 
 def test_stream_output_wrappers_change_only_at_a_document_boundary(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     # Within one document every final extends the previous one (clients may
     # type just the difference), so a mid-document config bump must not swap
     # the prefix of the open document: the new one applies after the boundary.
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[old] ")
     uid, raw_alice = make_user_key("alice")
@@ -972,11 +954,10 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
 
 
 def test_stream_output_suffix_closes_every_document_at_a_hard_break(
-        client, make_user_key, fake_model, app_module, monkeypatch):
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     # A hard break starts a fresh document that gets the prefix again, so the
     # document before it must be closed too: the suffix goes in front of the
     # boundary's separator (typed verbatim), not only on the closing flush.
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SEPARATOR", "\n")
     _, raw_alice = make_user_key("alice")
@@ -1005,8 +986,7 @@ def test_stream_output_suffix_closes_every_document_at_a_hard_break(
 
 
 def test_stream_client_output_wrappers_master_gate_off(
-        client, fake_model, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+        client, fake_model, app_module, monkeypatch, energy_vad):
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
     monkeypatch.setattr(app_module.cfg, "ALLOW_REQUEST_DECODE_OVERRIDES", False)
     with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:

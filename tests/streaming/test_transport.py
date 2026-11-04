@@ -214,10 +214,7 @@ def test_ffmpeg_transport_reader_join_timeout_still_returns(monkeypatch):
     assert asyncio.run(run()) == (True, True)
 
 
-def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):
-    # Force the energy gate — the synthetic sine tone is not real speech, so the
-    # Silero VAD would reject it; this test only checks the ffmpeg decode path.
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch, energy_vad):
     webm = _gen_webm(2.0)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -232,12 +229,11 @@ def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):
     assert "welt" in "".join(m["committed"] + m.get("tail", "") for m in finals)
 
 
-def test_stream_route_ends_the_session_when_the_decoder_dies(app_module, monkeypatch):
+def test_stream_route_ends_the_session_when_the_decoder_dies(app_module, monkeypatch, energy_vad):
     """A dead ffmpeg discards every later frame while the audio keeps re-arming
     the idle deadline — the producer must say so and end the session instead
     of holding a STREAMING_MAX_SESSIONS slot until the client gives up."""
     from faster_whisper_backend.streaming import routes as stream_routes
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     feeds = []
 
     class _DyingTransport:

@@ -29,11 +29,7 @@ def _drain(ws, limit=200):
     return ws_drain(ws, limit)[0]
 
 
-def test_stream_happy_path_partials_then_final(app_module, monkeypatch):
-    # Force the energy gate: the synthetic constant-amplitude PCM below is "loud"
-    # but not speech, so the real Silero VAD would (correctly) reject it. This test
-    # exercises the routing/protocol/session flow, not the VAD model.
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+def test_stream_happy_path_partials_then_final(app_module, monkeypatch, energy_vad):
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ready = _handshake(ws, response_format="json")
@@ -54,12 +50,11 @@ def test_stream_happy_path_partials_then_final(app_module, monkeypatch):
     assert finals[-1].get("last") is True
 
 
-def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch):
+def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch, energy_vad):
     """Over the real socket: ``ready`` advertises the frames, and the one
     utterance is announced, marked as decoding, and closed by its final — in
     that order, all on one ordinal. A client paints "the server is working"
     between ``open`` and the terminal frame, so the order IS the contract."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ready = _handshake(ws, response_format="json")
@@ -388,10 +383,9 @@ def test_stream_disabled_closes_connection(app_module, monkeypatch):
     assert ei.value.code == _WS_DISABLED
 
 
-def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
+def test_stream_records_trace_text_per_utterance(app_module, monkeypatch, energy_vad):
     """Each finalized utterance writes a recent-transcriptions row with non-empty
     raw/final text (drives /quick-config + /reports), not just numeric metrics."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     from faster_whisper_backend.stats import recent_transcriptions_store
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         before = recent_transcriptions_store.count()
@@ -409,12 +403,11 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
 
 
 def test_stream_records_the_key_label_on_the_trace_row(
-        client, app_module, make_user_key, monkeypatch):
+        client, app_module, make_user_key, monkeypatch, energy_vad):
     """The recent-transcriptions row snapshots the API key's label straight
     from the auth record (user["key_label"]), the same way /transcribe does."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.stats import metrics
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("root", is_admin=True)   # locks the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
     raw, _rec = api_keys_store.create_key(uid, label="alice-laptop")
@@ -426,7 +419,7 @@ def test_stream_records_the_key_label_on_the_trace_row(
     assert rows[0]["key_label"] == "alice-laptop"
 
 
-def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch):
+def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch, energy_vad):
     """Flush coalescing must only collapse flushes with NO audio in between:
     `flush A → audio → flush B` has to deliver BOTH flushes to the pump (new
     audio makes the queued flush no longer authoritative), instead of silently
@@ -435,7 +428,6 @@ def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch):
 
     from faster_whisper_backend.streaming import session as streaming_session
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     flushes = []
     orig_flush = streaming_session.StreamSession.flush_utterance
 
@@ -504,10 +496,9 @@ def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
     assert streaming_routes._active_sessions == set()
 
 
-def test_stream_session_idle_timeout_closes_and_notifies(app_module, monkeypatch):
+def test_stream_session_idle_timeout_closes_and_notifies(app_module, monkeypatch, energy_vad):
     # After a successful handshake, a connection that goes silent mid-session is
     # closed once the idle timeout elapses, with an idle_timeout notice first.
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -516,10 +507,9 @@ def test_stream_session_idle_timeout_closes_and_notifies(app_module, monkeypatch
     assert any(m.get("code") == "idle_timeout" for m in msgs)
 
 
-def test_stream_idle_timeout_zero_disables(app_module, monkeypatch):
+def test_stream_idle_timeout_zero_disables(app_module, monkeypatch, energy_vad):
     # 0 disables the idle timeout: the normal stop/close flow still works and no
     # idle_timeout notice is emitted (the receive falls through to a plain await).
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.0, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -529,7 +519,7 @@ def test_stream_idle_timeout_zero_disables(app_module, monkeypatch):
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
 
-def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkeypatch):
+def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkeypatch, energy_vad):
     """The idle deadline is anchored to the last AUDIO byte, not the last frame.
 
     A client alternating an unrecognised control JSON with an empty binary
@@ -541,7 +531,6 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkey
     timeout AFTER the last frame.
     Here the socket must already be closed by the time we stop sending.
     """
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.5, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -560,11 +549,10 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkey
     assert drained_in < 0.25, f"socket was still armed when we stopped sending ({drained_in:.2f}s)"
 
 
-def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypatch):
+def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypatch, energy_vad):
     """Real audio DOES re-arm the idle deadline, so a live mic (which streams
     PCM continuously, even through silence) is never cut short even though the
     session runs far longer than one idle timeout."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     # 2 s timeout with a frame every 0.25 s: 1.75 s of slack per frame, so a
     # stalled sleep on a loaded CI runner cannot turn into a spurious idle
     # close (a 0.5 s timeout with 0.25 s frames flaked in CI).
@@ -788,10 +776,9 @@ def _dictate_one_utterance(client, conf_extra):
         speak_and_stop(ws)
 
 
-def test_stream_client_job_names_the_usage_job(app_module, monkeypatch):
+def test_stream_client_job_names_the_usage_job(app_module, monkeypatch, energy_vad):
     """The handshake's `client_job` becomes the usage job id, so the outcome
     the client posts afterwards lands on the session's own utterances."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     from faster_whisper_backend.stats import usage_store
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         _dictate_one_utterance(client, {"client_job": "ab" * 16})
@@ -800,8 +787,7 @@ def test_stream_client_job_names_the_usage_job(app_module, monkeypatch):
     assert [tuple(r) for r in rows] == [("ab" * 16, "dictation", 1)]
 
 
-def test_stream_malformed_client_job_falls_back_to_session_id(app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+def test_stream_malformed_client_job_falls_back_to_session_id(app_module, monkeypatch, energy_vad):
     from faster_whisper_backend.stats import usage_store
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         _dictate_one_utterance(client, {"client_job": "../not-hex"})
@@ -834,7 +820,8 @@ def test_dictate_page_resampler_seam_uses_a_real_neighbour(client):
     assert "float32[i + 1] : resampleCarry" not in body
 
 
-def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypatch, caplog):
+def test_stream_final_arms_the_residual_stop_and_reports_it(
+        app_module, monkeypatch, caplog, energy_vad):
     """The FINAL decode resolves DECODE_SKIP_RESIDUAL_WINDOWS through cfg_for,
     hands it to the trace capture, and the receipt's guards block shows the
     value (with the non-default marker once it is switched off)."""
@@ -842,7 +829,6 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypa
     from faster_whisper_backend.transcription import decode_trace as dt
     from faster_whisper_backend.streaming import routes as streaming_routes
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     seen = []
     real = dt.capture
 
@@ -884,7 +870,7 @@ def _is_final(kw):
 
 
 def test_stream_final_caps_tokens_and_samples_one_candidate(
-        app_module, fake_model, monkeypatch, caplog):
+        app_module, fake_model, monkeypatch, caplog, energy_vad):
     """A looping rung once ran to 224 tokens (18.6 s), then a sampled rung's
     17-token answer waited 13.9 s for a looping sibling. The FINAL
     decode gets the token cap (through the trace capture) and
@@ -893,7 +879,6 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     from faster_whisper_backend.transcription import decode_trace as dt
     from faster_whisper_backend.streaming import routes as streaming_routes
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     caps = []
     real = dt.capture
 
@@ -922,8 +907,8 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [3]
 
 
-def test_stream_final_best_of_yields_to_a_client_override(app_module, fake_model, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+def test_stream_final_best_of_yields_to_a_client_override(
+        app_module, fake_model, monkeypatch, energy_vad):
     calls = _final_and_partial_kwargs(fake_model)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         _dictate_one_utterance(client, {"decode_overrides": {"best_of": 4}})
@@ -932,11 +917,10 @@ def test_stream_final_best_of_yields_to_a_client_override(app_module, fake_model
 
 @pytest.mark.parametrize("value", [None, "abc"])
 def test_stream_final_best_of_pins_when_the_client_value_does_not_apply(
-        app_module, fake_model, monkeypatch, value):
+        app_module, fake_model, monkeypatch, value, energy_vad):
     """A null / unparseable best_of is dropped by the assembler (the batch
     BEST_OF stays in kwargs), so the key's mere presence must not skip the
     STREAMING_FINAL_BEST_OF pin."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "BEST_OF", 5, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 1, raising=False)
     calls = _final_and_partial_kwargs(fake_model)

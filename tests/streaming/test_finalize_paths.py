@@ -186,10 +186,9 @@ def _gate_second_utterance(monkeypatch, ws, *, before_second=None):
 
 
 def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
-        client, app_module, monkeypatch, caplog):
+        client, app_module, monkeypatch, caplog, energy_vad):
     from faster_whisper_backend.stats import recent_transcriptions_store
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
         with client.websocket_connect(_STREAM_URL) as ws:
             assert _config(ws)["type"] == "ready"
@@ -218,10 +217,9 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
 
 
 def test_gate_skipped_utterance_receipt_says_no_final_decode(
-        client, app_module, monkeypatch, caplog):
+        client, app_module, monkeypatch, caplog, energy_vad):
     """The gate-skipped utterance's receipt says "no final decode", not
     "[!] empty output" blaming the decode thresholds: its RAW line holds text."""
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
         with client.websocket_connect(_STREAM_URL) as ws:
             assert _config(ws)["type"] == "ready"
@@ -241,7 +239,7 @@ def test_gate_skipped_utterance_receipt_says_no_final_decode(
 
 
 def test_revoked_identity_gets_no_rows_through_the_gate_path(
-        client, make_user_key, app_module, monkeypatch):
+        client, make_user_key, app_module, monkeypatch, energy_vad):
     """The gate path reaches on_final without decode_final's pre-model
     revocation raise, so on_final checks for itself: a revoked identity must
     write no trace/usage row."""
@@ -249,7 +247,6 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
     from faster_whisper_backend.stats import recent_transcriptions_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)
     uid, raw_alice = make_user_key("alice")
     counted = {}
@@ -273,14 +270,13 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
 
 
 def test_translate_expect_is_ignored_when_translation_is_disabled(
-        client, app_module, monkeypatch):
+        client, app_module, monkeypatch, energy_vad):
     """/v1/text/translations refuses before it can claim a receipt, so a
     declaration on a TRANSLATION_ENABLED=0 server must park nothing: the
     receipt is logged inline and no `captured` frame invites a claim."""
     from faster_whisper_backend.captures import store as captures_store
     from faster_whisper_backend.transcription import receipt_hold
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
@@ -295,12 +291,11 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
 
 
 def test_translate_expect_parks_when_translation_is_enabled(
-        client, app_module, monkeypatch):
+        client, app_module, monkeypatch, energy_vad):
     """The other direction, so the gate above is not just disabling the hold."""
     from faster_whisper_backend.captures import store as captures_store
     from faster_whisper_backend.transcription import receipt_hold
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
@@ -314,13 +309,12 @@ def test_translate_expect_parks_when_translation_is_enabled(
 
 
 def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
-        client, app_module, monkeypatch):
+        client, app_module, monkeypatch, energy_vad):
     """At CAPTURES_MAX the gate still hands the utterance to create_capture:
     its _evict_to_cap does the documented oldest-first rotation, and refusing
     first would silently record nothing from then on."""
     from faster_whisper_backend.captures import store as captures_store
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
@@ -338,12 +332,11 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
 
 
 def test_a_store_full_of_ready_captures_skips_the_stream_capture(
-        client, app_module, monkeypatch):
+        client, app_module, monkeypatch, energy_vad):
     """Ready rows alone fill CAPTURES_MAX: the new row would be evicted by its
     own insert, so the utterance is not handed to create_capture (no WAV)."""
     from faster_whisper_backend.captures import store as captures_store
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
     created = []
@@ -358,13 +351,12 @@ def test_a_store_full_of_ready_captures_skips_the_stream_capture(
 
 
 def test_turning_capture_recording_off_mid_session_stops_recording(
-        client, app_module, monkeypatch):
+        client, app_module, monkeypatch, energy_vad):
     """CAPTURES_RECORDING_ENABLED is a privacy switch: switched off while a
     dictation socket is open, the next utterance on that socket is not
     written to the captures store."""
     from faster_whisper_backend.captures import store as captures_store
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     created = []
     monkeypatch.setattr(captures_store, "create_capture",
@@ -507,13 +499,12 @@ def test_running_dictate_job_names_its_model(client, app_module):
         assert rows[0]["model"] == tx_models._resolve_model_name("whisper-1")
 
 
-def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, caplog):
+def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, caplog, energy_vad):
     """Two-byte PCM frames alternated with flushes queue two items per ~0 bytes,
     so the byte cap never trips; the item cap must shed them instead."""
     from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming import session as streaming_session
 
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(streaming_routes, "_HARD_CAP_ITEMS", 32)
     orig_flush = streaming_session.StreamSession.flush_utterance
     held = []

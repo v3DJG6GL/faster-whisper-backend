@@ -381,6 +381,15 @@ def no_vad(monkeypatch):
 
 
 @pytest.fixture
+def energy_vad(app_module, monkeypatch):
+    """Force the streaming energy gate: synthetic constant-level PCM or a sine
+    tone is loud but not speech, so the real Silero VAD would (correctly)
+    reject it. Read per WebSocket session, so setting it before the body (and
+    before `client`'s lifespan) is the same as the body's first line."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+
+
+@pytest.fixture
 def wav_factory(tmp_path):
     """Return write(name_or_spec) -> path; writes a 1ch/16k/s16 WAV."""
     counter = {"n": 0}

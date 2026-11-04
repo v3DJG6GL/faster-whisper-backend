@@ -250,11 +250,10 @@ def test_batch_whole_segment_prompt_echo_is_emptied(client, app_module, fake_mod
     assert metrics.guard_hits["head_echo"] == 1 and metrics.guard_hits["emptied"] == 1
 
 
-def test_stream_final_cuts_prompt_echo(app_module, fake_model, monkeypatch, caplog):
+def test_stream_final_cuts_prompt_echo(app_module, fake_model, monkeypatch, caplog, energy_vad):
     from fastapi.testclient import TestClient
     from tests._streaming_helpers import ws_drain
     from faster_whisper_backend.stats import metrics
-    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     fake_model._segments = [_head_echo_segment()]
     t = np.arange(8000 * 2) / RATE
     loud = (0.3 * np.sin(2 * np.pi * 220 * t) * 32767).astype("<i2").tobytes()
