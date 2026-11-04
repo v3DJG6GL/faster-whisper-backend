@@ -320,21 +320,16 @@
     // back to is_admin===false only if permissions are absent (an EMPTY
     // map, what admins get, means absent). Same gate as captures.html.
     try {
-      var r = await fetch('/auth/whoami');
-      if (r.ok) {
-        var j = await r.json();
-        // Cache whoami so _renderNoAccessLanding can list reachable pages.
-        try { window.__whoami = j; } catch(_) {}
-        if (j && j.is_admin) return false;
-        var pages = (j && j.permissions && j.permissions.pages) || null;
-        if (pages && !Object.keys(pages).length) pages = null;
-        var noScope = pages
-          ? (!pages.reports || pages.reports === 'none')
-          : (j && j.is_admin === false);
-        if (noScope) {
-          _renderNoAccessLanding({ page: 'reports' });
-          return true;
-        }
+      var j = await _refreshWhoami();
+      if (j && j.is_admin) return false;
+      var pages = (j && j.permissions && j.permissions.pages) || null;
+      if (pages && !Object.keys(pages).length) pages = null;
+      var noScope = pages
+        ? (!pages.reports || pages.reports === 'none')
+        : (j && j.is_admin === false);
+      if (noScope) {
+        _renderNoAccessLanding({ page: 'reports' });
+        return true;
       }
     } catch (_) {}
     return false;

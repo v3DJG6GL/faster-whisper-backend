@@ -895,10 +895,7 @@ async function loadState(saved) {
     // Signed in but not admin: the shared landing, not the generic toast
     // (which leaves the page blank); fresh whoami so it lists the pages
     // this user CAN reach.
-    try {
-      const w = await fetch('/auth/whoami');
-      if (w.ok) window.__whoami = await w.json();
-    } catch (_) {}
+    await _refreshWhoami();
     _renderNoAccessLanding({ page: 'config' });
     return;
   }
@@ -5170,14 +5167,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (probe.status === 403) {
     // 403 with a presented bearer = signed in but not admin.
     try {
-      const wr = await fetch('/auth/whoami');
-      if (wr.ok) {
-        const wj = await wr.json();
-        try { window.__whoami = wj; } catch (_) {}
-        if (wj && wj.is_admin === false) {
-          _renderNoAccessLanding({ page: 'config' });
-          return;
-        }
+      const wj = await _refreshWhoami();
+      if (wj && wj.is_admin === false) {
+        _renderNoAccessLanding({ page: 'config' });
+        return;
       }
     } catch (_) {}
   }

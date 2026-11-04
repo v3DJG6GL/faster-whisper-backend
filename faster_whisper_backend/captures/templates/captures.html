@@ -1131,21 +1131,16 @@
     // them pages = {} (truthy, no `captures` key): an EMPTY map means
     // "permissions absent", and an admin never lacks the page.
     try {
-      var r = await fetch('/auth/whoami');
-      if (r.ok) {
-        var j = await r.json();
-        // Cache whoami so _renderNoAccessLanding can list reachable pages.
-        try { window.__whoami = j; } catch(_) {}
-        if (j && j.is_admin) return false;
-        var pages = (j && j.permissions && j.permissions.pages) || null;
-        if (pages && !Object.keys(pages).length) pages = null;
-        var noScope = pages
-          ? (!pages.captures || pages.captures === 'none')
-          : (j && j.is_admin === false);
-        if (noScope) {
-          _renderNoAccessLanding({ page: 'captures' });
-          return true;
-        }
+      var j = await _refreshWhoami();
+      if (j && j.is_admin) return false;
+      var pages = (j && j.permissions && j.permissions.pages) || null;
+      if (pages && !Object.keys(pages).length) pages = null;
+      var noScope = pages
+        ? (!pages.captures || pages.captures === 'none')
+        : (j && j.is_admin === false);
+      if (noScope) {
+        _renderNoAccessLanding({ page: 'captures' });
+        return true;
       }
     } catch (_) {}
     return false;

@@ -525,10 +525,7 @@ async function ensureToken() {
   }
   if (r.status === 403 && typeof _renderNoAccessLanding === 'function') {
     // Refresh whoami so the landing can list reachable pages.
-    try {
-      const w = await fetch('/auth/whoami');
-      if (w.ok) window.__whoami = await w.json();
-    } catch (_) {}
+    await _refreshWhoami();
     _renderNoAccessLanding({ page: 'quick_config' });
     return null;
   }

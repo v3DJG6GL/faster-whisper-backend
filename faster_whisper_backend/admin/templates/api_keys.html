@@ -531,15 +531,10 @@
   async function _check403(r) {
     if (!r || r.status !== 403) return false;
     try {
-      var who = await fetch('/auth/whoami');
-      if (who.ok) {
-        var j = await who.json();
-        // Cache whoami so the landing can list pages the caller CAN reach.
-        try { window.__whoami = j; } catch(_) {}
-        if (j && j.is_admin === false) {
-          _renderNoAccessLanding({ page: 'api-keys' });
-          return true;
-        }
+      var j = await _refreshWhoami();
+      if (j && j.is_admin === false) {
+        _renderNoAccessLanding({ page: 'api-keys' });
+        return true;
       }
     } catch (_) {}
     return false;

@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+from faster_whisper_backend.core import web_common
+
 from tests._page_helpers import js_body, js_fn, needs_node
 from tests.conftest import bearer
 
@@ -81,7 +83,7 @@ def test_reports_page_403_landing_keys_on_reports_scope(client):
     reports page; it must render only when whoami shows no reports scope."""
     html = client.get("/reports").text
     fn = js_fn(html, "async function _renderAdminOnlyIfNonAdmin()")
-    script = fn + """
+    script = web_common.NOT_ADMIN_LANDING_JS + "\n" + fn + """
 const window = {};
 let landed = 0;
 function _renderNoAccessLanding() { landed++; }

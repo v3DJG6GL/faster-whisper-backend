@@ -627,8 +627,8 @@ def render_page(template: str, current: str) -> str:
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
       - {{RULE_EDITOR_JS}}       → shared per-rule body editors
       - {{TIME_HELPERS_JS}}      → absTime / relTime / fmtWhen / stampTs / timeTick
-      - {{NOT_ADMIN_LANDING_JS}} → _renderNoAccessLanding() helper
-                                   (+ _renderNotAdminLanding alias)
+      - {{NOT_ADMIN_LANDING_JS}} → _renderNoAccessLanding() + _refreshWhoami()
+                                   helpers (+ _renderNotAdminLanding alias)
       - {{PAGE_META}}            → <meta name="page-key" ...> carrier so
                                    shared JS knows which page it's on
       - {{PAGE_CLASS}}           → body class naming the page canvas width

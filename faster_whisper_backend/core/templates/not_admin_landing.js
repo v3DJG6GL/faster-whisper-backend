@@ -14,6 +14,18 @@ var _PAGE_LINK_INFO = {
   dictate:      { href: '/dictate', free: true }
 };
 
+// Fresh whoami for the landing's page list: cached on success. Null when the
+// request fails or answers non-ok; never rejects.
+async function _refreshWhoami() {
+  try {
+    var r = await fetch('/auth/whoami');
+    if (!r.ok) return null;
+    var j = await r.json();
+    try { window.__whoami = j; } catch (_) {}
+    return j;
+  } catch (_) { return null; }
+}
+
 function _renderNoAccessLanding(opts) {
   // The landing means the caller is not entitled to admin UI here.
   document.body.classList.remove('role-admin');
