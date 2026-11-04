@@ -23,7 +23,6 @@ from tests._transcription_helpers import (
     cancel_while_register_held as _cancel_while_register_held)
 from tests._transcription_helpers import (
     cancel_with_register_queued as _cancel_with_register_queued)
-from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import record_loads as _record_loads
 
@@ -100,22 +99,19 @@ def test_diarize_disabled_server_soft_fails(client, app_module, monkeypatch):
 
 def test_diarize_absent_inherits_config_default_off(client, monkeypatch, diar_on):
     called = _stub_turns(monkeypatch)
-    r = _post(client)
-    assert r.status_code == 200
+    body = _post_ok(client)
     assert called == []          # DIARIZE global default is false
-    assert "warnings" not in r.json()
+    assert "warnings" not in body
 
 
 def test_diarize_config_default_on_applies(client, app_module, monkeypatch,
                                            diar_on):
     monkeypatch.setattr(app_module.cfg, "DIARIZE", True, raising=False)
     called = _stub_turns(monkeypatch)
-    r = _post(client)
-    assert r.status_code == 200
+    _post_ok(client)
     assert len(called) == 1      # absent field inherits DIARIZE=true
     # ...and an explicit false still wins over the config default.
-    r = _post(client, diarize="false")
-    assert r.status_code == 200
+    _post_ok(client, diarize="false")
     assert len(called) == 1
 
 
@@ -133,9 +129,8 @@ def test_diarization_error_becomes_warning(client, monkeypatch, diar_on):
 
 def test_num_speakers_wins_and_clamps(client, monkeypatch, diar_on):
     called = _stub_turns(monkeypatch)
-    r = _post(client, diarize="yes", num_speakers="99", min_speakers="2",
-              max_speakers="5")
-    assert r.status_code == 200
+    _post_ok(client, diarize="yes", num_speakers="99", min_speakers="2",
+             max_speakers="5")
     assert called[0]["num_speakers"] == 32    # clamped to the cap
     assert called[0]["min_speakers"] is None  # num wins over bounds
     assert called[0]["max_speakers"] is None
@@ -143,8 +138,7 @@ def test_num_speakers_wins_and_clamps(client, monkeypatch, diar_on):
 
 def test_min_max_forwarded_without_num(client, monkeypatch, diar_on):
     called = _stub_turns(monkeypatch)
-    r = _post(client, diarize="on", min_speakers="2", max_speakers="4")
-    assert r.status_code == 200
+    _post_ok(client, diarize="on", min_speakers="2", max_speakers="4")
     assert called[0]["num_speakers"] is None
     assert called[0]["min_speakers"] == 2
     assert called[0]["max_speakers"] == 4
@@ -154,10 +148,9 @@ def test_no_segments_skips_diarization_with_warning(client, monkeypatch,
                                                     fake_model, diar_on):
     called = _stub_turns(monkeypatch)
     fake_model._segments = []          # silence: whisper yields nothing
-    r = _post(client, diarize="true")
-    assert r.status_code == 200
+    body = _post_ok(client, diarize="true")
     assert called == []
-    assert any("no speech" in w for w in r.json()["warnings"])
+    assert any("no speech" in w for w in body["warnings"])
 
 
 def _seg(start, end):

@@ -18,7 +18,6 @@ from faster_whisper_backend.runtime import model_registry
 from tests._transcription_helpers import (
     assert_cancelled_load_listed, bind_profile, blocked_register,
     cancel_while_register_held, cancel_with_register_queued, record_loads)
-from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests.conftest import bearer
 
@@ -65,9 +64,7 @@ def _stub_separate(monkeypatch):
 
 def test_separate_swaps_audio_and_cleans_up(client, monkeypatch, fake_model, bgm_on):
     calls, made = _stub_separate(monkeypatch)
-    r = _post(client, separate_bgm="true")
-    assert r.status_code == 200, r.text
-    assert "warnings" not in r.json()
+    assert "warnings" not in _post_ok(client, separate_bgm="true")
     assert len(calls) == 1                 # the ORIGINAL upload went in
     # The decode consumed the vocals file, not the original...
     assert fake_model.last_audio == made[0]
@@ -142,10 +139,9 @@ def test_separate_wav_input_skips_transcode(
         raise AssertionError("wav input must not be transcoded")
 
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _never)
-    r = _post(client, separate_bgm="true")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, separate_bgm="true")
     assert tc_calls == []
-    assert "warnings" not in r.json()
+    assert "warnings" not in body
     assert len(calls) == 1 and calls[0].endswith(".wav")
 
 
@@ -172,11 +168,9 @@ def test_separate_absent_inherits_config_default(client, app_module, monkeypatch
                                                  bgm_on):
     monkeypatch.setattr(app_module.cfg, "SEPARATE_BGM", True, raising=False)
     calls, _ = _stub_separate(monkeypatch)
-    r = _post(client)
-    assert r.status_code == 200
+    _post_ok(client)
     assert len(calls) == 1                 # SEPARATE_BGM=true applies
-    r = _post(client, separate_bgm="false")
-    assert r.status_code == 200
+    _post_ok(client, separate_bgm="false")
     assert len(calls) == 1                 # explicit false wins
 
 
@@ -185,10 +179,9 @@ def test_locked_separate_ignores_client_param(client, make_user_key,
     calls, _ = _stub_separate(monkeypatch)
     _, raw_alice = bind_profile(client, make_user_key, "nosep",
                                 {"locks": ["SEPARATE_BGM"]})
-    r = _post(client, bearer(raw_alice), separate_bgm="true")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, bearer(raw_alice), separate_bgm="true")
     assert calls == []                     # pinned off (global default)
-    assert "separate_bgm" in r.json()["overrides_ignored"]
+    assert "separate_bgm" in body["overrides_ignored"]
 
 
 def test_model_filename_appends_onnx(app_module, monkeypatch):

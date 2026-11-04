@@ -69,9 +69,7 @@ def test_translations_kept_marks_guard_fallback_segments(
             "kept": {0: list(targets)}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200, r.text
-    seg = r.json()["segments"][0]
+    seg = _post_ok(client, translate_to="en")["segments"][0]
     assert seg["translations"] == {"en": "hallo welt"}
     assert seg["translations_kept"] == ["en"]
 
@@ -88,9 +86,7 @@ def test_untranslated_segment_gets_explicit_empty_translations(
             "model": "org/d:Q4", "source": "de", "mode": "fluent", "kept": {}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200, r.text
-    seg = r.json()["segments"][0]
+    seg = _post_ok(client, translate_to="en")["segments"][0]
     assert seg["translations"] == {}
     assert "translations_kept" not in seg
 
@@ -124,11 +120,9 @@ def test_translation_allowlist_miss_soft_fails(client, app_module, monkeypatch):
 
     # The configured default passes even when it is not in the allowlist
     # (ALLOWED_MODELS semantics), and an allowlisted request passes too.
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200 and "translations" in r.json()
-    r = _post(client, translate_to="en",
-              translation_model="org/allowed-GGUF:Q4")
-    assert r.status_code == 200 and "translations" in r.json()
+    assert "translations" in _post_ok(client, translate_to="en")
+    assert "translations" in _post_ok(client, translate_to="en",
+                                      translation_model="org/allowed-GGUF:Q4")
     assert [c["model_ref"] for c in calls] == \
         ["org/default-GGUF:Q4", "org/allowed-GGUF:Q4"]
 
@@ -196,9 +190,7 @@ def test_captures_never_store_translated_text(client, app_module, monkeypatch, c
                         raising=False)
     _stub_translate(monkeypatch)
 
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200, r.text
-    assert r.json()["translations"]["en"] == "XLATED-en"  # the stage ran
+    assert _post_ok(client, translate_to="en")["translations"]["en"] == "XLATED-en"  # the stage ran
     assert created_captures, "capture was not persisted"
     stored = created_captures[-1]
 
@@ -256,15 +248,14 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
         return per_seg, [], {"model": "org/m:Q4", "source": "de",
                              "mode": "fluent"}
     monkeypatch.setattr(translation, "translate_segments", _fake)
-    r = _post(client, translate_to="en,fr", progress_id=_PID)
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, translate_to="en,fr", progress_id=_PID)
     assert seen["entry"]["target"] == "fr"
     assert seen["entry"]["target_progress"] == 0.5
     tr = next(s for s in seen["snap"]["plan"] if s["stage"] == "translating")
     by = {u["target"]: u for u in tr["units"]}
     assert by["en"]["state"] == "done"
     assert by["fr"]["state"] == "running" and by["fr"]["progress"] == 0.5
-    receipt = next(s for s in r.json()["plan"] if s["stage"] == "translating")
+    receipt = next(s for s in body["plan"] if s["stage"] == "translating")
     assert {u["state"] for u in receipt["units"]} == {"done"}
     assert receipt["compute"] == "fluent"
 
@@ -301,7 +292,6 @@ def test_locked_context_segments_ignores_client_value(
         client, make_user_key, "ctx",
         {"TRANSLATION_CONTEXT_SEGMENTS": 1,
          "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]})
-    r = _post(client, bearer(raw_alice), translate_to="en", context_segments="6")
-    assert r.status_code == 200, r.text
+    body = _post_ok(client, bearer(raw_alice), translate_to="en", context_segments="6")
     assert calls[-1]["context_segments"] == 1
-    assert "context_segments" in r.json()["overrides_ignored"]
+    assert "context_segments" in body["overrides_ignored"]
