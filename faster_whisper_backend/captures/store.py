@@ -158,15 +158,6 @@ def _require_conn() -> sqlite3.Connection:
     return store_common.require_init(_conn, "captures_store")
 
 
-def _cfg_int(name: str, default: int) -> int:
-    """A live int knob; `default` when it is missing or unparseable."""
-    try:
-        from faster_whisper_backend.settings import config as cfg
-        return int(getattr(cfg, name, default))
-    except Exception:
-        return default
-
-
 def _read_under_lock(fn):
     """Run a public reader under `_lock`, like the writers: two threads that
     run the same SELECT text on the shared connection share one cached
@@ -360,7 +351,7 @@ def ready_fills_cap() -> bool:
     wins" policy. Recording it then only costs a transcode, a WAV write and a
     dead capture id, so create_capture checks this first and the ingest gates
     can use it to skip the forced word timestamps too."""
-    row_cap = _cfg_int("CAPTURES_MAX", 5000)
+    row_cap = store_common.cfg_int("CAPTURES_MAX", 5000)
     if row_cap < 1:
         return False
     conn = _require_conn()
@@ -590,8 +581,8 @@ def _evict_to_cap(conn: sqlite3.Connection) -> bool:
     audio bytes). Drops rows + their audio files in _EVICTION_ORDER
     priority. _lock is already held by the caller. Returns whether any
     row was dropped (the caller then invalidates every proposer key)."""
-    row_cap = _cfg_int("CAPTURES_MAX", 5000)
-    mb_cap = _cfg_int("CAPTURES_MAX_MB", 5000)
+    row_cap = store_common.cfg_int("CAPTURES_MAX", 5000)
+    mb_cap = store_common.cfg_int("CAPTURES_MAX_MB", 5000)
     if row_cap < 1 and mb_cap < 1:
         return False
 
@@ -1344,7 +1335,7 @@ def sweep_retention() -> int:
     Dissolving an over-age sample unlinks its merged WAV and releases
     the members, which the ordinary sweep below then applies the same age rule
     to. The size and count caps still spare grouped rows; retention does not."""
-    days = _cfg_int("CAPTURES_RETENTION_DAYS", 0)
+    days = store_common.cfg_int("CAPTURES_RETENTION_DAYS", 0)
     if days <= 0:
         return 0
     cutoff = time.time() - days * 86400

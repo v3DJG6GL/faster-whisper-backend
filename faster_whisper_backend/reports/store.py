@@ -388,11 +388,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
     the current value. _lock is already held by the caller, so the COUNT
     sees a stable total even though the DELETEs are not transactionally
     atomic with the caller's INSERT."""
-    try:
-        from faster_whisper_backend.settings import config as cfg
-        cap = int(getattr(cfg, "REPORTS_MAX", 1000))
-    except Exception:
-        cap = 1000
+    cap = store_common.cfg_int("REPORTS_MAX", 1000)
     if cap < 1:
         return
     row = conn.execute("SELECT COUNT(*) FROM reports").fetchone()
@@ -613,11 +609,7 @@ def sweep_retention() -> int:
     """Delete rows older than cfg.REPORTS_RETENTION_DAYS. Returns count
     deleted (0 when retention is disabled or nothing's old enough).
     Lazy-imports cfg so admin /settings edits take effect on next sweep."""
-    try:
-        from faster_whisper_backend.settings import config as cfg
-        days = int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0))
-    except Exception:
-        return 0
+    days = store_common.cfg_int("REPORTS_RETENTION_DAYS", 0)
     if days <= 0:
         return 0
     cutoff = time.time() - days * 86400

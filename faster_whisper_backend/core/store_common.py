@@ -13,7 +13,8 @@
   by usage_jobs and recent_transcriptions.
 - `rename_columns()` / `add_missing_columns()`: the legacy column-rename and
   additive column migrations the stores run on init.
-- `json_column()`: the tolerant decode of a JSON-bearing column.
+- `json_column()`: the tolerant decode of a JSON-bearing column;
+  `cfg_int()`: a live int knob read with a fallback.
 
 Every store creates its DB at the process umask (0644 file / 0755 dir on a
 typical Linux box) and nothing narrows it afterwards, yet those files hold
@@ -166,6 +167,17 @@ def json_column(raw: Any, empty: str) -> Any:
         return json.loads(raw or empty)
     except (TypeError, ValueError):
         return json.loads(empty)
+
+
+def cfg_int(name: str, default: int) -> int:
+    """A live int knob; `default` when it is missing or unparseable. The
+    config import stays lazy so a monkey-patched or /settings-edited value
+    is read on every call."""
+    try:
+        from faster_whisper_backend.settings import config as cfg
+        return int(getattr(cfg, name, default))
+    except Exception:
+        return default
 
 
 def open_wal_db(path: str) -> sqlite3.Connection:

@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from faster_whisper_backend.captures import store as captures_store
+from faster_whisper_backend.core import store_common
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 
@@ -43,13 +44,13 @@ def _ends_sentence(text: str) -> bool:
 
 def _global_silence_ms() -> int:
     """Inter-member silence, sourced from the global VAD-internal knob."""
-    return captures_store._cfg_int("CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)
+    return store_common.cfg_int("CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)
 
 
 def _global_edge_ms() -> int:
     """Outer-margin silence (both ends of the merged WAV), sourced from the
     global VAD edge knob."""
-    return captures_store._cfg_int("CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300)
+    return store_common.cfg_int("CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300)
 
 
 def _outer_edge_ms() -> int:
