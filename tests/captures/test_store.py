@@ -42,13 +42,13 @@ def _var_limit(conn, n=999):
         conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
 
 
-def _seed_rows(conn, ids, status="new", ts=1.0):
-    """Raw-insert minimal capture rows (no audio on disk), one per id."""
+def _seed_rows(conn, ids, status="new", ts=1.0, rel="x.wav"):
+    """Raw-insert minimal capture rows (no audio written here), one per id."""
     conn.executemany(
         "INSERT INTO captures (id, created_ts, model, audio_relpath,"
         " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,?,'m','x.wav','wav','r','f','[]','[]',"
-        "'[]',?,'bob')", [(i, ts, status) for i in ids])
+        " status, user_id) VALUES (?,?,'m',?,'wav','r','f','[]','[]',"
+        "'[]',?,'bob')", [(i, ts, rel, status) for i in ids])
 
 
 def _caps(monkeypatch, rows, mb):
@@ -659,21 +659,12 @@ def test_byte_pass_keeps_rows_whose_audio_is_already_gone(
     cs = captures_store_db
     conn = cs._require_conn()
     missing = [f"gone{i:011d}" for i in range(10)]
-    conn.executemany(
-        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,1.0,'m',?,'wav','r','f','[]','[]',"
-        "'[]','audio_missing','bob')",
-        [(i, cs._relpath_for(i, ".wav")) for i in missing])
+    _seed_rows(conn, missing, "audio_missing")
     fresh = [f"new{i:012d}" for i in range(3)]
     for n, cid in enumerate(fresh):
         rel = cs._relpath_for(cid, ".wav")
         write_bytes(cs.abs_audio_path(rel), b"\x00" * (1024 * 1024))
-        conn.execute(
-            "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-            " audio_format, raw_text, final_text, words, segments,"
-            " corrections, status, user_id) VALUES (?,?,'m',?,'wav','r','f',"
-            "'[]','[]','[]','new','bob')", (cid, 2.0 + n, rel))
+        _seed_rows(conn, [cid], ts=2.0 + n, rel=rel)
     _caps(monkeypatch, 5000, 2)
     with cs._lock:
         assert cs._evict_to_cap(conn) is True
