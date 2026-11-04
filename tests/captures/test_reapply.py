@@ -18,6 +18,7 @@ import pytest
 
 from faster_whisper_backend.captures import reapply as captures_reapply
 from faster_whisper_backend.pipeline import engine as pl_engine
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
 
 # The module's canonical idle state (mirrors reapply._reset_for_tests).
@@ -128,7 +129,10 @@ def test_status_reflects_running_after_start(fake_thread):
 def fake_pipeline(monkeypatch):
     """Stand-in for the rules engine: `pl_engine._postprocess_text` records its
     kwargs and tags its output. The owner-identity resolve (effective_config.
-    build_ident) is stubbed too, so no key store is needed."""
+    build_ident) is stubbed too, so no key store is needed, and no
+    captures-excludes are configured."""
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
     fake = types.SimpleNamespace(calls=[])
 
     def build_ident(who, model_id):
@@ -169,11 +173,7 @@ def test_run_passes_the_row_language_and_updates_the_capture(
     """The rows are sqlite3.Row, which has no .get(): `r.get("language")`
     raised inside the per-row try, so EVERY capture was logged as skipped
     and the job still finished "done" with captures_updated == 0."""
-    from faster_whisper_backend.settings import config as cfg
-
     cs = captures_store_db
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     conn = cs._require_conn()
     _insert(conn, "reapply00001", language="de")
     _insert(conn, "reapply00002", language=None)
@@ -195,8 +195,6 @@ def test_run_passes_the_row_language_and_updates_the_capture(
 def test_run_training_pass_gets_the_language_too(
         captures_store_db, fake_pipeline, monkeypatch, caplog):
     """Second call site: the captures-excludes training-form pass."""
-    from faster_whisper_backend.settings import config as cfg
-
     cs = captures_store_db
     monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", ["some-rule"],
                         raising=False)
@@ -220,8 +218,6 @@ def test_run_scopes_a_translate_capture_by_its_english_text(
     text; the live run scoped its rules by "en", so the reapply must too —
     a de-scoped rule must not rewrite final or text_for_training. The
     transcribe twin with the same language still gets the de scope."""
-    from faster_whisper_backend.settings import config as cfg
-
     cs = captures_store_db
     monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", ["some-rule"],
                         raising=False)
@@ -255,11 +251,7 @@ def test_run_skips_a_row_whose_owner_identity_fails_to_resolve(
     """The owner-identity resolve sat outside the per-row try, so one row
     whose build_ident raised ended the whole run with status "error" and the
     remaining rows were never processed."""
-    from faster_whisper_backend.settings import config as cfg
-
     cs = captures_store_db
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     conn = cs._require_conn()
     _insert(conn, "reapplyid001", language="de")
     _insert(conn, "reapplyid002", language="de")
@@ -288,11 +280,7 @@ def test_run_reapplies_rules_saved_while_a_pass_was_running(
     """A start() during a pass used to return the running state only: the
     pass kept its ident snapshot of the OLD rules and finished "done", so the
     newer save was never applied to any capture."""
-    from faster_whisper_backend.settings import config as cfg
-
     cs = captures_store_db
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     conn = cs._require_conn()
     _insert(conn, "reapplyrr001", language="de")
     captures_reapply.start()
@@ -322,11 +310,7 @@ def test_rerun_keeps_the_job_totals_of_the_earlier_pass(
     """A queued rerun walks every row again, and a row pass 1 rewrote is
     current by then; the totals carry across passes, so the job does not
     report "0 updated" for a row it rewrote."""
-    from faster_whisper_backend.settings import config as cfg
-
     cs = captures_store_db
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     _insert(cs._require_conn(), "reapplyrt001", language="de")
     captures_reapply.start()
     calls = []
@@ -356,10 +340,7 @@ def test_run_rebuilds_a_group_transcript_with_chips_on_their_aligned_word(
     import json
 
     from faster_whisper_backend.captures import routes as captures_routes
-    from faster_whisper_backend.settings import config as cfg
 
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     aligned = [{"word": "äh", "removed": True}] * 3 + [
         {"word": "DIE"}, {"word": "KATZE"}, {"word": "DIE"}]
     monkeypatch.setattr(captures_routes, "_align_member_words",
@@ -386,10 +367,6 @@ def test_run_leaves_the_members_of_a_locked_sample_alone(
     """A locked sample's views derive its text from the members on every
     read, so rewriting a member's final / training text changed the locked
     sample anyway (the self-heal on a page view already skips them)."""
-    from faster_whisper_backend.settings import config as cfg
-
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     conn = captures_store_db._require_conn()
     gs = groups_store_db
     _insert_sample(conn, gs, "reapplylocked001", locked=1)
@@ -432,10 +409,6 @@ def test_run_reads_the_shared_connection_under_the_store_locks(
     share one cached statement: the pass's COUNT(*) is the text count() runs
     for the captures page, so an unlocked read could get the other caller's
     result or raise and fail the whole job."""
-    from faster_whisper_backend.settings import config as cfg
-
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     cs, gs = captures_store_db, groups_store_db
     conn = cs._require_conn()
     _insert_sample(gs._require_conn(), gs, "reapplysidlock01")
@@ -461,10 +434,6 @@ def test_run_leaves_a_sample_locked_mid_pass_alone(
     """The locked-sample set was read once before the walk: a sample locked
     while the pass ran (it can take minutes) still had its members' final /
     training text rewritten."""
-    from faster_whisper_backend.settings import config as cfg
-
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     conn = captures_store_db._require_conn()
     gs = groups_store_db
     _insert_sample(conn, gs, "reapplymidlock01")
@@ -496,10 +465,6 @@ def test_run_leaves_a_capture_merged_into_a_locked_sample_mid_pass_alone(
     capture ungrouped when the pass started, then merged into a sample that
     was locked while the pass ran, still had its final / training text
     rewritten."""
-    from faster_whisper_backend.settings import config as cfg
-
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     conn = captures_store_db._require_conn()
     gs = groups_store_db
     _insert(conn, "reapplymrg01", language="de", final="old")
@@ -529,10 +494,6 @@ def test_run_rebuilds_a_sample_a_capture_joined_mid_pass(
     """The group rebuild keyed on the snapshot's sample_id: a capture merged
     into an unlocked sample while the pass ran got the new text, but the
     sample's stored transcript kept the old member text."""
-    from faster_whisper_backend.settings import config as cfg
-
-    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
-                        raising=False)
     conn = captures_store_db._require_conn()
     gs = groups_store_db
     _insert(conn, "reapplyjoin1", language="de", final="old")
