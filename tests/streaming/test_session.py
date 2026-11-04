@@ -12,7 +12,7 @@ import pytest
 
 from tests._streaming_helpers import (
     const_final, const_partial, const_pcm, fast_config, inert_session, raising_decoder)
-from tests.streaming._feed_helpers import feed_levels, grow_and_close, grow_document
+from tests.streaming._feed_helpers import feed_and_close, feed_levels, grow_and_close, grow_document
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 
 
@@ -295,12 +295,9 @@ def test_all_dropped_final_keeps_empty_and_does_not_resurrect_partials():
         decode_final=const_final(dropped_all=True),  # decode produced segments, dropped them ALL
         cfg=cfg)
 
-    async def run():
-        await s.feed_pcm(_pcm(8000, 500))   # speech → partials commit "thank you"
-        await s.feed_pcm(_pcm(0, 400))      # silence → finalize (all-dropped)
-        await s.close()
-
-    asyncio.run(run())
+    feed_and_close(s,
+                   (8000, 500),   # speech → partials commit "thank you"
+                   (0, 400))      # silence → finalize (all-dropped)
     # the partials DID commit the hallucination into LocalAgreement...
     assert any("thank" in m["committed"] for m in msgs if m["type"] == "partial")
     # ...but the all-dropped final must not let it back into the document.
@@ -396,13 +393,7 @@ def test_no_boundary_for_a_document_that_was_never_sent():
 
 def test_close_releases_held_words_in_the_last_final():
     s, msgs = _held_neue_session()
-
-    async def run():
-        await s.feed_pcm(_pcm(8000, 300))
-        await s.feed_pcm(_pcm(0, 400))
-        await s.close()
-
-    asyncio.run(run())
+    feed_and_close(s, (8000, 300), (0, 400))
     finals = _finals(msgs)
     assert finals[0]["committed"] + finals[0]["tail"] == "bla"
     assert finals[-1]["committed"] == "bla neue" and finals[-1].get("last") is True

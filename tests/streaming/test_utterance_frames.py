@@ -18,7 +18,7 @@ import pytest
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm as _pcm,
     fast_config as _cfg, inert_session, raising_decoder)
-from tests.streaming._feed_helpers import feed_levels
+from tests.streaming._feed_helpers import feed_and_close, feed_levels
 from faster_whisper_backend.streaming.session import CloseAbort
 
 
@@ -316,14 +316,7 @@ def test_every_announced_utterance_has_exactly_one_terminal_frame():
         return step
 
     s, msgs = _session(decode_final=_df)
-
-    async def run():
-        for _ in range(4):
-            await s.feed_pcm(_pcm(8000, 500))
-            await s.feed_pcm(_pcm(0, 400))
-        await s.close()
-
-    asyncio.run(run())
+    feed_and_close(s, *[(8000, 500), (0, 400)] * 4)
     _assert_every_announced_utterance_closed_once(msgs)
     ordinals = [n for kind, n in _lifecycle(msgs) if kind == "open"]
     assert ordinals == [0, 1, 2, 3]
