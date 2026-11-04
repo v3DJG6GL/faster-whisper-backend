@@ -1446,6 +1446,7 @@ function setData(u, ys) {
   const yClean = ys.map(v => (v == null ? null : v));
   u.setData([xs, yClean], true);
 }
+function feedSpark(k, v) { setData(sparks[k], hist[SPARK_RING[k]]); setReadout(SPARK_HEAD[k], v); }
 
 const $ = id => document.getElementById(id);
 function fmtBytes(mb) {
@@ -1630,12 +1631,9 @@ function render(snap) {
       `(${memPct.toFixed(0)}%) &nbsp; ` +
       `<b>SM clock</b> ${snap.gpu.sm_clock_mhz ?? '—'} MHz &nbsp; ` +
       `<b>driver</b> ${snap.gpu.driver || '—'} &nbsp; <b>CUDA</b> ${snap.gpu.cuda || '—'}`;
-    setData(sparks.gpu_util, hist.gpu_util);
-    setData(sparks.gpu_mem,  hist.gpu_mem_pct);
-    setData(sparks.gpu_temp, hist.gpu_temp);
-    setReadout('gpu-util-now', snap.gpu.util_pct ?? 0);
-    setReadout('gpu-mem-now', memPct);
-    setReadout('gpu-temp-now', snap.gpu.temp_c ?? 0);
+    feedSpark('gpu_util', snap.gpu.util_pct ?? 0);
+    feedSpark('gpu_mem', memPct);
+    feedSpark('gpu_temp', snap.gpu.temp_c ?? 0);
   } else {
     $('gpu-content').classList.add('hidden');
     $('gpu-empty').classList.remove('hidden');
@@ -1652,15 +1650,13 @@ function render(snap) {
   for (let i = 0; i < cores.length; i++) {
     stripEl.children[i].style.height = Math.max(2, cores[i]) + '%';
   }
-  setData(sparks.cpu, hist.cpu);
-  setReadout('cpu-now', snap.host.cpu_pct ?? 0);
+  feedSpark('cpu', snap.host.cpu_pct ?? 0);
 
   setVal('ram-val', fmtBytes(snap.host.ram_used_mb) + ' ', '/ ' + fmtBytes(snap.host.ram_total_mb));
   setBar($('ram-bar'), snap.host.ram_pct);
   $('ram-meta').innerHTML = `<b>${snap.host.ram_pct.toFixed(1)}%</b> used &nbsp; ` +
     `<b>disk free</b> ${snap.host.disk_free_gb ?? '—'} GB (model cache)`;
-  setData(sparks.ram, hist.ram_pct);
-  setReadout('ram-now', snap.host.ram_pct ?? 0);
+  feedSpark('ram', snap.host.ram_pct ?? 0);
 
   setVal('proc-rss', (snap.process.rss_mb ?? 0).toFixed(0), 'MB RSS');
   $('proc-meta').innerHTML =
