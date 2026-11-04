@@ -12,6 +12,12 @@ from faster_whisper_backend.settings import config_store
 from tests.auth._store_helpers import failing_conn, failing_rebuild_conn, sibling_write
 
 
+@pytest.fixture
+def ak(api_keys_db):
+    """api_keys_db under its short test-body name."""
+    return api_keys_db
+
+
 def _store_user_binding(ak, uid, binding):
     """Write a raw stored user binding, bypassing set_user_permissions."""
     ak._require_conn().execute("UPDATE users SET permissions=? WHERE id=?",
@@ -49,19 +55,17 @@ def test_split_display_parts():
     assert prefix == "wk_abcde" and last4 == "wxyz"
 
 
-def test_create_user_and_duplicate(api_keys_db):
-    ak = api_keys_db
+def test_create_user_and_duplicate(ak):
     uid = ak.create_user("alice", is_admin=False)
     assert ak.get_user(uid)["username"] == "alice"
     with pytest.raises(ValueError):
         ak.create_user("alice", is_admin=False)
 
 
-def test_create_user_duplicate_of_revoked_user_names_the_revoke(api_keys_db):
+def test_create_user_duplicate_of_revoked_user_names_the_revoke(ak):
     """A revoked user drops off the keys page but keeps the name, so
     re-adding it must not claim a user the admin can't see "already
     exists"."""
-    ak = api_keys_db
     ak.create_user("alice", is_admin=False)
     ak.revoke_user(ak.create_user("bob", is_admin=False))
     with pytest.raises(ValueError, match="'bob' belongs to a revoked account"):
@@ -71,24 +75,21 @@ def test_create_user_duplicate_of_revoked_user_names_the_revoke(api_keys_db):
     assert ak.create_user("Bob", is_admin=False)  # UNIQUE is case-sensitive
 
 
-def test_create_user_blank_and_too_long(api_keys_db):
-    ak = api_keys_db
+def test_create_user_blank_and_too_long(ak):
     with pytest.raises(ValueError):
         ak.create_user("   ", is_admin=False)
     with pytest.raises(ValueError):
         ak.create_user("x" * 129, is_admin=False)
 
 
-def test_create_user_default_perms(api_keys_db):
-    ak = api_keys_db
+def test_create_user_default_perms(ak):
     nonadmin = ak.create_user("bob", is_admin=False)
     admin = ak.create_user("root", is_admin=True)
     assert ak.get_user_permissions(nonadmin)["pages"]["quick_config"] == "own"
     assert ak.get_user_permissions(admin) == {}  # admins bypass policy
 
 
-def test_lockdown_transitions(api_keys_db):
-    ak = api_keys_db
+def test_lockdown_transitions(ak):
     assert ak.is_locked_down() is False                 # fresh DB -> open
     uid = ak.create_user("root", is_admin=True)
     assert ak.is_locked_down() is False                 # admin user, no key yet
@@ -101,8 +102,7 @@ def test_lockdown_transitions(api_keys_db):
         ak.revoke_key(rec2["id"])
 
 
-def test_lookup_hit_miss_and_falsy(api_keys_db):
-    ak = api_keys_db
+def test_lookup_hit_miss_and_falsy(ak):
     uid = ak.create_user("u", is_admin=False)
     raw, rec = ak.create_key(uid, label="my-laptop")
     got = ak.lookup_by_raw_key(raw)
@@ -113,8 +113,7 @@ def test_lookup_hit_miss_and_falsy(api_keys_db):
     assert ak.lookup_by_raw_key("") is None
 
 
-def test_last_used_debounce(api_keys_db):
-    ak = api_keys_db
+def test_last_used_debounce(ak):
     uid = ak.create_user("u", is_admin=False)
     raw, rec = ak.create_key(uid)
     ak.lookup_by_raw_key(raw)
@@ -125,8 +124,7 @@ def test_last_used_debounce(api_keys_db):
     assert ak.get_key(rec["id"])["last_used_ts"] == t1
 
 
-def test_last_used_by_user_batched_max(api_keys_db):
-    ak = api_keys_db
+def test_last_used_by_user_batched_max(ak):
     conn = ak._require_conn()
     a = ak.create_user("a", is_admin=False)
     _, ka1 = ak.create_key(a)
@@ -149,8 +147,7 @@ def test_last_used_by_user_batched_max(api_keys_db):
     assert m[c] == 300.0         # 500.0 belonged to a now-revoked key
 
 
-def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(api_keys_db):
-    ak = api_keys_db
+def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(ak):
     conn = ak._require_conn()
     # User binding: 'old' appears in BOTH the ordered profiles list and the
     # allowlist; an unrelated profile and the '*' wildcard must survive untouched.
@@ -181,12 +178,11 @@ def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(api_keys_db):
     assert ak.rename_profile_refs("ghost", "x") == 0
 
 
-def test_rename_profile_refs_is_all_or_nothing(api_keys_db, monkeypatch):
+def test_rename_profile_refs_is_all_or_nothing(ak, monkeypatch):
     """The overrides route rolls the profile rename back when the cascade
     raises, so the cascade must be all-or-nothing: on the autocommit
     connection a mid-scan error would leave the rows already rewritten
     pointing at a profile name that no longer exists."""
-    ak = api_keys_db
     conn = ak._require_conn()
     u = ak.create_user("u", is_admin=False)
     _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
@@ -212,11 +208,10 @@ def test_rename_profile_refs_is_all_or_nothing(api_keys_db, monkeypatch):
 
 
 def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
-        api_keys_db, monkeypatch):
+        ak, monkeypatch):
     """SQLite rolls the transaction back by itself on SQLITE_FULL / IOERR; a
     bare ROLLBACK then raised "no transaction is active" and replaced the
     real error in the overrides route's 500 detail."""
-    ak = api_keys_db
     conn = ak._require_conn()
     u = ak.create_user("u", is_admin=False)
     _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
@@ -232,11 +227,10 @@ def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
 
 
 def test_revoke_user_failing_key_cascade_leaves_the_user_active(
-        api_keys_db, monkeypatch):
+        ak, monkeypatch):
     """A failing api_keys UPDATE rolls the users UPDATE back too: a user left
     revoked alone would be gone from list_users (so no retry from the UI)
     while their keys kept authenticating."""
-    ak = api_keys_db
     real_conn = ak._require_conn()
     ak.create_user("admin", is_admin=True)
     bob = ak.create_user("bob", is_admin=False)
@@ -254,12 +248,11 @@ def test_revoke_user_failing_key_cascade_leaves_the_user_active(
 
 
 def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
-        api_keys_db, monkeypatch):
+        ak, monkeypatch):
     """A matrix Save (pages only) read the stored binding, released _lock,
     and wrote it back later — a rename_profile_refs landing in between was
     overwritten, so the binding pointed at the old, now-missing profile
     name. The rename is fired from inside the Save's read of the row."""
-    ak = api_keys_db
     u = ak.create_user("u", is_admin=False)
     _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
     real = ak._parse_permissions
@@ -282,37 +275,32 @@ def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
     assert ak.get_user_permissions(u)["pages"]["logs"] == "all"
 
 
-def test_create_key_user_missing(api_keys_db):
-    ak = api_keys_db
+def test_create_key_user_missing(ak):
     with pytest.raises(ValueError):
         ak.create_key("nonexistent")
 
 
-def test_create_key_label_too_long(api_keys_db):
-    ak = api_keys_db
+def test_create_key_label_too_long(ak):
     uid = ak.create_user("u", is_admin=False)
     with pytest.raises(ValueError):
         ak.create_key(uid, label="x" * 129)
 
 
-def test_create_key_returns_prefixed_raw(api_keys_db):
-    ak = api_keys_db
+def test_create_key_returns_prefixed_raw(ak):
     uid = ak.create_user("u", is_admin=False)
     raw, rec = ak.create_key(uid, label="laptop")
     assert raw.startswith("wk_")
     assert rec["label"] == "laptop" and rec["revoked_ts"] is None
 
 
-def test_revoke_last_admin_key_blocked(api_keys_db):
-    ak = api_keys_db
+def test_revoke_last_admin_key_blocked(ak):
     uid = ak.create_user("root", is_admin=True)
     _, rec = ak.create_key(uid)
     with pytest.raises(ak.LastAdminError):
         ak.revoke_key(rec["id"])
 
 
-def test_revoke_admin_key_ok_when_second_exists(api_keys_db):
-    ak = api_keys_db
+def test_revoke_admin_key_ok_when_second_exists(ak):
     uid = ak.create_user("root", is_admin=True)
     _, r1 = ak.create_key(uid)
     _, r2 = ak.create_key(uid)
@@ -320,18 +308,16 @@ def test_revoke_admin_key_ok_when_second_exists(api_keys_db):
     assert ak.get_key(r1["id"])["revoked_ts"] is not None
 
 
-def test_revoke_last_admin_user_blocked(api_keys_db):
-    ak = api_keys_db
+def test_revoke_last_admin_user_blocked(ak):
     uid = ak.create_user("root", is_admin=True)
     ak.create_key(uid)
     with pytest.raises(ak.LastAdminError):
         ak.revoke_user(uid)
 
 
-def test_revoke_keyless_admin_user_allowed_in_open_mode(api_keys_db):
+def test_revoke_keyless_admin_user_allowed_in_open_mode(ak):
     # With no admin key anywhere (open mode) a keyless admin revoke can't flip
     # lockdown, so the last-admin guard must not refuse it.
-    ak = api_keys_db
     alice = ak.create_user("alice", is_admin=True)
     ak.create_user("bob", is_admin=True)
     assert ak.is_locked_down() is False
@@ -340,8 +326,7 @@ def test_revoke_keyless_admin_user_allowed_in_open_mode(api_keys_db):
     assert ak.is_locked_down() is False
 
 
-def test_revoke_last_keyed_admin_user_blocked_despite_keyless_admin(api_keys_db):
-    ak = api_keys_db
+def test_revoke_last_keyed_admin_user_blocked_despite_keyless_admin(ak):
     root = ak.create_user("root", is_admin=True)
     ak.create_key(root)
     ak.create_user("spare", is_admin=True)   # keyless: can't keep lockdown
@@ -349,8 +334,7 @@ def test_revoke_last_keyed_admin_user_blocked_despite_keyless_admin(api_keys_db)
         ak.revoke_user(root)
 
 
-def test_revoke_nonadmin_unguarded(api_keys_db):
-    ak = api_keys_db
+def test_revoke_nonadmin_unguarded(ak):
     admin = ak.create_user("root", is_admin=True)
     ak.create_key(admin)
     u = ak.create_user("bob", is_admin=False)
@@ -359,11 +343,10 @@ def test_revoke_nonadmin_unguarded(api_keys_db):
     assert ak.get_user(u)["revoked_ts"] is not None
 
 
-def test_concurrent_reads_are_thread_safe(api_keys_db):
+def test_concurrent_reads_are_thread_safe(ak):
     # get_user() & friends share one sqlite3 connection: without every read
     # under _lock, threadpool workers race on it → `sqlite3.InterfaceError:
     # bad parameter or other API misuse` and torn rows (created_ts read as None).
-    ak = api_keys_db
     uid = ak.create_user("root", is_admin=True)
     raw, _ = ak.create_key(uid)
     other = ak.create_user("alice", is_admin=False)
@@ -406,8 +389,7 @@ def test_concurrent_reads_are_thread_safe(api_keys_db):
     assert not errors, f"concurrent access raised: {errors[:3]}"
 
 
-def test_concurrent_revoke_of_two_admin_keys_keeps_one(api_keys_db):
-    ak = api_keys_db
+def test_concurrent_revoke_of_two_admin_keys_keeps_one(ak):
     uid = ak.create_user("root", is_admin=True)
     _, r1 = ak.create_key(uid)
     _, r2 = ak.create_key(uid)
@@ -429,8 +411,7 @@ def test_concurrent_revoke_of_two_admin_keys_keeps_one(api_keys_db):
     assert ak.is_locked_down() is True
 
 
-def test_set_permissions_validates_page_and_scope(api_keys_db):
-    ak = api_keys_db
+def test_set_permissions_validates_page_and_scope(ak):
     uid = ak.create_user("u", is_admin=False)
     with pytest.raises(ValueError):
         ak.set_user_permissions(uid, {"pages": {"nosuchpage": "all"}})
@@ -438,8 +419,7 @@ def test_set_permissions_validates_page_and_scope(api_keys_db):
         ak.set_user_permissions(uid, {"pages": {"captures": "sideways"}})
 
 
-def test_set_permissions_access_only_rejects_own(api_keys_db):
-    ak = api_keys_db
+def test_set_permissions_access_only_rejects_own(ak):
     uid = ak.create_user("u", is_admin=False)
     # logs is access-only: none|all, not own.
     with pytest.raises(ValueError):
@@ -447,9 +427,8 @@ def test_set_permissions_access_only_rejects_own(api_keys_db):
     ak.set_user_permissions(uid, {"pages": {"logs": "all"}})
 
 
-def test_stats_accepts_own_scope(api_keys_db):
+def test_stats_accepts_own_scope(ak):
     """stats is a scoped page, not access-only: "own" is a legal stored value."""
-    ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     ak.set_user_permissions(uid, {"pages": {"stats": "own"}})
     assert ak.get_user_permissions(uid)["pages"]["stats"] == "own"
@@ -458,12 +437,11 @@ def test_stats_accepts_own_scope(api_keys_db):
 
 
 def test_binding_saves_keep_a_stored_slug_a_rules_edit_removed(
-        api_keys_db, monkeypatch):
+        ak, monkeypatch):
     """The binding drawer sends the whole overrides blob back: a rule slug the
     stored user / key binding already names (removed from the rules since)
     must not 422 an edit of another field, while a newly added unknown slug
     still does."""
-    ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     _raw, rec = ak.create_key(uid)
     slugs = {"x", "known"}
@@ -492,26 +470,23 @@ def test_scoped_and_access_only_pages_are_disjoint():
         api_keys_store.PAGES)
 
 
-def test_default_nonadmin_perms_stats_own(api_keys_db):
-    ak = api_keys_db
+def test_default_nonadmin_perms_stats_own(ak):
     uid = ak.create_user("fresh", is_admin=False)
     pages = ak.get_user_permissions(uid)["pages"]
     assert pages["stats"] == "own"
     assert pages["logs"] == "none"
 
 
-def test_existing_stats_all_survives_merge(api_keys_db):
+def test_existing_stats_all_survives_merge(ak):
     """Widening the allowed scopes must not touch rows that already hold
     "all": a later edit to another page merges around it."""
-    ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     ak.set_user_permissions(uid, {"pages": {"stats": "all"}})
     ak.set_user_permissions(uid, {"pages": {"captures": "none"}})
     assert ak.get_user_permissions(uid)["pages"]["stats"] == "all"
 
 
-def test_set_permissions_merge_preserves_untouched(api_keys_db):
-    ak = api_keys_db
+def test_set_permissions_merge_preserves_untouched(ak):
     uid = ak.create_user("u", is_admin=False)
     ak.set_user_permissions(uid, {"pages": {"captures": "all"}})
     clean = ak.set_user_permissions(uid, {"pages": {"reports": "all"}})
@@ -519,15 +494,13 @@ def test_set_permissions_merge_preserves_untouched(api_keys_db):
     assert clean["pages"]["reports"] == "all"
 
 
-def test_set_permissions_normalises_tags(api_keys_db):
-    ak = api_keys_db
+def test_set_permissions_normalises_tags(ak):
     uid = ak.create_user("u", is_admin=False)
     clean = ak.set_user_permissions(uid, {"pages": {}, "quick_config_tags": ["B", "a", "a"]})
     assert clean["quick_config_tags"] == ["a", "b"]
 
 
-def test_set_permissions_revoked_user_raises(api_keys_db):
-    ak = api_keys_db
+def test_set_permissions_revoked_user_raises(ak):
     admin = ak.create_user("root", is_admin=True)
     ak.create_key(admin)
     u = ak.create_user("bob", is_admin=False)
@@ -537,8 +510,7 @@ def test_set_permissions_revoked_user_raises(api_keys_db):
         ak.set_user_permissions(u, {"pages": {"captures": "all"}})
 
 
-def test_username_helpers(api_keys_db):
-    ak = api_keys_db
+def test_username_helpers(ak):
     uid = ak.create_user("alice", is_admin=False)
     assert ak.get_username(uid) == "alice"
     assert ak.get_username(None) is None
@@ -549,8 +521,7 @@ def test_username_helpers(api_keys_db):
     assert "(open-mode)" not in batch
 
 
-def test_get_user_permissions_sentinel(api_keys_db):
-    ak = api_keys_db
+def test_get_user_permissions_sentinel(ak):
     assert ak.get_user_permissions("(open-mode)") == {}
     assert ak.get_user_permissions("missing") == {}
 
@@ -559,8 +530,7 @@ def test_open_mode_user_is_admin():
     assert api_keys_store.OPEN_MODE_USER["is_admin"] is True
 
 
-def test_update_key_label_renames(api_keys_db):
-    ak = api_keys_db
+def test_update_key_label_renames(ak):
     uid = ak.create_user("renamer", is_admin=False)
     raw, rec = ak.create_key(uid, label="old")
     out = ak.update_key_label(rec["id"], "  fresh  ")
@@ -572,8 +542,7 @@ def test_update_key_label_renames(api_keys_db):
     assert ak.lookup_by_raw_key(raw)["key_label"] == "fresh"
 
 
-def test_update_key_label_validates(api_keys_db):
-    ak = api_keys_db
+def test_update_key_label_validates(ak):
     uid = ak.create_user("badlabel", is_admin=False)
     _, rec = ak.create_key(uid, label="ok")
     for bad in ("", "   ", "x" * 129):
@@ -581,8 +550,7 @@ def test_update_key_label_validates(api_keys_db):
             ak.update_key_label(rec["id"], bad)
 
 
-def test_update_key_label_missing_returns_none(api_keys_db):
-    ak = api_keys_db
+def test_update_key_label_missing_returns_none(ak):
     assert ak.update_key_label("does-not-exist", "x") is None
 
 
@@ -733,11 +701,10 @@ def test_parse_binding_keeps_a_split_card_the_rules_in_force_still_hold(monkeypa
         "strip-whisper-punctuation"]
 
 
-def test_list_users_migrates_the_user_binding_the_drawer_sends_back(api_keys_db):
+def test_list_users_migrates_the_user_binding_the_drawer_sends_back(ak):
     """The per-user drawer reads list_users() and sends the blob back on
     every save; a raw stored guard at 1 or a pre-rename key would 422 any edit
     (keys already arrive migrated through _row_to_key_dict)."""
-    ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     _store_user_binding(ak, uid, {"direct": {
         "SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "SEGMENT_MAX_WORDS_PER_SEC": 3.0},
@@ -751,11 +718,10 @@ def test_list_users_migrates_the_user_binding_the_drawer_sends_back(api_keys_db)
     assert ak.get_user_config(uid)["direct"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
 
 
-def test_first_admin_key_bumps_the_config_version(api_keys_db):
+def test_first_admin_key_bumps_the_config_version(ak):
     """Creating the first admin key ends open mode; a keyless live stream
     resolved as the synthetic admin re-authenticates only on this counter."""
     from faster_whisper_backend.settings import version as settings_version
-    ak = api_keys_db
     uid = ak.create_user("root", is_admin=True)
     v0 = settings_version._CONFIG_VERSION
     assert ak.is_locked_down() is False
@@ -765,10 +731,9 @@ def test_first_admin_key_bumps_the_config_version(api_keys_db):
 
 
 def test_last_used_debounce_survives_a_backwards_wall_clock_step(
-        api_keys_db, monkeypatch):
+        ak, monkeypatch):
     # The debounce runs on the monotonic clock: a backwards wall-clock step
     # must not hold back last_used_ts writes for the step plus 60 s.
-    ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     raw, rec = ak.create_key(uid)
     mono = [1000.0]
@@ -785,12 +750,11 @@ def test_last_used_debounce_survives_a_backwards_wall_clock_step(
 
 
 def test_binding_saves_keep_a_stored_profile_name_that_vanished(
-        api_keys_db, monkeypatch):
+        ak, monkeypatch):
     """A bound profile name can vanish without the delete guard (env pin,
     hand edit); the drawer sends it back unseen, so only names a save ADDS
     must exist."""
     from faster_whisper_backend.settings import config as cfg
-    ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     _raw, rec = ak.create_key(uid)
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"gone": {"BEAM_SIZE": 2},
@@ -811,12 +775,10 @@ def test_binding_saves_keep_a_stored_profile_name_that_vanished(
             ak.set_user_permissions(uid, {"config": added})
 
 
-def test_sibling_revoke_still_seen_after_a_failed_rebuild(api_keys_db,
-                                                          monkeypatch):
+def test_sibling_revoke_still_seen_after_a_failed_rebuild(ak, monkeypatch):
     """A rebuild SELECT that fails must leave the sibling commit unseen, so
     the next lookup retries the rebuild instead of authenticating the revoked
     key from the stale index."""
-    ak = api_keys_db
     uid = ak.create_user("root", is_admin=True)
     raw, rec = ak.create_key(uid)
     ak.create_key(uid)
