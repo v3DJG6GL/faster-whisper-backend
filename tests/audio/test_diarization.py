@@ -11,6 +11,7 @@ import pytest
 
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import hf_cache
+from tests._transcription_helpers import blocked_register as _blocked_register
 from tests._transcription_helpers import post_verbose as _post
 
 
@@ -524,20 +525,6 @@ def test_placement_error_keeps_raw_torch_text_out_of_the_message(monkeypatch):
         diarization._load_blocking_inner("p/m", "cuda", 4)
     assert "SECRET" not in str(ei.value)
     assert "/opt/path" not in str(ei.value)
-
-
-def _blocked_register(monkeypatch):
-    import threading
-    from faster_whisper_backend.runtime import model_registry
-    entered, gate = threading.Event(), threading.Event()
-    real_register = model_registry.register_loaded_model
-
-    def _slow(*a, **kw):
-        entered.set()
-        gate.wait(5)
-        return real_register(*a, **kw)
-    monkeypatch.setattr(model_registry, "register_loaded_model", _slow)
-    return entered, gate
 
 
 def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch):

@@ -1,6 +1,7 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
 (the stub upload, a plain / verbose_json post, a profile-bound non-admin key,
-the record_transcription spy, a fixed model loader, a constant-tone WAV).
+the record_transcription spy, a fixed model loader, a constant-tone WAV, the
+receipt's guard line, a gated model_registry write).
 Import as ``from tests._transcription_helpers import ...``."""
 
 import io
@@ -76,3 +77,20 @@ def guard_line(caplog, knob):
     block = "\n".join(r.getMessage() for r in caplog.records
                       if "Post-decode guards" in r.getMessage())
     return next(l for l in block.splitlines() if knob in l).rstrip()
+
+
+def blocked_register(monkeypatch):
+    """Hold model_registry.register_loaded_model on a gate; return
+    (entered, gate): `entered` is set once a register call is waiting, and
+    setting `gate` (or 5 s) lets it through to the real write."""
+    import threading
+    from faster_whisper_backend.runtime import model_registry
+    entered, gate = threading.Event(), threading.Event()
+    real_register = model_registry.register_loaded_model
+
+    def _slow(*a, **kw):
+        entered.set()
+        gate.wait(5)
+        return real_register(*a, **kw)
+    monkeypatch.setattr(model_registry, "register_loaded_model", _slow)
+    return entered, gate

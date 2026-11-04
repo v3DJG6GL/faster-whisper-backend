@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 from faster_whisper_backend.audio import bgm_separation
-from tests._transcription_helpers import bind_profile
+from tests._transcription_helpers import bind_profile, blocked_register
 from tests._transcription_helpers import post_verbose as _post
 
 
@@ -434,19 +434,11 @@ def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatc
     is a phantom _drop_locked (which returns early on no separator) never
     unregisters."""
     import asyncio
-    import threading
     from faster_whisper_backend.runtime import model_registry
     _foo_model(monkeypatch)
     sep = object()
     monkeypatch.setattr(bgm_separation, "_load_blocking", lambda m, d: sep)
-    entered, gate = threading.Event(), threading.Event()
-    real_register = model_registry.register_loaded_model
-
-    def _slow_register(*a, **kw):
-        entered.set()
-        gate.wait(5)
-        return real_register(*a, **kw)
-    monkeypatch.setattr(model_registry, "register_loaded_model", _slow_register)
+    entered, gate = blocked_register(monkeypatch)
 
     async def _main():
         task = asyncio.create_task(bgm_separation._get_separator("Foo", lease=True))

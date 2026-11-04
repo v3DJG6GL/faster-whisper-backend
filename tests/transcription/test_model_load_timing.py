@@ -14,6 +14,7 @@ import types
 import pytest
 
 from faster_whisper_backend.runtime import model_registry
+from tests._transcription_helpers import blocked_register
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_fake_model as _register
@@ -73,17 +74,8 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
     """The registry write runs on a thread a cancellation cannot stop: the
     model must already be cached by then (no phantom registry entry), and
     the lease the cancelled caller will never release is given back."""
-    import threading
     _stub_load(monkeypatch, max_loaded=4)
-    entered, go = threading.Event(), threading.Event()
-    real_register = model_registry.register_loaded_model
-
-    def _slow_register(*a, **kw):
-        entered.set()
-        go.wait(5)
-        real_register(*a, **kw)
-    monkeypatch.setattr(model_registry, "register_loaded_model",
-                        _slow_register)
+    entered, go = blocked_register(monkeypatch)
 
     async def run():
         task = asyncio.create_task(
