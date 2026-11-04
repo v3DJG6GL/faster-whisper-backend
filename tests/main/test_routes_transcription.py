@@ -19,7 +19,7 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.transcription import run_plan
 from tests._transcription_helpers import (
-    fail_model_load, get_progress, post_transcription as _post,
+    fail_model_load, get_progress, post_json_ok, post_transcription as _post,
     post_translation, post_verbose_ok, record_runs, serve_model, watch_progress)
 
 
@@ -192,9 +192,7 @@ def test_deeply_nested_decode_overrides_is_ignored_not_500(client, fake_model):
     from faster_whisper_backend.stats import metrics
 
     before = metrics.err_count["/v1/audio/transcriptions"]
-    r = _post(client, response_format="json", decode_overrides="[" * 200_000)
-    assert r.status_code == 200, r.text
-    assert r.json() == {"text": "hallo welt"}
+    assert post_json_ok(client, decode_overrides="[" * 200_000) == {"text": "hallo welt"}
     # Ignored, so nothing from it reached the model, and no error was recorded.
     assert metrics.err_count["/v1/audio/transcriptions"] == before
 
@@ -202,10 +200,9 @@ def test_deeply_nested_decode_overrides_is_ignored_not_500(client, fake_model):
 def test_absurdly_long_filename_extension_does_not_crash(client):
     # The client filename feeds tempfile.NamedTemporaryFile's suffix; a 250-char
     # extension used to raise OSError(36, 'File name too long') → 500.
-    r = _post(client, response_format="json",
-              files={"file": ("a." + "x" * 250, b"RIFFxxxxWAVE", "audio/wav")})
-    assert r.status_code == 200, r.text
-    assert r.json() == {"text": "hallo welt"}
+    assert post_json_ok(
+        client, files={"file": ("a." + "x" * 250, b"RIFFxxxxWAVE", "audio/wav")}
+    ) == {"text": "hallo welt"}
 
 
 def test_null_byte_in_filename_does_not_crash(client):
@@ -662,11 +659,8 @@ def test_translate_task_cascades_from_english_text(client, app_module,
     enable_translation(app_module, monkeypatch)
     calls = stub_translate(monkeypatch)
     assert fake_model._info.language == "de"
-    r = _post(client, response_format="json", task="translate",
-              translate_to="de")
-    assert r.status_code == 200, r.text
+    body = post_json_ok(client, task="translate", translate_to="de")
     assert calls[-1]["source_lang"] == "en"
-    body = r.json()
     assert body["translations"] == {"de": "hallo welt-de"}
     assert body["translation"]["source"] == "en"
 
@@ -677,9 +671,7 @@ def test_translate_task_scopes_the_pipeline_by_the_output_language(
     # lowercasing of German wordlist hits like "Was") must not run on it.
     fake_model._segments = [
         FakeSegment("It is over. Was it good? In fact, yes.", 0.0, 1.0)]
-    r = _post(client, response_format="json", task="translate")
-    assert r.status_code == 200, r.text
-    assert "Was it good" in r.json()["text"]
+    assert "Was it good" in post_json_ok(client, task="translate")["text"]
     # Same text, transcribe task: the de rules do apply (the guard above is
     # only meaningful while they would).
     r = _post(client, response_format="json")
@@ -873,9 +865,7 @@ def test_retain_media_over_the_store_cap_is_declined_with_a_warning(
                         lambda *a, **kw: calls.append("register"))
     monkeypatch.setattr(media_store, "make_pipeline_copy",
                         lambda *a, **kw: calls.append("copy"))
-    r = _post(client, response_format="json", retain_media="true")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = post_json_ok(client, retain_media="true")
     assert "source_media_id" not in body
     assert any("RETAINED_MEDIA_MAX_BYTES" in w for w in body["warnings"])
     assert calls == []
@@ -899,9 +889,7 @@ def test_retain_media_with_a_body_that_cannot_name_it_is_refused(
 def test_retain_media_refused_by_register_says_so(client, app_module, monkeypatch):
     _retain_on(app_module, monkeypatch)
     monkeypatch.setattr(media_store, "register", lambda *a, **kw: None)
-    r = _post(client, response_format="json", retain_media="true")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = post_json_ok(client, retain_media="true")
     assert "source_media_id" not in body
     assert any(w.startswith("retain_media:") for w in body["warnings"])
 
@@ -916,9 +904,7 @@ def test_retain_media_staging_failure_says_so(client, app_module, monkeypatch):
                         lambda *a, **kw: calls.append("register"))
     monkeypatch.setattr(media_store, "make_pipeline_copy",
                         lambda *a, **kw: None)
-    r = _post(client, response_format="json", retain_media="true")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = post_json_ok(client, retain_media="true")
     assert "source_media_id" not in body
     assert any(w.startswith("retain_media:") and "could not stage" in w
                for w in body["warnings"])

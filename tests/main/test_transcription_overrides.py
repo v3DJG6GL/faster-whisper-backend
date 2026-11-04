@@ -11,7 +11,7 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.translation import gating as tr_gating
 from tests._transcription_helpers import (
-    bind_profile, post_transcription, post_verbose_ok)
+    bind_profile, post_json_ok, post_transcription, post_verbose_ok)
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
@@ -449,11 +449,10 @@ def test_batch_decode_overrides_drop_lone_surrogates(client, fake_model):
     response fail to encode — a 500 after the whole file was decoded — and in
     hotwords it reached the tokenizer. Dropped, as the streaming twin does."""
     # json.dumps escapes the surrogate as "\\ud83d", as a browser sends it.
-    r = post_transcription(client, response_format="json",
-                           decode_overrides=json.dumps({"output_prefix": ">> \ud83d",
-                                                        "hotwords": "Kardiologie \ud83d"}))
-    assert r.status_code == 200, r.text
-    assert r.json()["text"] == ">> hallo welt"
+    body = post_json_ok(client,
+                        decode_overrides=json.dumps({"output_prefix": ">> \ud83d",
+                                                     "hotwords": "Kardiologie \ud83d"}))
+    assert body["text"] == ">> hallo welt"
     assert fake_model.last_kwargs["hotwords"] == "Kardiologie "
 
 
@@ -468,8 +467,7 @@ def test_client_output_wrappers_master_gate_off(client, app_module):
 
 def test_batch_reports_hallucination_threshold_without_word_timestamps(
         client, fake_model):
-    r = post_transcription(client, response_format="json",
-                           decode_overrides=json.dumps({"hallucination_silence_threshold": 2}))
-    assert r.status_code == 200, r.text
+    body = post_json_ok(client,
+                        decode_overrides=json.dumps({"hallucination_silence_threshold": 2}))
     assert fake_model.last_kwargs["word_timestamps"] is False
-    assert r.json()["overrides_ignored"] == ["hallucination_silence_threshold"]
+    assert body["overrides_ignored"] == ["hallucination_silence_threshold"]

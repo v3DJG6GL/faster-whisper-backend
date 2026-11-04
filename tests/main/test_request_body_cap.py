@@ -11,7 +11,7 @@ import inspect
 import json
 
 from faster_whisper_backend.auth import dependencies as auth
-from tests._transcription_helpers import post_transcription
+from tests._transcription_helpers import post_json_ok, post_transcription
 
 _JSON = {"Content-Type": "application/json"}
 
@@ -140,11 +140,10 @@ def test_json_cap_honours_a_cfg_override(client, app_module, monkeypatch):
 def test_multipart_upload_is_not_subject_to_the_json_cap(client, app_module,
                                                          monkeypatch):
     monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 4096, raising=False)
-    r = post_transcription(
-        client, response_format="json",
-        files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")})
-    assert r.status_code == 200, r.text
-    assert r.json() == {"text": "hallo welt"}
+    assert post_json_ok(
+        client,
+        files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")}
+    ) == {"text": "hallo welt"}
 
 
 def test_non_json_content_type_is_not_held_to_the_json_cap(client):

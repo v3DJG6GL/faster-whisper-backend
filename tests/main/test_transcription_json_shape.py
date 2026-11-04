@@ -7,12 +7,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeSegment, bearer
 from tests._translation_helpers import enable_translation, stub_translate
-from tests._transcription_helpers import bind_profile, post_transcription, post_verbose_ok
-
-
-def _post(client, headers=None, **data):
-    data.setdefault("response_format", "json")
-    return post_transcription(client, headers, **data)
+from tests._transcription_helpers import bind_profile, post_json_ok, post_verbose_ok
 
 
 def test_plain_json_reports_locked_override_as_ignored(client, make_user_key,
@@ -22,15 +17,13 @@ def test_plain_json_reports_locked_override_as_ignored(client, make_user_key,
     # promises overrides_ignored: ["task"] on its own default shape.
     admin_h, raw_alice = bind_profile(client, make_user_key, "notask",
                                       {"locks": ["TASK"]})
-    r = _post(client, headers=bearer(raw_alice), task="translate")
-    assert r.status_code == 200, r.text
+    body = post_json_ok(client, headers=bearer(raw_alice), task="translate")
     assert "task" not in fake_model.last_kwargs
-    assert "task" in r.json()["overrides_ignored"]
+    assert "task" in body["overrides_ignored"]
     # Nothing locked and no profile asked for: the plain shape stays plain.
-    r = _post(client, headers=admin_h)
-    assert r.status_code == 200, r.text
-    assert "overrides_ignored" not in r.json()
-    assert "profile_applied" not in r.json()
+    body = post_json_ok(client, headers=admin_h)
+    assert "overrides_ignored" not in body
+    assert "profile_applied" not in body
 
 
 def test_plain_json_echoes_profile_applied(client, fake_model, monkeypatch):
@@ -38,10 +31,9 @@ def test_plain_json_echoes_profile_applied(client, fake_model, monkeypatch):
                         raising=False)
     monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True,
                         raising=False)
-    r = _post(client, override_profile="fast")
-    assert r.status_code == 200, r.text
+    body = post_json_ok(client, override_profile="fast")
     assert fake_model.last_kwargs["beam_size"] == 3
-    assert r.json()["profile_applied"] == "fast"
+    assert body["profile_applied"] == "fast"
 
 
 def test_plain_json_translation_meta_names_kept_originals(client, app_module,
@@ -59,9 +51,7 @@ def test_plain_json_translation_meta_names_kept_originals(client, app_module,
             "kept": {0: list(targets)}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = post_json_ok(client, translate_to="en")
     assert "segments" not in body
     assert body["translation"]["kept"] == {"en": [0]}
     # verbose_json exposes the same map beside its per-segment markers.
@@ -74,9 +64,7 @@ def test_plain_json_translation_meta_kept_is_explicit_empty(client, app_module,
                                                             monkeypatch):
     enable_translation(app_module, monkeypatch)
     stub_translate(monkeypatch)
-    r = _post(client, translate_to="en")
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = post_json_ok(client, translate_to="en")
     assert body["translations"] == {"en": "hallo welt-en"}
     assert body["translation"]["kept"] == {}
 
@@ -98,9 +86,8 @@ def test_joined_translations_glue_unspaced_pieces(client, app_module, fake_model
 
     want = {"zh": "我今天去商店买一些面包。", "en": "Hi there."}
     for fmt in ("json", "verbose_json"):
-        r = _post(client, translate_to="zh,en", response_format=fmt)
-        assert r.status_code == 200, r.text
-        assert r.json()["translations"] == want
+        assert post_json_ok(client, translate_to="zh,en",
+                            response_format=fmt)["translations"] == want
     assert created_captures[-1]["translations"] == want
 
 
@@ -118,10 +105,9 @@ def test_joined_translations_glue_a_digit_to_han_only_for_a_zh_target(
                 for i in range(len(segments))], [], {
             "model": "org/d:Q4", "source": "en", "mode": "fluent"}
     monkeypatch.setattr(translation, "translate_segments", _fake)
-    r = _post(client, translate_to="zh,en", response_format="json")
-    assert r.status_code == 200, r.text
+    body = post_json_ok(client, translate_to="zh,en")
     want = {"zh": "我买了3个苹果。", "en": "我买了3 个苹果。"}
-    assert r.json()["translations"] == want
+    assert body["translations"] == want
     assert created_captures[-1]["translations"] == want
 
 

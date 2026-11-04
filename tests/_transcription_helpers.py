@@ -1,5 +1,5 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
-(the stub upload, a plain / verbose_json / translations post, a 200-checked body fetch, the progress GET and cancel
+(the stub upload, a plain / verbose_json / translations post, a 200-checked json / verbose_json body fetch, the progress GET and cancel
 POST, a profile-bound non-admin key, the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a _load_blocking recorder, a gated model_registry write, a cancel while that
 write is held or queued, its post-condition).
@@ -36,6 +36,15 @@ def post_verbose(client, headers=None, **data):
 def post_verbose_ok(client, headers=None, **data):
     """post_verbose that must answer 200; return the parsed body."""
     r = post_verbose(client, headers, **data)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def post_json_ok(client, headers=None, **data):
+    """post_transcription (response_format defaults to json) that must answer
+    200; return the parsed body."""
+    data.setdefault("response_format", "json")
+    r = post_transcription(client, headers, **data)
     assert r.status_code == 200, r.text
     return r.json()
 
