@@ -10,14 +10,13 @@ boundary as test_stage_models — nothing here imports pyannote or onnxruntime.
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
-from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import preload_routes
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.translation import engine as translation
 
 from tests.conftest import bearer
-from tests.runtime.test_preload_registry import _no_room
+from tests.runtime.test_preload_registry import _fits, _no_room
 from faster_whisper_backend.transcription import models as tx_models
 
 _URL = "/v1/models/preload"
@@ -363,7 +362,7 @@ def test_a_refused_whisper_id_contributes_no_per_model_stage_model(
 def test_repeat_post_reuses_the_plan_and_does_not_grow_the_queue(
         client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
-    monkeypatch.setattr(model_sizes, "fits", lambda *a, **k: (True, None))
+    _fits(monkeypatch)
     # Freeze the worker so the queue is observable.
     if preload._worker is not None:
         preload._worker.cancel()
@@ -389,7 +388,7 @@ def test_client_supplied_plan_id_is_honoured(client, app_module, monkeypatch):
 def test_a_raising_loader_leaves_the_plan_intact(client, app_module,
                                                  monkeypatch):
     _enable(app_module, monkeypatch)
-    monkeypatch.setattr(model_sizes, "fits", lambda *a, **k: (True, None))
+    _fits(monkeypatch)
 
     seen = []
 

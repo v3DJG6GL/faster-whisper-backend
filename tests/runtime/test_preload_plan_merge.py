@@ -13,7 +13,6 @@ import gc
 import pytest
 
 from faster_whisper_backend.audio import diarization
-from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import preload_routes
@@ -425,8 +424,7 @@ def test_route_judges_the_resolved_whisper_id(client, app_module, monkeypatch):
     assert preload_routes._allowed("whisper", "whisper-1") is True
     assert preload_routes._allowed("whisper", "../etc/passwd") is False
 
-    monkeypatch.setattr(model_sizes, "fits",
-                        lambda *a, **k: (None, "size_unknown"))
+    _fits(monkeypatch, (None, "size_unknown"))
     r = client.post("/v1/models/preload", json={
         "models": [{"family": "whisper", "id": "whisper-1"}]})
     assert r.status_code == 202, r.text
