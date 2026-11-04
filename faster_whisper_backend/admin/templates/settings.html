@@ -3073,17 +3073,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       commitFull();
     }
     const rankStepper = _el('div', 'rank-stepper');
-    upBtn = document.createElement('button');
-    upBtn.type = 'button'; upBtn.className = 'move-btn move-up';
-    upBtn.innerHTML = MOVE_CHEV_UP;
-    upBtn.title = 'Move up one position'; upBtn.setAttribute('aria-label', upBtn.title);
+    upBtn = _button('move-btn move-up', '', 'Move up one position');
+    upBtn.innerHTML = MOVE_CHEV_UP; upBtn.setAttribute('aria-label', upBtn.title);
     if (rule.type === 'terminal' || idx <= 0) upBtn.disabled = true;
     upBtn.addEventListener('click', () => { if (!upBtn.disabled) _moveRuleBy(-1); });
     const ord = _el('span', 'ordinal', String(idx + 1));
-    downBtn = document.createElement('button');
-    downBtn.type = 'button'; downBtn.className = 'move-btn move-down';
-    downBtn.innerHTML = MOVE_CHEV_DOWN;
-    downBtn.title = 'Move down one position'; downBtn.setAttribute('aria-label', downBtn.title);
+    downBtn = _button('move-btn move-down', '', 'Move down one position');
+    downBtn.innerHTML = MOVE_CHEV_DOWN; downBtn.setAttribute('aria-label', downBtn.title);
     if (rule.type === 'terminal' || idx >= _lastMovable) downBtn.disabled = true;
     downBtn.addEventListener('click', () => { if (!downBtn.disabled) _moveRuleBy(1); });
     rankStepper.appendChild(upBtn);
@@ -3093,9 +3089,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     // Lock padlock (what a lock disables: _applyLockState). The terminal trim
     // is inherently fixed, so it shows a static, non-interactive padlock.
-    const lockBtn = document.createElement('button');
-    lockBtn.type = 'button';
-    lockBtn.className = 'lock-btn';
+    const lockBtn = _button('lock-btn', '');
     // Bootstrap Icons lock / unlock (MIT), inline SVG: crisp at rail size and
     // recolourable (the lock/unlock emoji can't be themed and read poorly small).
     const _LOCK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M8 0a4 4 0 0 1 4 4v2.05a2.5 2.5 0 0 1 2 2.45v5a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 13.5v-5a2.5 2.5 0 0 1 2-2.45V4a4 4 0 0 1 4-4M4.5 7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7zM8 1a3 3 0 0 0-3 3v2h6V4a3 3 0 0 0-3-3"/></svg>';
@@ -3221,11 +3215,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         colorPopCtl.hide();
       }
       const swatches = ['', 'red', 'amber', 'green', 'teal', 'blue', 'purple', 'pink'].map(tok => {
-        const sw = document.createElement('button');
-        sw.type = 'button';
-        sw.className = 'color-swatch' + (tok ? '' : ' none');
+        const sw = _button('color-swatch' + (tok ? '' : ' none'), '', tok || 'none');
         sw.dataset.color = tok;
-        sw.title = tok || 'none';
         sw.setAttribute('aria-label', tok || 'none');
         sw.setAttribute('role', 'option');
         sw.tabIndex = -1;
