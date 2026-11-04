@@ -12,6 +12,8 @@ import subprocess
 
 import pytest
 
+from faster_whisper_backend.captures.samples import _build_default_transcript
+
 _NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(_NODE is None, reason="node unavailable")
 
@@ -1487,8 +1489,6 @@ def test_merge_preview_join_of_unspaced_members_matches_the_server(
     """The JS twin joined every member with " " and closed it with ".", so
     the merge preview of zh / ja members showed "今天天气很好. 我们…" while
     the server joins Han / kana with no space and closes them with "。"."""
-    from faster_whisper_backend.captures.samples import _build_default_transcript
-
     rows = [{"final": f} for f in finals]
     out = _js_transcript(page, tmp_path, rows, strategy)
     assert out == expected[strategy]
@@ -2486,8 +2486,6 @@ def test_final_result_preview_joins_zh_ja_members_like_the_server(page, tmp_path
     member's "。" / "」"), but the group card's Final result still put " "
     at every member boundary: it showed "我们去北京 你好" for a sample whose
     transcript and export read "我们去北京你好"."""
-    from faster_whisper_backend.captures.samples import _build_default_transcript
-
     out = _run_node(tmp_path, _ground_spans_harness(page) + r"""
 console.log(JSON.stringify([
   render([{ word: '我们', member_idx: 0 }, { word: '去', member_idx: 0 },
@@ -2516,8 +2514,6 @@ def test_final_result_preview_reads_a_member_past_an_opener_word_of_its_own(page
     result tested the next member only on that first word, so it showed
     "我们去北京。 「你好」" where the transcript and export read
     "我们去北京。「你好」"."""
-    from faster_whisper_backend.captures.samples import _build_default_transcript
-
     out = _run_node(tmp_path, _ground_spans_harness(page) + r"""
 function m(member, list) {
   return list.map(function(w) {
