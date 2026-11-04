@@ -25,6 +25,12 @@ def _fail_logins(client, n):
                            json={"key": "wk_nope"}).status_code == 401
 
 
+def _login_root(client, make_user_key):
+    """Sign `client` in with a new root admin key; returns the CSRF token."""
+    _uid, raw = make_user_key("root", is_admin=True)
+    return client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+
+
 def test_login_open_mode_is_noop(client):
     # No admin key yet => open mode.
     r = client.post("/auth/login", json={"key": "anything"})
@@ -83,8 +89,7 @@ def test_whoami_names_the_csrf_cookie(client, make_user_key, monkeypatch):
     # so a renamed SESSION_CSRF_COOKIE_NAME must reach it there.
     from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "SESSION_CSRF_COOKIE_NAME", "fw_csrf")
-    _uid, raw = make_user_key("root", is_admin=True)
-    client.post("/auth/login", json={"key": raw})
+    _login_root(client, make_user_key)
     body = client.get("/auth/whoami").json()
     assert body["csrf_token"] and body["csrf_cookie"] == "fw_csrf"
 
@@ -120,8 +125,7 @@ def test_cookie_auth_respects_page_permissions(client, make_user_key):
 
 
 def test_logout_clears_session(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    tok = _login_root(client, make_user_key)
     assert client.get("/settings/state").status_code == 200
     r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
     assert r.status_code == 200
@@ -136,8 +140,7 @@ def test_logout_keeps_cookies_when_the_revoke_fails(client, make_user_key,
     valid for its TTL."""
     import sqlite3
     from faster_whisper_backend.auth import sessions_store
-    _uid, raw = make_user_key("root", is_admin=True)
-    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    tok = _login_root(client, make_user_key)
     cookie = client.cookies.get("whisper_session")
     real = sessions_store.revoke_session
 
@@ -165,8 +168,7 @@ def test_logout_keeps_cookies_when_the_revoke_fails(client, make_user_key,
 
 def test_expired_session_is_rejected(client, make_user_key):
     from faster_whisper_backend.auth import sessions_store
-    _uid, raw = make_user_key("root", is_admin=True)
-    client.post("/auth/login", json={"key": raw})
+    _login_root(client, make_user_key)
     assert client.get("/settings/state").status_code == 200
     # purge_expired also rebuilds the in-memory index, so the cookie stops resolving.
     sessions_store._require_conn().execute(
@@ -179,8 +181,7 @@ def test_expired_session_is_rejected(client, make_user_key):
 def test_active_session_does_not_move_expiry(client, make_user_key):
     import time
     from faster_whisper_backend.auth import sessions_store
-    _uid, raw = make_user_key("root", is_admin=True)
-    client.post("/auth/login", json={"key": raw})
+    _login_root(client, make_user_key)
     before = sessions_store._require_conn().execute(
         "SELECT created_ts, expires_ts FROM sessions"
     ).fetchone()
@@ -335,23 +336,20 @@ def test_secure_flag_off_by_default(client, make_user_key):
 
 
 def test_csrf_missing_token_blocks_cookie_mutation(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    client.post("/auth/login", json={"key": raw})
+    _login_root(client, make_user_key)
     # The 403 comes from the CSRF middleware, not from the route.
     r = client.post("/auth/logout")
     assert r.status_code == 403
 
 
 def test_csrf_valid_token_allows_cookie_mutation(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    tok = _login_root(client, make_user_key)
     r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
     assert r.status_code == 200
 
 
 def test_csrf_wrong_token_blocks_cookie_mutation(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    client.post("/auth/login", json={"key": raw})
+    _login_root(client, make_user_key)
     r = client.post("/auth/logout", headers={"X-CSRF-Token": "bogus"})
     assert r.status_code == 403
 
@@ -369,8 +367,7 @@ def test_cookie_mutation_resolves_the_session_once(client, make_user_key,
     # auth.user_from_session_cookie via request.state.session_record so the
     # dependency does not hit the sessions store a second time.
     from faster_whisper_backend.auth import sessions_store
-    _uid, raw = make_user_key("root", is_admin=True)
-    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    tok = _login_root(client, make_user_key)
     calls = []
     real = sessions_store.lookup_session
 
@@ -391,8 +388,7 @@ def test_cookie_mutation_resolves_the_session_once(client, make_user_key,
 def test_csrf_covers_router_mounted_mutation(client, make_user_key):
     # The app-level CSRF middleware must also guard router-mounted routes
     # (e.g. /quick-config/*), not just app-level endpoints like /auth/logout.
-    _uid, raw = make_user_key("root", is_admin=True)
-    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    tok = _login_root(client, make_user_key)
     assert client.post("/quick-config/state", json={"rules_patch": {}}).status_code == 403
     r = client.post(
         "/quick-config/state",
@@ -677,8 +673,7 @@ def test_revoke_session_bumps_config_version(client, make_user_key):
     (streaming.routes._refresh_ident), so without the bump it kept decoding
     for the signed-out identity."""
     from faster_whisper_backend.settings import version as settings_version
-    _uid, raw = make_user_key("root", is_admin=True)
-    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    tok = _login_root(client, make_user_key)
     # The raw counter, not config_version(): its sibling probe also bumps for
     # the logout's revocation counter once its 0.25 s throttle has passed, so
     # on a slow run it would pass without revoke_session's own bump.
@@ -692,8 +687,7 @@ def test_csrf_non_ascii_token_is_403_not_500(client, make_user_key):
     """Starlette decodes header bytes as latin-1 and hmac.compare_digest
     raises TypeError on non-ASCII str input, so a single `\\xe9` byte in
     X-CSRF-Token used to escape the middleware as an unhandled 500."""
-    _uid, raw = make_user_key("root", is_admin=True)
-    client.post("/auth/login", json={"key": raw})
+    _login_root(client, make_user_key)
     r = client.post("/auth/logout", headers={b"X-CSRF-Token": b"\xe9"})
     assert r.status_code == 403
     assert r.json()["detail"] == "CSRF token missing or invalid"
