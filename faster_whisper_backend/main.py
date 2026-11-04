@@ -1617,6 +1617,9 @@ async def transcribe(
         # `override_profile` (if sent + allowed) joins as the least-specific layer.
         ident = effective_config.build_ident(user, resolved_model, request_profile=override_profile)
 
+        def _model_cfg(name):
+            return effective_config.cfg_for(resolved_model, name, ident)
+
         form_data = await request.form()
         timestamp_granularities = form_data.getlist("timestamp_granularities[]")
         if not timestamp_granularities:
@@ -1874,7 +1877,7 @@ async def transcribe(
 
             # WORD_TIMESTAMPS_ENABLED=False skips DTW alignment entirely —
             # required for primeline-style finetunes that hit faster-whisper#1212.
-            gate_word_ts = effective_config.cfg_for(resolved_model, "WORD_TIMESTAMPS_ENABLED", ident)
+            gate_word_ts = _model_cfg("WORD_TIMESTAMPS_ENABLED")
             want_word_ts = gate_word_ts and include_words
 
             # Capture gates on gate_word_ts instead of overriding it: forcing
@@ -1930,14 +1933,14 @@ async def transcribe(
                 default=effective_config._NO_DEFAULT)
             initial_prompt_arg = _prompt if _prompt else None
 
-            _vad_filter = effective_config.cfg_for(resolved_model, "VAD_FILTER", ident)
+            _vad_filter = _model_cfg("VAD_FILTER")
             vad_parameters = dict(
-                min_silence_duration_ms=effective_config.cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
-                speech_pad_ms=effective_config.cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
-                threshold=effective_config.cfg_for(resolved_model, "VAD_THRESHOLD", ident),
+                min_silence_duration_ms=_model_cfg("VAD_MIN_SILENCE_MS"),
+                speech_pad_ms=_model_cfg("VAD_SPEECH_PAD_MS"),
+                threshold=_model_cfg("VAD_THRESHOLD"),
             ) if _vad_filter else None
 
-            _lead_pad_ms = int(effective_config.cfg_for(resolved_model, "LEADING_SILENCE_PAD_MS", ident) or 0)
+            _lead_pad_ms = int(_model_cfg("LEADING_SILENCE_PAD_MS") or 0)
 
             # Language: an ABSENT field inherits DEFAULT_LANGUAGE; present-but-
             # empty is an explicit auto-detect (the client's cleared state); a
@@ -1967,7 +1970,7 @@ async def transcribe(
             def _locked_bound(cfg_name):
                 if cfg_name not in ident.locked:
                     return 0
-                return effective_config.cfg_for(resolved_model, cfg_name, ident) or 0
+                return _model_cfg(cfg_name) or 0
 
             # A client bound on the wrong side of the opposite LOCKED bound
             # would lose the inversion below; refuse it up front so it is
@@ -1986,7 +1989,7 @@ async def transcribe(
                 _spk_rank[_client_name] = 0
                 if _cfg_name in ident.locked:
                     _spk_rank[_client_name] = 2
-                    _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
+                    _spk[_client_name] = _model_cfg(_cfg_name)
                     if (_client_val is not None
                             and (_client_val or None) != (_spk[_client_name] or None)):
                         ignored.append(_client_name)
@@ -2006,7 +2009,7 @@ async def transcribe(
                             ("DIARIZATION_MAX_SPEAKERS", "max_speakers", max_speakers))):
                     _spk[_client_name] = None
                 else:
-                    _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
+                    _spk[_client_name] = _model_cfg(_cfg_name)
             # An unlocked num outside a LOCKED bound would override that lock
             # (num wins below), so the lock wins and the num is dropped.
             _num = _spk.get("num_speakers")
@@ -2101,8 +2104,7 @@ async def transcribe(
                     and _diarization_model == _dm_req
                     and not preload.stage_model_allowed(
                         _diarization_model, "DIARIZATION_ALLOWED_MODELS",
-                        "DIARIZATION_MODEL", effective_config.cfg_for(
-                            resolved_model, "DIARIZATION_MODEL", ident))):
+                        "DIARIZATION_MODEL", _model_cfg("DIARIZATION_MODEL"))):
                 _skip("diarizing",
                       "requested diarization model is not allowed on this "
                       "server (DIARIZATION_ALLOWED_MODELS)")
@@ -2113,8 +2115,7 @@ async def transcribe(
                     and _separation_model == _sm_req
                     and not preload.stage_model_allowed(
                         _separation_model, "BGM_SEPARATION_ALLOWED_MODELS",
-                        "BGM_SEPARATION_UVR_MODEL", effective_config.cfg_for(
-                            resolved_model, "BGM_SEPARATION_UVR_MODEL", ident))):
+                        "BGM_SEPARATION_UVR_MODEL", _model_cfg("BGM_SEPARATION_UVR_MODEL"))):
                 _skip("separating",
                       "requested separation model is not allowed on this "
                       "server (BGM_SEPARATION_ALLOWED_MODELS)")
@@ -2128,8 +2129,7 @@ async def transcribe(
             # csv → deduped ordered list of well-formed codes. Malformed
             # entries drop silently (the sloppy-caller stance of the clamped
             # knobs); the MAX_TARGETS clamp warns, naming what it dropped.
-            _translation_max_targets = int(effective_config.cfg_for(
-                resolved_model, "TRANSLATION_MAX_TARGETS", ident) or 1)
+            _translation_max_targets = int(_model_cfg("TRANSLATION_MAX_TARGETS") or 1)
             # Bounded walk: a multipart field can carry ~1 MiB of codes. 64 is
             # far above the schema maximum (10), so the "dropped:" warning
             # still names every code a real client sends, but never a megabyte.
@@ -2144,8 +2144,7 @@ async def transcribe(
             _translation_model = _knob("TRANSLATION_MODEL", "translation_model", _tm_req)
             # The identity/per-model effective model: echoing (or being
             # locked to) it is not a client choice the allowlist gates.
-            _tm_inherited = (effective_config.cfg_for(resolved_model, "TRANSLATION_MODEL",
-                                     ident) or "").strip() or None
+            _tm_inherited = (_model_cfg("TRANSLATION_MODEL") or "").strip() or None
             _translation_mode = _knob("TRANSLATION_MODE", "translation_mode", translation_mode,
                 default="fluent")
             # Present-but-empty is an explicit "no glossary" (overrides an
@@ -2282,7 +2281,7 @@ async def transcribe(
             # the lock, so pin it to the ladder floor here.
             _temperature = temperature
             if "TEMPERATURE" in ident.locked:
-                _locked_ladder = effective_config.cfg_for(resolved_model, "TEMPERATURE", ident)
+                _locked_ladder = _model_cfg("TEMPERATURE")
                 # Same parse as the assembler: a blank, token-less (",") or
                 # unparseable ladder all leave the Form field in force.
                 if not tx_models._temperature_ladder(_locked_ladder):
@@ -2457,13 +2456,11 @@ async def transcribe(
             # the temperature ladder loops there for tens of seconds and the
             # result is dropped anyway. Resolved here (event loop) like every
             # other cfg_for read; the executor thread only carries the bool.
-            _skip_residual = bool(effective_config.cfg_for(
-                resolved_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
+            _skip_residual = bool(_model_cfg("DECODE_SKIP_RESIDUAL_WINDOWS"))
             # Per-rung token limit scaled to the window's length: a decode
             # that loops otherwise runs to the model's hard limit at ~83 ms a
             # token (transcription/decode_trace.py, "Token cap"). 0 = off.
-            _token_cap = float(effective_config.cfg_for(
-                resolved_model, "DECODE_TOKEN_CAP_PER_SECOND", ident) or 0.0)
+            _token_cap = float(_model_cfg("DECODE_TOKEN_CAP_PER_SECOND") or 0.0)
 
             def _do_transcribe(_model=model, _path=tmp_path,
                                _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms,
@@ -2640,7 +2637,7 @@ async def transcribe(
 
             # Post-decode word-rate guard (SEGMENT_MAX_WORDS_PER_S): drops
             # hallucinated echo segments — see segment_exceeds_word_rate.
-            _max_wps = float(effective_config.cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
+            _max_wps = float(_model_cfg("SEGMENT_MAX_WORDS_PER_S") or 0)
             # Tail cuts inside a segment (transcription/segment_guards.py). They run
             # AFTER the whole-segment verdict, on the survivors: a segment made
             # up from start to end is still dropped whole rather than trimmed to
