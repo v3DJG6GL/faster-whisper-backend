@@ -26,9 +26,16 @@ from tests._streaming_helpers import (
     dictate_session, handshake as _config, ready_ws, speak_and_stop, stop_and_drain,
     timed_final, ws_drain as _drain)
 from tests.streaming._feed_helpers import feed_levels
+from faster_whisper_backend.captures import store as captures_store
+from faster_whisper_backend.stats import recent_transcriptions_store
+from faster_whisper_backend.streaming import routes as streaming_routes
+from faster_whisper_backend.streaming import session as streaming_session
+from faster_whisper_backend.streaming.routes import (
+    _WS_BAD_ORIGIN, _WS_DISABLED, _WS_TOO_MANY, _WS_UNAUTH)
 from faster_whisper_backend.streaming.session import StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
 from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import receipt_hold
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
 
@@ -165,8 +172,6 @@ def _gate_second_utterance(monkeypatch, ws, *, before_second=None):
     """Utterance 1 decodes normally; utterance 2 commits text through the
     partials and is then finalized with the RMS gate forced shut, so on_final
     runs for it without a decode."""
-    from faster_whisper_backend.streaming import session as streaming_session
-
     ws.send_bytes(_pcm(8000, 2500))
     ws.send_bytes(_pcm(0, 1500))          # utterance 1 → decoded final
     time.sleep(0.5)
@@ -183,8 +188,6 @@ def _gate_second_utterance(monkeypatch, ws, *, before_second=None):
 
 def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
         client, app_module, monkeypatch, caplog, energy_vad):
-    from faster_whisper_backend.stats import recent_transcriptions_store
-
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
         with ready_ws(client) as ws:
             _gate_second_utterance(monkeypatch, ws)
@@ -236,8 +239,6 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
     revocation raise, so on_final checks for itself: a revoked identity must
     write no trace/usage row."""
     from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.stats import recent_transcriptions_store
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
     make_user_key("admin", is_admin=True)
     uid, raw_alice = make_user_key("alice")
@@ -265,9 +266,6 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
     """/v1/text/translations refuses before it can claim a receipt, so a
     declaration on a TRANSLATION_ENABLED=0 server must park nothing: the
     receipt is logged inline and no `captured` frame invites a claim."""
-    from faster_whisper_backend.captures import store as captures_store
-    from faster_whisper_backend.transcription import receipt_hold
-
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
@@ -281,9 +279,6 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
 def test_translate_expect_parks_when_translation_is_enabled(
         client, app_module, monkeypatch, energy_vad):
     """The other direction, so the gate above is not just disabling the hold."""
-    from faster_whisper_backend.captures import store as captures_store
-    from faster_whisper_backend.transcription import receipt_hold
-
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
@@ -298,8 +293,6 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
     """At CAPTURES_MAX the gate still hands the utterance to create_capture:
     its _evict_to_cap does the documented oldest-first rotation, and refusing
     first would silently record nothing from then on."""
-    from faster_whisper_backend.captures import store as captures_store
-
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
@@ -315,8 +308,6 @@ def test_a_store_full_of_ready_captures_skips_the_stream_capture(
         client, app_module, monkeypatch, energy_vad, created_captures):
     """Ready rows alone fill CAPTURES_MAX: the new row would be evicted by its
     own insert, so the utterance is not handed to create_capture (no WAV)."""
-    from faster_whisper_backend.captures import store as captures_store
-
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
 
@@ -371,8 +362,6 @@ def _assert_accepted_before_close(sent, code):
 
 
 def test_disabled_refusal_closes_after_accept_with_4503(client, app_module, monkeypatch, ws_sends):
-    from faster_whisper_backend.streaming.routes import _WS_DISABLED
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_ENABLED", False, raising=False)
     with pytest.raises(WebSocketDisconnect) as ei:
         with client.websocket_connect(_STREAM_URL) as ws:
@@ -383,8 +372,6 @@ def test_disabled_refusal_closes_after_accept_with_4503(client, app_module, monk
 
 
 def test_unauth_refusal_closes_after_accept_with_4401(app_module, ws_sends):
-    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
-
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         with pytest.raises(WebSocketDisconnect) as ei:
             with c.websocket_connect(_STREAM_URL) as ws:
@@ -394,8 +381,6 @@ def test_unauth_refusal_closes_after_accept_with_4401(app_module, ws_sends):
 
 
 def test_origin_refusal_closes_after_accept_with_4403(client, app_module, ws_sends):
-    from faster_whisper_backend.streaming.routes import _WS_BAD_ORIGIN
-
     with pytest.raises(WebSocketDisconnect) as ei:
         with client.websocket_connect(
                 _STREAM_URL, headers={"origin": "https://evil.example"}) as ws:
@@ -405,8 +390,6 @@ def test_origin_refusal_closes_after_accept_with_4403(client, app_module, ws_sen
 
 
 def test_cap_refusal_closes_after_accept_with_4429(client, app_module, monkeypatch, ws_sends):
-    from faster_whisper_backend.streaming.routes import _WS_TOO_MANY
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 1, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0, raising=False)
     with ready_ws(client):
@@ -446,11 +429,10 @@ def test_multilingual_with_a_set_language_is_reported_ignored(client, app_module
 
 
 def test_multilingual_override_reaches_the_final_decode(app_module, fake_model):
-    from faster_whisper_backend.streaming import routes as sr
     # The handshake drops any override not in _CLIENT_OVERRIDE_KEYS, so
     # multilingual must be one of them.
-    assert "multilingual" in sr._CLIENT_OVERRIDE_KEYS
-    kw = sr._build_transcribe_kwargs(
+    assert "multilingual" in streaming_routes._CLIENT_OVERRIDE_KEYS
+    kw = streaming_routes._build_transcribe_kwargs(
         "some-model", final=True, prompt="", want_words=False,
         language="", model_obj=fake_model, overrides={"multilingual": True})
     assert kw["multilingual"] is True
@@ -469,9 +451,6 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(
         client, app_module, monkeypatch, caplog, energy_vad):
     """Two-byte PCM frames alternated with flushes queue two items per ~0 bytes,
     so the byte cap never trips; the item cap must shed them instead."""
-    from faster_whisper_backend.streaming import routes as streaming_routes
-    from faster_whisper_backend.streaming import session as streaming_session
-
     monkeypatch.setattr(streaming_routes, "_HARD_CAP_ITEMS", 32)
     orig_flush = streaming_session.StreamSession.flush_utterance
     held = []
