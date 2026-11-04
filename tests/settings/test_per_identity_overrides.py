@@ -36,6 +36,13 @@ def _set_key_binding(client, h, uid, kid, **binding):
     return r.json()["config"]
 
 
+def _alice_with_key_binding(client, make_user_key, profiles, **binding):
+    h = _admin_with_profiles(client, make_user_key, profiles)
+    uid, raw_alice = make_user_key("alice")
+    _set_key_binding(client, h, uid, _key_id(client, h, uid), **binding)
+    return raw_alice
+
+
 def _bind_user_profiles(client, h, uid, profiles):
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {}, "config": {"overrides": {}, "profiles": profiles, "locks": []}})
@@ -178,13 +185,10 @@ def test_me_stage_model_lists_with_loaded_flags(client, app_module):
 
 
 def test_me_reflects_per_key_gate(client, make_user_key):
-    h = _admin_with_profiles(client, make_user_key, {"fast": {"BEAM_SIZE": 3}})
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid,
-                     allow_request_override_profile=False,
-                     allow_request_decode_overrides=False,
-                     allowed_override_profiles=["fast"])
+    raw_alice = _alice_with_key_binding(client, make_user_key, {"fast": {"BEAM_SIZE": 3}},
+                                        allow_request_override_profile=False,
+                                        allow_request_decode_overrides=False,
+                                        allowed_override_profiles=["fast"])
     j = client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert j["can_request_override_profile"] is False
     assert j["can_request_decode_overrides"] is False
@@ -193,11 +197,9 @@ def test_me_reflects_per_key_gate(client, make_user_key):
 
 
 def test_me_explicit_allowlist(client, make_user_key):
-    h = _admin_with_profiles(client, make_user_key,
-                             {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}})
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid, allowed_override_profiles=["fast"])
+    raw_alice = _alice_with_key_binding(
+        client, make_user_key, {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}},
+        allowed_override_profiles=["fast"])
     j = client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert j["can_request_override_profile"] is True
     assert j["allowed_override_profiles"] == ["fast"]
@@ -208,14 +210,11 @@ def test_per_key_gate_follows_session_login(client, make_user_key):
     WebUI (cookie auth), not only when the key is sent as a bearer token: the
     session stamps the login key_id, so per-key overrides/locks bind on
     cookie-authed requests instead of falling to the '(session)' sentinel."""
-    h = _admin_with_profiles(client, make_user_key, {"fast": {"BEAM_SIZE": 3}})
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid,
-                     allow_request_decode_overrides=False,
-                     allow_request_override_profile=False,
-                     allowed_override_profiles=["fast"])
-    jb = client.get("/v1/me", headers=bearer(raw_alice)).json()
+    raw_alice = _alice_with_key_binding(client, make_user_key, {"fast": {"BEAM_SIZE": 3}},
+                                        allow_request_decode_overrides=False,
+                                        allow_request_override_profile=False,
+                                        allowed_override_profiles=["fast"])
+    jb =client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert jb["can_request_decode_overrides"] is False
     assert jb["can_request_override_profile"] is False
 
@@ -232,11 +231,9 @@ def test_per_key_gate_follows_session_login(client, make_user_key):
 
 
 def test_override_profiles_filtered_by_allowlist(client, make_user_key):
-    h = _admin_with_profiles(client, make_user_key,
-                             {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}})
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid, allowed_override_profiles=["fast"])
+    raw_alice = _alice_with_key_binding(
+        client, make_user_key, {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}},
+        allowed_override_profiles=["fast"])
     r = client.get("/v1/override-profiles", headers=bearer(raw_alice))
     assert r.json() == {"profiles": ["fast"]}
 
@@ -284,12 +281,10 @@ def test_override_profile_detail_exposes_prompt(client, make_user_key):
 
 
 def test_override_profile_detail_404_when_not_allowed(client, make_user_key):
-    h = _admin_with_profiles(client, make_user_key, {
+    raw_alice = _alice_with_key_binding(client, make_user_key, {
         "fast": {"BEAM_SIZE": 3},
-        "internal": {"BEAM_SIZE": 1, "requestable": False}})
-    uid, raw_alice = make_user_key("alice")
-    kid = _key_id(client, h, uid)
-    _set_key_binding(client, h, uid, kid, allowed_override_profiles=["fast"])
+        "internal": {"BEAM_SIZE": 1, "requestable": False}},
+        allowed_override_profiles=["fast"])
     ah = bearer(raw_alice)
     assert client.get("/v1/override-profiles/internal", headers=ah).status_code == 404
     assert client.get("/v1/override-profiles/slow", headers=ah).status_code == 404  # unknown
