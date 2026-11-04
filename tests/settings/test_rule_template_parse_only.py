@@ -12,8 +12,7 @@ import time
 import pytest
 from pydantic import ValidationError
 
-from faster_whisper_backend.settings import schema as settings_schema
-from tests.settings._rules_helpers import regex_list_rules
+from tests.settings._rules_helpers import regex_list_rules, validate_rules
 
 # ~20 s per call before the fix on a fast machine (doubles with each extra
 # alternation), well under a millisecond after it.
@@ -22,8 +21,7 @@ _EMPTY_INPUT_BOMB = "(?:|){30}(?!)"
 
 def test_load_validation_does_not_run_the_pattern():
     t0 = time.monotonic()
-    settings_schema.AdminConfig.model_validate(
-        {"PIPELINE_RULES": regex_list_rules("b", _EMPTY_INPUT_BOMB)})
+    validate_rules(regex_list_rules("b", _EMPTY_INPUT_BOMB))
     assert time.monotonic() - t0 < 2.0
 
 
@@ -33,9 +31,7 @@ def test_save_reaches_the_out_of_process_guard_without_matching_first(monkeypatc
     seen = []
     monkeypatch.setattr(regex_guard, "validate", lambda checks, **_: seen.extend(checks))
     t0 = time.monotonic()
-    settings_schema.AdminConfig.model_validate(
-        {"PIPELINE_RULES": regex_list_rules("b", _EMPTY_INPUT_BOMB)},
-        context={"guard_regex": True})
+    validate_rules(regex_list_rules("b", _EMPTY_INPUT_BOMB), guard_regex=True)
     assert time.monotonic() - t0 < 2.0
     assert [c[1] for c in seen] == [_EMPTY_INPUT_BOMB]
 
@@ -47,7 +43,6 @@ def test_save_reaches_the_out_of_process_guard_without_matching_first(monkeypatc
 ])
 def test_bad_template_still_rejected_on_load(pattern, replacement, needle):
     with pytest.raises(ValidationError) as ei:
-        settings_schema.AdminConfig.model_validate(
-            {"PIPELINE_RULES": regex_list_rules("b", pattern, replacement)})
+        validate_rules(regex_list_rules("b", pattern, replacement))
     assert "regex test failed" in str(ei.value)
     assert needle in str(ei.value)

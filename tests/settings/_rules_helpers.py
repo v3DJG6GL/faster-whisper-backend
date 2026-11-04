@@ -3,6 +3,7 @@ import json
 import os
 
 from faster_whisper_backend import paths
+from faster_whisper_backend.settings import schema as settings_schema
 
 
 def factory_rules():
@@ -25,6 +26,13 @@ def regex_list_rules(name, pattern, replacement="x"):
     return [{"name": name, "label": name, "type": "regex-list",
              "entries": [{"pattern": pattern, "replacement": replacement}]},
             {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
+
+
+def validate_rules(rules, **context):
+    """AdminConfig validation of a document holding only PIPELINE_RULES:
+    a load with no context, a save with guard_regex=True (+ guard_slugs)."""
+    return settings_schema.AdminConfig.model_validate(
+        {"PIPELINE_RULES": rules}, context=context or None)
 
 
 def load_saved(tmp_path, raw):

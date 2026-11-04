@@ -16,8 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from faster_whisper_backend.pipeline import regex_guard
-from faster_whisper_backend.settings import schema as settings_schema
-from tests.settings._rules_helpers import regex_list_rules
+from tests.settings._rules_helpers import regex_list_rules, validate_rules
 
 # ~4 ms to compile (walks all 1.1M code points); far above timer resolution.
 _SLOW_TO_COMPILE = "(?i)[\x00-\U0010ffff]"
@@ -38,22 +37,18 @@ def no_compile_budget(monkeypatch):
 
 def test_save_refuses_once_the_compile_budget_is_spent(no_compile_budget):
     with pytest.raises(ValidationError) as ei:
-        settings_schema.AdminConfig.model_validate(
-            {"PIPELINE_RULES": regex_list_rules("slow", _SLOW_TO_COMPILE)},
-            context={"guard_regex": True})
+        validate_rules(regex_list_rules("slow", _SLOW_TO_COMPILE), guard_regex=True)
     assert "rule 0 ('slow') entry 0: compiling the submitted patterns took" in str(ei.value)
     assert no_compile_budget == []
 
 
 def test_load_and_untouched_rules_are_not_charged(no_compile_budget):
     # Load (no guard_regex context): the admin-owned file validates as before.
-    settings_schema.AdminConfig.model_validate(
-        {"PIPELINE_RULES": regex_list_rules("slow", _SLOW_TO_COMPILE)})
+    validate_rules(regex_list_rules("slow", _SLOW_TO_COMPILE))
     re.purge()
     # A save scoped to other rules does not charge the untouched one.
-    settings_schema.AdminConfig.model_validate(
-        {"PIPELINE_RULES": regex_list_rules("slow", _SLOW_TO_COMPILE)},
-        context={"guard_regex": True, "guard_slugs": frozenset({"other"})})
+    validate_rules(regex_list_rules("slow", _SLOW_TO_COMPILE),
+                   guard_regex=True, guard_slugs=frozenset({"other"}))
 
 
 def test_structural_screen_is_charged_against_the_same_budget(monkeypatch):
@@ -71,7 +66,6 @@ def test_structural_screen_is_charged_against_the_same_budget(monkeypatch):
     pat = "(?:(?:" + cls % 1 + "|" + cls % 2 + cls % 3 + "),)+"
     re.compile(pat)  # cached: the charged top-level compile costs ~nothing
     with pytest.raises(ValidationError) as ei:
-        settings_schema.AdminConfig.model_validate(
-            {"PIPELINE_RULES": regex_list_rules("wide", pat)}, context={"guard_regex": True})
+        validate_rules(regex_list_rules("wide", pat), guard_regex=True)
     assert "rule 0 ('wide') entry 0: checking the submitted patterns took" in str(ei.value)
     assert child == []
