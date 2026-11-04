@@ -804,13 +804,8 @@ def test_reconcile_marks_missing_and_unlinks_orphans(captures_store_db, monkeypa
     os.unlink(miss_abs)
     audio = cs._require_audio_dir()
     orphan_dir = os.path.join(audio, "zz", "zz")
-    os.makedirs(orphan_dir, exist_ok=True)
-    orphan = os.path.join(orphan_dir, "orphan.wav")
-    with open(orphan, "wb") as f:
-        f.write(b"x")
-    tmpf = os.path.join(orphan_dir, "partial.wav.tmp")
-    with open(tmpf, "wb") as f:
-        f.write(b"x")
+    orphan = write_bytes(os.path.join(orphan_dir, "orphan.wav"))
+    tmpf = write_bytes(os.path.join(orphan_dir, "partial.wav.tmp"))
 
     marked, unlinked = cs.reconcile_on_startup()
     assert marked == 1
@@ -826,10 +821,7 @@ def test_reconcile_skips_groups_subtree(captures_store_db, monkeypatch, tmp_path
     _make(cs, monkeypatch, tmp_path)
     # A file under groups/ must NOT be treated as an orphan.
     groups_dir = os.path.join(cs._require_audio_dir(), "groups", "ab", "cd")
-    os.makedirs(groups_dir, exist_ok=True)
-    merged = os.path.join(groups_dir, "merged.wav")
-    with open(merged, "wb") as f:
-        f.write(b"x")
+    merged = write_bytes(os.path.join(groups_dir, "merged.wav"))
     cs.reconcile_on_startup()
     assert os.path.isfile(merged)
 
