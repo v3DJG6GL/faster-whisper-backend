@@ -130,6 +130,10 @@ function flashCtl(id) {
   el.scrollIntoView({ block: 'nearest' });
   restartClass(el, 'flash');
 }
+// Call the optional cross-script hook window[name] if it is defined; a throw in it must not break the caller.
+function callHook(name, ...args) {
+  if (typeof window[name] === 'function') { try { window[name](...args); } catch (_) {} }
+}
 (() => {
   let initial = 'both';
   try { initial = localStorage.getItem(GS_PRESET_KEY) || 'both'; } catch (_) {}
@@ -551,7 +555,7 @@ function publishFilter() {
   const sig = Q.kinds.join(',') + '|' + Q.users.join(',') + '|' + window.__statsFilter.userNames.join(',');
   if (sig === _publishedSig) return;
   _publishedSig = sig;
-  if (typeof window._fwRerenderJobs === 'function') { try { window._fwRerenderJobs(); } catch (_) {} }
+  callHook('_fwRerenderJobs');
 }
 
 function wireScopeBar() {
@@ -1880,9 +1884,7 @@ function publishModels() {
   const map = {};
   (lastDoc.models || []).forEach(m => { map[m.model] = m; });
   window.__statsUsage = { models: map, range: lastDoc.range };
-  if (typeof window._fwRerenderModels === 'function') {
-    try { window._fwRerenderModels(); } catch (_) {}
-  }
+  callHook('_fwRerenderModels');
 }
 
 onSeg('usage-bucket', (v) => { Q.bucket = v; setSeg('usage-bucket', v); load(); });
