@@ -34,6 +34,12 @@ def _start(db, job_id="a" * 32, **kw):
     return args["job_id"]
 
 
+def _done(db, result, **start_kw):
+    jid = _start(db, **start_kw)
+    db.finish(job_id=jid, state="done", result=result, ttl_s=_TTL)
+    return jid
+
+
 def test_schema_and_migration_are_idempotent(tmp_path):
     path = str(tmp_path / "old.sqlite3")
     # A DB from a build that predated the task / response_format and
@@ -116,8 +122,7 @@ def test_finish_with_an_unstorable_result_stamps_failed_not_running(db):
 
 
 def test_start_replaces_a_finished_row_under_the_same_id(db):
-    jid = _start(db)
-    db.finish(job_id=jid, state="done", result={"text": "1"}, ttl_s=_TTL)
+    jid = _done(db, {"text": "1"})
     # The owner's own re-use: start() reports the row written.
     args = _start_args(job_id=jid, request_id="req2")
     assert db.start(**args) is True
@@ -129,8 +134,7 @@ def test_start_replaces_a_finished_row_under_the_same_id(db):
 def test_start_refuses_a_foreign_row(db):
     # The job id is client-chosen: bob posting with alice's id must not
     # destroy her stored result or take the id over.
-    jid = _start(db, user_id="alice", key_id="ka")
-    db.finish(job_id=jid, state="done", result={"text": "alice"}, ttl_s=_TTL)
+    jid = _done(db, {"text": "alice"}, user_id="alice", key_id="ka")
     args = _start_args(job_id=jid, request_id="req-bob", user_id="bob",
                        key_id="kb", source_name="x.m4a")
     assert db.start(**args) is False
@@ -217,8 +221,7 @@ def test_prune_ttl_rows_and_bytes(db):
     running = _start(db, job_id="r" * 32)
     time.sleep(0.01)
     for i in range(4):
-        jid = _start(db, job_id=str(i) * 32)
-        db.finish(job_id=jid, state="done", result={"t": "x" * 100}, ttl_s=_TTL)
+        _done(db, {"t": "x" * 100}, job_id=str(i) * 32)
         time.sleep(0.01)
     assert db.count() == 5
     # The running row is the oldest: it survives for being running, not new.
@@ -240,8 +243,7 @@ def test_byte_cap_never_eats_rows_that_hold_no_bytes(db):
         db.finish(job_id=_start(db, job_id=str(i) * 32), state=st, ttl_s=_TTL)
         time.sleep(0.01)
     for i in (2, 3):
-        db.finish(job_id=_start(db, job_id=str(i) * 32), state="done",
-                  result={"t": "x" * 100}, ttl_s=_TTL)
+        _done(db, {"t": "x" * 100}, job_id=str(i) * 32)
         time.sleep(0.01)
     total = db.total_result_bytes()
     assert db.prune(ttl_s=_TTL, max_rows=0, max_bytes=total - 1) == 1
@@ -282,8 +284,7 @@ def test_mark_running_as_failed_flips_only_running_rows(db, monkeypatch):
     from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "SERVER_WORKERS", 1, raising=False)
     a = _start(db, job_id="a" * 32)
-    b = _start(db, job_id="b" * 32)
-    db.finish(job_id=b, state="done", result={"text": "1"}, ttl_s=_TTL)
+    b = _done(db, {"text": "1"}, job_id="b" * 32)
     assert db.mark_running_as_failed("server restarted") == 1
     assert db.get(a)["state"] == "failed"
     assert db.get(a)["error"] == "server restarted"
@@ -345,9 +346,7 @@ def test_delete_finished_only_spares_a_running_row(db):
 
 
 def test_patch_result_patches_outside_the_lock_and_retries_a_lost_race(db):
-    a = _start(db, job_id="a" * 32)
-    db.finish(job_id=a, state="done", result={"text": "hi", "n": 0},
-              ttl_s=_TTL)
+    a = _done(db, {"text": "hi", "n": 0}, job_id="a" * 32)
     calls = []
 
     def _patch(payload):
@@ -408,8 +407,7 @@ def test_sweep_retention_reads_live_config(db, monkeypatch):
     monkeypatch.setattr(cfg, "JOBS_MAX_BYTES", 0, raising=False)
     ids = []
     for jid in ("a" * 32, "b" * 32, "c" * 32):
-        _start(db, job_id=jid)
-        db.finish(job_id=jid, state="done", result={"t": 1}, ttl_s=_TTL)
+        _done(db, {"t": 1}, job_id=jid)
         ids.append(jid)
         time.sleep(0.01)                    # created_ts apart: a oldest
     a, b, c = ids
