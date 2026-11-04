@@ -299,15 +299,11 @@
 {{SCALE_PICKER_JS}}
 {{SEV_POLLER_JS}}
 <script>
-/* Standalone resolution-waterfall renderer with its own esc() scope. Pure:
+/* Standalone resolution-waterfall renderer in its own scope. Pure:
    takes a per-field /resolve object and returns a DOM node. */
 window._renderWaterfall = (function () {
   'use strict';
-  function esc(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
+  var esc = window._escHtml;
   function fmt(v) {
     if (v === null || v === undefined) return '—';
     if (typeof v === 'boolean') return v ? 'true' : 'false';
