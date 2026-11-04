@@ -415,12 +415,12 @@ window._renderWaterfall = (function () {
     Object.keys(p || {}).forEach(function (k) {
       if (k === 'locks' || k === 'requestable') return;
       if (PIPE_FIELDS.indexOf(k) >= 0) { n += (p[k] || []).length; return; }
-      if (p[k] !== null && p[k] !== undefined) n += 1;
+      if (isSet(p, k)) n += 1;
     });
     // Value-less locks (lock-to-inherited) carry no value entry but still do
     // something, so count them — otherwise a locks-only profile looks empty.
     ((p && p.locks) || []).forEach(function (f) {
-      if (p[f] === null || p[f] === undefined) n += 1;
+      if (!isSet(p, f)) n += 1;
     });
     return n;
   }
