@@ -121,8 +121,7 @@ def test_upload_over_cap_413_leaves_no_file(client, package_enabled, monkeypatch
     def _gen():
         for _ in range(3):
             yield b"x" * 100
-    r = client.post("/v1/audio/media?ext=mp4", content=_gen(),
-                    headers={"Content-Type": "application/octet-stream"})
+    r = _upload(client, data=_gen())
     assert r.status_code == 413
     assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
     assert not _video_ids()
@@ -131,9 +130,7 @@ def test_upload_over_cap_413_leaves_no_file(client, package_enabled, monkeypatch
 def test_upload_declared_length_over_cap_is_an_early_413(client, package_enabled,
                                                           monkeypatch):
     monkeypatch.setattr(package_enabled.cfg, "MEDIA_MAX_BYTES", 100, raising=False)
-    r = client.post("/v1/audio/media?ext=mp4", content=b"x",
-                    headers={"Content-Type": "application/octet-stream",
-                             "Content-Length": "5000"})
+    r = _upload(client, data=b"x", headers={"Content-Length": "5000"})
     assert r.status_code == 413
 
 
@@ -152,8 +149,7 @@ def test_upload_over_the_retention_cap_is_an_early_413_naming_it(
     def _gen():
         for _ in range(5):
             yield b"x" * 1000
-    r = client.post("/v1/audio/media?ext=mp4", content=_gen(),
-                    headers={"Content-Type": "application/octet-stream"})
+    r = _upload(client, data=_gen())
     assert r.status_code == 413
     assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
 
