@@ -1115,9 +1115,8 @@
     var acts = _el('div', 'kacts');
     var kdraw = document.createElement('div');  // overrides drawer holder
     if (!revoked) {
-      var renameBtn = _el('button', 'ghost', '✎ Rename');
       var renameRow = null;
-      renameBtn.onclick = function () {
+      _btn(acts, 'ghost', '✎ Rename', function () {
         if (renameRow) { renameRow.remove(); renameRow = null; return; }
         renameRow = _el('div', 'krename');
         var inp = document.createElement('input');
@@ -1147,8 +1146,7 @@
         renameRow.appendChild(cancelB);
         body.appendChild(renameRow);
         inp.focus();
-      };
-      acts.appendChild(renameBtn);
+      });
 
       var kcfgBtn = _el('button', 'ghost', '⚙ Overrides');
       toggleDrawer(kcfgBtn, kdraw, function () {
@@ -1164,8 +1162,7 @@
       });
       acts.appendChild(kcfgBtn);
 
-      var b = _el('button', 'danger', 'Revoke');
-      b.onclick = function () {
+      _btn(acts, 'danger', 'Revoke', function () {
         if (!confirm('Revoke key "' + (hasLabel ? k.label : k.key_prefix + '…' + k.key_last4) +
             '"? Apps using it will stop working immediately.')) return;
         api('DELETE', _keyUrl(u.id, k.id))
@@ -1178,8 +1175,7 @@
             load();
           })
           .catch(function (e) { showToast(String(e.message || e), 'err'); });
-      };
-      acts.appendChild(b);
+      });
     }
     kc.appendChild(acts);
 
@@ -1197,6 +1193,12 @@
     if (cls) e.className = cls;
     if (text != null) e.textContent = text;
     return e;
+  }
+  function _btn(parent, cls, text, onclick) {
+    var b = _el('button', cls, text);
+    b.onclick = onclick;
+    parent.appendChild(b);
+    return b;
   }
 
   function fmtErrRate(reqs, errs) {
@@ -1511,13 +1513,10 @@
       b.profiles.forEach(function (name, i) {
         var c = _el('span', 'cfg-chip');
         c.innerHTML = '<span class="num">' + (i + 1) + '</span>' + escapeHtml(name);
-        var up = _el('button', null, '↑'); up.title = 'earlier';
-        up.onclick = function () { if (i > 0) { var t = b.profiles[i - 1]; b.profiles[i - 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } };
-        var dn = _el('button', null, '↓'); dn.title = 'later';
-        dn.onclick = function () { if (i < b.profiles.length - 1) { var t = b.profiles[i + 1]; b.profiles[i + 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } };
-        var x = _el('button', null, '×');
-        x.onclick = function () { b.profiles.splice(i, 1); rerender(); };
-        c.appendChild(up); c.appendChild(dn); c.appendChild(x); chips.appendChild(c);
+        _btn(c, null, '↑', function () { if (i > 0) { var t = b.profiles[i - 1]; b.profiles[i - 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } }).title = 'earlier';
+        _btn(c, null, '↓', function () { if (i < b.profiles.length - 1) { var t = b.profiles[i + 1]; b.profiles[i + 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } }).title = 'later';
+        _btn(c, null, '×', function () { b.profiles.splice(i, 1); rerender(); });
+        chips.appendChild(c);
       });
       var avail = Object.keys(ovState().profiles || {}).filter(function (n) { return b.profiles.indexOf(n) < 0; }).sort();
       if (avail.length) {
@@ -1547,9 +1546,8 @@
         lk.innerHTML = on ? '\u{1F512}' : '\u{1F513}'; lk.title = 'lock — client cannot override this field';
         lk.onclick = function () { var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); else b.locks.push(name); rerender(); };
         row.appendChild(lk);
-        var rm = _el('button', 'rm', '×');
-        rm.onclick = function () { delete b.overrides[name]; var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); rerender(); };
-        row.appendChild(rm); dcard.appendChild(row);
+        _btn(row, 'rm', '×', function () { delete b.overrides[name]; var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); rerender(); });
+        dcard.appendChild(row);
       });
       var avf = _cfgAvailFields().filter(function (n) { return !(n in b.overrides); });
       var addwrap = _el('div', 'cfg-chips');
