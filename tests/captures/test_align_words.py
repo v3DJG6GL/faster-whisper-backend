@@ -39,6 +39,11 @@ def _install_word_map(monkeypatch, mapping):
     monkeypatch.setattr(pl_engine, "_postprocess_text", fake)
 
 
+def _align(monkeypatch, mapping, final, *raw):
+    _install_word_map(monkeypatch, mapping)
+    return capture_samples._align_words_to_final(_words(*raw), final)
+
+
 def test_one_to_many_expansion_keeps_all_tokens(monkeypatch):
     _install_word_map(monkeypatch, {"Nurtax": "nur tags"})
     words = _words("Nurtax", "137", "Schrägstrich", "94")
@@ -58,11 +63,9 @@ def test_one_to_many_expansion_keeps_all_tokens(monkeypatch):
 
 def test_one_to_three_expansion(monkeypatch):
     # Compound-splitter style: one raw word becomes three tokens.
-    _install_word_map(monkeypatch, {"Eisenbindestrichinfusion":
-                                    "Eisen Bindestrich infusion"})
-    words = _words("Eisenbindestrichinfusion", "heute")
     final = "Eisen Bindestrich infusion heute"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {"Eisenbindestrichinfusion": "Eisen Bindestrich infusion"},
+                 final, "Eisenbindestrichinfusion", "heute")
 
     assert len(out) == 2
     assert _join(out) == final
@@ -73,10 +76,8 @@ def test_one_to_three_expansion(monkeypatch):
 
 def test_expansion_at_end(monkeypatch):
     # Trailing raw word expands — exercises the after-last-anchor segment.
-    _install_word_map(monkeypatch, {"Nurtax": "nur tags"})
-    words = _words("Hallo", "Nurtax")
     final = "Hallo nur tags"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {"Nurtax": "nur tags"}, final, "Hallo", "Nurtax")
     assert len(out) == 2
     assert _join(out) == final
     assert out[1]["word"] == "nur tags"
@@ -86,10 +87,8 @@ def test_expansion_at_end(monkeypatch):
 def test_many_to_one_contraction(monkeypatch):
     # Two raw words merge into one final token: the survivor attaches to the
     # first raw word, the second is removed — no token lost or duplicated.
-    _install_word_map(monkeypatch, {})  # identity; neither matches "Bindestrich"
-    words = _words("Bind", "strich")
     final = "Bindestrich"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {}, final, "Bind", "strich")  # identity; neither matches final
 
     assert len(out) == 2
     assert _join(out) == final
@@ -100,10 +99,8 @@ def test_many_to_one_contraction(monkeypatch):
 def test_symbol_substitution_keeps_token(monkeypatch):
     # Dictation-map style "Schrägstrich" -> "/": a 1->1 symbol swap whose key
     # normalises to empty must still attach the symbol, not drop it.
-    _install_word_map(monkeypatch, {"Schrägstrich": "/"})
-    words = _words("137", "Schrägstrich", "94")
     final = "137 / 94"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {"Schrägstrich": "/"}, final, "137", "Schrägstrich", "94")
 
     assert len(out) == 3
     assert _join(out) == final
@@ -112,10 +109,8 @@ def test_symbol_substitution_keeps_token(monkeypatch):
 
 
 def test_deletion_marks_removed(monkeypatch):
-    _install_word_map(monkeypatch, {"äh": ""})
-    words = _words("äh", "hallo", "welt")
     final = "hallo welt"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {"äh": ""}, final, "äh", "hallo", "welt")
 
     assert len(out) == 3
     assert _join(out) == final
@@ -128,10 +123,8 @@ def test_deletion_keeps_a_words_final_vowel_sign(monkeypatch):
     # The edge-punctuation strip cut the vowel sign off "का" and "की" (both
     # "क"), so the kept "की" was given to the deleted "का" and the real
     # "की" was struck as removed.
-    _install_word_map(monkeypatch, {})
-    words = _words("राम", "का", "की", "घर")
     final = "राम की घर"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {}, final, "राम", "का", "की", "घर")
 
     assert _join(out) == final
     assert [bool(w.get("removed")) for w in out] == [False, True, False, False]
@@ -140,10 +133,8 @@ def test_deletion_keeps_a_words_final_vowel_sign(monkeypatch):
 
 
 def test_plain_substitution(monkeypatch):
-    _install_word_map(monkeypatch, {"weiss": "weiß"})
-    words = _words("das", "weiss", "ich")
     final = "das weiß ich"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {"weiss": "weiß"}, final, "das", "weiss", "ich")
 
     assert len(out) == 3
     assert _join(out) == final
@@ -153,10 +144,8 @@ def test_plain_substitution(monkeypatch):
 
 
 def test_identity_no_flags(monkeypatch):
-    _install_word_map(monkeypatch, {})
-    words = _words("eins", "zwei", "drei")
     final = "eins zwei drei"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {}, final, "eins", "zwei", "drei")
 
     assert _join(out) == final
     for w in out:
@@ -167,27 +156,21 @@ def test_identity_no_flags(monkeypatch):
 def test_unspaced_chinese_gives_each_word_its_own_text(monkeypatch):
     # The whole sentence is one final token: it went to the first word and
     # every later word was struck as removed by a rule that never fired.
-    _install_word_map(monkeypatch, {})
-    words = _words("我们", "去", "北京", "。")
-    out = capture_samples._align_words_to_final(words, "我们去北京。")
+    out = _align(monkeypatch, {}, "我们去北京。", "我们", "去", "北京", "。")
 
     assert [w["word"] for w in out] == ["我们", "去", "北京", "。"]
     assert not any(w.get("removed") or "raw_word" in w for w in out)
 
 
 def test_unspaced_thai_gives_each_word_its_own_text(monkeypatch):
-    _install_word_map(monkeypatch, {})
-    out = capture_samples._align_words_to_final(
-        _words("สวัสดี", "ครับ"), "สวัสดีครับ")
+    out = _align(monkeypatch, {}, "สวัสดีครับ", "สวัสดี", "ครับ")
 
     assert [w["word"] for w in out] == ["สวัสดี", "ครับ"]
     assert not any(w.get("removed") for w in out)
 
 
 def test_unspaced_rule_change_marks_only_that_word(monkeypatch):
-    _install_word_map(monkeypatch, {"北京": "上海", "去": ""})
-    words = _words("我们", "去", "北京", "。")
-    out = capture_samples._align_words_to_final(words, "我们上海。")
+    out = _align(monkeypatch, {"北京": "上海", "去": ""}, "我们上海。", "我们", "去", "北京", "。")
 
     assert "".join(w["word"] for w in out if not w.get("removed")) == "我们上海。"
     assert [bool(w.get("removed")) for w in out] == [False, True, False, False]
@@ -200,9 +183,7 @@ def test_unspaced_substitution_stays_on_the_substituted_word(monkeypatch):
     # A rule over the whole sentence turned 他 into 她 (no per-word form
     # explains it): the unmatched 她 went to the first MATCHED word, so 他
     # was struck as removed and 我 showed "我她".
-    _install_word_map(monkeypatch, {})
-    out = capture_samples._align_words_to_final(
-        _words("我", "他", "好"), "我她好")
+    out = _align(monkeypatch, {}, "我她好", "我", "他", "好")
 
     assert [w["word"] for w in out] == ["我", "她", "好"]
     assert not any(w.get("removed") for w in out)
@@ -231,9 +212,7 @@ def test_split_unspaced_spreads_replaced_and_inserted_chars():
 def test_unspaced_sentences_split_per_token(monkeypatch):
     # Two sentences joined by a space (faster-whisper glues the "。" onto
     # the word before it): each word stays inside its own token.
-    _install_word_map(monkeypatch, {})
-    words = _words("你好。", "我", "很", "好。")
-    out = capture_samples._align_words_to_final(words, "你好。 我很好。")
+    out = _align(monkeypatch, {}, "你好。 我很好。", "你好。", "我", "很", "好。")
 
     assert [w["word"] for w in out] == ["你好。", "我", "很", "好。"]
     assert not any(w.get("removed") for w in out)
@@ -245,10 +224,9 @@ def test_repeated_word_anchors_the_spaced_raw_word(monkeypatch):
     # skipped it for the later "Python", which took the first token while
     # " Python" 写 代码 ， were struck as removed and 很 owned
     # "写代码，Python 很". A chip on idx 6 then rewrote the FIRST Python.
-    _install_word_map(monkeypatch, {})
-    words = _words("我", "用", " Python", " 写", "代码", "，", "Python", " 很", "好")
     final = "我用 Python 写代码，Python 很好"
-    out = capture_samples._align_words_to_final(words, final)
+    out = _align(monkeypatch, {}, final,
+                 "我", "用", " Python", " 写", "代码", "，", "Python", " 很", "好")
 
     assert [w["word"].strip() for w in out] == [
         "我", "用", "Python", "写", "代码", "，", "Python", "很", "好"]
@@ -261,9 +239,7 @@ def test_repeated_word_anchors_the_spaced_raw_word(monkeypatch):
 def test_repeated_unspaced_char_anchors_the_spaced_raw_word(monkeypatch):
     # The opposite tie: the later " 好" starts the second token, so the
     # unspaced 好 before it stays inside "你好".
-    _install_word_map(monkeypatch, {})
-    out = capture_samples._align_words_to_final(
-        _words("你", "好", " 好"), "你好 好")
+    out = _align(monkeypatch, {}, "你好 好", "你", "好", " 好")
 
     assert [w["word"] for w in out] == ["你", "好", "好"]
     assert not any(w.get("removed") for w in out)
@@ -300,8 +276,7 @@ def test_output_length_always_matches_raw_count(monkeypatch):
 
 
 def test_empty_words_returns_empty(monkeypatch):
-    _install_word_map(monkeypatch, {})
-    assert capture_samples._align_words_to_final([], "anything") == []
+    assert _align(monkeypatch, {}, "anything") == []
 
 
 # _align_member_words aligns to the runtime `final` and to the EXCLUDE-aware
