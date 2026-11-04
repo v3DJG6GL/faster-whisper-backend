@@ -14,6 +14,13 @@ from faster_whisper_backend.streaming.vad import EnergyEndpointer
 from tests.conftest import bearer
 
 
+def locked_down_user(make_user_key):
+    """Lock the server down with a throwaway admin key (so open mode is off),
+    then create non-admin alice; returns her ``(uid, raw_key)``."""
+    make_user_key("admin", is_admin=True)
+    return make_user_key("alice")
+
+
 def const_pcm(level: int, ms: int, sample_rate: int = 16000) -> bytes:
     """One constant-level int16 PCM frame of ``ms`` milliseconds."""
     return np.full(sample_rate * ms // 1000, level, dtype="<i2").tobytes()

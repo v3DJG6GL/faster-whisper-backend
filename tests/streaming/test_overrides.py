@@ -10,8 +10,8 @@ import pytest
 
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import (
-    config_drain, config_frame, const_pcm, dictate_session, handshake, speak_and_stop,
-    stop_and_drain, stream_ws, ws_drain)
+    config_drain, config_frame, const_pcm, dictate_session, handshake, locked_down_user,
+    speak_and_stop, stop_and_drain, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -113,8 +113,7 @@ def test_final_drops_low_confidence_hallucination_segment(
     the temperature ladder (a hallucination on near-silence) is dropped from the
     committed text; a normal segment in the same decode is kept."""
     from tests.conftest import FakeSegment
-    make_user_key("admin", is_admin=True)               # lock down
-    _, raw_alice = make_user_key("alice")
+    _, raw_alice = locked_down_user(make_user_key)
 
     bad = FakeSegment(" thank you for watching", 0.0, 1.0)
     bad.avg_logprob, bad.temperature = -2.32, 1.0        # failed decode → drop
@@ -136,8 +135,7 @@ def test_stream_prompt_sentinel_inherit_clear_value(
     DEFAULT_PROMPT; explicit "" → CLEAR (no initial_prompt); a value → used verbatim.
     The first utterance's final decode is seeded straight from base_prompt."""
     monkeypatch.setattr(app_module.cfg, "DEFAULT_PROMPT", "SERVER PROMPT", raising=False)
-    make_user_key("admin", is_admin=True)
-    _, raw_alice = make_user_key("alice")
+    _, raw_alice = locked_down_user(make_user_key)
 
     def _run(conf_extra):
         dictate_session(client, raw_alice, **conf_extra)
@@ -460,8 +458,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
-    uid, raw_alice = make_user_key("alice")
+    uid, raw_alice = locked_down_user(make_user_key)
 
     with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
@@ -496,8 +493,7 @@ def test_revoked_session_closes_without_a_further_client_frame(
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
-    uid, raw_alice = make_user_key("alice")
+    uid, raw_alice = locked_down_user(make_user_key)
 
     with stream_ws(client, raw_alice) as ws:
         assert handshake(ws)["type"] == "ready"
@@ -524,8 +520,7 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
     from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
-    uid, raw_alice = make_user_key("alice")
+    uid, raw_alice = locked_down_user(make_user_key)
 
     real = streaming_routes.authenticate_ws
     calls = []
@@ -583,8 +578,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
     handshake, no matter how many partial/final decodes run."""
     from faster_whisper_backend.streaming import routes as streaming_routes
 
-    make_user_key("admin", is_admin=True)
-    _, raw_alice = make_user_key("alice")
+    _, raw_alice = locked_down_user(make_user_key)
 
     calls = []
     real = streaming_routes.authenticate_ws
@@ -605,8 +599,7 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
-    _uid, raw_alice = make_user_key("alice")
+    _uid, raw_alice = locked_down_user(make_user_key)
     assert client.post("/auth/login", json={"key": raw_alice}).status_code == 200
     cookie_name = app_module.cfg.SESSION_COOKIE_NAME
     raw_cookie = client.cookies.get(cookie_name)
@@ -643,8 +636,7 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     from faster_whisper_backend.stats import metrics
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
-    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
-    uid, raw_alice = make_user_key("alice")
+    uid, raw_alice = locked_down_user(make_user_key)
     rows = []
     monkeypatch.setattr(metrics, "record_transcription",
                         lambda **kw: rows.append(kw.get("status")))
@@ -859,8 +851,7 @@ def test_stream_client_output_wrappers_survive_a_refresh(
         client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     # _refresh_ident recomputes the wrappers; it must keep the client's.
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    uid, raw_alice = make_user_key("alice")
+    uid, raw_alice = locked_down_user(make_user_key)
     from faster_whisper_backend.auth import api_keys_store
     with stream_ws(client, raw_alice) as ws:
         assert handshake(ws, decode_overrides={"output_prefix": ">> ",
