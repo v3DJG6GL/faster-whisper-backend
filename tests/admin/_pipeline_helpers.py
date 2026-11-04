@@ -9,6 +9,13 @@ def dry_run(client, rules, sample):
     return r.json()
 
 
+def refused_dry_run(client, rules, sample):
+    """Dry-run `rules` over `sample`, expecting the 400 refusal; return its error text."""
+    r = client.post("/settings/test-pipeline", json={"sample": sample, "rules": rules})
+    assert r.status_code == 400, r.status_code
+    return r.json()["error"]
+
+
 def list_rule(entries, name="rl"):
     """One enabled regex-list rule, as the editor posts it."""
     return {"name": name, "type": "regex-list", "enabled": True, "entries": entries}

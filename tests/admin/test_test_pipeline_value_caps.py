@@ -7,7 +7,7 @@ from typing import get_args
 from faster_whisper_backend.admin import routes as admin_routes
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import schema as settings_schema
-from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
+from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, refused_dry_run, upper_rule
 
 
 def test_caps_are_read_off_the_schema():
@@ -19,22 +19,15 @@ def test_caps_are_read_off_the_schema():
 
 
 def test_oversized_regex_list_replacement_is_rejected(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "a" * 8192,
-        "rules": [list_rule([{"pattern": "a", "replacement": "x" * 20000}])],
-    })
-    assert r.status_code == 400, r.status_code
-    assert "replacement too long" in r.json()["error"]
+    error = refused_dry_run(
+        client, [list_rule([{"pattern": "a", "replacement": "x" * 20000}])], "a" * 8192)
+    assert "replacement too long" in error
 
 
 def test_oversized_map_value_is_rejected(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "komma " * 100,
-        "rules": [{"name": "m", "type": "callback:map", "enabled": True,
-                   "map": {"komma": "," * 5000}}],
-    })
-    assert r.status_code == 400, r.status_code
-    assert "map value too long" in r.json()["error"]
+    error = refused_dry_run(client, [{"name": "m", "type": "callback:map", "enabled": True,
+                                      "map": {"komma": "," * 5000}}], "komma " * 100)
+    assert "map value too long" in error
 
 
 def test_replacement_at_the_cap_still_runs(client):
@@ -93,25 +86,17 @@ def test_oversized_callback_pattern_is_rejected_before_the_screen(client, monkey
         raise AssertionError("structural screen ran on an over-long pattern")
     monkeypatch.setattr(admin_routes.regex_guard, "_nested_repetition", _screen)
     alternation = "(?:" + "|".join(f"w{i:06d}" for i in range(700)) + ")+"
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "w000001",
-        "rules": [{"name": "d", "type": "callback:dedup", "enabled": True,
-                   "pattern": alternation}],
-    })
-    assert r.status_code == 400, r.status_code
-    assert r.json()["error"] == "rule 1: pattern too long (max 512 chars)"
+    error = refused_dry_run(client, [{"name": "d", "type": "callback:dedup", "enabled": True,
+                                      "pattern": alternation}], "w000001")
+    assert error == "rule 1: pattern too long (max 512 chars)"
 
 
 def test_oversized_regex_list_pattern_is_rejected(client):
-    r = client.post("/settings/test-pipeline", json={
-        "sample": "a",
-        "rules": [list_rule([
-            {"pattern": "a", "replacement": "b"},
-            {"pattern": "a" * 513, "replacement": "b"},
-        ])],
-    })
-    assert r.status_code == 400, r.status_code
-    assert "pattern too long" in r.json()["error"]
+    error = refused_dry_run(client, [list_rule([
+        {"pattern": "a", "replacement": "b"},
+        {"pattern": "a" * 513, "replacement": "b"},
+    ])], "a")
+    assert "pattern too long" in error
 
 
 def test_pattern_at_the_cap_still_runs(client):
