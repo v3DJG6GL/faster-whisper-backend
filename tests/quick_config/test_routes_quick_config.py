@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from tests._page_helpers import js_upto
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
@@ -553,8 +554,7 @@ def test_quick_config_page_save_and_recent_guards(client):
     # is awaited between that snapshot and applying the fresh state, so an
     # edit typed during the GET cannot be wiped; a failed fetch returns
     # instead of re-applying diffs liveRules already holds.
-    save = html[html.index("async function _doSave("):
-                html.index("// --- Silent reapply strip")]
+    save = js_upto(html, "async function _doSave(", "// --- Silent reapply strip")
     for tail in (save[save.index("const conflictSet"):],
                  save[save.index("startReapplyJobSilent("):]):
         fetch = tail.index("const j = await fetchState();\n")
@@ -568,7 +568,7 @@ def test_quick_config_page_save_and_recent_guards(client):
     assert "await load()" not in save
     # The seen-set reset follows the await: a trace pushed during the wait
     # went into the old set, so an earlier reset would drop it.
-    body = html[html.index("async function reloadRecent()"):html.index("async function loadOlder()")]
+    body = js_upto(html, "async function reloadRecent()", "async function loadOlder()")
     assert body.index("await api(") < body.index("_seenReqIds = new Set();")
 
 
@@ -579,8 +579,7 @@ def test_quick_config_page_refetches_only_on_a_refused_slug(client):
     edits were kept". A 422 detail list renders its first message, not
     "[object Object]", and the report comment is bounded like the server."""
     html = client.get("/quick-config").text
-    save = html[html.index("async function _doSave("):
-                html.index("// --- Silent reapply strip")]
+    save = js_upto(html, "async function _doSave(", "// --- Silent reapply strip")
     assert "/^unknown rule slug/.test(String(msg))" in save
     assert save.index("if (!refusedSlug) { showToast(msg, 'err'); return; }") < (
         save.index("rules reloaded; your other edits were kept"))
@@ -605,12 +604,10 @@ def test_quick_config_page_reload_failure_and_reapply_guards(client):
     "0 s"; the re-apply strip keeps polling after one failed status fetch
     and a thrown POST shows the error."""
     html = client.get("/quick-config").text
-    older = html[html.index("async function loadOlder()"):
-                 html.index("function rebuildDatalist()")]
+    older = js_upto(html, "async function loadOlder()", "function rebuildDatalist()")
     assert older.index("if (_pushedDuringReload) return;") < older.index(
         "const gen = _recentGen;")
-    body = html[html.index("async function reloadRecent()"):
-                html.index("async function loadOlder()")]
+    body = js_upto(html, "async function reloadRecent()", "async function loadOlder()")
     fail = body.index("if (!j) {")
     assert body.index(
         "if (gen !== _recentGen) return;   // a newer reload owns the list now"
@@ -619,8 +616,7 @@ def test_quick_config_page_reload_failure_and_reapply_guards(client):
     dur = html[html.index("function traceDur("):]
     assert dur.index("if (s < 0.5) return '<1 s';") < dur.index(
         "return Math.round(s) + ' s';")
-    start = html[html.index("async function startReapplyJobSilent("):
-                 html.index("function doDiscard()")]
+    start = js_upto(html, "async function startReapplyJobSilent(", "function doDiscard()")
     assert "catch (e) { fail(String(e)); return; }" in start
     assert ("if (status !== 'done' && status !== 'error' "
             "&& status !== 'idle') {") in start
@@ -635,36 +631,32 @@ def test_quick_config_page_failure_paths_recover(client):
     stops on 'idle' and on a lost session; the stream-recovery probe stands
     down when the browser's own reconnect won."""
     html = client.get("/quick-config").text
-    body = html[html.index("async function reloadRecent()"):
-                html.index("async function loadOlder()")]
+    body = js_upto(html, "async function reloadRecent()", "async function loadOlder()")
     fail = body[body.index("if (!j) {"):body.index("list.innerHTML = '';")]
     assert "if (q !== _listQuery) _searchQuery = _listQuery;" in fail
     assert fail.index("_searchQuery = _listQuery;") < fail.index("return;")
     assert body.index("_listQuery = q;") > body.index("if (!j) {")
-    save = html[html.index("async function _doSave("):
-                html.index("// --- Silent reapply strip")]
+    save = js_upto(html, "async function _doSave(", "// --- Silent reapply strip")
     refused = save[save.index("if (!r.ok) {"):save.index("const result = await r.json();")]
     assert "if (!refusedSlug) { showToast(msg, 'err'); return; }" in refused
     fetch = refused.index("const j = await fetchState();")
     assert fetch < refused.index("_diffsSince(initialRules)") < refused.index(
         "applyState(j);") < refused.index("rule.locked && !_isAdmin()") < refused.index(
         "_reapplyDiffs(diffs, clashed, restored);")
-    do_save = html[html.index("async function doSave()"):
-                   html.index("async function _doSave(")]
+    do_save = js_upto(html, "async function doSave()", "async function _doSave(")
     catch = do_save[do_save.index("} catch (e) {"):do_save.index("} finally {")]
     assert "setStatus('save failed');" in catch
-    load = html[html.index("async function load()"):html.index("function applyState(j)")]
+    load = js_upto(html, "async function load()", "function applyState(j)")
     assert load.index("try {") < load.index("await fetchState()") < load.index(
         "} catch (e) {") < load.index("setStatus('load failed');")
-    poll = html[html.index("async function _pollStripOnce()"):
-                html.index("async function startReapplyJobSilent(")]
+    poll = js_upto(html, "async function _pollStripOnce()",
+                   "async function startReapplyJobSilent(")
     idle = poll[poll.index("} else if (s.status === 'idle') {"):]
     assert "clearInterval(_stripPoll); _stripPoll = null;" in idle
     lost = poll[poll.index("if (!r.ok) {"):poll.index("let s;")]
     assert "r.status === 401 || r.status === 403" in lost
     assert "clearInterval(_stripPoll); _stripPoll = null;" in lost
-    probe = html[html.index("const probe = async () => {"):
-                 html.index("// --- Field-level diff helpers")]
+    probe = js_upto(html, "const probe = async () => {", "// --- Field-level diff helpers")
     assert probe.index("await api('GET', '/quick-config/recent?limit=1');") < probe.index(
         "if (!_recoveryTimer) return;") < probe.index("if (r.ok) {")
     assert "if (!_recoveryTimer) return;   // onopen cancelled it meanwhile" in probe
@@ -679,8 +671,7 @@ def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client)
     when the fresh server list already held it, so the next save stored it
     twice."""
     html = client.get("/quick-config").text
-    probe = html[html.index("const probe = async () => {"):
-                 html.index("// --- Field-level diff helpers")]
+    probe = js_upto(html, "const probe = async () => {", "// --- Field-level diff helpers")
     gone = probe[probe.index("if (r.status === 401 || r.status === 403) {"):
                  probe.index("if (r.ok) {")]
     assert probe.index("if (!_recoveryTimer) return;") < probe.index(
@@ -689,8 +680,8 @@ def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client)
     assert "_setRecentLabel(r.status === 401 ? 'signed out' : 'no access');" in gone
     assert "if (r.status === 401 && window._showLoginGate) window._showLoginGate();" in gone
     assert "return;" in gone
-    merge = html[html.index("function _applyFieldDiff(serverValue, diff, clashes, restored) {"):
-                 html.index("function _diffKindFor(field) {")]
+    merge = js_upto(html, "function _applyFieldDiff(serverValue, diff, clashes, restored) {",
+                    "function _diffKindFor(field) {")
     lst = merge[merge.index("if (diff.kind === 'list') {"):]
     assert "const have = new Set(out.map(_stringify));" in lst
     assert lst.index("if (have.has(key)) continue;") < lst.index("out.push(item);")
