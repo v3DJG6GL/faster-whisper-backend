@@ -1,11 +1,14 @@
 """Auth-model integration tests: open mode vs locked-down, admin vs
 non-admin keys, host gate, cross-user 404, and the SSE credential carriers."""
 
+import asyncio
+
 from starlette.testclient import TestClient
 
 from tests.conftest import bearer, fake_request
 from tests.conftest import status_of as _status_of
 from faster_whisper_backend.admin import logs_routes
+from faster_whisper_backend.quick_config import routes as quick_config_routes
 
 
 def test_open_mode_admin_everywhere(client):
@@ -105,8 +108,6 @@ def _fake_request(headers=None, query=b""):
 def test_sse_bearer_header_admits(client, make_user_key):
     # The bearer header is the carrier for non-browser SSE clients; browsers
     # ride the session cookie EventSource sends same-origin.
-    from faster_whisper_backend.quick_config import routes as quick_config_routes
-
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     req = _fake_request(headers={"Authorization": f"Bearer {raw}"})
@@ -117,8 +118,6 @@ def test_sse_bearer_header_admits(client, make_user_key):
 def test_sse_key_query_param_rejected(client, make_user_key):
     # ?key= is not a credential carrier: the raw key would land in every
     # access log that records the request line.
-    from faster_whisper_backend.quick_config import routes as quick_config_routes
-
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     req = _fake_request(query=f"key={raw}".encode())
@@ -126,8 +125,6 @@ def test_sse_key_query_param_rejected(client, make_user_key):
 
 
 def test_sse_missing_key_rejected_when_locked(client, make_user_key):
-    from faster_whisper_backend.quick_config import routes as quick_config_routes
-
     make_user_key("root", is_admin=True)
     req = _fake_request()  # no bearer, no cookie
     assert _status_of(quick_config_routes.require_user_or_admin_sse, req) == 401
@@ -280,8 +277,6 @@ def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
 # stream.
 
 def _sse_request(path, raw_key):
-    import asyncio
-
     async def _receive():
         await asyncio.Event().wait()
 
@@ -290,7 +285,6 @@ def _sse_request(path, raw_key):
 
 def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,
                                        monkeypatch, tmp_path):
-    import asyncio
     from faster_whisper_backend.auth import api_keys_store
 
     log = tmp_path / "live.log"
@@ -323,9 +317,7 @@ def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,
 
 def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
                                                app_module):
-    import asyncio
     from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.quick_config import routes as qc
     from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
 
     make_user_key("root", is_admin=True)
@@ -333,7 +325,8 @@ def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
     req = _sse_request("/quick-config/stream", raw)
 
     async def drive():
-        resp = await qc.stream_recent(req, qc.require_user_or_admin_sse(req))
+        resp = await quick_config_routes.stream_recent(
+            req, quick_config_routes.require_user_or_admin_sse(req))
         body = resp.body_iterator
 
         async def push(user_id):
