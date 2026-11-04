@@ -513,6 +513,13 @@
     return fetch(path, opts);
   }
 
+  function _userUrl(uid) {
+    return '/settings/api-keys/api/users/' + encodeURIComponent(uid);
+  }
+  function _keyUrl(uid, kid) {
+    return _userUrl(uid) + '/keys/' + encodeURIComponent(kid);
+  }
+
   // Rejects with the response body text on a non-2xx, else parses JSON.
   function _okJson(r) {
     if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
@@ -856,9 +863,7 @@
     tr._permSending = sent;
     var renders0 = _permRenders;
     btn.disabled = true;
-    api('PATCH',
-        '/settings/api-keys/api/users/' + encodeURIComponent(uid) + '/permissions',
-        body)
+    api('PATCH', _userUrl(uid) + '/permissions', body)
       .then(_okJson)
       .then(function() {
         tr._permBaseline = sent;
@@ -1000,8 +1005,7 @@
       if (!label) { showToast('Label is required', 'err'); labelInp.focus(); return; }
       addBusy = true;
       addBtn.disabled = true;
-      api('POST', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/keys',
-          { label: label })
+      api('POST', _userUrl(u.id) + '/keys', { label: label })
         .then(_okJson)
         .then(function (j) {
           showKeyModal(j.key, u.username, label, function () {
@@ -1029,8 +1033,7 @@
         scope: 'user', binding: bindingFromConfig((u.permissions || {}).config),
         previewQuery: 'user_id=' + encodeURIComponent(u.id),
         save: function (body) {
-          return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/permissions',
-                     { config: body })
+          return api('PATCH', _userUrl(u.id) + '/permissions', { config: body })
             .then(_okJson)
             // The reload after a save can be declined (another drawer is
             // dirty); a reopened drawer must start from what was saved.
@@ -1054,7 +1057,7 @@
     revBtn.onclick = function () {
       if (!confirm('Revoke user "' + u.username +
           '"? This will also revoke all of their keys.')) return;
-      api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id))
+      api('DELETE', _userUrl(u.id))
         .then(function (r) {
           if (r.status === 409) {
             return r.json().then(function (j) { throw new Error(_detailMsg(j, 'cannot revoke last admin')); });
@@ -1073,7 +1076,7 @@
 
     var listEl = document.createElement('div');
     userBody.appendChild(listEl);
-    api('GET', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/keys')
+    api('GET', _userUrl(u.id) + '/keys')
       .then(function (r) { return r.ok ? r.json() : { keys: [] }; })
       .then(function (j) {
         if (!j.keys || j.keys.length === 0) {
@@ -1148,8 +1151,7 @@
           var nl = inp.value.trim();
           if (!nl) { showToast('Label is required', 'err'); inp.focus(); return; }
           saveB.disabled = true;
-          api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
-              '/keys/' + encodeURIComponent(k.id) + '/label', { label: nl })
+          api('PATCH', _keyUrl(u.id, k.id) + '/label', { label: nl })
             .then(_okJson)
             .then(function () { showToast('Key renamed', 'ok'); load(); })
             .catch(function (e) { showToast(String(e.message || e), 'err'); saveB.disabled = false; });
@@ -1174,8 +1176,7 @@
           scope: 'key', binding: bindingFromConfig(k.config),
           previewQuery: 'user_id=' + encodeURIComponent(u.id) + '&key_id=' + encodeURIComponent(k.id),
           save: function (body2) {
-            return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
-                       '/keys/' + encodeURIComponent(k.id) + '/config', body2)
+            return api('PATCH', _keyUrl(u.id, k.id) + '/config', body2)
               .then(_okJson)
               .then(function (j) { k.config = j.config; return j; });
           },
@@ -1187,8 +1188,7 @@
       b.onclick = function () {
         if (!confirm('Revoke key "' + (hasLabel ? k.label : k.key_prefix + '…' + k.key_last4) +
             '"? Apps using it will stop working immediately.')) return;
-        api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
-            '/keys/' + encodeURIComponent(k.id))
+        api('DELETE', _keyUrl(u.id, k.id))
           .then(function (r) {
             if (r.status === 409) {
               return r.json().then(function (j) { throw new Error(_detailMsg(j, 'cannot revoke last admin key')); });
@@ -1677,8 +1677,7 @@
     return !!(window.__csMeta && window.__csMeta.unavailable);
   }
   function csApiBase(uid) {
-    return '/settings/api-keys/api/users/' + encodeURIComponent(uid)
-      + '/client-settings';
+    return _userUrl(uid) + '/client-settings';
   }
   function fmtBytes(n) {
     n = Number(n || 0);
