@@ -1,12 +1,11 @@
 """A failed forced refresh after a sibling logout must not mark the
 'revocations' counter as seen."""
 
-import sqlite3
-
 import pytest
 
 from tests.auth._store_helpers import (
-    count_rebuilds, failing_rebuild_conn, load_sessions_store_copy, sibling_write)
+    count_rebuilds, failing_conn, failing_rebuild_conn, load_sessions_store_copy,
+    sibling_write)
 
 
 @pytest.fixture
@@ -86,14 +85,8 @@ def test_failed_data_version_read_still_rebuilds_on_a_moved_counter(
     assert w.lookup_session(raw) is not None
     _sibling_logout(w)
     real = w._require_conn()
-
-    class _FailingDataVersion:
-        def execute(self, sql, *args):
-            if sql == "PRAGMA data_version":
-                raise sqlite3.OperationalError("disk I/O error")
-            return real.execute(sql, *args)
-
-    monkeypatch.setattr(w, "_require_conn", _FailingDataVersion)
+    monkeypatch.setattr(w, "_require_conn",
+                        lambda: failing_conn(real, "PRAGMA data_version", "disk I/O error"))
     assert w.revocation_generation() == 1
     monkeypatch.undo()
     assert w.lookup_session(raw) is None

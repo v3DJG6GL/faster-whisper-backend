@@ -8,7 +8,7 @@ import threading
 import pytest
 
 from faster_whisper_backend.auth import api_keys_store
-from tests.auth._store_helpers import failing_rebuild_conn, sibling_write
+from tests.auth._store_helpers import failing_conn, failing_rebuild_conn, sibling_write
 
 
 def _store_user_binding(ak, uid, binding):
@@ -244,15 +244,8 @@ def test_revoke_user_failing_key_cascade_leaves_the_user_active(
     ak.create_user("admin", is_admin=True)
     bob = ak.create_user("bob", is_admin=False)
     raw, _ = ak.create_key(bob)
-
-    class _FailKeyCascade:
-        in_transaction = property(lambda self: real_conn.in_transaction)
-
-        def execute(self, sql, *args):
-            if sql.startswith("UPDATE api_keys SET revoked_ts"):
-                raise sqlite3.OperationalError("database or disk is full")
-            return real_conn.execute(sql, *args)
-    monkeypatch.setattr(ak, "_conn", _FailKeyCascade())
+    monkeypatch.setattr(ak, "_conn", failing_conn(
+        real_conn, "UPDATE api_keys SET revoked_ts", "database or disk is full"))
     with pytest.raises(sqlite3.OperationalError, match="disk is full"):
         ak.revoke_user(bob)
     monkeypatch.setattr(ak, "_conn", real_conn)

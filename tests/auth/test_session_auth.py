@@ -9,7 +9,7 @@ follow-up requests — exactly like a browser."""
 import pytest
 from starlette.testclient import TestClient
 
-from tests.auth._store_helpers import count_rebuilds, load_sessions_store_copy
+from tests.auth._store_helpers import count_rebuilds, failing_conn, load_sessions_store_copy
 from tests.conftest import bearer
 
 
@@ -603,17 +603,7 @@ def test_revoke_failing_on_the_counter_leaves_no_half_revoked_session(tmp_path):
     raw, _csrf = w.create_session("u", 3600.0)
     assert w.lookup_session(raw) is not None
     real = w._conn
-
-    class _FailingMeta:
-        def execute(self, sql, *args):
-            if sql.startswith("INSERT INTO meta"):
-                raise sqlite3.OperationalError("database is locked")
-            return real.execute(sql, *args)
-
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-    w._conn = _FailingMeta()
+    w._conn = failing_conn(real, "INSERT INTO meta")
     try:
         with pytest.raises(sqlite3.OperationalError):
             w.revoke_session(raw)

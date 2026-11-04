@@ -50,16 +50,25 @@ def sibling_write(store, *stmts):
         sibling.close()
 
 
+def failing_conn(real, prefix, message="database is locked"):
+    """A stand-in for connection `real` whose execute raises
+    OperationalError(message) for sql starting with `prefix`; everything
+    else (execute, in_transaction, ...) goes to `real`."""
+    class _Failing:
+        def execute(self, sql, *args):
+            if sql.startswith(prefix):
+                raise sqlite3.OperationalError(message)
+            return real.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    return _Failing()
+
+
 def failing_rebuild_conn(store, select_prefix):
     """A `_require_conn` stand-in whose rebuild SELECT (sql starting with
     `select_prefix`) raises 'database is locked'; everything else runs on
     the real connection."""
     real = store._require_conn()
-
-    class _FailingRebuild:
-        def execute(self, sql, *args):
-            if sql.startswith(select_prefix):
-                raise sqlite3.OperationalError("database is locked")
-            return real.execute(sql, *args)
-
-    return _FailingRebuild
+    return lambda: failing_conn(real, select_prefix)
