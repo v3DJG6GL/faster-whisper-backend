@@ -14,14 +14,13 @@ StreamSession with the real pipeline and hold-back, and must:
   one — sent text is kept there, the rest formatted on its own.
 """
 
-import asyncio
 import logging
 import random
 import re
 
 
 from tests._streaming_helpers import inert_session
-from tests.streaming._feed_helpers import grow_document
+from tests.streaming._feed_helpers import grow_and_close
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 DE = [
@@ -86,11 +85,7 @@ def _run(utts, language):
         diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=language),
     )
 
-    async def go():
-        await grow_document(s, *utts)
-        await s.close()
-
-    asyncio.run(go())
+    grow_and_close(s, *utts)
     return [m for m in msgs if m["type"] == "final"]
 
 

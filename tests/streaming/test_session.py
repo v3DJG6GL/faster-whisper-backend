@@ -12,7 +12,7 @@ import pytest
 
 from tests._streaming_helpers import (
     const_final, const_partial, const_pcm, fast_config, inert_session, raising_decoder)
-from tests.streaming._feed_helpers import feed_levels, grow_document
+from tests.streaming._feed_helpers import feed_levels, grow_and_close, grow_document
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 
 
@@ -52,13 +52,9 @@ def test_committed_is_append_only_and_document_equals_postprocess():
     whole document."""
     s, msgs = _make_session()
 
-    async def run():
-        await grow_document(s, "der patient hat fieber.",
-                            " blutdruck normal",  # no terminator yet → tail
-                            ".")                  # terminator (commits on close)
-        await s.close()
-
-    asyncio.run(run())
+    grow_and_close(s, "der patient hat fieber.",
+                   " blutdruck normal",  # no terminator yet → tail
+                   ".")                  # terminator (commits on close)
     finals = [m for m in msgs if m["type"] == "final"]
     committeds = [m["committed"] for m in finals]
     for a, b in zip(committeds, committeds[1:]):
@@ -83,12 +79,8 @@ def test_committed_never_holds_half_resolved_dictation_phrase():
 
     s, msgs = _make_session(postprocess=pp, holdback=_hold_trailing("neue"))
 
-    async def run():
-        await grow_document(s, "bla bla neue",    # incomplete phrase, no terminator
-                            " zeile text.")   # phrase completes + terminator
-        await s.close()
-
-    asyncio.run(run())
+    grow_and_close(s, "bla bla neue",    # incomplete phrase, no terminator
+                   " zeile text.")   # phrase completes + terminator
     finals = [m for m in msgs if m["type"] == "final"]
     committeds = [m["committed"] for m in finals]
     assert all("neue" not in c for c in committeds)

@@ -26,3 +26,13 @@ async def grow_document(session, *pieces: str) -> None:
     for piece in pieces:
         session.raw_confirmed += piece
         await session._emit_update()
+
+
+def grow_and_close(session, *pieces: str) -> None:
+    """asyncio.run ``grow_document(session, *pieces)``, then ``session.close()``
+    (which commits the whole document)."""
+    async def run():
+        await grow_document(session, *pieces)
+        await session.close()
+
+    asyncio.run(run())

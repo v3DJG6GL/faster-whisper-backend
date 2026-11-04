@@ -15,12 +15,10 @@ a later final cannot rewrite what an earlier one typed (quotes typed twice,
 a stray 'neue' left before a newline).
 """
 
-import asyncio
-
 import pytest
 
 from tests._streaming_helpers import inert_session
-from tests.streaming._feed_helpers import grow_document
+from tests.streaming._feed_helpers import grow_and_close
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 
@@ -38,11 +36,7 @@ def _run_stream(utterances, language):
         diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=language),
     )
 
-    async def run():
-        await grow_document(s, *utterances)
-        await s.close()  # commit the whole document
-
-    asyncio.run(run())
+    grow_and_close(s, *utterances)
     return [m for m in msgs if m["type"] == "final"]
 
 
