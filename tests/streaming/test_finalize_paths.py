@@ -378,14 +378,13 @@ def _assert_accepted_before_close(sent, code):
                for s, typ, _c in sent[:closes[0]]), sent
 
 
-def test_disabled_refusal_closes_after_accept_with_4503(app_module, monkeypatch, ws_sends):
+def test_disabled_refusal_closes_after_accept_with_4503(client, app_module, monkeypatch, ws_sends):
     from faster_whisper_backend.streaming.routes import _WS_DISABLED
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_ENABLED", False, raising=False)
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with pytest.raises(WebSocketDisconnect) as ei:
-            with client.websocket_connect(_STREAM_URL) as ws:
-                ws.receive_json()
+    with pytest.raises(WebSocketDisconnect) as ei:
+        with client.websocket_connect(_STREAM_URL) as ws:
+            ws.receive_json()
     assert ei.value.code == _WS_DISABLED
     assert "disabled" in (ei.value.reason or "")
     _assert_accepted_before_close(ws_sends, _WS_DISABLED)
@@ -476,7 +475,8 @@ def test_running_dictate_job_names_its_model(client, app_module):
         assert rows[0]["model"] == tx_models._resolve_model_name("whisper-1")
 
 
-def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, caplog, energy_vad):
+def test_queue_item_cap_sheds_tiny_frames_and_flushes(
+        client, app_module, monkeypatch, caplog, energy_vad):
     """Two-byte PCM frames alternated with flushes queue two items per ~0 bytes,
     so the byte cap never trips; the item cap must shed them instead."""
     from faster_whisper_backend.streaming import routes as streaming_routes
@@ -498,19 +498,18 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, c
 
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
     with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.routes"):
-        with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-            with client.websocket_connect(_STREAM_URL) as ws:
-                assert _config(ws)["type"] == "ready"
-                ws.send_bytes(_pcm(8000, 200))
-                ws.send_json({"type": "flush"})   # pump held here
-                for _ in range(100):
-                    ws.send_bytes(b"\x00\x00")
-                    ws.send_json({"type": "flush"})
-                deadline = time.monotonic() + 10.0
-                while time.monotonic() < deadline and not any(
-                        "audio backlog over cap" in r.getMessage() for r in caplog.records):
-                    time.sleep(0.02)
-                released.set()
-                stop_and_drain(ws)
+        with client.websocket_connect(_STREAM_URL) as ws:
+            assert _config(ws)["type"] == "ready"
+            ws.send_bytes(_pcm(8000, 200))
+            ws.send_json({"type": "flush"})   # pump held here
+            for _ in range(100):
+                ws.send_bytes(b"\x00\x00")
+                ws.send_json({"type": "flush"})
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and not any(
+                    "audio backlog over cap" in r.getMessage() for r in caplog.records):
+                time.sleep(0.02)
+            released.set()
+            stop_and_drain(ws)
     assert any("audio backlog over cap" in r.getMessage() for r in caplog.records), \
         [r.getMessage() for r in caplog.records]
