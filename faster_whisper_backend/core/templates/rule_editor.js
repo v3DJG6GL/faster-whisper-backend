@@ -297,6 +297,11 @@ function _renumberEntries(parent) {
   });
 }
 
+// Re-read the rows into rule.entries, refresh ordinals/end-stops, mark dirty.
+function _syncEntries(rule, parent, commitData) {
+  rule.entries = _readEntries(parent); _renumberEntries(parent); commitData();
+}
+
 function _makeEntryRow(rule, entry, commitData, onEnter) {
   entry = entry || {};
   const row = _reEl('div', 'rl-entry');
@@ -340,7 +345,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     }
     // A real drop: sync rule.entries with the moved DOM (idempotent after an
     // in-list drop, which already committed).
-    rule.entries = _readEntries(parent); _renumberEntries(parent); commitData();
+    _syncEntries(rule, parent, commitData);
   });
   const ord = _reEl('span', 'rl-ord', '0');
   // ↑/↓ move the NEIGHBOUR, not this row: reinserting the row would blur the
@@ -406,7 +411,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   del.addEventListener('click', () => {
     const parent = row.parentNode;
     row.remove();
-    if (parent) { rule.entries = _readEntries(parent); _renumberEntries(parent); commitData(); }
+    if (parent) _syncEntries(rule, parent, commitData);
   });
   r1.appendChild(lwrap); r1.appendChild(noteBtn); r1.appendChild(del);
   function frRow(gut, cls, val, ph) {
@@ -529,9 +534,7 @@ function renderTypeEditor(rule, commitData, opts) {
       if (!_rlDragSrc || _rlDragSrc.parentNode !== entriesBox) return;
       e.preventDefault();
       DRAG_AUTOSCROLL.stop();
-      rule.entries = _readEntries(entriesBox);
-      _renumberEntries(entriesBox);
-      commitData();
+      _syncEntries(rule, entriesBox, commitData);
     });
     box.appendChild(entriesBox);
     _renumberEntries(entriesBox);
