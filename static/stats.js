@@ -394,7 +394,7 @@ function parsePageQuery(search) {
   // `kind` / `user` / `key` are the single-valued spellings of older links.
   Q.kinds = csv('kinds').concat(csv('kind')).filter(k => KINDS.includes(k));
   Q.kinds = Array.from(new Set(Q.kinds));
-  if (Q.kinds.length === KINDS.length) Q.kinds = [];
+  normKinds();
   Q.with = csv('with').filter(s => WITH_CHIPS.some(c => c[0] === s));
   Q.users = Array.from(new Set(csv('users').concat(csv('user'))));
   Q.keys = Array.from(new Set(csv('keys').concat(csv('key'))));
@@ -570,7 +570,6 @@ function wireScopeBar() {
     if (v === 'all') Q.kinds = [];
     else if (e.altKey) Q.kinds = [v];
     else Q.kinds = Q.kinds.includes(v) ? Q.kinds.filter(k => k !== v) : Q.kinds.concat([v]);
-    if (Q.kinds.length === KINDS.length) Q.kinds = [];
     setKind();
   });
   onPick('sb-with', '.chip', (c) => {
@@ -700,7 +699,9 @@ function loadTail(seq) {
 // Kinds narrow the document's per-kind splits on the client, but the
 // by-user / key / model breakdowns, the leaderboard and the tail are
 // aggregated on the server: fetch again (cheap, and one code path).
-function setKind() { load(); }
+function setKind() { normKinds(); load(); }
+// Every kind picked means no kind filter.
+function normKinds() { if (Q.kinds.length === KINDS.length) Q.kinds = []; }
 function load() {
   renderChips(); syncUrl();
   usageCards().forEach(el => el.classList.add('updating'));
@@ -1449,7 +1450,6 @@ function renderBoard() {
       const id = tr.dataset.id;
       if (by === 'kind') {
         Q.kinds = Q.kinds.includes(id) ? Q.kinds.filter(k => k !== id) : Q.kinds.concat([id]);
-        if (Q.kinds.length === KINDS.length) Q.kinds = [];
         setKind(); return;
       }
       if (by === 'user' && ownScope()) return;
