@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from faster_whisper_backend.captures import samples as capture_samples
 from tests.conftest import waits_on as _waits_on, write_bytes as _touch
 
 
@@ -254,8 +255,6 @@ def test_dissolve_waits_for_an_in_flight_rebuild(captures_store_db,
                                                  groups_store_db):
     """dissolve_sample takes the per-sid rebuild lock, so it cannot delete the
     row (and unlink the WAV) under a regenerate that is mid-build."""
-    from faster_whisper_backend.captures import samples as capture_samples
-
     gs = groups_store_db
     sid = "gdissolvewait001"
     _insert_group(gs, sid)
@@ -271,8 +270,6 @@ def test_racing_dissolves_drop_the_lock_entry(captures_store_db,
     the dead sid's lock entry itself."""
     import threading
     import time
-
-    from faster_whisper_backend.captures import samples as capture_samples
 
     gs = groups_store_db
     sid = "gdissolverace001"
@@ -331,8 +328,6 @@ def test_clear_all_waits_for_an_in_flight_rebuild(captures_store_db,
     """clear_all_samples takes each sample's rebuild lock like dissolve_sample,
     so the admin wipe cannot delete a row under a regenerate that is mid-build
     (whose merged WAV would then outlive the wipe)."""
-    from faster_whisper_backend.captures import samples as capture_samples
-
     gs = groups_store_db
     sid = "gclearwait000001"
     _insert_group(gs, sid)
