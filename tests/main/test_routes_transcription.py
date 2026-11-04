@@ -867,6 +867,13 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
                    for w in r.json().get("warnings") or [])
 
 
+def _record_captures_on(app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
+                        raising=False)
+
+
 def test_a_full_capture_store_still_records_a_batch_request(
         client, app_module, fake_model, monkeypatch):
     """At CAPTURES_MAX the batch gate must still reach create_capture so its
@@ -874,10 +881,7 @@ def test_a_full_capture_store_still_records_a_batch_request(
     request records anything (streaming twin: tests/streaming/test_finalize_paths.py)."""
     from faster_whisper_backend.captures import store as captures_store
 
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
-                        raising=False)
+    _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
     # Not a store full of "ready" rows (the real DB state must not decide).
@@ -898,10 +902,7 @@ def test_a_store_full_of_ready_captures_skips_the_batch_capture(
     row itself, so the gate records nothing and does not force DTW."""
     from faster_whisper_backend.captures import store as captures_store
 
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
-                        raising=False)
+    _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
     created = []
     monkeypatch.setattr(captures_store, "create_capture",
@@ -923,10 +924,7 @@ def test_batch_capture_gate_reads_the_store_off_the_event_loop(
     import asyncio
     from faster_whisper_backend.captures import store as captures_store
 
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
-                        raising=False)
+    _record_captures_on(app_module, monkeypatch)
     on_loop = []
 
     def _probe():
