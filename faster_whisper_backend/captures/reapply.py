@@ -42,7 +42,9 @@ from faster_whisper_backend.settings import effective_config
 logger = logging.getLogger("whisper-api")
 
 _state_lock = threading.Lock()
-_state: dict[str, Any] = {
+# The idle shape: the module's starting state, what start() resets the
+# counters to, and what _reset_for_tests restores.
+_IDLE_STATE: dict[str, Any] = {
     "status":           "idle",     # idle | running | done | error
     "started_ts":       None,
     "finished_ts":      None,
@@ -52,6 +54,7 @@ _state: dict[str, Any] = {
     "groups_updated":   0,
     "error":            None,
 }
+_state: dict[str, Any] = dict(_IDLE_STATE)
 _worker: "threading.Thread | None" = None
 # Set by a start() that found a pass running (under _state_lock); the worker
 # consumes it and runs one more pass with the rules as they are by then.
@@ -105,16 +108,7 @@ def start() -> dict[str, Any]:
         _rerun_requested = False
         _updated_cids.clear()
         _updated_sids.clear()
-        _state.update({
-            "status":           "running",
-            "started_ts":       time.time(),
-            "finished_ts":      None,
-            "total":            0,
-            "processed":        0,
-            "captures_updated": 0,
-            "groups_updated":   0,
-            "error":            None,
-        })
+        _state.update(_IDLE_STATE, status="running", started_ts=time.time())
     _worker = threading.Thread(target=_run, daemon=True, name="reapply-rules")
     _worker.start()
     with _state_lock:
@@ -305,13 +299,4 @@ def _reset_for_tests() -> None:
     _rerun_requested = False
     _updated_cids.clear()
     _updated_sids.clear()
-    _state = {
-        "status": "idle",
-        "started_ts": None,
-        "finished_ts": None,
-        "total": 0,
-        "processed": 0,
-        "captures_updated": 0,
-        "groups_updated": 0,
-        "error": None,
-    }
+    _state = dict(_IDLE_STATE)
