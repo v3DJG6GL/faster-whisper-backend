@@ -201,6 +201,18 @@ def decode_span_16k(src_path: str, skip: float, seconds: float):
         container.close()
 
 
+def _close_quietly(container):
+    """Best-effort close of a PyAV container (None = nothing to close).
+    Returns None once it is closed, else the still-open handle."""
+    try:
+        if container is not None:
+            container.close()
+            return None
+    except Exception:
+        pass
+    return container
+
+
 def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:
     return transcode_to_wav(src_path, dst_path, rate=16000, layout="mono")
 
@@ -238,24 +250,11 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
     except Exception:
         # Release the output handle before unlink (Windows holds the
         # lock otherwise).
-        try:
-            if out_container is not None:
-                out_container.close()
-                out_container = None
-        except Exception:
-            pass
+        out_container = _close_quietly(out_container)
         store_common.unlink_quietly(dst_path)
         raise
     finally:
-        try:
-            if out_container is not None:
-                out_container.close()
-        except Exception:
-            pass
-        try:
-            if in_container is not None:
-                in_container.close()
-        except Exception:
-            pass
+        _close_quietly(out_container)
+        _close_quietly(in_container)
 
     return os.path.getsize(dst_path)
