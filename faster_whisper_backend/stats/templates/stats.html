@@ -87,9 +87,8 @@
   .badge, .kindchip, .rtf { display: inline-block; border-radius: 999px;
     border: 1px solid var(--border); color: var(--dim); }
   .badge, .kindchip { font-size: 0.667rem; padding: 0.0625rem 0.375rem; }
-  .badge.warm { color: var(--green); border-color: #1f4d2a; }
-  .badge.cold { color: var(--yellow); border-color: #4d3e1f; }
-  .badge.ok { color: var(--green); border-color: #1f4d2a; }
+  .badge.warm, .badge.ok { color: var(--green); border-color: #1f4d2a; }
+  .badge.cold, .badge.busy { color: var(--yellow); border-color: #4d3e1f; }
   .badge.err { color: var(--red); border-color: #5a2424; }
   /* Loaded models: the role swatch matches the Pipeline stages card. */
   table.models .role { display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
@@ -353,8 +352,6 @@
     font-size: var(--fs-sm); color: var(--dim); }
   .own-server .stat b { color: var(--bold); font-size: var(--fs-lg);
     font-variant-numeric: tabular-nums; }
-  .own-server .stat .badge.warm { color: var(--green); border-color: #1f4d2a; }
-  .own-server .stat .badge.busy { color: var(--yellow); border-color: #4d3e1f; }
   header .pill.scope { color: #fff; background: #1f6feb; border: 1px solid #1f6feb; }
   /* The usage card fills its tile and the chart flexes to absorb the slack,
      so there is no dead clickable space below the card and resizing the tile
