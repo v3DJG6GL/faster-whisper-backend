@@ -47,11 +47,15 @@ def map_rule(name, mapping=None, map_meta=None, **kw):
     return r
 
 
+def terminal_rule():
+    """The trim-edges terminal that ends a PIPELINE_RULES list."""
+    return {"name": "trim-edges", "label": "Trim", "type": "terminal"}
+
+
 def regex_list_rules(name, pattern, replacement="x"):
     """A one-entry regex-list rule `name` (labelled `name`), then the
     trim-edges terminal: the smallest valid PIPELINE_RULES list."""
-    return [regex_rule(name, pattern, replacement),
-            {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
+    return [regex_rule(name, pattern, replacement), terminal_rule()]
 
 
 def validate_rules(rules, **context):

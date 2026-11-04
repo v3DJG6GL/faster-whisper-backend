@@ -5,10 +5,7 @@ app_module fixture (which reloads config and recompiles the rules per test, so
 cfg/_COMPILED_RULES mutations are isolated)."""
 
 from faster_whisper_backend.pipeline import engine as pl_engine
-
-
-def _term():
-    return {"name": "trim-edges", "label": "Trim", "type": "terminal"}
+from tests.settings._rules_helpers import terminal_rule as _term
 
 
 def _set(app_module, card):

@@ -24,6 +24,7 @@ from tests.settings._rules_helpers import (
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
     regex_list_rules,
     regex_rule as _regex,
+    terminal_rule as _terminal,
     validate_rules,
 )
 
@@ -488,10 +489,6 @@ def test_normalize_tags_rejects_bad():
 def _rl(*entries, **extra):
     return {"name": "rl", "label": "RL", "type": "regex-list",
             "entries": list(entries), **extra}
-
-
-def _terminal():
-    return {"name": "trim-edges", "label": "Trim", "type": "terminal"}
 
 
 def test_pipeline_callback_map_skips_pattern_validation():

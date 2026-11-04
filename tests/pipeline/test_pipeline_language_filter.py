@@ -4,10 +4,7 @@ Language mismatch skips even force-INCLUDEd rules (language is a correctness
 constraint). Unknown language (None) skips nothing (safe for streaming partials)."""
 
 from faster_whisper_backend.pipeline import engine as pl_engine
-
-
-def _term():
-    return {"name": "trim-edges", "label": "Trim", "type": "terminal"}
+from tests.settings._rules_helpers import terminal_rule as _term
 
 
 def _set(app_module, *cards):

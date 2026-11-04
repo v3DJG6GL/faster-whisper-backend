@@ -6,14 +6,14 @@ a quick-config user's edited pattern would silently do nothing."""
 import pytest
 from pydantic import ValidationError
 
-from tests.settings._rules_helpers import validate_rules
+from tests.settings._rules_helpers import terminal_rule, validate_rules
 
 
 def _rules(pattern):
     return [
         {"name": "lower", "label": "Lower", "type": "callback:lowercase-wordlist",
          "pattern": pattern, "wordlist": ["und"]},
-        {"name": "trim-edges", "label": "Trim", "type": "terminal"},
+        terminal_rule(),
     ]
 
 
