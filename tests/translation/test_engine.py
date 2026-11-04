@@ -1413,7 +1413,8 @@ def test_greedy_context_blind_family_skips_context_retry(base_cfg,
     assert len(warns) == 2
 
 
-def _install_fake_llama(monkeypatch, record, *, local_files_only=False):
+def _install_fake_llama(monkeypatch, *, local_files_only=False):
+    record = []
     mod = types.ModuleType("llama_cpp")
 
     class Llama:
@@ -1429,14 +1430,14 @@ def _install_fake_llama(monkeypatch, record, *, local_files_only=False):
     monkeypatch.setitem(sys.modules, "llama_cpp", mod)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", local_files_only,
                         raising=False)
+    return record
 
 
 def _predownload_fails(monkeypatch, make_error, cached):
     """A fake llama behind an online load whose hub pre-download raises
     ``make_error()`` and whose cache lookup answers ``cached``; returns the
     llama call record."""
-    record = []
-    _install_fake_llama(monkeypatch, record)
+    record = _install_fake_llama(monkeypatch)
 
     def fail(repo, quant, cb=None):
         raise make_error()
@@ -1449,8 +1450,7 @@ def _predownload_answers(monkeypatch, path=None, cached=None):
     """A fake llama behind an online load whose hub pre-download answers
     ``path`` (None: no unique file) and whose cache lookup answers ``cached``;
     returns the llama call record."""
-    record = []
-    _install_fake_llama(monkeypatch, record)
+    record = _install_fake_llama(monkeypatch)
     monkeypatch.setattr(translation, "_predownload_gguf",
                         lambda repo, quant, cb=None: path)
     monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: cached)
@@ -1510,8 +1510,7 @@ def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
     a disk-full error of that resume carries the timeout only as
     __context__ and is not a hub timeout."""
     import httpx2 as httpx
-    record = []
-    _install_fake_llama(monkeypatch, record)
+    record = _install_fake_llama(monkeypatch)
 
     def disk_full(repo, quant, cb=None):
         try:
@@ -1661,8 +1660,7 @@ def test_load_uses_the_cached_gguf_when_no_unique_hub_file_matches(
 
 
 def test_local_files_only_skips_predownload(monkeypatch):
-    record = []
-    _install_fake_llama(monkeypatch, record, local_files_only=True)
+    record = _install_fake_llama(monkeypatch, local_files_only=True)
 
     def never(repo, quant, cb=None):
         raise AssertionError("pre-download must not run offline")
@@ -1705,8 +1703,9 @@ def test_load_blocking_threads_offline_flag_explicitly(monkeypatch):
 
 # The HF cache dir is passed explicitly: huggingface_hub freezes HF_HOME at import.
 
-def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
-                      card_languages=None):
+def _install_fake_hub(monkeypatch, files=("m.Q4.gguf",), card_languages=None):
+    record = []
+
     class _Sib:
         def __init__(self, name):
             self.rfilename = name
@@ -1732,10 +1731,11 @@ def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
     mod.info_timeouts = info_timeouts
     mod.hf_hub_download = hf_hub_download
     monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
+    return record
 
 
 def test_predownload_logs_the_card_languages(monkeypatch, caplog):
-    _install_fake_hub(monkeypatch, [], card_languages=["eng", "de", "rm", "zh_hant"])
+    _install_fake_hub(monkeypatch, card_languages=["eng", "de", "rm", "zh_hant"])
     with caplog.at_level("INFO", logger="whisper-server"):
         translation._predownload_gguf("org/card", "Q4")
     assert translation._card_languages["org/card"] == ("en", "de", "zh-Hant")
@@ -1747,15 +1747,14 @@ def test_predownload_bounds_the_model_listing_with_the_hub_timeout(
         monkeypatch, tmp_path):
     # model_info defaults to no deadline: a stalled hub would pin the loader
     # thread and the model's load lock forever instead of failing the load.
-    _install_fake_hub(monkeypatch, [])
+    _install_fake_hub(monkeypatch)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     translation._predownload_gguf("org/repo", "Q4")
     assert sys.modules["huggingface_hub"].info_timeouts == [7]
 
 
 def test_predownload_passes_download_root_cache_dir(monkeypatch, tmp_path):
-    record = []
-    _install_fake_hub(monkeypatch, record)
+    record = _install_fake_hub(monkeypatch)
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     out = translation._predownload_gguf("org/repo", "Q4")
@@ -1767,8 +1766,7 @@ def test_predownload_passes_download_root_cache_dir(monkeypatch, tmp_path):
 
 def test_predownload_captures_the_model_card_languages(monkeypatch,
                                                        tmp_path):
-    record = []
-    _install_fake_hub(monkeypatch, record, card_languages=["de", "sv"])
+    _install_fake_hub(monkeypatch, card_languages=["de", "sv"])
     monkeypatch.setattr(translation, "_card_languages", {})
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     translation._predownload_gguf("org/repo", "Q4")
@@ -1778,8 +1776,7 @@ def test_predownload_captures_the_model_card_languages(monkeypatch,
 
 def test_predownload_set_hf_home_wins_over_download_root(monkeypatch,
                                                          tmp_path):
-    record = []
-    _install_fake_hub(monkeypatch, record)
+    record = _install_fake_hub(monkeypatch)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "custom"))
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path / "root"),
                         raising=False)
@@ -1814,9 +1811,8 @@ def _install_fake_progress(monkeypatch):
 
 
 def test_predownload_matches_quant_case_insensitively(monkeypatch):
-    record = []
-    _install_fake_hub(monkeypatch, record,
-                      files=("a.Q4_K_M.GGUF", "README.md", "b.Q8_0.gguf"))
+    record = _install_fake_hub(
+        monkeypatch, files=("a.Q4_K_M.GGUF", "README.md", "b.Q8_0.gguf"))
     rec = _install_fake_progress(monkeypatch)
     out = translation._predownload_gguf("org/repo", "q4_k_m")
     assert out == "/cache/m.Q4.gguf"
@@ -1827,17 +1823,15 @@ def test_predownload_matches_quant_case_insensitively(monkeypatch):
 
 
 def test_predownload_ambiguous_listing_returns_none(monkeypatch):
-    record = []
-    _install_fake_hub(monkeypatch, record,
-                      files=("m-00001.Q4.gguf", "m-00002.Q4.gguf"))
+    record = _install_fake_hub(
+        monkeypatch, files=("m-00001.Q4.gguf", "m-00002.Q4.gguf"))
     rec = _install_fake_progress(monkeypatch)
     assert translation._predownload_gguf("org/repo", "Q4") is None
     assert record == [] and rec["jobs"] == []      # caller: cache or from_pretrained
 
 
 def test_predownload_no_quant_matches_any_gguf(monkeypatch):
-    record = []
-    _install_fake_hub(monkeypatch, record, files=("only.GGUF", "cfg.json"))
+    record = _install_fake_hub(monkeypatch, files=("only.GGUF", "cfg.json"))
     rec = _install_fake_progress(monkeypatch)
     assert translation._predownload_gguf("org/repo", None) == \
         "/cache/m.Q4.gguf"
@@ -1846,8 +1840,7 @@ def test_predownload_no_quant_matches_any_gguf(monkeypatch):
 
 
 def test_predownload_hook_updates_job_and_shields_download_cb(monkeypatch):
-    record = []
-    _install_fake_hub(monkeypatch, record)
+    _install_fake_hub(monkeypatch)
     rec = _install_fake_progress(monkeypatch)
     seen = []
     translation._predownload_gguf("org/repo", "Q4",
@@ -1871,7 +1864,7 @@ def test_predownload_hook_updates_job_and_shields_download_cb(monkeypatch):
 
 
 def test_predownload_ends_job_when_download_raises(monkeypatch):
-    _install_fake_hub(monkeypatch, [])
+    _install_fake_hub(monkeypatch)
     rec = _install_fake_progress(monkeypatch)
 
     def boom(**kw):
@@ -3066,8 +3059,7 @@ def test_a_completion_cancelled_while_queued_on_the_mutex_never_decodes(
 
 
 def test_offline_load_raises_when_not_cached(monkeypatch):
-    record = []
-    _install_fake_llama(monkeypatch, record, local_files_only=True)
+    record = _install_fake_llama(monkeypatch, local_files_only=True)
     monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: None)
 
     def never(repo, quant, cb=None):
