@@ -19,7 +19,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.core.web_common import render_page, require_user_webui_host
+from faster_whisper_backend.core.web_common import (
+    brand_mark_svg,
+    render_page,
+    require_user_webui_host,
+)
 from faster_whisper_backend.core import templates
 
 router = APIRouter()
@@ -108,7 +112,8 @@ def _tiles_html() -> tuple[str, str]:
     return "".join(user_parts), admin_zone
 
 
-_HUB_HTML = templates.load(__file__, "hub.html")
+_HUB_HTML = templates.load(__file__, "hub.html").replace(
+    "{{HUB_MARK}}", brand_mark_svg("mark", "fw-hub", ' class="hb"'))
 
 
 @router.get(

@@ -1,8 +1,8 @@
-"""The brand mark (skewed five-bar waveform tile) exists as several inline
-copies: the page header, the login gate, the hub hero, and the brand sources
-in docs/brand/. They differ on purpose in gradient id and bar class, but the
-geometry and colours must stay identical — a hand edit to one copy would
-otherwise drift unnoticed."""
+"""The brand mark (skewed five-bar waveform tile) exists as several copies: the
+page header, the login gate and the hub hero (rendered by
+web_common.brand_mark_svg), and the brand sources in docs/brand/. They differ
+on purpose in gradient id and bar class, but the geometry and colours must stay
+identical — a hand edit to one copy would otherwise drift unnoticed."""
 import os
 import re
 

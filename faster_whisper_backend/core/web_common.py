@@ -294,12 +294,38 @@ NAV_OVERFLOW_JS = templates.load(__file__, "nav_overflow.js")
 
 POPOVER_JS = templates.load(__file__, "popover.js")
 
+# (x, y, height) of the brand mark's five waveform bars.
+_BRAND_BARS = ((16, 74, 20), (35, 52, 42), (54, 22, 72), (73, 44, 50), (92, 66, 28))
+
+
+def brand_mark_svg(svg_class: str, grad_id: str, rect_attrs: str = "", svg_tail: str = "") -> str:
+    """The inline brand mark, the forward-skewed audio-waveform tile (same
+    geometry as docs/brand/icon.svg; tests/core/test_brand_mark.py pins it).
+    The header, login gate and hub hero differ only in these strings:
+    `rect_attrs` goes on each bar, `svg_tail` after the svg's aria-hidden. The
+    output holds no single quote, so it is safe inside a JS single-quoted string."""
+    bars = "".join(
+        f'<rect{rect_attrs} x="{x}" y="{y}" width="11" height="{h}" rx="5.5"/>'
+        for x, y, h in _BRAND_BARS
+    )
+    return (
+        f'<svg class="{svg_class}" viewBox="0 0 120 120" aria-hidden="true"{svg_tail}>'
+        f'<defs><linearGradient id="{grad_id}" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0" stop-color="#79c0ff"/><stop offset="1" stop-color="#7ee787"/>'
+        '</linearGradient></defs>'
+        '<rect x="6" y="6" width="108" height="108" rx="26" fill="#161b22" '
+        'stroke="#30363d" stroke-width="2"/>'
+        f'<g transform="translate(13 2) skewX(-9)" fill="url(#{grad_id})">{bars}</g></svg>'
+    )
+
+
 # The central whoami script on every WebUI page (end of <body>, via
 # {{SEV_POLLER_JS}}). Fetches /auth/whoami on the HttpOnly session cookie and
 # from it sets window.__whoami, the nav gating (.allowed, body.role-admin),
 # the logout/reload wiring and the no-access landing. With open_mode=true it
 # also prepends a red banner telling the operator to bootstrap an admin key.
-OPEN_MODE_BANNER_JS = templates.load(__file__, "open_mode_banner.js")
+OPEN_MODE_BANNER_JS = templates.load(__file__, "open_mode_banner.js").replace(
+    "__BRAND_MARK__", brand_mark_svg("lg-mark", "lg-fw", ' class="lg-bar"'))
 
 
 # Shared timestamp helpers (own <script> block; pages opt in with a
@@ -732,24 +758,8 @@ def _header_title_for(current: str) -> str:
     return f"faster-whisper-backend · {slug}"
 
 
-# Inline brand mark: the forward-skewed audio-waveform tile (same geometry
-# as docs/brand/icon.svg; tests/core/test_brand_mark.py keeps the inline
-# copies in step). Sized in em so it tracks the --fs-base UI scale.
-_BRAND_MARK_SVG = (
-    '<svg class="brand-mark" viewBox="0 0 120 120" aria-hidden="true" focusable="false">'
-    '<defs><linearGradient id="fw-hdr" x1="0" y1="0" x2="1" y2="1">'
-    '<stop offset="0" stop-color="#79c0ff"/><stop offset="1" stop-color="#7ee787"/>'
-    '</linearGradient></defs>'
-    '<rect x="6" y="6" width="108" height="108" rx="26" fill="#161b22" '
-    'stroke="#30363d" stroke-width="2"/>'
-    '<g transform="translate(13 2) skewX(-9)" fill="url(#fw-hdr)">'
-    '<rect x="16" y="74" width="11" height="20" rx="5.5"/>'
-    '<rect x="35" y="52" width="11" height="42" rx="5.5"/>'
-    '<rect x="54" y="22" width="11" height="72" rx="5.5"/>'
-    '<rect x="73" y="44" width="11" height="50" rx="5.5"/>'
-    '<rect x="92" y="66" width="11" height="28" rx="5.5"/>'
-    '</g></svg>'
-)
+# The page header's brand mark. Sized in em so it tracks the --fs-base UI scale.
+_BRAND_MARK_SVG = brand_mark_svg("brand-mark", "fw-hdr", svg_tail=' focusable="false"')
 
 
 def _header_brand_for(current: str) -> str:
