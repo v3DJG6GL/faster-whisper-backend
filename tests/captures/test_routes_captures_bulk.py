@@ -80,13 +80,12 @@ def test_stats_scoped_to_caller_and_admin_only_override(client, make_user_key):
     assert st["total"] == {"n": 2, "s": 10.0, "median_s": 5.0}
 
 
-def test_stats_folds_speakers_past_eight_into_others(client, make_user_key):
-    _root, raw_root = make_user_key("root", is_admin=True)
+def test_stats_folds_speakers_past_eight_into_others(client, make_user_key, root_key):
     conn = captures_store._require_conn()
     for i in range(10):
         uid, _ = make_user_key(f"u{i}", pages={"captures": "own"})
         _row(conn, f"c{i:011d}", user_id=uid, audio_s=float(10 - i))
-    st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
+    st = client.get("/captures/api/stats", headers=bearer(root_key)).json()
     assert len(st["by_user"]) == 9
     assert st["by_user"][-1] == {"user_id": None, "username": "others",
                                  "n": 2, "s": 3.0}                # 2 + 1
@@ -118,18 +117,17 @@ def test_list_user_id_accepts_several_speakers(client, make_user_key):
     assert [r["id"] for r in body["captures"]] == ["a1a1a1a1a1a1"]
 
 
-def test_list_user_id_rejects_an_oversized_speaker_list(client, make_user_key):
+def test_list_user_id_rejects_an_oversized_speaker_list(client, root_key):
     """Every id is one SQL bind variable in four queries; an uncapped list
     ends in sqlite's "too many SQL variables" (a 500), so it is a 422."""
-    _root, raw_root = make_user_key("root", is_admin=True)
     cap = captures_routes._MAX_OWNER_FILTER_IDS
     ok = ",".join(f"u{i}" for i in range(cap))
     assert client.get("/captures/api/list?user_id=" + ok,
-                      headers=bearer(raw_root)).status_code == 200
+                      headers=bearer(root_key)).status_code == 200
     for path in ("/captures/api/list", "/captures/api/stats",
                  "/captures/api/samples"):
         r = client.get(f"{path}?user_id={ok},one-too-many",
-                       headers=bearer(raw_root))
+                       headers=bearer(root_key))
         assert r.status_code == 422, path
 
 

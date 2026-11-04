@@ -809,6 +809,12 @@ def make_user_key(app_module):
     return _create
 
 
+@pytest.fixture
+def root_key(client, make_user_key):
+    """The admin root's bearer key (flips the app to locked-down mode)."""
+    return make_user_key("root", is_admin=True)[1]
+
+
 def schema_map_cap():
     """MapRule.map's max_length read straight off the schema, with NO fallback
     (web_common's 10_000 default would hide a blind introspection)."""

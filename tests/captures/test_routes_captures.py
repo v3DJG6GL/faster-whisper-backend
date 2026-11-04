@@ -500,11 +500,10 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
 
 
 def test_propose_merges_narrows_to_several_picked_speakers(client, make_user_key,
-                                                          monkeypatch):
+                                                          root_key, monkeypatch):
     """Two or more picked speakers go to the proposer as one pick list. The
     all-users sweep is already cut to the global top proposals, so filtering
     it afterwards lets a busy third speaker leave the picked ones with none."""
-    _uid, raw_admin = make_user_key("root", is_admin=True)
     _uid_o, raw_own = make_user_key("solo", pages={"captures": "own"})
     seen = []
     monkeypatch.setattr(
@@ -513,7 +512,7 @@ def test_propose_merges_narrows_to_several_picked_speakers(client, make_user_key
 
     for q in ("?user_id=alice,%20carol", "?user_id=bob", "?user_id=,", ""):
         r = client.get("/captures/api/propose-merges" + q,
-                       headers=bearer(raw_admin))
+                       headers=bearer(root_key))
         assert r.status_code == 200
     client.get("/captures/api/propose-merges?user_id=alice,carol",
                headers=bearer(raw_own))
@@ -521,19 +520,17 @@ def test_propose_merges_narrows_to_several_picked_speakers(client, make_user_key
 
     too_many = ",".join(f"u{i}" for i in range(captures_routes._MAX_OWNER_FILTER_IDS + 1))
     r = client.get("/captures/api/propose-merges?user_id=" + too_many,
-                   headers=bearer(raw_admin))
+                   headers=bearer(root_key))
     assert r.status_code == 422
 
 
-def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
+def test_preview_merge_audio_is_not_cacheable(client, root_key,
                                               monkeypatch, tmp_path):
     """The merged preview WAV is PHI behind a per-row owner check. FileResponse
     alone sends only ETag/Last-Modified, which makes the body heuristically
     cacheable by any shared cache in front of the app — the two sibling audio
     routes both send Cache-Control: no-store."""
     from faster_whisper_backend.captures import merge as audio_merge
-
-    _uid, raw = make_user_key("root", is_admin=True)
 
     monkeypatch.setattr(
         captures_routes, "_validate_merge_payload",
@@ -545,18 +542,17 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
 
-    r = _post_members(client, raw, "/captures/api/samples/preview-audio",
+    r = _post_members(client, root_key, "/captures/api/samples/preview-audio",
                       ["prevcap00001"])
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store"
 
 
 def test_preview_merge_audio_removes_its_temp_file(
-        client, make_user_key, monkeypatch):
+        client, root_key, monkeypatch):
     """The merged WAV is gone once the preview answer is sent."""
     from faster_whisper_backend.captures import merge as audio_merge
 
-    _uid, raw = make_user_key("root", is_admin=True)
     monkeypatch.setattr(
         captures_routes, "_validate_merge_payload",
         lambda ids, silence_ms, user: ([], "root", ["/nonexistent.wav"], 0))
@@ -568,7 +564,7 @@ def test_preview_merge_audio_removes_its_temp_file(
         return {"duration_ms": 1}
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
-    r = _post_members(client, raw, "/captures/api/samples/preview-audio",
+    r = _post_members(client, root_key, "/captures/api/samples/preview-audio",
                       ["prevcap00001"])
     assert r.status_code == 200
     assert len(written) == 1
@@ -1448,32 +1444,29 @@ def _mixed_pair(task_b=None, lang_b="de"):
     ("translate", "de", "members must all share one task"),
     (None, "en", "members must all share one language"),
 ])
-def test_merge_rejects_mixed_task_or_language(client, make_user_key,
+def test_merge_rejects_mixed_task_or_language(client, root_key,
                                               task_b, lang_b, detail):
     """Same partition as the proposer: a sample has ONE language and ONE task
     label, so a de+en (or transcribe+translate) merge would export
     wrong-language training data."""
-    _uid, raw = make_user_key("root", is_admin=True)
     ids = _mixed_pair(task_b, lang_b)
     for path in ("/captures/api/samples/merge-estimate", "/captures/api/samples"):
-        r = _post_members(client, raw, path, ids)
+        r = _post_members(client, root_key, path, ids)
         assert r.status_code == 400, (path, r.text)
         assert r.json()["detail"] == detail
 
 
-def test_merge_accepts_region_variants_of_one_language(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_merge_accepts_region_variants_of_one_language(client, root_key):
     ids = _mixed_pair(None, "de-CH")
-    r = _post_members(client, raw, "/captures/api/samples/merge-estimate", ids)
+    r = _post_members(client, root_key, "/captures/api/samples/merge-estimate", ids)
     assert r.status_code == 200, r.text
 
 
-def test_regenerate_of_a_sample_dissolved_mid_wait_is_404(client, make_user_key,
+def test_regenerate_of_a_sample_dissolved_mid_wait_is_404(client, root_key,
                                                           monkeypatch):
     """dissolve_sample holds the rebuild lock, so a regenerate that waited on
     it must re-read the row and 404 instead of rebuilding an orphan WAV and
     500ing in _enrich_sample."""
-    _uid, raw = make_user_key("root", is_admin=True)
     sid = "regendis0000001"
     _insert_sample(captures_store._require_conn(), gs, sid, locked=False)
     real_lock = capture_samples._rebuild_lock
@@ -1490,7 +1483,7 @@ def test_regenerate_of_a_sample_dissolved_mid_wait_is_404(client, make_user_key,
     built = []
     monkeypatch.setattr(capture_samples, "_build_merged_wav",
                         lambda **kw: built.append(kw) or (0, {}, {}))
-    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(raw))
+    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(root_key))
     assert r.status_code == 404, r.text
     assert built == []
 
@@ -1657,16 +1650,15 @@ def test_sample_and_by_request_routes_read_the_store_off_the_loop():
         assert _inline_calls(fn) == [], fn.__name__
 
 
-def test_patch_of_a_sample_dissolved_mid_apply_is_404(client, make_user_key,
+def test_patch_of_a_sample_dissolved_mid_apply_is_404(client, root_key,
                                                      monkeypatch):
     """A dissolve committed between the route's get_sample and _apply's
     update_sample leaves update_sample returning None — a 404, not a 500
     from _enrich_sample(None)."""
-    _uid, raw_key = make_user_key("root", is_admin=True)
     sid = "patchdis000001"
     _insert_sample(captures_store._require_conn(), gs, sid, locked=False)
     monkeypatch.setattr(gs, "update_sample", lambda s, patch: None)
-    r = _patch(client, raw_key, f"samples/{sid}", admin_notes="x")
+    r = _patch(client, root_key, f"samples/{sid}", admin_notes="x")
     assert r.status_code == 404, r.text
 
 
@@ -1731,11 +1723,10 @@ def test_a_group_holding_more_chips_than_one_member_may_saves(
 
 
 def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
-        client, make_user_key, monkeypatch):
+        client, root_key, monkeypatch):
     """Up to 30 update_capture calls must not run on the event loop, and a
     member that a concurrent create_sample grouped after the validation is
     left alone (its chips now belong to the sample)."""
-    _uid, raw_key = make_user_key("root", is_admin=True)
     ids = _mixed_pair(None, "de")
     real_light = captures_store.get_captures_light
 
@@ -1753,7 +1744,7 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
 
     monkeypatch.setattr(captures_store, "get_captures_light", _light)
     monkeypatch.setattr(captures_store, "update_capture", _spy)
-    r = _post_members(client, raw_key, "/captures/api/samples/preview-save-chips",
+    r = _post_members(client, root_key, "/captures/api/samples/preview-save-chips",
                       ids, corrections=[])
     assert r.status_code == 200, r.text
     assert seen == [(ids[0], False, True)]
@@ -1818,14 +1809,13 @@ def test_group_chip_save_stores_the_transcript_with_the_new_chips(
 
 
 def test_preview_save_chips_keeps_a_members_anchorless_chip(
-        client, make_user_key):
+        client, root_key):
     """Same REPLACE fan-out on a not-yet-merged proposal: the anchorless chip
     of an unmerged member survives a chip save."""
-    _uid, raw_key = make_user_key("root", is_admin=True)
     ids = _mixed_pair(None, "de")
     captures_store.update_capture(ids[0], {"corrections": [
         {"wrong": "foo", "correct": "bar"}]})
-    r = _post_members(client, raw_key, "/captures/api/samples/preview-save-chips",
+    r = _post_members(client, root_key, "/captures/api/samples/preview-save-chips",
                       ids, corrections=[])
     assert r.status_code == 200, r.text
     kept = captures_store.get_capture(ids[0])["corrections"]
@@ -1833,47 +1823,44 @@ def test_preview_save_chips_keeps_a_members_anchorless_chip(
     assert r.json()["saved"][ids[0]] == 1
 
 
-def test_patch_keeps_every_chip_the_schema_accepts(client, make_user_key):
+def test_patch_keeps_every_chip_the_schema_accepts(client, root_key):
     """The store keeps every chip the schema accepts (200): a lower store
     cap would toast "Saved." and lose the extra chips on reload."""
-    _uid, raw = make_user_key("root", is_admin=True)
     _insert_member(captures_store._require_conn(), "chipcap00001", None)
     chips = [{"wrong": "w", "correct": f"c{i}", "idx": i} for i in range(51)]
-    r = _patch(client, raw, "chipcap00001", corrections=chips)
+    r = _patch(client, root_key, "chipcap00001", corrections=chips)
     assert r.status_code == 200, r.text
     assert len(r.json()["capture"]["corrections"]) == 51
     assert len(captures_store.get_capture("chipcap00001")["corrections"]) == 51
 
 
 @pytest.mark.parametrize("field", ["wrong", "correct"])
-def test_patch_refuses_chip_text_past_the_stored_cap(client, make_user_key, field):
+def test_patch_refuses_chip_text_past_the_stored_cap(client, root_key, field):
     """The store keeps CAP_CORRECTION_FIELD chars of a chip's `wrong` and
     `correct`, so a longer one is a 422: saving it cut behind a 200 made the
     export rewrite only part of the span."""
-    _uid, raw = make_user_key("root", is_admin=True)
     _insert_member(captures_store._require_conn(), "chipcap00003", None)
     cap = text_corrections.CAP_CORRECTION_FIELD
     chip = {"wrong": "w", "correct": "c", "idx": 0}
-    r = _patch(client, raw, "chipcap00003",
+    r = _patch(client, root_key, "chipcap00003",
                corrections=[dict(chip, **{field: "x" * (cap + 1)})])
     assert r.status_code == 422
     assert captures_store.get_capture("chipcap00003")["corrections"] == []
-    r = _patch(client, raw, "chipcap00003",
+    r = _patch(client, root_key, "chipcap00003",
                corrections=[dict(chip, **{field: "x" * cap})])
     assert r.status_code == 200, r.text
     assert captures_store.get_capture("chipcap00003")["corrections"][0][field] == "x" * cap
 
 
 def test_patch_refuses_a_merge_that_grows_past_the_chip_cap(
-        client, make_user_key):
+        client, root_key):
     """A three-way merge can add the user's chips on top of a full stored
     list; that is a 422 naming the limit, not a silently shortened save."""
-    _uid, raw = make_user_key("root", is_admin=True)
     _insert_member(captures_store._require_conn(), "chipcap00002", None)
     cap = text_corrections.CAP_CORRECTIONS
     full = [{"wrong": "w", "correct": f"c{i}", "idx": i} for i in range(cap)]
     captures_store.update_capture("chipcap00002", {"corrections": full})
-    r = _patch(client, raw, "chipcap00002",
+    r = _patch(client, root_key, "chipcap00002",
                corrections=[{"wrong": "w", "correct": "x", "idx": cap + 5}],
                baseline_corrections=[])
     assert r.status_code == 422
@@ -1890,19 +1877,18 @@ def _two_member_sample(gs, sid):
         _insert_member(conn, cid, sid, sample_order=i)
 
 
-def test_regenerate_adopts_the_global_join_strategy(client, make_user_key,
+def test_regenerate_adopts_the_global_join_strategy(client, root_key,
                                                     monkeypatch):
     """The join strategy is a global setting that "applies to every new or
     regenerated sample": regenerate must restamp it (and the stored
     transcript), or every read and the export keep the old separator."""
-    _uid, raw = make_user_key("root", is_admin=True)
     sid = "regenjoin00000"
     _two_member_sample(gs, sid)
     monkeypatch.setattr(cfg, "CAPTURES_SAMPLE_JOIN_STRATEGY", "period_space",
                         raising=False)
     monkeypatch.setattr(capture_samples, "_build_merged_wav",
                         lambda **kw: (1000, {}, {}))
-    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(raw))
+    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(root_key))
     assert r.status_code == 200, r.text
     assert r.json()["sample"]["transcript"] == "r. r"  # read path: refreshed
     row = gs.get_sample(sid)

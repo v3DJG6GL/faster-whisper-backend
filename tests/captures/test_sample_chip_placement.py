@@ -35,12 +35,11 @@ def aligned(monkeypatch):
 
 
 @pytest.fixture
-def sample(client, make_user_key, aligned):
+def sample(client, root_key, aligned):
     """An unlocked one-member sample; returns the admin's bearer key."""
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store
 
-    _uid, raw = make_user_key("root", is_admin=True)
     conn = captures_store._require_conn()
     _insert_sample(conn, gs, _SID, locked=False)
     _insert_member(conn, _CID, _SID, audio_relpath="x.wav",
@@ -48,7 +47,7 @@ def sample(client, make_user_key, aligned):
                    text_for_training="die Katze die",
                    words=json.dumps(_RAW_WORDS),
                    corrections=json.dumps([_CHIP]))
-    return raw
+    return root_key
 
 
 def test_expanded_sample_places_a_chip_on_its_aligned_word(
@@ -78,8 +77,7 @@ def _merge_member():
 
 
 def test_merge_preview_places_a_chip_on_its_aligned_word(
-        client, make_user_key, aligned, monkeypatch):
-    _uid, raw = make_user_key("root", is_admin=True)
+        client, root_key, aligned, monkeypatch):
     monkeypatch.setattr(captures_routes, "_validate_merge_payload",
                         lambda ids, silence_ms, user: (
                             [_merge_member()], "alice", ["x.wav"], 1000))
@@ -87,16 +85,15 @@ def test_merge_preview_places_a_chip_on_its_aligned_word(
                         lambda *a, **kw: [])
     monkeypatch.setattr(captures_routes, "_preview_member_trims",
                         lambda ids, paths: {})
-    r = _post_members(client, raw, "/captures/api/samples/preview-words", [_CID])
+    r = _post_members(client, root_key, "/captures/api/samples/preview-words", [_CID])
     assert r.status_code == 200, r.text
     assert r.json()["transcript"] == _EXPECTED
 
 
 def test_merge_stores_the_transcript_with_the_chip_on_its_aligned_word(
-        client, make_user_key, aligned, monkeypatch):
+        client, root_key, aligned, monkeypatch):
     from faster_whisper_backend.captures import samples as capture_samples
 
-    _uid, raw = make_user_key("root", is_admin=True)
     monkeypatch.setattr(captures_routes, "_validate_merge_payload",
                         lambda ids, silence_ms, user: (
                             [_merge_member()], "alice", ["x.wav"], 1000))
@@ -105,6 +102,6 @@ def test_merge_stores_the_transcript_with_the_chip_on_its_aligned_word(
     inserted = []
     monkeypatch.setattr(captures_routes, "_insert_sample_with_sid",
                         lambda **kw: inserted.append(kw))
-    r = _post_members(client, raw, "/captures/api/samples", [_CID])
+    r = _post_members(client, root_key, "/captures/api/samples", [_CID])
     assert r.status_code == 200, r.text
     assert [kw["transcript"] for kw in inserted] == [_EXPECTED]
