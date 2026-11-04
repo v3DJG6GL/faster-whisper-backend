@@ -17,6 +17,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose as _post
+from tests.runtime.test_routes_preload import _enable as _routes_enable
 
 
 def _stub_diarize(app_module, monkeypatch, **cfg):
@@ -356,22 +357,13 @@ def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
     """Register a plan bound to `pid` with the enqueue path stubbed, so the
     test observes exactly what the cursor decided to warm."""
     from faster_whisper_backend.runtime import preload
-    from faster_whisper_backend.runtime import model_sizes
     # REGISTRATION must admit nothing, so what the CURSOR enqueues next is
     # unambiguous: on_stage_start does not consult the ladder (the worker
     # re-admits at dequeue), which is the split under test.
-    # Stub a definite "no room", not size_unknown: the ladder TRIES on
-    # size_unknown, so registration would enqueue everything and leave the
-    # cursor with nothing to assert on.
-    monkeypatch.setattr(model_sizes, "fits",
-                        lambda *a, **k: (False, "insufficient_vram"))
-    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
-    for k, v in (("MODEL_PRELOAD_ENABLED", True),
-                 ("MODEL_PRELOAD_WARM_TTL_S", 180),
-                 ("DIARIZATION_ENABLED", True),
-                 ("BGM_SEPARATION_ENABLED", True),
-                 ("TRANSLATION_ENABLED", True)):
-        monkeypatch.setattr(app_module.cfg, k, v, raising=False)
+    # _routes_enable stubs a definite "no room", not size_unknown: the
+    # ladder TRIES on size_unknown, so registration would enqueue everything
+    # and leave the cursor with nothing to assert on.
+    _routes_enable(app_module, monkeypatch)
 
     enqueued = []
     monkeypatch.setattr(preload, "_enqueue_threadsafe", enqueued.append)

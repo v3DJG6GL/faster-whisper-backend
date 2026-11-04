@@ -15,6 +15,7 @@ from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.translation import engine as translation
 
 from tests.conftest import bearer
+from tests.runtime.test_preload_registry import _no_room
 from faster_whisper_backend.transcription import models as tx_models
 
 _URL = "/v1/models/preload"
@@ -35,10 +36,8 @@ def _enable(app_module, monkeypatch, **over):
     # No room and no evictable peer → every admitted entry defers, which
     # keeps these tests off the REAL loaders (pyannote / UVR / a hub whisper
     # fetch) unless they opt in. size_unknown would not: with nothing to
-    # evict, admission tries the load. Same stubs as test_stage_models.
-    monkeypatch.setattr(model_sizes, "fits",
-                        lambda *a, **k: (False, "insufficient_vram"))
-    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
+    # evict, admission tries the load. test_stage_models reuses this.
+    _no_room(monkeypatch)
     return cfg
 
 

@@ -28,6 +28,12 @@ def _fits(monkeypatch, verdict=(True, None)):
                         lambda *a, **k: verdict, raising=True)
 
 
+def _no_room(monkeypatch):
+    """No room and no evictable peer: every admitted entry defers."""
+    _fits(monkeypatch, (False, "insufficient_vram"))
+    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
+
+
 def _fits_raises(monkeypatch):
     """Make model_sizes.fits raise, so register_plan's failure wrapper runs."""
     def _boom(*a, **k):
@@ -640,8 +646,7 @@ def test_a_client_driven_plan_with_a_deferral_opens_no_live_row(monkeypatch):
     entry can never be retried — the /stats row must not stay up (for the
     TTL, or forever under a re-POSTing dictation client)."""
     _enable(monkeypatch)
-    _fits(monkeypatch, (False, "insufficient_vram"))
-    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
+    _no_room(monkeypatch)
     out = preload.register_plan("u5", [("diarization", "p/x")],
                                 plan_id="5" * 8, stage_ahead=False)
     assert out["models"][0]["reason"] == "insufficient_vram"
@@ -654,8 +659,7 @@ def test_a_job_plan_row_ends_once_the_cursor_passes_a_deferred_entry(
     """The job loads an entry at or behind the cursor in-band; preload
     never retries it, so it must not hold the row open."""
     _enable(monkeypatch)
-    _fits(monkeypatch, (False, "insufficient_vram"))
-    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
+    _no_room(monkeypatch)
     preload.register_plan("u6", [("diarization", "p/x")], plan_id="6" * 8)
     plan = preload._plans["6" * 8]
     assert plan.job_id is not None            # still retriable ahead
