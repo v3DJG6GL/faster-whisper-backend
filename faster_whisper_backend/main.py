@@ -2910,11 +2910,8 @@ async def transcribe(
                                     cancel_check=lambda:
                                         tx_progress._cancel_requested(_pid),
                                     download_cb=lambda done, total:
-                                        _ps(
-                                            stage="downloading",
-                                            progress=((done / total)
-                                                      if total else None),
-                                            total_bytes=total or None),
+                                        _ps(stage="downloading",
+                                            **jobs.download_fields(done, total)),
                                 )
                             # The inference semaphore is held ONLY for GPU
                             # translation: a llama.cpp CPU run can take

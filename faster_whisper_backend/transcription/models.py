@@ -1264,10 +1264,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                     _dl_job = jobs.job_start("download", model=_dl_label)
 
                     def _dl_hook(done, total):
-                        jobs.job_update(
-                            _dl_job,
-                            progress=(done / total) if total else None,
-                            total_bytes=total or None)
+                        jobs.job_update(_dl_job, **jobs.download_fields(done, total))
 
                     def _fetch():
                         # The capture scope lives on the download's own

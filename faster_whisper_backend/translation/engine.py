@@ -729,9 +729,7 @@ def _predownload_gguf(repo: str, quant: "str | None",
     job_id = jobs.job_start("download", model=label, detail=matches[0])
 
     def _hook(done: int, total: int) -> None:
-        jobs.job_update(job_id,
-                        progress=(done / total) if total else None,
-                        total_bytes=total or None)
+        jobs.job_update(job_id, **jobs.download_fields(done, total))
         if download_cb is not None:
             try:
                 download_cb(done, total)

@@ -377,13 +377,10 @@ async def translate_text(request: Request,
             _tick_plan(**fields)
 
         def _on_download(done, total):
-            frac = (done / total) if total else None
-            jobs.job_update(request_id, stage="downloading", progress=frac,
-                            total_bytes=total or None)
-            tx_progress._progress_set(_pid, stage="downloading", progress=frac,
-                          total_bytes=total or None)
-            _tick_plan(stage="downloading", progress=frac,
-                       total_bytes=total or None)
+            fields = {"stage": "downloading", **jobs.download_fields(done, total)}
+            jobs.job_update(request_id, **fields)
+            tx_progress._progress_set(_pid, **fields)
+            _tick_plan(**fields)
 
         def _tick_plan(*, stage, progress=None, step=None, target=None,
                        target_progress=None, total_bytes=None, **_):

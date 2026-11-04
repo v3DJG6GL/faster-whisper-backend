@@ -48,7 +48,7 @@ from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
-from faster_whisper_backend.core import web_common
+from faster_whisper_backend.core import jobs, web_common
 from faster_whisper_backend.pipeline import dictation_map
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.pipeline import engine as pl_engine
@@ -1563,9 +1563,7 @@ async def translation_test(
                                           target_progress=target_progress),
             download_cb=lambda done, total:
                 tx_progress._progress_set(
-                    _pid, stage="downloading",
-                    progress=(done / total) if total else None,
-                    total_bytes=total or None))
+                    _pid, stage="downloading", **jobs.download_fields(done, total)))
     except translation.TranslationError as e:
         # str(e) is client-safe by the module's failure contract.
         return _bad_request(str(e))

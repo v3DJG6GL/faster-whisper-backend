@@ -117,6 +117,13 @@ def job_update(job_id: "str | None", **fields: Any) -> None:
                 entry[k] = v
 
 
+def download_fields(done: int, total: int) -> dict:
+    """A download tick's progress fields: fraction and byte total, both None
+    while the total is unknown."""
+    return {"progress": (done / total) if total else None,
+            "total_bytes": total or None}
+
+
 def job_end(job_id: "str | None") -> None:
     """Drop the job entry. Idempotent."""
     if not job_id:
