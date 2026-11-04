@@ -12,6 +12,7 @@ import copy
 
 from faster_whisper_backend.quick_config import routes as quick_config_routes
 from tests.conftest import bearer, schema_map_cap
+from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
@@ -88,8 +89,7 @@ def test_v1_patch_empty_is_noop(client):
 def test_v1_patch_valid_field_saves(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
     r = _patch_rules(client, {slug: {"enabled": False}})
-    assert r.status_code == 200
-    assert slug in r.json()["saved"]
+    assert_saved(r, slug)
 
 
 def test_v1_patch_unknown_slug_400(client):
@@ -137,8 +137,7 @@ def test_v1_patch_fingerprint_conflict_then_match(client, app_module):
         "rules_patch": {slug: {"enabled": False}},
         "fingerprints": {slug: fp},
     })
-    assert ok.status_code == 200
-    assert slug in ok.json()["saved"]
+    assert_saved(ok, slug)
 
 
 def _alice_alpha_key(make_user_key):
@@ -193,8 +192,7 @@ def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
     alpha, _beta, _untagged = _expose_tagged(app_module)
     raw = _alice_alpha_key(make_user_key)
     r = _patch_rules(client, {alpha: {"enabled": False}}, headers=bearer(raw))
-    assert r.status_code == 200
-    assert alpha in r.json()["saved"]
+    assert_saved(r, alpha)
 
 
 def test_v1_requires_quick_config_page(client, make_user_key):
@@ -233,5 +231,4 @@ def test_v1_nonadmin_can_edit_exposed_regex_entries(client, app_module, make_use
     _uid, alice = make_user_key("alice", pages={"quick_config": "own"})
     r = _patch_rules(client, {slug: {"entries": [
         {"pattern": "behaviour", "replacement": "behavior"}]}}, headers=bearer(alice))
-    assert r.status_code == 200
-    assert slug in r.json()["saved"]
+    assert_saved(r, slug)

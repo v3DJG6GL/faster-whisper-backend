@@ -18,3 +18,9 @@ def expose_first(app_module, rule_type, **extra):
     app_module.cfg.PIPELINE_RULES = rules
     assert slug is not None, f"fixture config has no {rule_type} rule"
     return slug
+
+
+def assert_saved(r, slug):
+    """A rules patch that answered 200 and saved `slug`."""
+    assert r.status_code == 200, r.text
+    assert slug in r.json()["saved"], r.text

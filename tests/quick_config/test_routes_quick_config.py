@@ -8,6 +8,7 @@ import pytest
 from faster_whisper_backend.quick_config import routes as qc
 from tests._page_helpers import js_upto
 from tests.conftest import bearer, fake_request, schema_map_cap
+from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
@@ -86,8 +87,7 @@ def test_post_patch_unknown_top_level_field_422(client):
 def test_post_patch_valid_field_saves(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
     r = _post_patch(client, {slug: {"enabled": False}})
-    assert r.status_code == 200
-    assert slug in r.json()["saved"]
+    assert_saved(r, slug)
 
 
 def test_post_patch_succeeds_despite_guard_failing_untouched_rule(
@@ -107,8 +107,7 @@ def test_post_patch_succeeds_despite_guard_failing_untouched_rule(
                      "entries": [{"pattern": "(n|d|nd)+#", "replacement": "X"}]})
     app_module.cfg.PIPELINE_RULES = rules
     r = _post_patch(client, {slug: {"enabled": False}})
-    assert r.status_code == 200, r.text
-    assert slug in r.json()["saved"]
+    assert_saved(r, slug)
 
 
 def test_post_patch_own_guard_failing_pattern_still_422(client, app_module):
@@ -132,8 +131,7 @@ def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module)
     rule["entries"] = [{"pattern": "(n|d|nd)+#", "replacement": "X"}]
     app_module.cfg.PIPELINE_RULES = rules
     r = _post_patch(client, {slug: {"enabled": False}})
-    assert r.status_code == 200, r.text
-    assert slug in r.json()["saved"]
+    assert_saved(r, slug)
     stored = next(x for x in app_module.cfg.PIPELINE_RULES
                   if isinstance(x, dict) and x.get("name") == slug)
     assert stored.get("enabled") is False
@@ -316,8 +314,7 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
         _uid2, user_raw = make_user_key("alice", pages={"quick_config": "own"})
 
         r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(user_raw))
-        assert r.status_code == 200, r.text
-        assert slug in r.json()["saved"]
+        assert_saved(r, slug)
         assert r.json()["captures_count"] == 0
         assert calls == []
 
