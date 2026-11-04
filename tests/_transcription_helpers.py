@@ -1,6 +1,6 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
 (the stub upload, a plain / verbose_json post, a profile-bound non-admin key,
-the record_transcription spy, a fixed model loader, a constant-tone WAV, the
+the record_transcription spy, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a gated model_registry write).
 Import as ``from tests._transcription_helpers import ...``."""
 
@@ -60,6 +60,13 @@ def serve_model(monkeypatch, model):
     """Every model load returns `model`."""
     async def _loader(name, *, lease=False):
         return model
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+
+
+def fail_model_load(monkeypatch, exc):
+    """Every model load raises `exc`."""
+    async def _loader(name, *, lease=False):
+        raise exc
     monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
 
 

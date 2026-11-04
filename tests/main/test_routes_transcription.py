@@ -13,8 +13,8 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import (
-    WAV_UPLOAD as _FILE, post_transcription as _post, post_verbose, record_runs,
-    serve_model)
+    WAV_UPLOAD as _FILE, fail_model_load, post_transcription as _post, post_verbose,
+    record_runs, serve_model)
 
 
 def test_default_json_returns_text_object(client):
@@ -415,9 +415,7 @@ def test_progress_entry_is_closed_when_the_model_load_fails(
         client, app_module, monkeypatch):
     from fastapi import HTTPException
 
-    async def _refuse(*a, **k):
-        raise HTTPException(status_code=400, detail="model not allowed")
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _refuse)
+    fail_model_load(monkeypatch, HTTPException(status_code=400, detail="model not allowed"))
     pid = "f" * 32
     r = _post(client, response_format="json", progress_id=pid)
     assert r.status_code == 400
@@ -598,10 +596,7 @@ def test_curated_4xx_is_rejected_not_a_server_failure(client, app_module, monkey
     server failure class."""
     from fastapi import HTTPException
 
-    async def _loader(name, *, lease=False):
-        raise HTTPException(status_code=400, detail="model not allowed")
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    fail_model_load(monkeypatch, HTTPException(status_code=400, detail="model not allowed"))
     assert _post(client, response_format="json").status_code == 400
     row = _ledger_row()
     assert row["status"] == "error" and row["error_class"] == "rejected"
