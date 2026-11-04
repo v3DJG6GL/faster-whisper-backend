@@ -13,8 +13,8 @@ from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import (
-    WAV_UPLOAD as _FILE, fail_model_load, post_transcription as _post, post_verbose,
-    record_runs, serve_model, watch_progress)
+    WAV_UPLOAD as _FILE, fail_model_load, get_progress, post_transcription as _post,
+    post_verbose, record_runs, serve_model, watch_progress)
 
 
 def test_default_json_returns_text_object(client):
@@ -288,7 +288,7 @@ def test_task_config_default_applies_when_field_absent(client, app_module, fake_
 
 
 def test_progress_endpoint_unknown_id(client):
-    r = client.get("/v1/audio/transcriptions/progress/" + "a" * 32)
+    r = get_progress(client, "a" * 32)
     assert r.status_code == 200
     assert r.json() == {"stage": "unknown"}
 
@@ -301,7 +301,7 @@ def test_progress_endpoint_malformed_id_422(client):
 def test_progress_live_entry_and_cleanup(client, app_module):
     pid = "b" * 32
     tx_progress._progress_set(pid, stage="transcribing", progress=0.5, duration=60.0)
-    r = client.get(f"/v1/audio/transcriptions/progress/{pid}")
+    r = get_progress(client, pid)
     assert r.status_code == 200
     body = r.json()
     assert body["stage"] == "transcribing"
@@ -312,8 +312,7 @@ def test_progress_live_entry_and_cleanup(client, app_module):
     tx_progress._BATCH_PROGRESS.pop(pid, None)
     r = _post(client, response_format="verbose_json", progress_id=pid)
     assert r.status_code == 200
-    assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
-        "stage": "unknown"}
+    assert get_progress(client, pid).json() == {"stage": "unknown"}
 
 
 def test_progress_updates_during_decode(client, app_module, fake_model):
@@ -408,8 +407,7 @@ def test_progress_entry_is_closed_on_a_413_before_the_decode(
     assert r.status_code == 413
     assert pid not in tx_progress._BATCH_PROGRESS
     assert pid not in tx_progress._PROGRESS_OWNER
-    assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
-        "stage": "unknown"}
+    assert get_progress(client, pid).json() == {"stage": "unknown"}
 
 
 def test_progress_entry_is_closed_when_the_model_load_fails(
@@ -421,8 +419,7 @@ def test_progress_entry_is_closed_when_the_model_load_fails(
     r = _post(client, response_format="json", progress_id=pid)
     assert r.status_code == 400
     assert pid not in tx_progress._BATCH_PROGRESS
-    assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
-        "stage": "unknown"}
+    assert get_progress(client, pid).json() == {"stage": "unknown"}
 
 
 def test_verbose_json_reports_duration_after_vad(client, fake_model):
@@ -593,7 +590,7 @@ def test_progress_carries_plan_overall_and_eta(client, app_module):
     tx_progress._RUN_PLAN_BY_PID[pid] = plan
     try:
         tx_progress._progress_set(pid, stage="transcribing", progress=0.5)
-        body = client.get(f"/v1/audio/transcriptions/progress/{pid}").json()
+        body = get_progress(client, pid).json()
     finally:
         tx_progress._RUN_PLAN_BY_PID.pop(pid, None)
         tx_progress._BATCH_PROGRESS.pop(pid, None)
@@ -605,7 +602,7 @@ def test_progress_carries_plan_overall_and_eta(client, app_module):
     pid2 = "f" * 32
     tx_progress._progress_set(pid2, stage="translating", progress=0.1)
     try:
-        body = client.get(f"/v1/audio/transcriptions/progress/{pid2}").json()
+        body = get_progress(client, pid2).json()
     finally:
         tx_progress._BATCH_PROGRESS.pop(pid2, None)
     assert body["plan"] is None and body["overall"] is None

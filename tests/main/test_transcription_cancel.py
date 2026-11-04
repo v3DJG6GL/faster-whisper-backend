@@ -6,7 +6,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._transcription_helpers import post_verbose as _post, record_runs
+from tests._transcription_helpers import get_progress, post_cancel, post_verbose as _post, record_runs
 from tests._translation_helpers import enable_translation
 from tests.main._stage_helpers import must_not_run
 
@@ -18,7 +18,7 @@ def test_cancel_malformed_id_is_422(client):
 
 
 def test_cancel_unknown_id_is_a_noop(client, app_module):
-    r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}")
+    r = post_cancel(client, _PID)
     assert r.status_code == 200
     assert r.json() == {"cancelled": False}
     assert _PID not in tx_progress._BATCH_CANCELLED
@@ -26,7 +26,7 @@ def test_cancel_unknown_id_is_a_noop(client, app_module):
 
 def test_cancel_flags_an_in_flight_id(client, app_module):
     tx_progress._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "updated": 0}
-    r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}")
+    r = post_cancel(client, _PID)
     assert r.status_code == 200
     assert r.json() == {"cancelled": True}
     assert _PID in tx_progress._BATCH_CANCELLED
@@ -84,10 +84,8 @@ def test_validation_reject_leaves_no_progress_entry(client, app_module):
     r = _post(client, task="nope", progress_id=_PID)
     assert r.status_code == 422
     assert _PID not in tx_progress._BATCH_PROGRESS
-    assert client.get(
-        f"/v1/audio/transcriptions/progress/{_PID}").json() == {
-            "stage": "unknown"}
-    r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}")
+    assert get_progress(client, _PID).json() == {"stage": "unknown"}
+    r = post_cancel(client, _PID)
     assert r.json() == {"cancelled": False}
     assert _PID not in tx_progress._BATCH_CANCELLED
 
@@ -101,25 +99,20 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
     tx_progress._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": uid_alice, "updated": 0}
     # Another user's id reads exactly like a miss — no existence oracle.
-    r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
-                   headers=bearer(raw_bob))
+    r = get_progress(client, _PID, bearer(raw_bob))
     assert r.json() == {"stage": "unknown"}
-    r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}",
-                    headers=bearer(raw_bob))
+    r = post_cancel(client, _PID, bearer(raw_bob))
     assert r.json() == {"cancelled": False}
     assert _PID not in tx_progress._BATCH_CANCELLED
-    r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
-                   headers=bearer(raw_alice))
+    r = get_progress(client, _PID, bearer(raw_alice))
     assert r.json()["stage"] == "transcribing"
-    r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}",
-                    headers=bearer(raw_alice))
+    r = post_cancel(client, _PID, bearer(raw_alice))
     assert r.json() == {"cancelled": True}
     assert _PID in tx_progress._BATCH_CANCELLED
     # Cleared, so the admin step below proves the admin path on its own.
     tx_progress._BATCH_CANCELLED.discard(_PID)
     # An admin may cancel anyone's run (the /stats activity popover).
-    r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}",
-                    headers=bearer(raw_admin))
+    r = post_cancel(client, _PID, bearer(raw_admin))
     assert r.json() == {"cancelled": True}
     assert _PID in tx_progress._BATCH_CANCELLED
 
@@ -256,8 +249,7 @@ def test_recreated_progress_entry_keeps_its_owner(client, app_module,
     tx_progress._BATCH_PROGRESS.pop(_PID)
     tx_progress._progress_set(_PID, progress=0.5, last_text="x")
     assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == uid_alice
-    r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
-                   headers=bearer(raw_bob))
+    r = get_progress(client, _PID, bearer(raw_bob))
     assert r.json() == {"stage": "unknown"}
 
 

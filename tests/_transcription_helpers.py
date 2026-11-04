@@ -1,6 +1,6 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
-(the stub upload, a plain / verbose_json post, a 200-checked body fetch, a profile-bound non-admin key,
-the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
+(the stub upload, a plain / verbose_json post, a 200-checked body fetch, the progress GET and cancel
+POST, a profile-bound non-admin key, the record_transcription and _progress_set spies, a fixed / failing model loader, a constant-tone WAV, the
 receipt's guard line, a _load_blocking recorder, a gated model_registry write, a cancel while that
 write is held or queued, its post-condition).
 Import as ``from tests._transcription_helpers import ...``."""
@@ -34,6 +34,14 @@ def post_verbose_ok(client, headers=None, **data):
     r = post_verbose(client, headers, **data)
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def get_progress(client, pid, headers=None):
+    return client.get(f"/v1/audio/transcriptions/progress/{pid}", headers=headers)
+
+
+def post_cancel(client, pid, headers=None):
+    return client.post(f"/v1/audio/transcriptions/cancel/{pid}", headers=headers)
 
 
 def bind_profile(client, make_user_key, name, fields, user="alice"):
