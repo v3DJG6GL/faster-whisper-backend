@@ -452,7 +452,7 @@ def _free_locked(model: str) -> None:
     removed it from the cache."""
     # A same-model RELOAD can have happened (or be in flight) while an orphan
     # was still draining; the stats entry then describes the live separator.
-    if not (_separator_key and _separator_key[0] == model):
+    if not is_resident(model):
         if _loading_key and _loading_key[0] == model:
             _deferred_free.add(model)
         else:
@@ -532,7 +532,7 @@ def _release_locked(model: str, sep) -> None:
             _free_locked(model)
         return
     release_count(_leases, model)
-    if _separator is not None and _separator_key and _separator_key[0] == model:
+    if _separator is not None and is_resident(model):
         # Restart the idle clock: a long separation must not be evicted the
         # instant it ends because the LOAD timestamp aged past the timeout.
         _last_used_monotonic = time.monotonic()
@@ -669,7 +669,7 @@ def _redo_deferred_frees() -> None:
     not be redone by a re-register, so do it here. Caller holds _lock."""
     global _session_device
     for m in _deferred_free:
-        if not (_separator_key and _separator_key[0] == m) and not _orphans.get(m):
+        if not is_resident(m) and not _orphans.get(m):
             model_registry.unregister_loaded_model(_STATS_PREFIX + m)
     if _deferred_free and _separator is None:
         _session_device = None

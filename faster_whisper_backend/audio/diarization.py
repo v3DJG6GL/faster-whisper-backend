@@ -230,7 +230,7 @@ def _free_locked(model_id: str) -> None:
     removed the pipeline from the cache."""
     # A same-id RELOAD can have happened while an orphan was still draining;
     # the stats entry then describes the live pipeline, not the dying one.
-    if not (_pipeline_key and _pipeline_key[0] == model_id):
+    if not is_resident(model_id):
         model_registry.unregister_loaded_model(_STATS_PREFIX + model_id)
     device_memory.reclaim_after_unload()
     logger.info("[diarize] pipeline %s unloaded", model_id)
@@ -302,7 +302,7 @@ def _release_locked(model_id: str, pipe=None) -> None:
             _free_locked(model_id)
         return
     release_count(_leases, model_id)
-    if _pipeline is not None and _pipeline_key and _pipeline_key[0] == model_id:
+    if _pipeline is not None and is_resident(model_id):
         # Restart the idle clock: a long job must not be evicted the instant
         # it ends because the LOAD timestamp aged past the timeout.
         _last_used_monotonic = time.monotonic()
