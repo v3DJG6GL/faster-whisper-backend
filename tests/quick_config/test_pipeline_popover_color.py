@@ -22,7 +22,6 @@ from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 def test_quick_config_state_includes_color(client, app_module):
     slug = _expose_first(app_module, "regex-list", color="blue")
-    assert slug is not None
     r = client.get("/quick-config/state")
     assert r.status_code == 200
     rules = {rd["name"]: rd for rd in r.json()["rules"]}

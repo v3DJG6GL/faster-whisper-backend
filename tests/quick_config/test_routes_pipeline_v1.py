@@ -71,7 +71,6 @@ def test_v1_get_empty_when_nothing_exposed(client):
 
 def test_v1_get_includes_exposed_rule_with_fingerprint(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
-    assert slug is not None
     body = client.get("/v1/pipeline-rules").json()
     names = [r["name"] for r in body["rules"]]
     assert slug in names

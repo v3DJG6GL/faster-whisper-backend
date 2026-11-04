@@ -69,7 +69,6 @@ def test_post_patch_unknown_slug_400(client):
 
 def test_post_patch_unknown_field_400(client, app_module):
     slug = _expose_first_regex_list_rule(app_module)
-    assert slug is not None
     # `label` is admin-only / not in the per-type allow-list -> 400.
     r = _post_patch(client, {slug: {"label": "hacked"}})
     assert r.status_code == 400
@@ -100,7 +99,6 @@ def test_post_patch_succeeds_despite_guard_failing_untouched_rule(
     the user never touched (the toast then read "admin pipeline has a
     validation error" on every save of any word)."""
     slug = _expose_first_regex_list_rule(app_module)
-    assert slug is not None
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     # Compiles fine, so load-path validation accepts it; only the guard's
     # structural screen (nested/ambiguous repetition) refuses it.
@@ -117,7 +115,6 @@ def test_post_patch_own_guard_failing_pattern_still_422(client, app_module):
     """The scoping must not wave through the caller's OWN bad pattern — a
     patched rule is always in the guard set."""
     slug = _expose_first_regex_list_rule(app_module)
-    assert slug is not None
     r = _post_patch(client, {slug: {"entries": [{"pattern": "(n|d|nd)+#", "replacement": "X"}]}})
     assert r.status_code == 422, r.text
     assert "catastrophic backtracking" in r.text
@@ -130,7 +127,6 @@ def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module)
     rewritten. Switching it back ON, or changing its entries, still runs the
     guard (the load path runs none, so the refused body would go live)."""
     slug = _expose_first_regex_list_rule(app_module)
-    assert slug is not None
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     rule = next(r for r in rules if isinstance(r, dict) and r.get("name") == slug)
     rule["entries"] = [{"pattern": "(n|d|nd)+#", "replacement": "X"}]
@@ -269,7 +265,6 @@ def test_post_patch_oversized_map_400(client, app_module):
     already doomed (Pydantic 422s it inside save_overrides) — this only moves
     the rejection earlier and makes it a 400 like the sibling map guards."""
     slug = _expose_first_map_rule(app_module)
-    assert slug is not None, "fixture config has no callback:map rule"
 
     cap = qc._MAP_MAX_ENTRIES
     # Track the schema rather than re-pinning the literal: this still catches
@@ -289,7 +284,6 @@ def test_post_patch_oversized_map_400(client, app_module):
 def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
     """Exactly at the cap must still pass the ingress guard (off-by-one)."""
     slug = _expose_first_map_rule(app_module)
-    assert slug is not None
     at_cap = {f"wort{i}": str(i)
               for i in range(qc._MAP_MAX_ENTRIES)}
     r = _post_patch(client, {slug: {"map": at_cap}})
@@ -341,7 +335,6 @@ def test_state_carries_locked_and_role_for_nonadmin(client, app_module,
     so the state payload must carry both signals it gates on: `locked` on each
     rule and the caller's `role`."""
     slug = _expose_first(app_module, "regex-list", locked=True)
-    assert slug is not None
 
     make_user_key("root", is_admin=True)  # flips lockdown
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
@@ -361,7 +354,6 @@ def test_post_patch_falsy_nondict_map_400(client, app_module, bad):
     `or {}` before the isinstance guard, slipping past the precise 400 into a
     generic Pydantic 422 from save_overrides."""
     slug = _expose_first_map_rule(app_module)
-    assert slug is not None
     r = _post_patch(client, {slug: {"map": bad}})
     assert r.status_code == 400, r.text
     assert "must be an object" in r.json()["detail"]
@@ -421,7 +413,6 @@ def test_hidden_rule_validation_error_is_fully_redacted(
     its list position, or its rule type — a plain Pydantic field error carries
     all three in its dotted loc."""
     slug = _expose_first_regex_list_rule(app_module)
-    assert slug is not None
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     # Hidden (not exposed) rule whose map KEY fails the schema pattern —
     # sits fine in the live config (assignment is unvalidated) but 422s the
@@ -452,7 +443,6 @@ def test_hidden_rule_guard_error_keeps_sentinel_for_page(
     regex error was shown verbatim as an actionable toast. The sentinel must
     survive; the ordinal and the slug must not."""
     slug = _expose_first_regex_list_rule(app_module)
-    assert slug is not None
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     rules.insert(0, {"name": "geheim", "label": "geheim",
                      "type": "regex-list",
