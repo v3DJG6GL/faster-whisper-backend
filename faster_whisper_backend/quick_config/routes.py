@@ -225,6 +225,7 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
 # is the actionable part of a guard error and names nothing but the failure.
 _HIDDEN_GUARD_REASON = re.compile(
     r"<hidden rule>: (?:invalid regex|regex test failed|regex took)\b")
+_HIDDEN_ERROR = {"loc": "<hidden rule>", "msg": "<hidden rule>"}
 
 
 def _redact_invisible_slugs(
@@ -275,8 +276,7 @@ def _redact_invisible_slugs(
             # The whole error is about a rule this user may not see — blank
             # both fields so the page's '<hidden rule>' guard routes it to the
             # generic "contact admin" toast.
-            red["loc"] = "<hidden rule>"
-            red["msg"] = "<hidden rule>"
+            red.update(_HIDDEN_ERROR)
             out.append(red)
             continue
         swapped = False
@@ -310,8 +310,7 @@ def _redact_invisible_slugs(
         # rule name ... at index N") carries the rule's own content or
         # position in the rest of the message, so it is blanked wholesale.
         if swapped and not _HIDDEN_GUARD_REASON.search(red.get("msg") or ""):
-            red["loc"] = "<hidden rule>"
-            red["msg"] = "<hidden rule>"
+            red.update(_HIDDEN_ERROR)
         # Errors off PIPELINE_RULES (model-level stale-slug checks on
         # MODEL_OVERRIDES / OVERRIDE_PROFILES / CAPTURES_PIPELINE_RULES_EXCLUDE)
         # quote slugs bare inside a list and append "Valid: [every slug]".
@@ -320,8 +319,7 @@ def _redact_invisible_slugs(
         elif not loc.startswith("PIPELINE_RULES") and any(
                 f"'{slug}'" in str(red.get(key) or "")
                 for slug in hidden for key in ("loc", "msg")):
-            red["loc"] = "<hidden rule>"
-            red["msg"] = "<hidden rule>"
+            red.update(_HIDDEN_ERROR)
         out.append(red)
     return out
 
