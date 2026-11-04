@@ -358,16 +358,10 @@ def record_timing(
     error_class = (error_class or "")[:32] or None
     error_stage = (error_stage or "")[:32] or None
     wait_s = None if wait_s is None else round(max(0.0, float(wait_s)), 3)
-    stages_blob = None
-    if stages:
-        try:
-            stages_blob = json.dumps(list(stages), ensure_ascii=False)
-        except (TypeError, ValueError):
-            stages_blob = None
-        # Over the cap the list is dropped whole, as append_stage does: a
-        # truncated JSON array never parses back, so no partial list survives.
-        if stages_blob is not None and len(stages_blob) > _CAP_STAGES_JSON:
-            stages_blob = None
+    # Over the cap the list is dropped whole, as append_stage does: a
+    # truncated JSON array never parses back, so no partial list survives.
+    stages_blob = (store_common.capped_json(list(stages), _CAP_STAGES_JSON)
+                   if stages else None)
     ts = float(created_ts) if created_ts else time.time()
     conn = _require_conn()
     with _lock:
@@ -419,11 +413,8 @@ def append_stage(request_id: str, stage: dict, *, add_processing_s: float = 0.0)
         if not isinstance(stages, list):
             stages = []
         stages.append(dict(stage))
-        try:
-            blob = json.dumps(stages, ensure_ascii=False)
-        except (TypeError, ValueError):
-            return False
-        if len(blob) > _CAP_STAGES_JSON:
+        blob = store_common.capped_json(stages, _CAP_STAGES_JSON)
+        if blob is None:
             return False
         proc = round(float(row[1] or 0.0) + max(0.0, float(add_processing_s or 0.0)), 3)
         conn.execute(

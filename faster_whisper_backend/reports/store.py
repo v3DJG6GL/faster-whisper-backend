@@ -306,14 +306,8 @@ def upsert_report(
     # allow_nan=False: `stages` is list[Any], so the route's allow_inf_nan
     # never reaches a float inside it, and a stored bare Infinity made every
     # strict /reports/api/list and /export render raise (-> not stored).
-    stages_t: str | None = None
-    if stages:
-        try:
-            blob = json.dumps(stages, ensure_ascii=False, allow_nan=False)
-        except (TypeError, ValueError):
-            blob = None
-        if blob is not None and len(blob) <= _CAP_STAGES_JSON:
-            stages_t = blob
+    stages_t = (store_common.capped_json(stages, _CAP_STAGES_JSON, allow_nan=False)
+                if stages else None)
 
     conn = _require_conn()
     # Lookup and write share one lock span: with the lookup outside, two

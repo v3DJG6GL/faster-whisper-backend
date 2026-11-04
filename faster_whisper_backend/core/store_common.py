@@ -15,6 +15,7 @@
   additive column migrations the stores run on init.
 - `json_column()`: the tolerant decode of a JSON-bearing column;
   `json_object()`: the tolerant decode of client-sent JSON into a dict;
+  `capped_json()`: a JSON blob under a byte cap, whole or not at all;
   `cfg_int()`: a live int knob read with a fallback.
 
 Every store creates its DB at the process umask (0644 file / 0755 dir on a
@@ -159,6 +160,17 @@ def add_missing_columns(conn: sqlite3.Connection, table: str,
     for col, ddl in columns:
         if col not in have:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+
+def capped_json(value: Any, cap: int, *, allow_nan: bool = True,
+                default: Any = None) -> str | None:
+    """`value` as JSON, whole or not at all: None when it will not serialise
+    or is over `cap`. The keywords pass straight to json.dumps."""
+    try:
+        blob = json.dumps(value, ensure_ascii=False, allow_nan=allow_nan, default=default)
+    except (TypeError, ValueError):
+        return None
+    return blob if len(blob) <= cap else None
 
 
 def json_column(raw: Any, empty: str) -> Any:

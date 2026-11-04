@@ -174,11 +174,7 @@ def _side_json(value: Any) -> str | None:
     or over the defensive cap (the row still lands, just without it)."""
     if value is None:
         return None
-    try:
-        blob = json.dumps(value, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        return None
-    return blob if len(blob) <= _CAP_SIDE_JSON else None
+    return store_common.capped_json(value, _CAP_SIDE_JSON, default=str)
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
