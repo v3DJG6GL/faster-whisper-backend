@@ -3,11 +3,10 @@ per-account synced client settings (metadata map, export, import, delete)."""
 
 import json
 import shutil
-import subprocess
 
 import pytest
 
-from tests._page_helpers import js_body, js_fn, js_upto
+from tests._page_helpers import js_body, js_fn, js_upto, node_json
 from tests.conftest import bearer
 
 _API = "/settings/api-keys/api"
@@ -368,11 +367,7 @@ function preview(n) {
 }
 console.log(JSON.stringify([preview(1024 * 1024), preview(%d)]));
 """ % (cap, cap)
-    out = subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, timeout=30,
-    )
-    assert out.returncode == 0, out.stderr
-    ok, over = json.loads(out.stdout)
+    ok, over = node_json(script)
     assert ok["disabled"] is False, ok["warn"]
     assert over["disabled"] is True
     assert "over the 4.0 MB server cap" in over["warn"]
