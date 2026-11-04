@@ -123,6 +123,8 @@ function _traceItem(final) {
   item.appendChild(badge); item.appendChild(form); _body.appendChild(item);
   return { form, item, badge };
 }
+const _reportUi = (form, badge) => ({
+  badge: badge.style.display, removeBtn: form.querySelector('.rep-remove').style.display });
 const _ls = {};
 const localStorage = {
   getItem: (k) => (k in _ls ? _ls[k] : null),
@@ -235,8 +237,7 @@ def test_remove_report_404_clears_stale_local_hint(client, tmp_path):
       await removeReport(form);
       out({
         reported: isReported('rid1'),
-        badge: badge.style.display,
-        removeBtn: form.querySelector('.rep-remove').style.display,
+        ..._reportUi(form, badge),
         toasts: _toasts,
       });
     """, funcs=_REPORT_FUNCS + (
@@ -314,8 +315,7 @@ def test_state_load_keeps_hint_ids_the_server_set_misses(client, tmp_path, serve
       applyState({ rules: [], user_id: 'u1', reported_chips: %s });
       out({
         rid1: isReported('rid1'),
-        badge: badge.style.display,
-        removeBtn: form.querySelector('.rep-remove').style.display,
+        ..._reportUi(form, badge),
       });
     """ % server_chips, funcs=_REPORT_FUNCS + (
         "markReported", "syncReportedBadges", "applyState", "_redrawRules",
@@ -336,8 +336,7 @@ def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path)
       applyState({ rules: [], user_id: 'uB', reported_chips: {} });
       const asB = {
         rid1: isReported('rid1'), rid9: isReported('rid9'),
-        badge: badge.style.display,
-        removeBtn: form.querySelector('.rep-remove').style.display,
+        ..._reportUi(form, badge),
       };
       markReported('rid3');
       applyState({ rules: [], user_id: 'uA', reported_chips: {} });
@@ -368,8 +367,7 @@ def test_state_load_drops_hint_ids_of_reports_an_admin_closed(client, tmp_path):
       applyState({ rules: [], user_id: 'u1', reported_chips: {} });
       out({
         rid1: isReported('rid1'), rid2: isReported('rid2'), rid3: isReported('rid3'),
-        badge: badge.style.display,
-        removeBtn: form.querySelector('.rep-remove').style.display,
+        ..._reportUi(form, badge),
       });
     """, funcs=_REPORT_FUNCS + (
         "markReported", "syncReportedBadges", "applyState", "_redrawRules",
