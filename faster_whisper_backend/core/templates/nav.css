@@ -17,7 +17,8 @@
    consumed by NAV_CSS's own header activity cluster (.hact-ring border,
    .hact-bar.vram fill), so it must live here: pages that define no
    --magenta of their own (/dictate, /settings/api-keys) would otherwise
-   render an invisible ring and a permanently empty VRAM bar. */
+   render an invisible ring and a permanently empty VRAM bar. The base dark
+   palette lives here too; a page's own :root holds only its local tokens. */
 :root {
   --fs-base:  15px;
   --fs-xs:    0.733rem;   /* ~11px @ 15px base */
@@ -47,6 +48,9 @@
                "DejaVu Sans", "Liberation Sans", Arial, sans-serif;
   --font-mono: Consolas, "Cascadia Code", "JetBrains Mono", Menlo,
                ui-monospace, monospace;
+  --bg: #0d1117; --panel: #161b22; --fg: #c9d1d9; --dim: #6e7681;
+  --cyan: #79c0ff; --green: #7ee787; --yellow: #f2cc60; --red: #ff7b72;
+  --bold: #f0f6fc; --border: #30363d;
   --help: #8b949e;
   --magenta: #d2a8ff;
 {{STAGE_TOKENS}}
