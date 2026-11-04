@@ -62,6 +62,13 @@ def _outer_edge_ms() -> int:
     return 0
 
 
+def _packed_total(bodies, n, gap, edge):
+    """Length of a merged WAV under merge_wavs' uniform layout, in the unit of
+    the arguments: Σ bodies + (n-1) join gaps + both outer edges (none with no
+    member)."""
+    return bodies + gap * max(0, n - 1) + (2 * edge if n >= 1 else 0)
+
+
 # Scripts written without spaces between words: Thai, Lao, Myanmar, Khmer,
 # Hiragana, Katakana and Han (the ideographic iteration / closing marks
 # 々〆〇 included). The JS twins in captures.html (_applyChipsToText,

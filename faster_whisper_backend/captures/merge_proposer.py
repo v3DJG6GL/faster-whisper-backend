@@ -188,7 +188,8 @@ def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
     # Packed audio uses TRIMMED bodies (what the merged WAV actually is) +
     # (n-1) join gaps + the two uniform outer margins; wall span uses RAW
     # duration since the recording occupied real wall-clock time before trim.
-    total_dur = sum(_dur(m) for m in members) + gap_s * (n - 1) + 2.0 * edge_s
+    total_dur = capture_samples._packed_total(
+        sum(_dur(m) for m in members), n, gap_s, edge_s)
     first_ts = float(members[0]["created_ts"])
     last = members[-1]
     last_end = float(last["created_ts"]) + float(last["audio_s"])

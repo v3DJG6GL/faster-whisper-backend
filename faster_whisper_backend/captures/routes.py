@@ -1330,13 +1330,12 @@ def _validate_merge_payload(
     )
     # Real merged length under the uniform layout: 2×outer-edge +
     # Σ trimmed bodies + (N-1)×join silence.
-    n_members = len(member_ids)
-    total_gap_ms = int(silence_ms) * max(0, n_members - 1)
     # merge_wavs adds the outer edge margin only on its trim path; counting
     # 2×edge with trimming off would over-reject in-cap merges by ~2×edge_ms.
-    total_edge_ms = 2 * capture_samples._outer_edge_ms() if n_members >= 1 else 0
+    total_ms = capture_samples._packed_total(
+        total_trimmed_ms, len(member_ids), int(silence_ms),
+        capture_samples._outer_edge_ms())
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
-    total_ms = total_trimmed_ms + total_gap_ms + total_edge_ms
     if enforce_cap and total_ms > cap_ms:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -1605,13 +1604,13 @@ async def merge_estimate_api(
         for c in captures
     )
     n = len(payload.member_ids)
-    gap_ms = int(capture_samples._global_silence_ms()) * max(0, n - 1)
+    silence = int(capture_samples._global_silence_ms())
     # Mirror merge_wavs: the outer edge margin only exists on the trim path.
-    total_edge_ms = 2 * capture_samples._outer_edge_ms() if n >= 1 else 0
+    edge = capture_samples._outer_edge_ms()
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
-    trimmed_total = trimmed_ms + gap_ms + total_edge_ms
+    trimmed_total = capture_samples._packed_total(trimmed_ms, n, silence, edge)
     return JSONResponse({
-        "raw_total_s": (raw_ms + gap_ms + total_edge_ms) / 1000.0,
+        "raw_total_s": capture_samples._packed_total(raw_ms, n, silence, edge) / 1000.0,
         "trimmed_total_s": trimmed_total / 1000.0,
         "hard_cap_s": cap_ms / 1000.0,
         "fits": trimmed_total <= cap_ms,
