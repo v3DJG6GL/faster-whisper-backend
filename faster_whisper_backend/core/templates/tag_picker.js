@@ -71,7 +71,8 @@
     }
 
     function _hasTag(s) { return tags.indexOf(s) !== -1; }
-    function _notify() {
+    function _commit() {
+      _render();
       if (typeof opts.onChange === 'function') opts.onChange(tags.slice());
     }
 
@@ -96,8 +97,7 @@
             var i = tags.indexOf(t);
             if (i >= 0) {
               tags.splice(i, 1);
-              _render();
-              _notify();
+              _commit();
             }
           });
           pill.appendChild(x);
@@ -121,8 +121,7 @@
       tags.push(t);
       tags.sort();
       input.value = '';
-      _render();
-      _notify();
+      _commit();
       return true;
     }
 
@@ -189,8 +188,7 @@
         _hideSuggest();
       } else if (e.key === 'Backspace' && !input.value && tags.length) {
         tags.pop();
-        _render();
-        _notify();
+        _commit();
       } else if (e.key === 'Escape') {
         // First Escape closes the list; if already closed, clear the input.
         if (sugPop.isOpen()) { e.preventDefault(); _hideSuggest(); }
