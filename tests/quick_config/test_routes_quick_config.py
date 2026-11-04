@@ -5,8 +5,9 @@ import re
 
 import pytest
 
+from faster_whisper_backend.quick_config import routes as qc
 from tests._page_helpers import js_upto
-from tests.conftest import bearer
+from tests.conftest import bearer, fake_request, schema_map_cap
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
@@ -171,10 +172,8 @@ def test_stream_reauth_rechecks_an_expired_session_without_a_bump(
     from fastapi import HTTPException
 
     from faster_whisper_backend.auth import sessions_store
-    from faster_whisper_backend.quick_config import routes as qc_routes
     from faster_whisper_backend.settings import config
     from faster_whisper_backend.settings import version as settings_version
-    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, _raw = make_user_key("alice", pages={"quick_config": "all"})
@@ -182,15 +181,15 @@ def test_stream_reauth_rechecks_an_expired_session_without_a_bump(
     req = fake_request(headers={"cookie": f"{config.SESSION_COOKIE_NAME}={token}"})
     seen = settings_version.config_version()
     fresh = time.monotonic()
-    res = qc_routes._reauth_on_version_change(req, seen, fresh - 3600)
+    res = qc._reauth_on_version_change(req, seen, fresh - 3600)
     assert res is not None and res[1] == seen and res[2] >= fresh
     at = res[2]
     monkeypatch.setattr(config, "SESSION_TTL_S", 1e-6)
     assert settings_version.config_version() == seen
-    assert qc_routes._reauth_on_version_change(req, seen, at) is None
+    assert qc._reauth_on_version_change(req, seen, at) is None
     with pytest.raises(HTTPException):
-        qc_routes._reauth_on_version_change(
-            req, seen, at - qc_routes._REAUTH_INTERVAL_S - 1)
+        qc._reauth_on_version_change(
+            req, seen, at - qc._REAUTH_INTERVAL_S - 1)
 
 
 def test_recent_open_mode(client):
@@ -269,13 +268,10 @@ def test_post_patch_oversized_map_400(client, app_module):
     the stamping loop walks the caller's dict twice on the event loop. It was
     already doomed (Pydantic 422s it inside save_overrides) — this only moves
     the rejection earlier and makes it a 400 like the sibling map guards."""
-    from faster_whisper_backend.quick_config import routes as quick_config_routes
-
     slug = _expose_first_map_rule(app_module)
     assert slug is not None, "fixture config has no callback:map rule"
-    from tests.conftest import schema_map_cap
 
-    cap = quick_config_routes._MAP_MAX_ENTRIES
+    cap = qc._MAP_MAX_ENTRIES
     # Track the schema rather than re-pinning the literal: this still catches
     # the derivation silently taking its fallback if pydantic's metadata
     # layout changes, without failing on a deliberate schema-side cap change.
@@ -292,12 +288,10 @@ def test_post_patch_oversized_map_400(client, app_module):
 
 def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
     """Exactly at the cap must still pass the ingress guard (off-by-one)."""
-    from faster_whisper_backend.quick_config import routes as quick_config_routes
-
     slug = _expose_first_map_rule(app_module)
     assert slug is not None
     at_cap = {f"wort{i}": str(i)
-              for i in range(quick_config_routes._MAP_MAX_ENTRIES)}
+              for i in range(qc._MAP_MAX_ENTRIES)}
     r = _post_patch(client, {slug: {"map": at_cap}})
     assert r.status_code == 200, r.text
 
@@ -399,18 +393,17 @@ def test_post_patch_map_total_over_cap_400(client, app_module, monkeypatch):
     valid on their own must save together (the page always posts every dirty
     map in one request), which the old guard — reusing the per-map cap for
     the sum — made impossible."""
-    from faster_whisper_backend.quick_config import routes as quick_config_routes
 
     slug_a, slug_b = _expose_two_map_rules(app_module)
     assert slug_a and slug_b, "fixture config has no callback:map rule"
-    assert (quick_config_routes._MAP_MAX_TOTAL_ENTRIES
-            > quick_config_routes._MAP_MAX_ENTRIES)
-    half = quick_config_routes._MAP_MAX_ENTRIES // 2 + 1
+    assert (qc._MAP_MAX_TOTAL_ENTRIES
+            > qc._MAP_MAX_ENTRIES)
+    half = qc._MAP_MAX_ENTRIES // 2 + 1
     map_a = {f"awort{i}": str(i) for i in range(half)}
     map_b = {f"bwort{i}": str(i) for i in range(half)}
     r = _post_patch(client, {slug_a: {"map": map_a}, slug_b: {"map": map_b}})
     assert r.status_code == 200, r.text
-    monkeypatch.setattr(quick_config_routes, "_MAP_MAX_TOTAL_ENTRIES", 10)
+    monkeypatch.setattr(qc, "_MAP_MAX_TOTAL_ENTRIES", 10)
     small_a = {f"awort{i}": str(i) for i in range(6)}
     small_b = {f"bwort{i}": str(i) for i in range(6)}
     r = _post_patch(client, {slug_a: {"map": small_a}, slug_b: {"map": small_b}})
@@ -654,12 +647,10 @@ def test_redact_collapses_hidden_rule_ordinals():
     """The schema's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
     position and entry count."""
-    from faster_whisper_backend.quick_config import routes as q
-
     user = _exposed_only_user()
     rules = [{"name": "geheim", "exposed": False},
              {"name": "meins", "exposed": True}]
-    out = q._redact_invisible_slugs(
+    out = qc._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES",
           "msg": "rule 0 ('geheim') entry 2: invalid regex: boom"}],
         user, rules)
@@ -672,13 +663,13 @@ def test_redact_collapses_hidden_rule_ordinals():
     assert not re.search(r"\b(rule|entry) \d+", out[0]["msg"])
     # A dotted Pydantic loc on the hidden index is blanked wholesale so the
     # page's '<hidden rule>' guard routes it to the generic toast.
-    out = q._redact_invisible_slugs(
+    out = qc._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES.0.callback:map.map.x",
           "msg": "Input should be a valid string"}],
         user, rules)
     assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
     # The visible rule's errors stay legible.
-    out = q._redact_invisible_slugs(
+    out = qc._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES.1.regex-list.entries.0.pattern",
           "msg": "rule 1 ('meins'): bad"}],
         user, rules)
@@ -691,18 +682,16 @@ def test_redact_blanks_non_guard_errors_naming_a_hidden_rule():
     hidden rule used to reach a non-admin as "<hidden rule>: map keys
     ['Passwort', 'passwort'] collide ...", i.e. the admin dictionary's own
     keys, and a duplicate-name error kept the hidden rule's index."""
-    from faster_whisper_backend.quick_config import routes as q
-
     user = _exposed_only_user()
     rules = [{"name": "geheim", "exposed": False},
              {"name": "meins", "exposed": True}]
-    out = q._redact_invisible_slugs(
+    out = qc._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES",
           "msg": "Value error, rule 0 ('geheim'): map keys "
                  "['Passwort', 'passwort'] collide when lowercased"}],
         user, rules)
     assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
-    out = q._redact_invisible_slugs(
+    out = qc._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES",
           "msg": "Value error, duplicate rule name 'geheim' at index 3"}],
         user, rules)
@@ -710,7 +699,7 @@ def test_redact_blanks_non_guard_errors_naming_a_hidden_rule():
     # The caller's own rule keeps its collision message.
     msg = ("Value error, rule 1 ('meins'): map keys ['A', 'a'] collide "
            "when lowercased")
-    out = q._redact_invisible_slugs(
+    out = qc._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
     assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
 
@@ -720,14 +709,12 @@ def test_redact_keeps_own_map_keys_that_equal_a_hidden_slug():
     key equal to a hidden slug (echoed in quotes by the collision message)
     blanked their own error — and its presence told them the hidden rule
     exists, one guess per save."""
-    from faster_whisper_backend.quick_config import routes as q
-
     user = _exposed_only_user()
     rules = [{"name": "meins", "exposed": True},
              {"name": "geheim-rule", "exposed": False}]
     msg = ("rule 1 ('meins'): map keys ['Geheim-rule', 'geheim-rule'] "
            "collide when lowercased")
-    out = q._redact_invisible_slugs(
+    out = qc._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
     assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
 
@@ -739,7 +726,6 @@ def test_redact_blanks_stale_slug_errors_listing_hidden_rules():
     PIPELINE_RULES.N branch nor the slug swap matched, so a non-admin's
     quick-config save got the full list of admin-hidden rule names."""
     from pydantic import ValidationError
-    from faster_whisper_backend.quick_config import routes as q
     from faster_whisper_backend.settings.schema import (
         AdminConfig, format_validation_errors)
 
@@ -761,7 +747,7 @@ def test_redact_blanks_stale_slug_errors_listing_hidden_rules():
             AdminConfig.model_validate({"PIPELINE_RULES": rules, **extra})
         errs = format_validation_errors(ei.value)
         assert any("'strip-stray-symbols'" in e["msg"] for e in errs)
-        out = q._redact_invisible_slugs(errs, user, rules)
+        out = qc._redact_invisible_slugs(errs, user, rules)
         for e in out:
             for slug in hidden:
                 assert f"'{slug}'" not in e["loc"], (slug, e)
@@ -777,9 +763,7 @@ def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
     via TestClient streaming."""
     import asyncio
     from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.quick_config import routes as qc
     from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
-    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "all"})
@@ -824,8 +808,6 @@ def test_stream_recent_rechecks_the_caller_before_the_replay(
     import asyncio
 
     from faster_whisper_backend.auth import api_keys_store
-    from faster_whisper_backend.quick_config import routes as qc
-    from tests.conftest import fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "all"})
