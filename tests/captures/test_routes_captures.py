@@ -189,6 +189,13 @@ def _insert_member(conn, cid, sid, user_id="alice", request_id=None, **cols):
     )
 
 
+def _root_and_alice(make_user_key):
+    """Admin root + own-scope alice; returns (raw_root, alice_uid, raw_alice, conn)."""
+    _uid, raw_root = make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    return raw_root, uid, raw, captures_store._require_conn()
+
+
 def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
     """A non-admin cannot mutate/delete a capture that is a member of a LOCKED
     sample — deleting it would auto-dissolve (and destroy the merged WAV of) an
@@ -303,9 +310,7 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
     PATCH, DELETE and reprocess on a locked sample's member all 409 for the
     non-admin owner. (Removing the _assert_member_sample_not_locked call
     sites would pass the helper test but fail this one.)"""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
+    _, uid, raw, conn = _root_and_alice(make_user_key)
     _insert_sample(conn, gs, "locked01sid", locked=True, user_id=uid)
     _insert_member(conn, "locked01cid", "locked01sid", user_id=uid)
 
@@ -327,9 +332,7 @@ def test_nonadmin_can_unlock_but_not_edit_a_locked_sample(client, make_user_key)
     """`is_locked` is writable by any captures-scoped caller, so it must also
     be RELEASABLE by them — otherwise it is a one-way switch only an admin can
     undo. A non-admin may send the unlock and nothing else while locked."""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
+    _, uid, raw, conn = _root_and_alice(make_user_key)
     _insert_sample(conn, gs, "unlock01sid", locked=True, user_id=uid)
     h = bearer(raw)
 
@@ -364,9 +367,7 @@ def test_locked_member_view_does_not_rewrite_text(
     """Viewing a locked sample's member — or the sample itself — must not
     self-heal-rewrite the member's stored text: the lock freezes what was
     curated. An UNLOCKED member still self-heals on view (contrast case)."""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
+    _, uid, raw, conn = _root_and_alice(make_user_key)
     _insert_sample(conn, gs, "locked02sid", locked=True, user_id=uid)
     _insert_member(conn, "locked02cid", "locked02sid", user_id=uid)
     _insert_sample(conn, gs, "open0002sid", locked=False, user_id=uid)
@@ -413,9 +414,7 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
 
 
 def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
+    _, uid, raw, conn = _root_and_alice(make_user_key)
     # Deliberately give two of them an IDENTICAL created_ts that straddles the
     # first page boundary (page 1 = [5.0, the higher-id 3.0]): samples merged
     # in one call share a timestamp, and a timestamp-only cursor drops the
@@ -448,9 +447,7 @@ def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key)
 
 
 def test_last_page_reports_no_cursor(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
+    _, uid, raw, conn = _root_and_alice(make_user_key)
     for i in range(2):
         _insert_sample(conn, gs, f"exact{i}sid0000", locked=False,
                        ts=float(i), user_id=uid)
@@ -1227,9 +1224,7 @@ def test_list_samples_projects_chip_offsets_without_hydrating_words(
     """The list path projects member chips onto global word indices from
     get_members' word_count alone — no per-member get_capture (that was a
     full SELECT * + words JSON decode per member per page)."""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
+    _, uid, raw, conn = _root_and_alice(make_user_key)
     sid = "chipsid000000001"
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
     _insert_member(conn, "chipmember00", sid, user_id=uid,
@@ -1254,9 +1249,7 @@ def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
     """A group has no model or request of its own, so the list projects both
     from its members; without them the page's model filter and search box
     never hid a group."""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = captures_store._require_conn()
+    _, uid, raw, conn = _root_and_alice(make_user_key)
     sid = "filtersid0000001"
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
     _insert_member(conn, "filtmember00", sid, user_id=uid,
