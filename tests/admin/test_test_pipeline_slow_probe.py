@@ -11,7 +11,7 @@ import time
 import pytest
 
 from faster_whisper_backend.admin import routes as admin_routes
-from tests.admin._pipeline_helpers import dry_run, list_step
+from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
 
 # Every probe round starts a `python -I` child inside its timeout. Sixty walks
 # against the 0.2 s rounds these tests need outlast it on a loaded Windows
@@ -36,8 +36,7 @@ def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch)
 
 def test_callback_pattern_too_slow_on_the_sample_is_not_run(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    step = dry_run(client, [{"name": "up", "type": "callback:upper", "enabled": True,
-                             "pattern": _EMPTY_BACKTRACK}], "aaaa")["steps"][0]
+    step = dry_run(client, [upper_rule(_EMPTY_BACKTRACK)], "aaaa")["steps"][0]
     assert step["not_run"] is True
     assert step["after"] == "aaaa"
     assert "killable probe" in step["error"]
@@ -56,8 +55,7 @@ def _grow(n=100):
 
 def test_callback_pattern_slow_only_on_an_earlier_rules_output_is_not_run(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    steps = dry_run(client, [_grow(), {"name": "up", "type": "callback:upper", "enabled": True,
-                                       "pattern": _GROWN_BACKTRACK}], "x")["steps"]
+    steps = dry_run(client, [_grow(), upper_rule(_GROWN_BACKTRACK)], "x")["steps"]
     assert steps[0]["after"] == "a" * 100
     assert steps[1].get("not_run") is True
     assert "killable probe" in steps[1]["error"]
@@ -81,8 +79,7 @@ def test_text_a_callback_changed_is_probed_again_before_the_next_rule(client, mo
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     steps = dry_run(client, [{"name": "m", "type": "callback:map", "enabled": True,
                               "map": {"xy": "a" * 60}},
-                             {"name": "up", "type": "callback:upper", "enabled": True,
-                              "pattern": _GROWN_BACKTRACK}], "xy")["steps"]
+                             upper_rule(_GROWN_BACKTRACK)], "xy")["steps"]
     assert steps[0]["after"] == "a" * 60
     assert steps[1].get("not_run") is True
 
@@ -93,8 +90,7 @@ def test_ordinary_chain_runs_with_one_probe(client, monkeypatch):
     monkeypatch.setattr(admin_routes, "_probe_chain",
                         lambda text, *a: calls.append(text) or real(text, *a))
     j = dry_run(client, [_grow(3),
-                         {"name": "up", "type": "callback:upper", "enabled": True,
-                          "pattern": "foo"},
+                         upper_rule("foo"),
                          {"name": "t", "type": "terminal"}], " x foo ")
     assert j["final"] == "aaa FOO"
     # The upper callback changed the text, but no pattern rule follows it.
@@ -163,14 +159,12 @@ def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monk
     killed = _count_probe_timeouts(monkeypatch)
     rules = []
     for n in "123":
-        rules += [{"name": "up" + n, "type": "callback:upper", "enabled": True,
-                   "pattern": "q"},
+        rules += [upper_rule("q", name="up" + n),
                   {"name": "m" + n, "type": "callback:map", "enabled": True,
                    "map": {"1": "a"}},
                   {"name": "rl" + n, "type": "regex-list", "enabled": True,
                    "entries": [{"pattern": "a", "replacement": "1"}]}]
-    rules.append({"name": "slow", "type": "callback:upper", "enabled": True,
-                  "pattern": _EMPTY_BACKTRACK})
+    rules.append(upper_rule(_EMPTY_BACKTRACK, name="slow"))
     steps = dry_run(client, rules, "1 1 1 1")["steps"]
     assert [s["after"] for s in steps[1:3]] == ["a a a a", "1 1 1 1"]
     assert steps[-1].get("not_run") is True
@@ -197,8 +191,7 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch):
     for n, c in zip("123456", "bcdefg"):
         rules += [{"name": "m" + n, "type": "callback:map", "enabled": True,
                    "map": {n: c * 60}},
-                  {"name": "up" + n, "type": "callback:upper", "enabled": True,
-                   "pattern": "(?:|%s){18}(?!)" % c}]
+                  upper_rule("(?:|%s){18}(?!)" % c, name="up" + n)]
     steps = dry_run(client, rules, "1 1 2 2 3 3 4 4 5 5 6 6")["steps"]
     assert all(s.get("not_run") is True for s in steps[1::2])
     assert budgets and all(b is budgets[0] for b in budgets)
@@ -212,8 +205,7 @@ def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(cl
     # the map turns the real text into "ok", where the entry is instant, so
     # the walk from there must time it again instead of skipping it as slow.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
-    steps = dry_run(client, [{"name": "up", "type": "callback:upper", "enabled": True,
-                              "pattern": "q"},
+    steps = dry_run(client, [upper_rule("q"),
                              {"name": "m", "type": "callback:map", "enabled": True,
                               "map": {"c" * 100: "ok"}},
                              {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
@@ -231,8 +223,7 @@ def test_healthy_walks_do_not_spend_the_probe_time(client, monkeypatch):
     # and leave the tail reported as too slow.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     words = ["w%d" % n for n in range(60)]
-    rules = [{"name": w, "type": "callback:upper", "enabled": True,
-              "pattern": r"\b%s\b" % w} for w in words]
+    rules = [upper_rule(r"\b%s\b" % w, name=w) for w in words]
     rules.append({"name": "rl", "type": "regex-list", "enabled": True,
                   "entries": [{"pattern": "W59", "replacement": "end"}]})
     body = dry_run(client, rules, " ".join(words))
@@ -278,9 +269,8 @@ def test_probe_walks_that_each_finish_still_stop_at_the_request_wall_time(client
             spent.append(time.monotonic() - t0)
     monkeypatch.setattr(subprocess, "run", _run)
     words = ["w%d" % n for n in range(60)]
-    rules = [{"name": w, "type": "callback:upper", "enabled": True,
-              "pattern": r"\b%s\b" % w} for w in words]
-    steps = dry_run(client, rules, " ".join(words))["steps"]
+    rules = [upper_rule(r"\b%s\b" % w, name=w) for w in words]
+    steps =dry_run(client, rules, " ".join(words))["steps"]
     held = [s for s in steps if s.get("not_run")]
     assert held and held[-1]["ordinal"] == 60
     assert all("ran out" in s["error"] and "did not finish" not in s["error"]

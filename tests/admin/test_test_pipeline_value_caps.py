@@ -7,7 +7,7 @@ from typing import get_args
 from faster_whisper_backend.admin import routes as admin_routes
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import schema as settings_schema
-from tests.admin._pipeline_helpers import dry_run, list_step
+from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
 
 
 def test_caps_are_read_off_the_schema():
@@ -76,8 +76,7 @@ def test_map_rule_stops_before_passing_the_output_bound(client, monkeypatch):
         ]},
         {"name": "m", "type": "callback:map", "enabled": True,
          "map": {"komma": "," * 64}},
-        {"name": "up", "type": "callback:upper", "enabled": True,
-         "pattern": "(a)"},
+        upper_rule("(a)"),
     ], "a" * 100)
     steps = j["steps"]
     assert len(steps[0]["after"]) == 36_000

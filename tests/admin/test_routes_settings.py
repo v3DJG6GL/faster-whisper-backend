@@ -13,7 +13,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto
 from tests._translation_helpers import enable_translation
-from tests.admin._pipeline_helpers import dry_run, list_step
+from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
 from tests.conftest import _repoint_path_default, bearer
 
 
@@ -595,8 +595,7 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
     steps = dry_run(client, [
         {"name": "boom-list", "type": "regex-list", "enabled": True,
          "entries": [{"pattern": r"(\w+ )+$", "replacement": ""}]},
-        {"name": "boom-single", "type": "callback:upper",
-         "enabled": True, "pattern": r"(\w+ ?)+"},
+        upper_rule(r"(\w+ ?)+", name="boom-single"),
     ], "aaaaaaaaaaaaaaaaaaaa!")["steps"]
     assert "nested repetition" in (steps[0]["error"] or "")
     assert not steps[0]["slow"]
@@ -620,8 +619,7 @@ def test_test_pipeline_fixed_count_nest_screened_not_run(client):
     steps = dry_run(client, [
         {"name": "fc-list", "type": "regex-list", "enabled": True,
          "entries": [{"pattern": pat, "replacement": ""}]},
-        {"name": "fc-single", "type": "callback:upper",
-         "enabled": True, "pattern": pat},
+        upper_rule(pat, name="fc-single"),
     ], "abcd")["steps"]
     assert _time.monotonic() - t0 < 1.0
     for step in steps[:2]:

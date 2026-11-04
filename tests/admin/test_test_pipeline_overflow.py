@@ -3,14 +3,13 @@ sre's MAXREPEAT. re.compile raises OverflowError (not re.error) for it, and
 the fixed-count screen only checks fixed counts, so the dry run must catch it
 itself, like the save path and the engine do."""
 
-from tests.admin._pipeline_helpers import dry_run, list_step
+from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
 
 _HUGE_RANGE = "a{1,4294967296}"
 
 
 def test_test_pipeline_huge_range_repeat_is_a_step_error(client):
-    step = dry_run(client, [{"name": "up", "type": "callback:upper", "enabled": True,
-                             "pattern": _HUGE_RANGE}], "aaa")["steps"][0]
+    step = dry_run(client, [upper_rule(_HUGE_RANGE)], "aaa")["steps"][0]
     assert step["after"] == "aaa"
     assert "repetition number is too large" in (step["error"] or "")
 

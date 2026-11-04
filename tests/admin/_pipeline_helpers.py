@@ -13,3 +13,8 @@ def list_step(client, entries, sample="aaaa"):
     """Dry-run one regex-list rule over `sample`; return its step."""
     return dry_run(client, [{"name": "rl", "type": "regex-list", "enabled": True,
                              "entries": entries}], sample)["steps"][0]
+
+
+def upper_rule(pattern, name="up"):
+    """One enabled callback:upper rule, as the editor posts it."""
+    return {"name": name, "type": "callback:upper", "enabled": True, "pattern": pattern}
