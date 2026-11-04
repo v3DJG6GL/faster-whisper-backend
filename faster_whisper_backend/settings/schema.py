@@ -703,6 +703,13 @@ def _max_outer_below_hard_break_ms(hb: int) -> int:
     return FRAME_MS * (-(-hb // FRAME_MS) - 2)
 
 
+def _str_list(item_max: int, list_max: int) -> Any:
+    """A capped list of non-empty, length-capped strings (an annotation; pydantic
+    evaluates the call against this module when it builds AdminConfig)."""
+    return Annotated[list[Annotated[str, Field(min_length=1, max_length=item_max)]],
+                     Field(max_length=list_max)]
+
+
 class AdminConfig(BaseModel):
     """Pydantic schema for config.local.json. Every field is Optional; absent
     means "do not override". Bounds and patterns enforce resource caps and
@@ -1102,10 +1109,7 @@ class AdminConfig(BaseModel):
     BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F(
         "BGM_SEPARATION_UVR_MODEL", scope="per_request",
         group="Music separation", evict="bgm")
-    BGM_SEPARATION_ALLOWED_MODELS: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=128)]],
-        Field(max_length=64),
-    ] | None = _F(
+    BGM_SEPARATION_ALLOWED_MODELS: _str_list(128, 64) | None = _F(
         "BGM_SEPARATION_ALLOWED_MODELS", scope="server",
         group="Music separation", evict="bgm")
     BGM_SEPARATION_PRELOAD: bool | None = _F(
@@ -1183,10 +1187,7 @@ class AdminConfig(BaseModel):
 
     URL_DOWNLOAD_ENABLED: bool | None = _F(
         "URL_DOWNLOAD_ENABLED", scope="server", group="Transcribe from URL")
-    URL_ALLOWED_EXTRACTORS: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=64)]],
-        Field(max_length=128),
-    ] | None = _F(
+    URL_ALLOWED_EXTRACTORS: _str_list(64, 128) | None = _F(
         "URL_ALLOWED_EXTRACTORS", scope="server",
         group="Transcribe from URL")
     URL_ALLOW_DIRECT_MEDIA: bool | None = _F(
@@ -1300,33 +1301,21 @@ class AdminConfig(BaseModel):
 
     # Each entry must be parseable by ipaddress.ip_network(strict=False) — bare
     # IPs (v4 or v6) and CIDRs are both accepted. See _validate_hosts below.
-    ADMIN_WEBUI_ALLOWED_HOSTS: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=64)]],
-        Field(max_length=64),
-    ] | None = _F(
+    ADMIN_WEBUI_ALLOWED_HOSTS: _str_list(64, 64) | None = _F(
         "ADMIN_WEBUI_ALLOWED_HOSTS", scope="server",
         group="Access & sessions", order=1)
-    USER_WEBUI_ALLOWED_HOSTS: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=64)]],
-        Field(max_length=64),
-    ] | None = _F(
+    USER_WEBUI_ALLOWED_HOSTS: _str_list(64, 64) | None = _F(
         "USER_WEBUI_ALLOWED_HOSTS", scope="server",
         group="Access & sessions", order=2)
     # CORS allowlist — each entry is a browser origin (scheme://host[:port]) or
     # "*". Validated by _validate_cors_origins below.
-    CORS_ALLOW_ORIGINS: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=256)]],
-        Field(max_length=64),
-    ] | None = _F(
+    CORS_ALLOW_ORIGINS: _str_list(256, 64) | None = _F(
         "CORS_ALLOW_ORIGINS", scope="server", group="Access & sessions",
         order=3, restart=True)
     # Extra origins the unsafe-method same-origin check accepts. Same entry
     # shape as CORS_ALLOW_ORIGINS but "*" is rejected — see
     # _validate_trusted_origins below.
-    TRUSTED_ORIGINS: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=256)]],
-        Field(max_length=64),
-    ] | None = _F(
+    TRUSTED_ORIGINS: _str_list(256, 64) | None = _F(
         "TRUSTED_ORIGINS", scope="server", group="Access & sessions",
         order=4, restart=True)
     API_KEYS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
@@ -1506,10 +1495,7 @@ class AdminConfig(BaseModel):
     CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
         "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT", scope="server",
         group="Captures", subgroup="Duration & size guards")
-    CAPTURES_PIPELINE_RULES_EXCLUDE: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=64)]],
-        Field(max_length=64),
-    ] | None = _F(
+    CAPTURES_PIPELINE_RULES_EXCLUDE: _str_list(64, 64) | None = _F(
         "CAPTURES_PIPELINE_RULES_EXCLUDE", scope="server", group="Captures",
         subgroup="Training-form pipeline", coerce=set)
     CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES: bool | None = _F(
