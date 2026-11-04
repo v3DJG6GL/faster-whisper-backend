@@ -396,6 +396,15 @@ def _queued_final(texts):
     return decode_final
 
 
+def _held_neue_session(texts=("bla neue",), *, hard_break_silence_ms=0, decode_final=None):
+    """Session holding a trailing 'neue' (the 'neue zeile' toy pipeline) over
+    queued final texts."""
+    return _make_session(
+        postprocess=_neue_zeile, decode_final=decode_final or _queued_final(texts),
+        cfg=fast_config(hard_break_silence_ms=hard_break_silence_ms),
+        holdback=_hold_trailing("neue"))
+
+
 def _finals(msgs):
     return [m for m in msgs if m["type"] == "final"]
 
@@ -403,10 +412,7 @@ def _finals(msgs):
 def test_held_words_are_released_before_the_boundary():
     """A held trailing word goes out as a release final (flush, no utterance)
     BEFORE the boundary marker, so it lands in the document it belongs to."""
-    s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=fast_config(hard_break_silence_ms=500),
-        holdback=_hold_trailing("neue"))
+    s, msgs = _held_neue_session(hard_break_silence_ms=500)
 
     feed_levels(s, (8000, 300),
                 (0, 700))     # finalize, then the hard break
@@ -444,10 +450,7 @@ def test_no_boundary_for_a_document_that_was_never_sent():
 
 
 def test_close_releases_held_words_in_the_last_final():
-    s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=fast_config(hard_break_silence_ms=0),
-        holdback=_hold_trailing("neue"))
+    s, msgs = _held_neue_session()
 
     async def run():
         await s.feed_pcm(_pcm(8000, 300))
@@ -464,10 +467,7 @@ def test_close_releases_held_words_in_the_last_final():
 def test_flush_releases_held_words_between_utterances():
     """A client flush with no utterance in flight releases the held tail as a
     release final; a second flush has nothing left to send."""
-    s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=fast_config(hard_break_silence_ms=0),
-        holdback=_hold_trailing("neue"))
+    s, msgs = _held_neue_session()
 
     async def run():
         await s.feed_pcm(_pcm(8000, 300))
@@ -482,10 +482,7 @@ def test_flush_releases_held_words_between_utterances():
 
 
 def test_flush_in_utterance_finalizes_with_the_hold_released():
-    s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=fast_config(hard_break_silence_ms=0),
-        holdback=_hold_trailing("neue"))
+    s, msgs = _held_neue_session()
 
     async def run():
         await s.feed_pcm(_pcm(8000, 300))
@@ -508,10 +505,7 @@ def test_flush_releases_the_hold_when_the_utterance_is_dropped():
         if not texts:
             raise RuntimeError("decode failed")
         return (texts.pop(0), [], False)
-    s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=decode_final,
-        cfg=fast_config(hard_break_silence_ms=0),
-        holdback=_hold_trailing("neue"))
+    s, msgs = _held_neue_session(decode_final=decode_final)
 
     async def run():
         await s.feed_pcm(_pcm(8000, 300))
@@ -529,10 +523,7 @@ def test_flush_releases_the_hold_when_the_utterance_is_dropped():
 def test_idle_release_when_hard_breaks_are_off():
     """With hard breaks off nothing else would release a held word while the
     speaker stays quiet: 5 s of silence release it, once."""
-    s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
-        cfg=fast_config(hard_break_silence_ms=0),
-        holdback=_hold_trailing("neue"))
+    s, msgs = _held_neue_session()
 
     async def run():
         await s.feed_pcm(_pcm(8000, 300))
@@ -550,10 +541,7 @@ def test_idle_release_when_hard_breaks_are_off():
 def test_dropped_final_keeps_the_hold():
     """An utterance whose final decode drops everything adds no text: the held
     word stays held and joins the utterance after it."""
-    s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue", ("", True), " zeile text."]),
-        cfg=fast_config(hard_break_silence_ms=0),
-        holdback=_hold_trailing("neue"))
+    s, msgs = _held_neue_session(["bla neue", ("", True), " zeile text."])
 
     feed_levels(s, (8000, 300), (0, 400), (8000, 300), (0, 400), (8000, 300), (0, 400))
     docs = [m["committed"] + m["tail"] for m in _finals(msgs)]
