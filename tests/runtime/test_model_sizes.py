@@ -35,6 +35,11 @@ def _bytes_src(name, device, compute):
     return got["bytes"], got["src"]
 
 
+def _gpu_free(monkeypatch, n):
+    monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
+                        lambda *a: n, raising=False)
+
+
 @pytest.fixture
 def ledger(model_sizes_ledger):
     """The conftest model_sizes_ledger (PATH + the def-time path defaults)."""
@@ -100,40 +105,33 @@ def test_fits_cuda_verdicts_and_the_reserve_boundary(ledger, monkeypatch):
     model_sizes.record("large-v3", "cuda", "float16", 3 * GB)
     reserve = 1 * GB
 
-    def free(n):
-        monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                            lambda *a: n, raising=False)
-
-    free(8 * GB)
+    _gpu_free(monkeypatch, 8 * GB)
     assert model_sizes.fits("large-v3", "cuda", "float16",
                             reserve_bytes=reserve) == (True, None)
     # free - need == reserve is still a fit; one byte less is not.
-    free(4 * GB)
+    _gpu_free(monkeypatch, 4 * GB)
     assert model_sizes.fits("large-v3", "cuda", "float16",
                             reserve_bytes=reserve) == (True, None)
-    free(4 * GB - 1)
+    _gpu_free(monkeypatch, 4 * GB - 1)
     assert model_sizes.fits("large-v3", "cuda", "float16",
                             reserve_bytes=reserve) == (False, "insufficient_vram")
 
 
 def test_fits_reports_unknowns_apart(ledger, monkeypatch):
-    monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                        lambda *a: 8 * GB, raising=False)
+    _gpu_free(monkeypatch, 8 * GB)
     # Never measured: "cannot say", NOT a refusal.
     assert model_sizes.fits("never-loaded", "cuda", "float16",
                             reserve_bytes=0) == (None, "size_unknown")
 
     # NVML absent: we refuse rather than guess on the GPU...
-    monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                        lambda *a: None, raising=False)
+    _gpu_free(monkeypatch, None)
     model_sizes.record("large-v3", "cuda", "float16", 3 * GB)
     assert model_sizes.fits("large-v3", "cuda", "float16",
                             reserve_bytes=0) == (False, "vram_unknown")
 
 
 def test_fits_cpu_uses_psutil_even_without_nvml(ledger, monkeypatch):
-    monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                        lambda *a: None, raising=False)
+    _gpu_free(monkeypatch, None)
     model_sizes.record("large-v3", "cpu", "int8", 2 * GB)
 
     class _VM:
