@@ -561,10 +561,16 @@ def _olist_consts(page):
         for m in re.finditer(r"^const (_\w+_FIELDS) = (.*)$", page, re.M))
 
 
+_OLIST_PRELUDE = r"""
+  globalThis.dirty = new Set();
+  globalThis.e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+"""
+
+
 def _run_olist_js(client, tmp_path, body):
     """_run_js with the page's _*_FIELDS sets as globals and the olist merge functions."""
     page = client.get("/quick-config").text
-    return _run_js(client, tmp_path, _olist_consts(page) + body, funcs=_OLIST_FUNCS)
+    return _run_js(client, tmp_path, _olist_consts(page) + _OLIST_PRELUDE + body, funcs=_OLIST_FUNCS)
 
 
 _ENTRIES_MERGE_JS = r"""
@@ -583,7 +589,6 @@ def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_p
     # writer's new entry was dropped by the next save, under an "Auto-merged"
     # toast.
     res = _run_olist_js(client, tmp_path, r"""
-      const e = (p) => ({ pattern: p, replacement: p.toUpperCase() });
       const base = [e('a'), e('b'), e('c')];
       // The user moved c to the top, dropped b and appended y; meanwhile the
       // other writer inserted x after a.
@@ -651,7 +656,6 @@ def test_conflict_merge_pairs_a_pattern_edited_in_place_with_its_entry(client, t
     # new entry was spliced in front of it, or the other writer's edit to the
     # same entry was dropped, all under an "Auto-merged" toast.
     res = _run_olist_js(client, tmp_path, r"""
-      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const merge = (base, mine, theirs) => {
         const clashes = [];
         const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
@@ -694,7 +698,6 @@ def test_conflict_merge_keeps_the_other_writers_entry_added_where_they_deleted_o
     # the user had deleted that entry as well it vanished with no clash, and
     # when the user had edited it only the user's version came back.
     res = _run_olist_js(client, tmp_path, r"""
-      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const merge = (base, mine, theirs) => {
         const clashes = [];
         const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
@@ -724,7 +727,6 @@ def test_conflict_merge_keeps_both_new_entries_around_a_moved_one(client, tmp_pa
     # the same deleted entry's id went to two new entries: one of the other
     # writer's new entries was dropped under a clean "Auto-merged" toast.
     res = _run_olist_js(client, tmp_path, r"""
-      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const base = [e('a'), e('b'), e('c'), e('d')];
       // The other writer added X on top, deleted b, moved a after c and added
       // Y after a; the user only changed d.
@@ -746,7 +748,6 @@ def test_conflict_merge_keeps_one_entry_when_both_writers_made_the_same_pattern_
     # replacement: the other writer's entry went back in under its own id as
     # well, so the list held y twice and theirs, first, shadowed the user's.
     res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
-      const e = (p, r) => ({ pattern: p, replacement: r });
       out({
         mineRepl: merge([e('x', '1'), e('a', '2')], [e('y', 'U'), e('a', '2')],
                         [e('y', '1'), e('a', '2')]),
@@ -763,7 +764,6 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_the_user_also_adde
     # but the user had added a y entry of their own: theirs was skipped with
     # no clash, so the next save overwrote it under an "Auto-merged" toast.
     res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
-      const e = (p, r) => ({ pattern: p, replacement: r });
       out({
         // the user edited x's replacement and appended y.
         edited: merge([e('a', '1'), e('x', '1')], [e('a', '1'), e('x', 'U'), e('y', '5')],
@@ -784,7 +784,6 @@ def test_conflict_merge_reports_the_users_new_entry_shadowed_by_the_other_writer
     # the user's y, so the user's entry never matched (or sat there twice)
     # under a clean "Auto-merged" toast.
     res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
-      const e = (p, r) => ({ pattern: p, replacement: r });
       const base = [e('a', 'A'), e('x', 'X'), e('z', 'Z')];
       const theirs = [e('a', 'A'), e('y', 'X'), e('z', 'Z')];
       out({
@@ -802,7 +801,6 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_to_an_entry_the_us
     # entry came back under a clean "Auto-merged" toast, though a deleted
     # entry the other writer changed the replacement of stays deleted.
     res = _run_olist_js(client, tmp_path, _ENTRIES_MERGE_JS + r"""
-      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       out({
         fixed: merge([e('x'), e('b'), e('y')], [e('x'), e('y')], [e('x'), e('b2', 'B'), e('y')]),
         // ... and the user appended an entry with the fixed pattern.
@@ -823,8 +821,6 @@ def test_reapply_tells_an_entry_the_user_deleted_coming_back_from_a_both_edited_
     # their version, but its rule was reported like a both-edited clash, so
     # the toast said "your version is kept" of a deletion that was undone.
     res = _run_olist_js(client, tmp_path, r"""
-      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
-      globalThis.dirty = new Set();
       globalThis.liveRules = [
         { name: 'del', entries: [e('x'), e('b2', 'B'), e('y')] },
         { name: 'both', entries: [e('foo', 'qux')] },
@@ -852,7 +848,6 @@ def test_reapply_keeps_a_both_edited_clash_when_the_users_entry_keeps_the_other_
     # delete it again" (pointing at the user's own entry) instead of "your
     # version is kept"; the same b2 on both sides was a clash too.
     res = _run_olist_js(client, tmp_path, r"""
-      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
       const base = [e('x'), e('b'), e('y')];
       const theirs = [e('x'), e('b2', 'B'), e('y')];
       const merge = (mine) => {
@@ -860,7 +855,6 @@ def test_reapply_keeps_a_both_edited_clash_when_the_users_entry_keeps_the_other_
         const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, 'olist'), clashes, back);
         return [clashes, back, m.map(x => x.pattern + '>' + x.replacement)];
       };
-      globalThis.dirty = new Set();
       globalThis.liveRules = [{ name: 'kept', entries: theirs }];
       const clashed = [], restored = [];
       _reapplyDiffs(new Map([['kept', { entries: _fieldDiff(base, [e('x'), e('y'), e('b2', 'W')],
@@ -882,7 +876,6 @@ def test_reapply_reports_a_scalar_both_writers_changed_differently_as_a_clash(
     # over the other writer's different one and the toast called the rule
     # "Auto-merged", so their edit was dropped by the next save unseen.
     res = _run_olist_js(client, tmp_path, r"""
-      globalThis.dirty = new Set();
       const reapply = (theirs) => {
         globalThis.liveRules = [{ name: 'lw', type: 'callback:lowercase-wordlist',
                                   enabled: true, pattern: theirs }];
@@ -945,8 +938,6 @@ def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited
     # entries) vanished with no undo. Its slug is reported so the toast can
     # name the rule.
     res = _run_olist_js(client, tmp_path, r"""
-      const e = (p, r) => ({ pattern: p, replacement: r });
-      globalThis.dirty = new Set();
       globalThis.liveRules = [
         { name: 'rx', enabled: true, entries: [e('foo', 'qux'), e('a', 'A')] },
         { name: 'ok', enabled: true, entries: [e('a', 'A')] },
@@ -977,7 +968,6 @@ def test_reapply_reports_a_dictionary_key_both_writers_changed(client, tmp_path)
     # the next save lost their edit. It keeps the user's value and reports
     # the rule, as a regex-list entry both writers edited does.
     res = _run_olist_js(client, tmp_path, r"""
-      globalThis.dirty = new Set();
       const base = { komma: ',', punkt: '.', fragezeichen: '?' };
       globalThis.liveRules = [
         { name: 'both', map: { komma: ', ', punkt: '.', fragezeichen: '?', neu: 'A' } },
@@ -1012,7 +1002,6 @@ def test_reapply_brings_back_a_dictionary_key_the_user_deleted_and_the_other_wri
     # rename of that key (a remove plus an add). Their key is back and the
     # rule reported, as for a regex-list entry the user deleted.
     res = _run_olist_js(client, tmp_path, r"""
-      globalThis.dirty = new Set();
       const base = { komma: ',', punkt: '.' };
       globalThis.liveRules = [
         { name: 'changed', map: { komma: ', ', punkt: '.' } },
@@ -1072,7 +1061,6 @@ def test_reapply_keeps_one_spelling_of_a_dictionary_key_both_writers_added_in_an
     # keys collide when lowercased). The user's key is kept and the rule
     # reported, as for a key both writers added with different values.
     res = _run_olist_js(client, tmp_path, r"""
-      globalThis.dirty = new Set();
       const base = { punkt: '.' };
       globalThis.liveRules = [
         { name: 'added', map: { komma: ', ', punkt: '.' } },
