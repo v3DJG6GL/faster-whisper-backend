@@ -664,7 +664,7 @@ def _mark_trimmed(captures_store, cid, trimmed_rel):
                 " WHERE id = ?", (trimmed_rel, cid))
 
 
-def _ready_capture(captures_store, monkeypatch, tmp_path, *, language, translations):
+def _ready_capture(captures_store, monkeypatch, tmp_path, *, language="de", translations=None):
     cid = _audio_capture(
         captures_store, monkeypatch, tmp_path, language=language,
         final="quelle", translations=translations, translation_model="HY-MT",
@@ -816,8 +816,7 @@ def test_export_joins_the_text_with_the_strategy_of_the_reread_sample(
     shipped the new WAV with text joined by the old separator. Members and
     text come from the row re-read under the lock."""
     sid = "e" * 32
-    cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path,
-                           language="de", translations=None) for _ in range(2)]
+    cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path) for _ in range(2)]
     captures_routes._insert_sample_with_sid(
         sid=sid, **_sample_kwargs(cids, "quelle quelle"))
     _write_merged_wav(gs, sid, b"old audio")
@@ -847,8 +846,7 @@ def test_export_skips_a_sample_whose_members_no_longer_match_its_wav(
     is still exported."""
     drifted, legacy = "e" * 32, "f" * 32
     for sid, hashed in ((drifted, True), (legacy, False)):
-        cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path,
-                               language="de", translations=None)
+        cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path)
                 for _ in range(2)]
         over = {} if hashed else {"member_hash_map": {}}
         captures_routes._insert_sample_with_sid(
@@ -877,8 +875,7 @@ def test_export_sizes_each_wav_from_the_file_it_opened(
     sid = "d" * 32
     _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
     group_abs = _write_merged_wav(gs, sid, b"old merged audio, long")
-    cid = _ready_capture(captures_store_db, monkeypatch, tmp_path,
-                         language="de", translations=None)
+    cid = _ready_capture(captures_store_db, monkeypatch, tmp_path)
     single_abs = captures_store_db.abs_audio_path(
         captures_store_db.get_capture(cid)["audio_relpath"])
     swaps = {group_abs: b"short", single_abs: b"tiny"}
@@ -984,8 +981,7 @@ def _sample_kwargs(cids, transcript="quelle", **over):
 
 def _grouped_capture(captures_store, monkeypatch, tmp_path, sid):
     """One ready capture packed into sample `sid`; returns the capture id."""
-    cid = _ready_capture(captures_store, monkeypatch, tmp_path, language="de",
-                         translations=None)
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path)
     captures_routes._insert_sample_with_sid(sid=sid, **_sample_kwargs([cid]))
     return cid
 
@@ -1142,8 +1138,7 @@ def test_insert_sample_with_sid_holds_captures_lock(
     captures_store._lock — otherwise a bare captures_store write from
     another thread joins the transaction and is discarded with a losing
     merge's ROLLBACK."""
-    cid = _ready_capture(captures_store, monkeypatch, tmp_path, language="de",
-                         translations=None)
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path)
     real_conn = gs._require_conn()
     seen: dict[str, bool] = {}
 
@@ -1170,8 +1165,7 @@ def test_insert_sample_with_sid_rolls_back_a_failed_commit(
     BEGIN failed with "cannot start a transaction within a transaction"."""
     import sqlite3
 
-    cid = _ready_capture(captures_store, monkeypatch, tmp_path, language="de",
-                         translations=None)
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path)
     real_conn = gs._require_conn()
     failed = []
 
