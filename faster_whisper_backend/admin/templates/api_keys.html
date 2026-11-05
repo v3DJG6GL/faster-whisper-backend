@@ -1030,9 +1030,7 @@
     toggleDrawer(csBtn, csWrap, function () { return buildCsDrawer(u); });
     tb.appendChild(csBtn);
 
-    var revBtn = _el('button', 'danger', 'Revoke user');
-    revBtn.style.marginLeft = 'auto';       // separate the destructive action
-    revBtn.onclick = function () {
+    var revBtn = _btn(tb, 'danger', 'Revoke user', function () {
       if (!confirm('Revoke user "' + u.username +
           '"? This will also revoke all of their keys.')) return;
       api('DELETE', _userUrl(u.id))
@@ -1045,8 +1043,8 @@
           load();
         })
         .catch(function (e) { showToast(String(e.message || e), 'err'); });
-    };
-    tb.appendChild(revBtn);
+    });
+    revBtn.style.marginLeft = 'auto';       // separate the destructive action
 
     userBody.appendChild(tb);
     userBody.appendChild(ovrWrap);
@@ -1121,8 +1119,9 @@
         inp.type = 'text'; inp.maxLength = 128;
         inp.value = hasLabel ? k.label : '';
         inp.placeholder = 'label (e.g., desktop)';
-        var saveB = _el('button', 'primary', 'Save');
-        var cancelB = _el('button', 'ghost', 'Cancel');
+        renameRow.appendChild(inp);
+        var saveB = _btn(renameRow, 'primary', 'Save', doSave);
+        _btn(renameRow, 'ghost', 'Cancel', closeRename);
         function closeRename() { if (renameRow) { renameRow.remove(); renameRow = null; } }
         function doSave() {
           var nl = inp.value.trim();
@@ -1133,15 +1132,10 @@
             .then(function () { showToast('Key renamed', 'ok'); load(); })
             .catch(function (e) { showToast(String(e.message || e), 'err'); saveB.disabled = false; });
         }
-        saveB.onclick = doSave;
-        cancelB.onclick = closeRename;
         inp.onkeydown = function (e) {
           if (e.key === 'Enter') doSave();
           else if (e.key === 'Escape') closeRename();
         };
-        renameRow.appendChild(inp);
-        renameRow.appendChild(saveB);
-        renameRow.appendChild(cancelB);
         body.appendChild(renameRow);
         inp.focus();
       });
@@ -1540,10 +1534,8 @@
         vc.appendChild(_cfgWidget(name, b.overrides[name], function (v) { if (v !== null) b.overrides[name] = v; _syncSave(); }));
         row.appendChild(vc);
         var on = b.locks.indexOf(name) >= 0;
-        var lk = _el('button', 'lk' + (on ? ' on' : ''));
+        var lk = _btn(row, 'lk' + (on ? ' on' : ''), null, function () { var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); else b.locks.push(name); rerender(); });
         lk.innerHTML = on ? '\u{1F512}' : '\u{1F513}'; lk.title = 'lock — client cannot override this field';
-        lk.onclick = function () { var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); else b.locks.push(name); rerender(); };
-        row.appendChild(lk);
         _btn(row, 'rm', '×', function () { delete b.overrides[name]; var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); rerender(); });
         dcard.appendChild(row);
       });
@@ -1800,8 +1792,6 @@
     // Export — two-press guard: the file is exactly what the desktop stored,
     // which can include the account's saved API keys.
     var EX_LABEL = '⤓ Export';
-    var ex = _el('button', 'ghost', EX_LABEL);
-    ex.disabled = !meta;
     var exArmed = false, exTimer = null;
     function disarmExport() {
       exArmed = false;
@@ -1809,7 +1799,7 @@
       ex.textContent = EX_LABEL;
       if (exTimer) { clearTimeout(exTimer); exTimer = null; }
     }
-    ex.onclick = function () {
+    var ex = _btn(foot, 'ghost', EX_LABEL, function () {
       if (!exArmed) {
         exArmed = true;
         ex.classList.add('warn-armed');
@@ -1829,12 +1819,12 @@
         })
         .then(function () { showToast('Settings exported', 'ok'); })
         .catch(function (e) { showToast(String(e.message || e), 'err'); });
-    };
-    foot.appendChild(ex);
+    });
+    ex.disabled = !meta;
 
     // Import — file picker → preview modal → force-write. Accepts a desktop
     // settings export (envelope with categories) or a server Export file.
-    var imp = _el('button', 'ghost', '⤒ Import…');
+    var imp = _btn(foot, 'ghost', '⤒ Import…', function () { fileInp.value = ''; fileInp.click(); });
     // Store down: a force-write over unknown state is the one thing the
     // page must not offer; Export/Delete are already disabled via !meta.
     imp.disabled = csUnavailable();
@@ -1842,7 +1832,6 @@
     fileInp.type = 'file';
     fileInp.accept = '.json,application/json';
     fileInp.style.display = 'none';
-    imp.onclick = function () { fileInp.value = ''; fileInp.click(); };
     fileInp.onchange = function () {
       var f = fileInp.files && fileInp.files[0];
       if (!f) return;
@@ -1888,13 +1877,9 @@
         showToast('Could not read the file: ' + String((e && e.message) || e), 'err');
       });
     };
-    foot.appendChild(imp);
     foot.appendChild(fileInp);
 
-    var del = _el('button', 'danger', 'Delete');
-    del.style.marginLeft = 'auto';
-    del.disabled = !meta;
-    del.onclick = function () {
+    var del = _btn(foot, 'danger', 'Delete', function () {
       if (!confirm('Delete the synced settings stored for "' + u.username
         + '"? Devices keep their local settings; the next device to sync '
         + 're-uploads its own copy.')) return;
@@ -1913,8 +1898,9 @@
           load();
         })
         .catch(function (e) { showToast(String(e.message || e), 'err'); });
-    };
-    foot.appendChild(del);
+    });
+    del.style.marginLeft = 'auto';
+    del.disabled = !meta;
     root.appendChild(foot);
     return root;
   }
