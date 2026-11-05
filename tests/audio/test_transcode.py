@@ -8,6 +8,7 @@ import os
 import sys
 import wave
 
+import av
 import numpy as np
 import pytest
 
@@ -31,7 +32,6 @@ def _write_src_wav(path, *, rate, nchannels, freq=440.0, dur_s=0.5):
 def _spy_av_open(monkeypatch, wrap=lambda container, kwargs: container):
     """Route av.open through a spy; return the list of (file, kwargs) it saw.
     `wrap` may replace the container handed back to the caller."""
-    import av
     opens, real_open = [], av.open
 
     def spy_open(file, *args, **kwargs):
@@ -71,7 +71,6 @@ def test_transcode_pyav_missing(tmp_path, monkeypatch):
 
 
 def _write_video_only(path):
-    import av
     c = av.open(path, "w")
     st = c.add_stream("mpeg4", rate=5)
     st.width = 32
@@ -220,7 +219,6 @@ def _two_tone(path, *, rate=44100, pts_offset_s=0):
     pcm = np.repeat((tone * 8000).astype(np.int16), 2)
     if path.endswith(".wav"):
         return write_wav(path, pcm.tobytes(), nchannels=2, rate=rate)
-    import av
     with av.open(path, "w") as out:
         st = out.add_stream("aac", rate=rate, layout="stereo")
         step = 1024
@@ -313,7 +311,6 @@ def _damaged_mp3(path, *, seconds=8):
     failure, never as a refused input)."""
     import random
 
-    import av
     with av.open(path, "w", format="mp3") as out:
         st = out.add_stream("libmp3lame", rate=RATE)
         st.layout = "mono"
@@ -356,7 +353,6 @@ def _concat_mp3(tmp_path):
     """2 s of 44.1 kHz stereo mp3 followed by 2 s of 22.05 kHz mono, as
     `cat a.mp3 b.mp3` makes it: the decoder's frames change rate and layout
     halfway, which one AudioResampler refuses with a plain ValueError."""
-    import av
     parts = []
     for rate, layout in ((44100, "stereo"), (22050, "mono")):
         path = str(tmp_path / f"{rate}.mp3")
