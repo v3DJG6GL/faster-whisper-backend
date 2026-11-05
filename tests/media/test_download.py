@@ -15,11 +15,14 @@ from asyncio import run as _run
 import os
 import socket
 import sys
+import threading
 import time
 import urllib.error
 
 import pytest
+import yt_dlp.extractor
 
+from faster_whisper_backend.core import net_policy as np
 from faster_whisper_backend.media import download as udl
 from tests.media._server_helpers import _QuietHandler, _stopping
 
@@ -504,7 +507,6 @@ def test_probe_bounds_the_hand_off_check_by_the_probe_deadline(monkeypatch):
     """The hand-off re-check (DNS outside the socket cutoff, a busy probe
     pool) spends from the probe's one wall-clock budget like the steps
     before it: "took too long", not a request running past the timeout."""
-    import threading
     _youtube_handing_off_to_generic(
         monkeypatch, webpage_url="https://cdn.example/live.m3u8",
         protocol="m3u8_native")
@@ -582,7 +584,6 @@ def test_download_subprocess_cannot_hand_off_to_a_scraped_generic_page(
     never sees ITS extraction: with URL_ALLOW_GENERIC off a site key's argv
     carries match filters that admit only the site's own result or a media
     file / manifest GenericIE served itself."""
-    import yt_dlp
     _handoff_policy(monkeypatch)
     filters = udl.handoff_match_filters("Youtube")
     assert udl.handoff_match_filters("Generic") is None
@@ -648,7 +649,6 @@ def test_match_extractor_skips_extractors_yt_dlp_disables_by_default(monkeypatch
     """yt-dlp's default extractor set leaves out _ENABLED=False IEs (DW,
     R7, ...), so GenericIE scrapes those URLs: the offline match must call
     them Generic or they skip the direct-media gate."""
-    import yt_dlp.extractor
 
     def _ie(name, enabled, claims):
         return type(name + "IE", (), {
@@ -668,7 +668,6 @@ def test_match_extractor_keeps_a_disabled_by_default_extractor_the_allowlist_nam
         monkeypatch):
     """An explicit allowed_extractors pin turns an _ENABLED=False IE back on
     in yt-dlp, so an operator who allowlists DW must get DW, not Generic."""
-    import yt_dlp.extractor
 
     def _ie(name, enabled):
         return type(name + "IE", (), {
@@ -1221,8 +1220,7 @@ def test_thumbnail_dribble_bounded_by_deadline(monkeypatch):
         headers = {"Content-Type": "image/jpeg"}
 
         def read(self, n):
-            import time as _t
-            _t.sleep(0.1)
+            time.sleep(0.1)
             return b"x" * 100  # never EOF, always under the socket timeout
 
     _patch_opener(monkeypatch, _Resp)
@@ -1243,7 +1241,6 @@ def test_direct_media_probe_bounded_by_deadline(monkeypatch):
     probe budget) must not be judged direct media once the deadline has
     passed, whatever its Content-Type says: it took too long, it is not
     "not media"."""
-    import time as _t
 
     class _Resp(_CtxResp):
         headers = {"Content-Type": "audio/mpeg"}
@@ -1252,7 +1249,7 @@ def test_direct_media_probe_bounded_by_deadline(monkeypatch):
             return b"x"
 
     def _slow():
-        _t.sleep(0.5)  # past the 0.2 s budget, under the 1 s op timeout
+        time.sleep(0.5)  # past the 0.2 s budget, under the 1 s op timeout
         return _Resp()
 
     _patch_opener(monkeypatch, _slow)
@@ -1337,7 +1334,6 @@ def test_probe_extract_runs_on_probe_pool(monkeypatch):
     """extract_info can wedge a thread past the wait_for (per-socket-op
     timeouts, dribbling hosts); it must cost _PROBE_POOL capacity, never the
     default executor that transcription runs on."""
-    import threading
     seen: dict = {}
 
     def _extract(url):
@@ -1350,7 +1346,6 @@ def test_probe_extract_runs_on_probe_pool(monkeypatch):
 
 
 def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
-    import threading
     seen: dict = {}
 
     class _Resp(_CtxResp):
@@ -1434,7 +1429,6 @@ def _ok_server(content_type, body, on_get=None):
     """Loopback HTTPServer answering every GET 200 `content_type` + `body`;
     `on_get(handler)` runs first, to record the request."""
     import http.server
-    import threading
 
     class _H(_QuietHandler):
         def do_GET(self):
@@ -1452,7 +1446,6 @@ def _rebinding_server(monkeypatch, content_type):
     """Local server + a getaddrinfo stub for "rebind.test" that answers a
     public address on the first lookup (the _host_is_forbidden gate) and
     loopback on every later one (what an unpinned connect would dial)."""
-    import socket
 
     hits = {"n": 0}
 
@@ -1505,7 +1498,6 @@ def _no_proxy(monkeypatch):
 
 def _open_loopback(monkeypatch):
     """Let the real opener dial the loopback server under test."""
-    from faster_whisper_backend.core import net_policy as np
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
     monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
     _no_proxy(monkeypatch)
@@ -1517,13 +1509,10 @@ def _dribbling_server(header: bytes, interval: float):
     Returns (socket, accepted): the Event proves the client got as far as
     the dribble — a fast refusal before connecting would otherwise pass
     for the cut."""
-    import socket as _s
-    import threading as _th
-    import time as _t
-    srv = _s.socket()
+    srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
-    accepted = _th.Event()
+    accepted = threading.Event()
 
     def serve():
         try:
@@ -1537,8 +1526,8 @@ def _dribbling_server(header: bytes, interval: float):
                     conn.send(bytes([b]))
                 except OSError:
                     return
-                _t.sleep(interval)
-    _th.Thread(target=serve, daemon=True).start()
+                time.sleep(interval)
+    threading.Thread(target=serve, daemon=True).start()
     return srv, accepted
 
 
@@ -1548,20 +1537,19 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
     and would wedge a _PROBE_POOL thread for the whole dribble. The
     wall-clock cutoff must free it at `timeout`, through the REAL opener
     and connection classes."""
-    import time as _t
     _open_loopback(monkeypatch)
     srv, accepted = _dribbling_server(
         b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 1\r\n\r\nx",
         0.1)
     try:
         port = srv.getsockname()[1]
-        t0 = _t.monotonic()
+        t0 = time.monotonic()
         with pytest.raises(udl.UrlTimeoutError, match="too long"):
             udl._direct_media_probe_sync(f"http://127.0.0.1:{port}/a.mp3", timeout=0.5)
         assert accepted.is_set()
         # The dribble alone takes ~7 s. 4 s, not 2: a loaded CI runner needed
         # 2.5 s for the 0.5 s deadline, and the cut is still proven.
-        assert _t.monotonic() - t0 < 4.0
+        assert time.monotonic() - t0 < 4.0
     finally:
         srv.close()
 
@@ -1572,21 +1560,20 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
     soft-fails to None, which would pass this bound with the cut gone while
     the pool thread stays wedged for the whole ~7 s dribble."""
     import http.client
-    import time as _t
     _open_loopback(monkeypatch)
     srv, accepted = _dribbling_server(
         b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 1\r\n\r\nx",
         0.1)
     try:
         port = srv.getsockname()[1]
-        t0 = _t.monotonic()
+        t0 = time.monotonic()
         # The cut surfaces as http.client's BadStatusLine / a socket error;
         # anything else (a TypeError, a host-gate refusal) never reached it.
         with pytest.raises((http.client.HTTPException, OSError)):
             udl._capped_get(f"http://127.0.0.1:{port}/t.jpg", max_bytes=512_000,
                             timeout=0.5, accept=lambda c: c.startswith("image/"))
         assert accepted.is_set()
-        assert _t.monotonic() - t0 < 4.0   # see the probe test above
+        assert time.monotonic() - t0 < 4.0   # see the probe test above
     finally:
         srv.close()
 
@@ -1633,10 +1620,8 @@ def test_direct_media_probe_and_capped_get_send_an_idn_host_as_punycode(
     (probe said not media, _capped_get raised it). Through a plain-HTTP
     proxy the whole URL is the ASCII request line. The host must go out
     IDNA-encoded on both."""
-    import socket as _s
-    from faster_whisper_backend.core import net_policy as np
     _open_loopback(monkeypatch)
-    real_gai = _s.getaddrinfo
+    real_gai = socket.getaddrinfo
     names = {"müller.example", "xn--mller-kva.example",
              "例え.jp", "xn--r8jz45g.jp"}
     monkeypatch.setattr(np.socket, "getaddrinfo", lambda host, *a, **kw: (
@@ -1663,8 +1648,7 @@ def test_cutoff_shuts_a_socket_added_after_it_fired():
     """A socket whose connect() returns after the timer fired (a dribbled TLS
     handshake, a redirect hop dialled past the cutoff) must be shut at once,
     not parked in the list cut() already emptied."""
-    import socket as _s
-    a, b = _s.socketpair()
+    a, b = socket.socketpair()
     try:
         a.settimeout(2.0)
         cutoff = udl._WallClockCutoff(10.0)
