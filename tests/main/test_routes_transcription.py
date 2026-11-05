@@ -24,10 +24,7 @@ from tests._transcription_helpers import (
 
 
 def test_default_json_returns_text_object(client):
-    r = _post(client, response_format="json")
-    assert r.status_code == 200
-    body = r.json()
-    assert body == {"text": "hallo welt"}
+    assert post_json_ok(client) == {"text": "hallo welt"}
 
 
 def test_text_format_returns_plain_string(client):
@@ -343,8 +340,7 @@ def test_pid_bindings_of_a_same_id_repost_survive_the_first_run(
             tx_progress._PLAN_BY_PID[pid] = "other-plan"
             tx_progress._RUN_PLAN_BY_PID[pid] = foreign_plan
     monkeypatch.setattr(tx_progress, "_progress_close", _close_then_repost)
-    r = _post(client, response_format="json", progress_id=pid)
-    assert r.status_code == 200, r.text
+    post_json_ok(client, progress_id=pid)
     assert tx_progress._JOB_BY_PID.get(pid) == "other-request"
     assert tx_progress._PLAN_BY_PID.get(pid) == "other-plan"
     assert tx_progress._RUN_PLAN_BY_PID.get(pid) is foreign_plan
@@ -352,8 +348,7 @@ def test_pid_bindings_of_a_same_id_repost_survive_the_first_run(
 
 def test_pid_bindings_are_popped_when_the_run_still_owns_them(client):
     pid = "b3" * 16
-    r = _post(client, response_format="json", progress_id=pid)
-    assert r.status_code == 200, r.text
+    post_json_ok(client, progress_id=pid)
     assert pid not in tx_progress._JOB_BY_PID
     assert pid not in tx_progress._PLAN_BY_PID
     assert pid not in tx_progress._RUN_PLAN_BY_PID
@@ -378,8 +373,7 @@ def test_job_finish_is_scoped_to_the_runs_request_id(
         return await real_finish(p, **kw)
     monkeypatch.setattr(tx_progress, "_jobs_start_async", _start)
     monkeypatch.setattr(tx_progress, "_jobs_finish", _finish)
-    r = _post(client, response_format="json", progress_id=pid)
-    assert r.status_code == 200, r.text
+    post_json_ok(client, progress_id=pid)
     assert len(finishes) == 1
     assert starts[0] and finishes == starts
 
@@ -489,8 +483,7 @@ def test_record_transcription_carries_the_key_label(client, app_module,
     uid = api_keys_store.create_user("alice", is_admin=False)
     raw, _ = api_keys_store.create_key(uid, label="alice-laptop")
     recorded = record_runs(app_module, monkeypatch)
-    r = _post(client, bearer(raw), response_format="json")
-    assert r.status_code == 200, r.text
+    post_json_ok(client, bearer(raw))
     assert recorded and recorded[-1]["key_label"] == "alice-laptop"
 
 
@@ -507,7 +500,7 @@ def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
         seen.append(kw.get("prefix"))
         return _orig(*a, **kw)
     monkeypatch.setattr(app_module.tempfile, "NamedTemporaryFile", _spy)
-    assert _post(client, response_format="json").status_code == 200
+    post_json_ok(client)
     assert seen == ["whisperup-"]
 
 
@@ -533,8 +526,7 @@ def test_cuda_oom_is_classified_on_the_ledger(client, app_module, monkeypatch):
 
 def test_unknown_failure_is_other_and_success_has_no_class(client, app_module,
                                                           monkeypatch):
-    r = _post(client, response_format="json")
-    assert r.status_code == 200
+    post_json_ok(client)
     ok = _ledger_row()
     assert ok["error_class"] is None and ok["error_stage"] is None
 

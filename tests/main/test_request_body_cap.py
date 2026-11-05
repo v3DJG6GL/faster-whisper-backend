@@ -11,7 +11,7 @@ import inspect
 import json
 
 from faster_whisper_backend.auth import dependencies as auth
-from tests._transcription_helpers import post_json_ok, post_transcription
+from tests._transcription_helpers import post_json_ok
 
 _JSON = {"Content-Type": "application/json"}
 
@@ -238,10 +238,9 @@ def test_multipart_label_on_a_non_upload_route_keeps_the_backstop(
 def test_multipart_upload_route_is_not_held_to_the_backstop(
         client, app_module, monkeypatch):
     monkeypatch.setattr(app_module, "_NON_UPLOAD_BODY_BACKSTOP", 1024)
-    r = post_transcription(
-        client, response_format="json",
+    post_json_ok(
+        client,
         files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")})
-    assert r.status_code == 200, r.text
 
 
 def test_every_multipart_route_is_an_upload_path(app_module):

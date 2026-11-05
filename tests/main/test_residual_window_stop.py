@@ -12,7 +12,8 @@ import logging
 
 from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo, FakeSegment
-from tests._transcription_helpers import guard_line, post_transcription as _post, post_verbose_ok
+from tests._transcription_helpers import (
+    guard_line, post_json_ok, post_transcription as _post, post_verbose_ok)
 
 
 def _stopping_generator():
@@ -32,8 +33,7 @@ def test_batch_keeps_segments_yielded_before_the_stop(client, app_module, fake_m
 def test_batch_off_switch_reaches_the_receipt(client, app_module, fake_model, caplog):
     app_module.cfg.DECODE_SKIP_RESIDUAL_WINDOWS = False
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = _post(client, response_format="json")
-    assert r.status_code == 200, r.text
+        post_json_ok(client)
     assert guard_line(caplog, "skip_residual_windows").endswith("false *")
 
 
