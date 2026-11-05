@@ -589,8 +589,7 @@ def test_verbose_json_carries_plan_receipt_and_entry_is_gone(client,
     # (The test config's DEFAULT_MODEL is empty, so no model key rides.)
     assert pid not in tx_progress._RUN_PLAN_BY_PID
     # The plain json shape stays the OpenAI-compatible object.
-    r = _post(client, response_format="json")
-    assert "plan" not in r.json()
+    assert "plan" not in post_json_ok(client)
 
 
 def test_plan_receipt_is_clocked_without_a_progress_id(client, app_module,
@@ -666,8 +665,7 @@ def test_translate_task_scopes_the_pipeline_by_the_output_language(
     assert "Was it good" in post_json_ok(client, task="translate")["text"]
     # Same text, transcribe task: the de rules do apply (the guard above is
     # only meaningful while they would).
-    r = _post(client, response_format="json")
-    assert "Was it good" not in r.json()["text"]
+    assert "Was it good" not in post_json_ok(client)["text"]
 
 
 def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module,
@@ -794,8 +792,7 @@ def test_a_full_capture_store_still_records_a_batch_request(
     # Not a store full of "ready" rows (the real DB state must not decide).
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
 
-    r = _post(client)
-    assert r.status_code == 200, r.text
+    post_json_ok(client)
     assert len(created_captures) == 1
     assert fake_model.last_kwargs["word_timestamps"] is True   # forced DTW
 
@@ -807,8 +804,7 @@ def test_a_store_full_of_ready_captures_skips_the_batch_capture(
     _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
 
-    r = _post(client)
-    assert r.status_code == 200, r.text
+    post_json_ok(client)
     assert created_captures == []
     # The costly half: a json response with no timestamp_granularities runs
     # without DTW once the gate declines.
@@ -834,8 +830,7 @@ def test_batch_capture_gate_reads_the_store_off_the_event_loop(
         return True
     monkeypatch.setattr(captures_store, "ready_fills_cap", _probe)
 
-    r = _post(client)
-    assert r.status_code == 200, r.text
+    post_json_ok(client)
     assert on_loop == [False]
 
 

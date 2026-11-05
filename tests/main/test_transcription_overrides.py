@@ -290,8 +290,7 @@ def test_per_key_override_beats_user(client, make_user_key, fake_model):
     client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
                  json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
 
-    r = post_transcription(client, bearer(raw_alice))
-    assert r.status_code == 200, r.text
+    post_json_ok(client, bearer(raw_alice))
     assert fake_model.last_kwargs["beam_size"] == 4       # key.direct wins over user.direct
 
 

@@ -10,36 +10,31 @@ kwarg entirely rather than being forwarded.
 
 import json
 
-from tests._transcription_helpers import post_transcription as _post
+from tests._transcription_helpers import post_json_ok
 
 
 def test_space_hotwords_override_clears_admin_hotwords(client, app_module, fake_model):
     app_module.cfg.DEFAULT_HOTWORDS = "Komma, Punkt"
-    r = _post(client, decode_overrides=json.dumps({"hotwords": " "}))
-    assert r.status_code == 200
+    post_json_ok(client, decode_overrides=json.dumps({"hotwords": " "}))
     assert "hotwords" not in fake_model.last_kwargs
 
 
 def test_empty_hotwords_override_clears_admin_hotwords(client, app_module, fake_model):
     app_module.cfg.DEFAULT_HOTWORDS = "Komma, Punkt"
-    r = _post(client, decode_overrides=json.dumps({"hotwords": ""}))
-    assert r.status_code == 200
+    post_json_ok(client, decode_overrides=json.dumps({"hotwords": ""}))
     assert "hotwords" not in fake_model.last_kwargs
 
 
 def test_blank_admin_default_hotwords_not_forwarded(client, app_module, fake_model):
     app_module.cfg.DEFAULT_HOTWORDS = "   "
-    r = _post(client)
-    assert r.status_code == 200
+    post_json_ok(client)
     assert "hotwords" not in fake_model.last_kwargs
 
 
 def test_real_hotwords_still_flow(client, app_module, fake_model):
     app_module.cfg.DEFAULT_HOTWORDS = "Komma, Punkt"
-    r = _post(client)
-    assert r.status_code == 200
+    post_json_ok(client)
     assert fake_model.last_kwargs.get("hotwords") == "Komma, Punkt"
     # ...and a real client override replaces (not clears) them.
-    r = _post(client, decode_overrides=json.dumps({"hotwords": "Doppelpunkt"}))
-    assert r.status_code == 200
+    post_json_ok(client, decode_overrides=json.dumps({"hotwords": "Doppelpunkt"}))
     assert fake_model.last_kwargs.get("hotwords") == "Doppelpunkt"

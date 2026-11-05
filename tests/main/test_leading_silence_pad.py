@@ -12,17 +12,16 @@ import numpy as np
 import pytest
 
 from tests.conftest import FakeInfo, FakeModel, FakeSegment, FakeWord
-from tests._transcription_helpers import post_transcription, serve_model, wav_bytes as _wav_bytes
+from tests._transcription_helpers import post_json_ok, serve_model, wav_bytes as _wav_bytes
 
 
-def _post(client, wav, **data):
-    return post_transcription(client, files={"file": ("a.wav", wav, "audio/wav")}, **data)
+def _post_ok(client, wav, **data):
+    return post_json_ok(client, files={"file": ("a.wav", wav, "audio/wav")}, **data)
 
 
 def test_model_receives_padded_array(client, app_module, fake_model):
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
-    r = _post(client, _wav_bytes(seconds=1.0))
-    assert r.status_code == 200
+    _post_ok(client, _wav_bytes(seconds=1.0))
     audio = fake_model.last_audio
     assert isinstance(audio, np.ndarray)
     assert len(audio) == 24000                    # 8000 pad + 16000 payload
@@ -42,9 +41,7 @@ def test_timestamps_shifted_back_to_original_timeline(client, app_module, monkey
     serve_model(monkeypatch, model)
 
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
-    r = _post(client, _wav_bytes(seconds=1.0), response_format="verbose_json")
-    assert r.status_code == 200
-    body = r.json()
+    body = _post_ok(client, _wav_bytes(seconds=1.0), response_format="verbose_json")
     assert body["duration"] == pytest.approx(1.0)
     assert body["segments"][0]["start"] == pytest.approx(0.1)
     assert body["segments"][0]["end"] == pytest.approx(0.9)
@@ -84,8 +81,7 @@ def test_live_progress_and_plan_use_the_original_timeline(
     monkeypatch.setattr(tx_progress, "_progress_set", _spy_ps)
 
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
-    r = _post(client, _wav_bytes(seconds=1.0), progress_id="0adf1e0e0001")
-    assert r.status_code == 200
+    _post_ok(client, _wav_bytes(seconds=1.0), progress_id="0adf1e0e0001")
     assert secs == [pytest.approx(1.0)]
     assert [t["duration"] for t in ticks if "duration" in t] == [
         pytest.approx(1.0)]
@@ -95,8 +91,7 @@ def test_live_progress_and_plan_use_the_original_timeline(
 
 def test_pad_zero_passes_path_through(client, app_module, fake_model):
     app_module.cfg.LEADING_SILENCE_PAD_MS = 0
-    r = _post(client, _wav_bytes(seconds=1.0))
-    assert r.status_code == 200
+    _post_ok(client, _wav_bytes(seconds=1.0))
     assert isinstance(fake_model.last_audio, str)
 
 
@@ -105,8 +100,7 @@ def test_undecodable_upload_falls_back_to_path(client, app_module, fake_model):
     # tmp-file path (unpadded), not 500. Every pre-existing dummy-WAV test
     # rides this same fallback.
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
-    r = _post(client, b"RIFFxxxxWAVE")
-    assert r.status_code == 200
+    _post_ok(client, b"RIFFxxxxWAVE")
     assert isinstance(fake_model.last_audio, str)
 
 
