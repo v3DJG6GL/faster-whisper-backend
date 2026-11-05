@@ -1677,7 +1677,7 @@ def overview(
         e = ents.get(eid)
         if e is None:
             e = ents[eid] = {"id": eid, "values": [0.0] * n,
-                             "totals": _zero_cell(), **meta}
+                             "totals": _zero_cell(), "label": eid, **meta}
         return e
 
     def add(e: dict[str, Any], day: int, cell: dict[str, Any]) -> None:
@@ -1696,7 +1696,7 @@ def overview(
             for k in KINDS:
                 cell = p[k]
                 if any(cell.get(m, 0) for m in rest):
-                    add(ent(k, label=k), day, cell)
+                    add(ent(k), day, cell)
                 for m in rest:
                     rest[m] -= cell[m]
             # Each cell was rounded to 3 decimals on its own, so `all` minus
@@ -1705,7 +1705,7 @@ def overview(
             # in KINDS).
             rest = {m: (v if v > 0.05 else 0) for m, v in rest.items()}
             if any(v > 0 for v in rest.values()):
-                add(ent(UNKNOWN_KIND, label=UNKNOWN_KIND), day, rest)
+                add(ent(UNKNOWN_KIND), day, rest)
     elif by in ("user", "key"):
         where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
         if with_stages:
@@ -1730,11 +1730,9 @@ def overview(
                         (*params, start_hour, end_hour))]
         for day, r, cell in rows:
             if by == "user":
-                add(ent(r["user_id"], label=r["user_id"], user_id=r["user_id"]),
-                    day, cell)
+                add(ent(r["user_id"], user_id=r["user_id"]), day, cell)
             else:
-                add(ent(r["key_id"], label=r["key_id"], user_id=r["user_id"],
-                        key_id=r["key_id"]), day, cell)
+                add(ent(r["key_id"], user_id=r["user_id"], key_id=r["key_id"]), day, cell)
     elif by == "model":
         where, params = _jobs_where(user_id, key_id, kinds, start_ts, end_ts)
         for job in conn.execute(
@@ -1743,8 +1741,7 @@ def overview(
             (*params, *with_stages),
         ):
             name = job["model"] or "(unknown)"
-            add(ent(name, label=name),
-                _epoch_day(_date_of(float(job["created_ts"]), tz)), _job_cell(job))
+            add(ent(name), _epoch_day(_date_of(float(job["created_ts"]), tz)), _job_cell(job))
     elif with_stages:  # stage, over the narrowed jobs (see by=user above)
         where, params = _scope_where(user_id, key_id, col="usage_jobs.user_id",
                                      key_col="usage_jobs.key_id", kinds=kinds,
@@ -1760,8 +1757,7 @@ def overview(
             cell = {"sessions": 1, "requests": 1, "errors": 0, "words": 0,
                     "audio_s": float(r["audio_s"] or 0.0),
                     "processing_s": float(r["secs"] or 0.0)}
-            add(ent(r["stage"], label=r["stage"]),
-                _epoch_day(_date_of(float(r["created_ts"]), tz)), cell)
+            add(ent(r["stage"]), _epoch_day(_date_of(float(r["created_ts"]), tz)), cell)
     else:  # stage
         key_scoped = False
         where, params = _scope_where(user_id)
@@ -1776,7 +1772,7 @@ def overview(
             cell = {"sessions": runs, "requests": runs, "errors": 0, "words": 0,
                     "audio_s": float(r["audio_s"] or 0.0),
                     "processing_s": float(r["secs"] or 0.0)}
-            add(ent(r["stage"], label=r["stage"]), day, cell)
+            add(ent(r["stage"]), day, cell)
 
     ranked = sorted(ents.values(),
                     key=lambda e: (-float(e["totals"].get(metric, 0) or 0), e["id"]))
