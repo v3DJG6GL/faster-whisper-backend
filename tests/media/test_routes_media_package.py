@@ -17,7 +17,7 @@ import pytest
 from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media import subtitle_mux as pk
-from tests.conftest import bearer, wait_until, write_bytes
+from tests.conftest import bearer, record_calls, wait_until, write_bytes
 from tests.media.test_routes_url import _assert_refused, _ok_body, _video_ids
 from tests.media.test_subtitle_mux import TESTSRC_1S, run_ffmpeg
 
@@ -383,13 +383,8 @@ def test_package_cover_art_only_says_so(client, package_enabled, monkeypatch):
 
 
 def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatch):
-    seen: list = []
-    inner = pk.build_package_argv
-
-    def _argv(*a, **kw):
-        seen.append(kw.get("video_index"))
-        return inner(*a, **kw)
-    monkeypatch.setattr(pk, "build_package_argv", _argv)
+    seen = record_calls(monkeypatch, pk, "build_package_argv",
+                        lambda *a, **kw: kw.get("video_index"))
     monkeypatch.setattr(pk, "probe_streams", lambda p: _streams(video_index=1))
     mid = _upload(client).json()["media_id"]
     r = _package(client, mid, {"container": "mkv"})

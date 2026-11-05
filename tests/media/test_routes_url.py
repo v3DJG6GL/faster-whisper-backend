@@ -22,7 +22,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media.routes import _has_speech as _REAL_HAS_SPEECH
-from tests.conftest import bearer
+from tests.conftest import bearer, record_calls
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -996,16 +996,11 @@ def hls_link(url_enabled, lang_check, fake_capped_get, monkeypatch):
     from tests.media.test_segmented import serve_hls
     link = fake_capped_get
     serve_hls(link.table, _HLS, 15)
-    link.ctype, link.downloads, link.heard = "video/mp2t", [], []
+    link.ctype, link.heard = "video/mp2t", []
 
     _stub_probe(monkeypatch, duration=60.0, segmented={
         "protocol": "hls", "url": _HLS, "headers": {}})
-    full = url_download.download
-
-    async def _download(url, **kw):
-        link.downloads.append(url)
-        return await full(url, **kw)
-    monkeypatch.setattr(url_download, "download", _download)
+    link.downloads = record_calls(monkeypatch, url_download, "download", lambda url, **kw: url)
     _before_detect(monkeypatch, lang_check,
                    lambda audio, kw: link.heard.append(len(audio)))
     return link
@@ -1174,14 +1169,7 @@ def _prefetched(tmp_path, *, user_id=None, kind="audio", source_url=_URL, name="
 
 @pytest.fixture
 def downloads(url_enabled, monkeypatch):
-    calls: list = []
-    real = url_download.download
-
-    async def _counting(url, **kw):
-        calls.append(url)
-        return await real(url, **kw)
-    monkeypatch.setattr(url_download, "download", _counting)
-    return calls
+    return record_calls(monkeypatch, url_download, "download", lambda url, **kw: url)
 
 
 def test_prefetched_audio_is_reused(client, url_enabled, downloads, tmp_path, fake_model):
