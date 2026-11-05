@@ -196,6 +196,8 @@ ConvertQuantLit = Literal[
 RuleSlug = Annotated[str, Field(min_length=1, max_length=64,
                                 pattern=r"^[a-z0-9-]+$")]
 RuleLabel = Annotated[str, Field(min_length=1, max_length=80)]
+# One cap for every rule type: admin/routes reads it off RegexListEntry for the dry run.
+RulePattern = Annotated[str, Field(max_length=512)]
 
 # Tag format (Kubernetes label-style). Tags filter which users see which
 # rules on /quick-config; api_keys_store validates the per-user
@@ -391,7 +393,7 @@ class RegexListEntry(BaseModel):
     Optional fields default to "" — never None — so model_dump(exclude_none=True)
     on the export/env round-trip keeps them."""
     model_config = {"extra": "forbid"}
-    pattern: Annotated[str, Field(max_length=512)]
+    pattern: RulePattern
     replacement: Annotated[str, Field(max_length=512)] = ""
     label: Annotated[str, Field(max_length=80)] = ""
     note: Annotated[str, Field(max_length=4000)] = ""
@@ -409,7 +411,7 @@ class RegexListRule(_RepeatableRule):
 class LowercaseWordlistRule(_RepeatableRule):
     """Strip terminator and lowercase the next word if it's in the wordlist."""
     type: Literal["callback:lowercase-wordlist"]
-    pattern: Annotated[str, Field(max_length=512)]
+    pattern: RulePattern
     wordlist: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[A-Za-zÄÖÜäöüß]+$")]],
         Field(max_length=2000),
@@ -444,14 +446,14 @@ class DedupRule(_RepeatableRule):
     """Pattern-only row. Callback collapses each match: prefer last
     non-comma in the run; pure-comma run collapses to a single comma."""
     type: Literal["callback:dedup"]
-    pattern: Annotated[str, Field(max_length=512)]
+    pattern: RulePattern
 
 
 class UpperRule(_RepeatableRule):
     """Pattern-only row. Callback uppercases group(2) (or the entire match
     if the pattern has fewer than 2 groups)."""
     type: Literal["callback:upper"]
-    pattern: Annotated[str, Field(max_length=512)]
+    pattern: RulePattern
 
 
 class TerminalRule(_RuleBase):
