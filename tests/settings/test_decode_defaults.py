@@ -9,7 +9,7 @@ assert the projection, the source categories and the request-profile layering.
 import pytest
 
 from faster_whisper_backend.settings import schema as settings_schema
-from tests.conftest import bearer
+from tests.conftest import bearer, bind_key
 
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
@@ -30,12 +30,6 @@ def _key_id(client, h, uid):
     return r.json()["keys"][0]["id"]
 
 
-def _set_key_binding(client, h, uid, kid, **binding):
-    body = {"overrides": {}, "profiles": [], "locks": [], **binding}
-    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h, json=body)
-    assert r.status_code == 200, r.text
-
-
 def _bound_alice(client, make_user_key, *, define=None, **binding):
     """A new admin posts the OVERRIDE_PROFILES `define` (if any), then binds a
     new key "alice"; returns alice's headers."""
@@ -45,7 +39,7 @@ def _bound_alice(client, make_user_key, *, define=None, **binding):
         r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": define})
         assert r.status_code == 200, r.text
     uid, raw = make_user_key("alice")
-    _set_key_binding(client, h, uid, _key_id(client, h, uid), **binding)
+    bind_key(client, h, uid, _key_id(client, h, uid), **binding)
     return bearer(raw)
 
 

@@ -13,7 +13,7 @@ from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store, effective_config
 from tests._page_helpers import js_body, js_fn, js_upto, needs_node, node_json
-from tests.conftest import bearer, locked_user
+from tests.conftest import bearer, bind_key, locked_user
 
 PERMS = "/settings/api-keys/api/users"
 OV = "/settings/overrides"
@@ -37,14 +37,6 @@ def _bind_user(client, h, uid, **config):
     body = {"overrides": {}, "profiles": [], "locks": [], **config}
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=h,
                      json={"pages": {}, "config": body})
-    assert r.status_code == 200, r.text
-    return r
-
-
-def _bind_key(client, h, uid, kid, **config):
-    """PATCH key {kid}'s config binding (unnamed parts empty); asserts 200."""
-    body = {"overrides": {}, "profiles": [], "locks": [], **config}
-    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h, json=body)
     assert r.status_code == 200, r.text
     return r
 
@@ -176,7 +168,7 @@ def test_delete_guard_counts_allowlist_only_reference(client, make_user_key, h):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
-    _bind_key(client, h, uid, kid, allowed_override_profiles=["clinic-de"])
+    bind_key(client, h, uid, kid, allowed_override_profiles=["clinic-de"])
 
     usage = client.get(f"{OV}/state", headers=h).json()["usage"]["clinic-de"]
     assert kid in usage["keys"]
@@ -249,7 +241,7 @@ def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key, h
     # ignored — even though the field itself carries no field-level lock.
     bob_uid, _ = make_user_key("bob", is_admin=False)
     kid = client.get(f"{PERMS}/{bob_uid}/keys", headers=h).json()["keys"][0]["id"]
-    _bind_key(client, h, bob_uid, kid, allow_request_decode_overrides=False)
+    bind_key(client, h, bob_uid, kid, allow_request_decode_overrides=False)
 
     rj = client.get(f"{OV}/resolve", headers=h, params={
         "user_id": bob_uid, "key_id": kid, "model": "whisper-1",
@@ -353,7 +345,7 @@ def test_per_key_config_overrides_user(client, make_user_key, h):
         "pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
     keys = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"]
     kid = keys[0]["id"]
-    r = _bind_key(client, h, uid, kid, overrides={"BEAM_SIZE": 4})
+    r = bind_key(client, h, uid, kid, overrides={"BEAM_SIZE": 4})
     assert r.json()["config"]["direct"]["BEAM_SIZE"] == 4
 
     rj = client.get(f"{OV}/resolve", headers=h, params={
@@ -377,7 +369,7 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key, h):
     _bind_user(client, h, uid, profiles=["clinic-de"],
                allowed_override_profiles=["clinic-de"])
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
-    _bind_key(client, h, uid, kid, profiles=["clinic-de"])
+    bind_key(client, h, uid, kid, profiles=["clinic-de"])
 
     r = _rename_profile(client, h, "clinic-de", "clinic-deutsch")
     assert r.status_code == 200, r.text

@@ -878,6 +878,14 @@ def locked_user(make_user_key, username="alice", **kwargs):
     return make_user_key(username, **kwargs)
 
 
+def bind_key(client, h, uid, kid, **config):
+    """PATCH key {kid}'s config binding (unnamed parts empty); asserts 200."""
+    body = {"overrides": {}, "profiles": [], "locks": [], **config}
+    r = client.patch(f"/settings/api-keys/api/users/{uid}/keys/{kid}/config", headers=h, json=body)
+    assert r.status_code == 200, r.text
+    return r
+
+
 def locked_alice(make_user_key, scope="own"):
     """Lock the server down with an admin key (open mode off), then create
     non-admin alice with quick_config=`scope`. Returns her (uid, raw_key)."""

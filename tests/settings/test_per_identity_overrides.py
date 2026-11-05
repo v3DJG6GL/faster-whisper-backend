@@ -10,7 +10,7 @@ round-trip (the request-gate keys survive validate_binding/_parse_binding).
 from faster_whisper_backend.core import languages
 from tests._transcription_helpers import bind_profile
 from tests._translation_helpers import enable_translation
-from tests.conftest import bearer
+from tests.conftest import bearer, bind_key
 
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
@@ -30,17 +30,10 @@ def _key_id(client, h, uid):
     return r.json()["keys"][0]["id"]
 
 
-def _set_key_binding(client, h, uid, kid, **binding):
-    body = {"overrides": {}, "profiles": [], "locks": [], **binding}
-    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h, json=body)
-    assert r.status_code == 200, r.text
-    return r.json()["config"]
-
-
 def _alice_with_key_binding(client, make_user_key, profiles, **binding):
     h = _admin_with_profiles(client, make_user_key, profiles)
     uid, raw_alice = make_user_key("alice")
-    _set_key_binding(client, h, uid, _key_id(client, h, uid), **binding)
+    bind_key(client, h, uid, _key_id(client, h, uid), **binding)
     return raw_alice
 
 
@@ -298,10 +291,10 @@ def test_binding_roundtrip_preserves_request_gates(client, make_user_key):
     h = _admin_with_profiles(client, make_user_key, {"fast": {"BEAM_SIZE": 3}})
     uid, _ = make_user_key("alice")
     kid = _key_id(client, h, uid)
-    stored = _set_key_binding(client, h, uid, kid,
-                              allow_request_override_profile=False,
-                              allow_request_decode_overrides=True,
-                              allowed_override_profiles=["fast"])
+    stored = bind_key(client, h, uid, kid,
+                      allow_request_override_profile=False,
+                      allow_request_decode_overrides=True,
+                      allowed_override_profiles=["fast"]).json()["config"]
     assert stored["allow_request_override_profile"] is False
     assert stored["allow_request_decode_overrides"] is True
     assert stored["allowed_override_profiles"] == ["fast"]
@@ -327,7 +320,7 @@ def test_apply_no_profiles_roundtrip_and_suppresses_user_profile(client, make_us
     assert "clinic" in rj["profiles_applied"]
 
     # set the per-key force → stored + re-read carry it
-    stored = _set_key_binding(client, h, uid, kid, apply_no_profiles=True)
+    stored = bind_key(client, h, uid, kid, apply_no_profiles=True).json()["config"]
     assert stored["apply_no_profiles"] is True
     cfg = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["config"]
     assert cfg["apply_no_profiles"] is True
