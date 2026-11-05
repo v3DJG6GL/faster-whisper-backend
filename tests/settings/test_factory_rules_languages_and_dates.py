@@ -21,14 +21,12 @@ from tests.settings._rules_helpers import (
     factory_rules_with_entry as _factory_rules_with_entry,
     fast_postprocess as _fast_postprocess,
     load_saved as _load_saved,
+    terminal_rule,
 )
 
 
 def _by_name():
     return {r["name"]: r for r in _factory_rules()}
-
-
-_TRIM = {"name": "trim-edges", "label": "Trim", "type": "terminal"}
 
 
 def _install(app_module, rules):
@@ -41,7 +39,7 @@ def _install_factory(app_module):
 
 
 def _install_one(app_module, name):
-    _install(app_module, [_by_name()[name], dict(_TRIM)])
+    _install(app_module, [_by_name()[name], terminal_rule()])
 
 
 def _pp(text, language="de"):
@@ -85,7 +83,7 @@ def test_capitalize_after_terminator_is_fast_on_a_run_of_paragraph_breaks(app_mo
     started at every newline of the run and scanned to its end. A match now
     starts only at the last newline of a run."""
     rule = _by_name()["capitalize-after-terminator"]
-    _install(app_module, [rule, dict(_TRIM)])
+    _install(app_module, [rule, terminal_rule()])
     for text in ("Befund" + "\n" * 40000 + "Ende", "Befund" + "\n \n" * 20000 + "Ende"):
         assert _fast_postprocess(text) == text
     for old in (r"([.?!]\s+|\n+\s*)([a-zäöüß])", r"([.?!]\s+|\n\s*)([a-zäöüß])"):

@@ -15,16 +15,13 @@ from pydantic import ValidationError
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
 from tests.settings._rules_helpers import (
-    entry_by_label, map_rule as _map_rule, regex_rule as _regex_rule)
+    entry_by_label, map_rule as _map_rule, regex_rule as _regex_rule,
+    terminal_rule as _terminal)
 
 
 @pytest.fixture
 def path(tmp_path):
     return str(tmp_path / "config.json")
-
-
-def _terminal():
-    return {"name": "trim-edges", "label": "Trim edges", "type": "terminal"}
 
 
 def test_load_real_config_json():
