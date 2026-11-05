@@ -7,7 +7,7 @@ from faster_whisper_backend.captures import routes as captures_routes
 from faster_whisper_backend.captures import samples_store as gs
 from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import (
-    _insert_member, _insert_sample, _patch, _root_and_alice,
+    _get, _insert_member, _insert_sample, _patch, _root_and_alice,
 )
 from tests.conftest import bearer, locked_user, write_bytes
 
@@ -46,7 +46,7 @@ def test_stats_arithmetic_median_ready_week_oldest_new(client, make_user_key):
     _row(conn, "b3b3b3b3b3b3", user_id=uid_b, status="dismissed", audio_s=3.0,
          created_ts=400.0, reviewed_ts=now)
 
-    st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
+    st = _get(client, raw_root, "stats").json()
     assert st["total"]["n"] == 5 and st["total"]["s"] == 20.0
     assert st["total"]["median_s"] == 3.0                    # 1,2,3,4,10
     assert st["by_status"]["new"] == {"n": 2, "s": 3.0}
@@ -68,15 +68,13 @@ def test_stats_scoped_to_caller_and_admin_only_override(client, make_user_key):
     _row(conn, "b2b2b2b2b2b2", user_id=uid_b, audio_s=5.0)
 
     # own-scope alice: her rows only, even when she asks for bob
-    st = client.get("/captures/api/stats?user_id=" + uid_b,
-                    headers=bearer(raw_a)).json()
+    st = _get(client, raw_a, "stats?user_id=" + uid_b).json()
     assert st["total"]["n"] == 1
     assert [u["user_id"] for u in st["by_user"]] == [uid_a]
     # admin: everything, and the override narrows
-    st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
+    st = _get(client, raw_root, "stats").json()
     assert st["total"]["n"] == 3
-    st = client.get("/captures/api/stats?user_id=" + uid_b,
-                    headers=bearer(raw_root)).json()
+    st = _get(client, raw_root, "stats?user_id=" + uid_b).json()
     assert st["total"] == {"n": 2, "s": 10.0, "median_s": 5.0}
 
 
@@ -85,7 +83,7 @@ def test_stats_folds_speakers_past_eight_into_others(client, make_user_key, root
     for i in range(10):
         uid, _ = make_user_key(f"u{i}", pages={"captures": "own"})
         _row(conn, f"c{i:011d}", user_id=uid, audio_s=float(10 - i))
-    st = client.get("/captures/api/stats", headers=bearer(root_key)).json()
+    st = _get(client, root_key, "stats").json()
     assert len(st["by_user"]) == 9
     assert st["by_user"][-1] == {"user_id": None, "username": "others",
                                  "n": 2, "s": 3.0}                # 2 + 1
@@ -105,15 +103,13 @@ def test_list_user_id_accepts_several_speakers(client, make_user_key):
     _row(conn, "b1b1b1b1b1b1", user_id=uid_b)
     _row(conn, "c1c1c1c1c1c1", user_id=uid_c, status="ready")
 
-    body = client.get(f"/captures/api/list?user_id={uid_a},{uid_b}",
-                      headers=bearer(raw_root)).json()
+    body = _get(client, raw_root, f"list?user_id={uid_a},{uid_b}").json()
     assert sorted(r["id"] for r in body["captures"]) == [
         "a1a1a1a1a1a1", "b1b1b1b1b1b1"]
     assert body["counts"]["new"] == 2 and body["counts"]["ready"] == 0
     assert body["total_count"] == 2
     # a non-admin's speaker list is ignored: still pinned to herself
-    body = client.get(f"/captures/api/list?user_id={uid_a},{uid_b}",
-                      headers=bearer(raw_a)).json()
+    body = _get(client, raw_a, f"list?user_id={uid_a},{uid_b}").json()
     assert [r["id"] for r in body["captures"]] == ["a1a1a1a1a1a1"]
 
 
@@ -122,8 +118,7 @@ def test_list_user_id_rejects_an_oversized_speaker_list(client, root_key):
     ends in sqlite's "too many SQL variables" (a 500), so it is a 422."""
     cap = captures_routes._MAX_OWNER_FILTER_IDS
     ok = ",".join(f"u{i}" for i in range(cap))
-    assert client.get("/captures/api/list?user_id=" + ok,
-                      headers=bearer(root_key)).status_code == 200
+    assert _get(client, root_key, "list?user_id=" + ok).status_code == 200
     for path in ("/captures/api/list", "/captures/api/stats",
                  "/captures/api/samples"):
         r = client.get(f"{path}?user_id={ok},one-too-many",
@@ -142,7 +137,7 @@ def test_samples_user_id_accepts_several_speakers(client, make_user_key):
     _insert_sample(conn, gs, "sampleccccc1", locked=False, user_id=uid_c)
 
     def ids(q, raw):
-        body = client.get("/captures/api/samples" + q, headers=bearer(raw)).json()
+        body = _get(client, raw, "samples" + q).json()
         return sorted(g["id"] for g in body["samples"])
 
     assert ids(f"?user_id={uid_a},{uid_b}", raw_root) == [
@@ -191,7 +186,7 @@ def test_bulk_status_keeps_reviewed_ts_of_rows_already_at_the_target(
         {"id": "a2a2a2a2a2a2", "prev_status": "ready"}]
     assert captures_store.get_capture("a2a2a2a2a2a2")["reviewed_ts"] == old_ts
     assert captures_store.get_capture("a1a1a1a1a1a1")["reviewed_ts"] > old_ts
-    st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
+    st = _get(client, raw_root, "stats").json()
     assert st["ready"]["n"] == 2 and st["ready"]["week_n"] == 1
 
 
@@ -209,7 +204,7 @@ def test_single_patch_keeps_reviewed_ts_when_status_is_unchanged(
     assert r.status_code == 200
     row = captures_store.get_capture("a3a3a3a3a3a3")
     assert row["admin_notes"] == "checked" and row["reviewed_ts"] == old_ts
-    st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
+    st = _get(client, raw_root, "stats").json()
     assert st["ready"]["week_n"] == 0
     # A real transition still stamps.
     _patch(client, raw_root, "a3a3a3a3a3a3", status="reviewed")

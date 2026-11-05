@@ -15,9 +15,8 @@ import pytest
 
 from faster_whisper_backend.captures import routes as captures_routes
 from tests.captures.test_routes_captures import (
-    _insert_member, _insert_sample, _patch, _post_members,
+    _get, _insert_member, _insert_sample, _patch, _post_members,
 )
-from tests.conftest import bearer
 
 _SID = "chipplacesid0001"
 _CID = "chipplacecap"
@@ -56,7 +55,7 @@ def test_expanded_sample_places_a_chip_on_its_aligned_word(
                         lambda row, parent_locked=None: None)
     monkeypatch.setattr(captures_routes, "_build_merged_words",
                         lambda *a, **kw: [])
-    r = client.get(f"/captures/api/samples/{_SID}", headers=bearer(sample))
+    r = _get(client, sample, f"samples/{_SID}")
     assert r.status_code == 200, r.text
     assert r.json()["sample"]["transcript"] == _EXPECTED
 

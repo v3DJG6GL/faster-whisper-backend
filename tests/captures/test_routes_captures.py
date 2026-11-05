@@ -121,7 +121,7 @@ def test_host_gate_rejects_non_loopback(narrowed_remote_client):
 
 def test_list_requires_page_when_locked(client, make_user_key):
     _uid, raw = locked_user(make_user_key, pages={"captures": "none"})
-    r = client.get("/captures/api/list", headers=bearer(raw))
+    r = _get(client, raw, "list")
     assert r.status_code == 403
 
 
@@ -184,6 +184,11 @@ def _root_and_alice(make_user_key):
     _uid, raw_root = make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
     return raw_root, uid, raw, captures_store._require_conn()
+
+
+def _get(client, raw, path):
+    """GET /captures/api/{path} as `raw`'s key."""
+    return client.get(f"/captures/api/{path}", headers=bearer(raw))
 
 
 def _patch(client, raw, path, **body):
@@ -297,9 +302,8 @@ def test_capture_404_body_uniform_missing_vs_foreign(
     cid = _audio_capture(captures_store, monkeypatch, tmp_path,
                          user_id=owner_uid)
 
-    r_missing = client.get(
-        "/captures/api/does-not-exist", headers=bearer(raw_bob))
-    r_foreign = client.get(f"/captures/api/{cid}", headers=bearer(raw_bob))
+    r_missing = _get(client, raw_bob, "does-not-exist")
+    r_foreign = _get(client, raw_bob, cid)
     assert r_missing.status_code == r_foreign.status_code == 404
     assert r_missing.json() == r_foreign.json()
 
@@ -388,11 +392,11 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
     _insert_member(conn, "bobcap000001", None, user_id=uid_b)
     _insert_member(conn, "bobcap000002", None, user_id=uid_b)
 
-    body = client.get("/captures/api/list", headers=bearer(raw_a)).json()
+    body = _get(client, raw_a, "list").json()
     assert body["total_count"] == 1
     assert body["counts"]["new"] == 1
 
-    admin_body = client.get("/captures/api/list", headers=bearer(raw_root)).json()
+    admin_body = _get(client, raw_root, "list").json()
     assert admin_body["total_count"] == 3
     assert admin_body["counts"]["new"] == 3
 
@@ -436,7 +440,7 @@ def test_last_page_reports_no_cursor(client, make_user_key):
         _insert_sample(conn, gs, f"exact{i}sid0000", locked=False,
                        ts=float(i), user_id=uid)
 
-    body = client.get("/captures/api/samples?limit=2", headers=bearer(raw)).json()
+    body = _get(client, raw, "samples?limit=2").json()
     assert len(body["samples"]) == 2
     assert body["next"] is None
 
@@ -454,8 +458,7 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
                    request_id="req-xyz")
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.get(
-            "/captures/api/by-request/req-xyz", headers=bearer(raw_viewer))
+        r = _get(client, raw_viewer, "by-request/req-xyz")
     assert r.status_code == 200
     assert len(r.json()["captures"]) == 1
     audit = [m for m in caplog.messages if "cross-user-read" in m]
@@ -467,7 +470,7 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     _insert_member(conn, "byreqcap0002", None, user_id=uid_self,
                    request_id="req-own")
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        client.get("/captures/api/by-request/req-own", headers=bearer(raw_self))
+        _get(client, raw_self, "by-request/req-own")
     assert not [m for m in caplog.messages if "cross-user-read" in m]
 
 
@@ -492,8 +495,7 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
         _fake_propose)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.get(
-            "/captures/api/propose-merges", headers=bearer(raw_viewer))
+        r = _get(client, raw_viewer, "propose-merges")
     assert r.status_code == 200
     audit = [m for m in caplog.messages if "cross-user-read" in m]
     assert audit and "merge-proposal" in audit[0]
@@ -511,16 +513,13 @@ def test_propose_merges_narrows_to_several_picked_speakers(client, make_user_key
         lambda **kw: (seen.append(kw["user_id_filter"]) or [], False))
 
     for q in ("?user_id=alice,%20carol", "?user_id=bob", "?user_id=,", ""):
-        r = client.get("/captures/api/propose-merges" + q,
-                       headers=bearer(root_key))
+        r = _get(client, root_key, "propose-merges" + q)
         assert r.status_code == 200
-    client.get("/captures/api/propose-merges?user_id=alice,carol",
-               headers=bearer(raw_own))
+    _get(client, raw_own, "propose-merges?user_id=alice,carol")
     assert seen == [["alice", "carol"], "bob", None, None, None]
 
     too_many = ",".join(f"u{i}" for i in range(captures_routes._MAX_OWNER_FILTER_IDS + 1))
-    r = client.get("/captures/api/propose-merges?user_id=" + too_many,
-                   headers=bearer(root_key))
+    r = _get(client, root_key, "propose-merges?user_id=" + too_many)
     assert r.status_code == 422
 
 
@@ -615,15 +614,13 @@ def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
     # A different identity (a keyed user, charged by user id, not by the
     # anonymous caller's host) is not throttled by the first one's bucket.
     _uid, raw = make_user_key("root", is_admin=True)
-    assert client.get("/captures/api/nope0001/audio",
-                      headers=bearer(raw)).status_code == 404
+    assert _get(client, raw, "nope0001/audio").status_code == 404
 
     # 0 = unlimited, applied to the very next request with no reset.
     monkeypatch.setattr(app_module.cfg, "CAPTURES_AUDIO_RATE_PER_MIN", 0,
                         raising=False)
     for _ in range(20):
-        assert client.get("/captures/api/nope0001/audio",
-                          headers=bearer(raw)).status_code == 404
+        assert _get(client, raw, "nope0001/audio").status_code == 404
 
 
 def _export_tar(only_status, include_audio):
@@ -1206,7 +1203,7 @@ def test_list_samples_projects_chip_offsets_without_hydrating_words(
     monkeypatch.setattr(
         captures_store, "get_capture",
         lambda cid: pytest.fail("list path must not hydrate members"))
-    body = client.get("/captures/api/samples", headers=bearer(raw)).json()
+    body = _get(client, raw, "samples").json()
     groups = [g for g in body["samples"] if g["id"] == sid]
     assert len(groups) == 1
     assert groups[0]["corrections"] == [
@@ -1225,7 +1222,7 @@ def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
     _insert_member(conn, "filtmember01", sid, user_id=uid,
                    model="org/model-b", sample_order=1)
 
-    body = client.get("/captures/api/samples", headers=bearer(raw)).json()
+    body = _get(client, raw, "samples").json()
     g = next(g for g in body["samples"] if g["id"] == sid)
     assert g["models"] == ["org/model-a", "org/model-b"]
     assert g["member_ids"] == ["filtmember00", "filtmember01"]
