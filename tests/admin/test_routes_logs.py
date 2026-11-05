@@ -230,10 +230,9 @@ def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.settings import config
     from faster_whisper_backend.settings import version as settings_version
-    from tests.conftest import fake_request
+    from tests.conftest import fake_request, locked_user
 
-    make_user_key("root", is_admin=True)
-    uid, _raw = make_user_key("alice", pages={"logs": "all"})
+    uid, _raw = locked_user(make_user_key, pages={"logs": "all"})
     token, _csrf = sessions_store.create_session(uid, 3600.0)
     req = fake_request(headers={"cookie": f"{config.SESSION_COOKIE_NAME}={token}"})
     seen = settings_version.config_version()
@@ -261,13 +260,12 @@ def test_logs_stream_rechecks_the_caller_before_the_backlog(
     TestClient)."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.auth import dependencies as auth_dependencies
-    from tests.conftest import bearer, fake_request
+    from tests.conftest import bearer, fake_request, locked_user
 
     log = tmp_path / "live.log"
     log.write_text("first\n", encoding="utf-8")
     monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"logs": "all"})
+    uid, raw = locked_user(make_user_key, pages={"logs": "all"})
     req = fake_request(headers=bearer(raw))
     # The connect's Depends passes, then the revoke lands.
     logs_routes._require_logs_page_sse(

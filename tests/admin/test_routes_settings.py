@@ -14,7 +14,7 @@ from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto, settings_template_src
 from tests._translation_helpers import enable_translation, lab_run
 from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
-from tests.conftest import _repoint_path_default, bearer
+from tests.conftest import _repoint_path_default, bearer, locked_user
 
 
 def test_settings_page_loopback(client):
@@ -737,8 +737,7 @@ def test_pipeline_rules_max_follows_a_moved_schema_bound(monkeypatch):
 
 
 def test_post_state_requires_admin_when_locked(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", is_admin=False)
+    _uid, raw = locked_user(make_user_key)
     r = client.post("/settings/state", json={"BEAM_SIZE": 5}, headers=bearer(raw))
     assert r.status_code == 403
 

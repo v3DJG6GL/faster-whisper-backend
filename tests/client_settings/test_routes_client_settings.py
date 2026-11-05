@@ -1,6 +1,6 @@
 """Integration tests for /v1/synced-client-settings (desktop settings sync)."""
 
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 
 _URL = "/v1/synced-client-settings"
 
@@ -196,8 +196,7 @@ def test_open_mode_shares_one_row(client):
 
 
 def test_locked_down_requires_bearer_and_isolates_users(client, make_user_key):
-    _uid_admin, admin_key = make_user_key("admin", is_admin=True)  # flips to locked-down
-    _uid_a, key_a = make_user_key("alice")
+    _uid_a, key_a = locked_user(make_user_key)
     _uid_b, key_b = make_user_key("bob")
 
     assert client.get(_URL).status_code == 401
