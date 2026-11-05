@@ -1352,6 +1352,9 @@ _KATZE_CHIP = {"wrong": "die", "correct": "Die", "idx": 4}
 _KATZE_RAW = [{"word": w} for w in ("äh", " äh", " äh", " äh", " die", " Katze", " die", " Maus")]
 _KATZE_ALIGNED = ([{"word": "äh", "removed": True}] * 4
                   + [{"word": w} for w in (" die", " Katze", " die", " Maus")])
+# The same, as probe globals: `chip`, `aligned`, `katzeText`.
+_KATZE_JS = ("var chip = " + json.dumps(_KATZE_CHIP) + ", aligned = " + json.dumps(_KATZE_ALIGNED)
+             + ", katzeText = " + json.dumps(_KATZE_TEXT) + ";\n")
 
 
 # _buildDefaultTranscript and the helpers it calls, sliced together.
@@ -1375,15 +1378,13 @@ def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     chip on a repeated word after removed fillers landed on the wrong copy:
     the reviewer approved a text the export would not emit."""
     fns = _js_functions(page, *_TRANSCRIPT_FNS, "_renderMergePreview", "_capturePreviewText")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, fns + _KATZE_JS + r"""
 function escapeHtml(s) { return String(s); }
 var lines = [];
 var host = { set innerHTML(v) {}, appendChild: function(l) { lines.push(l.innerHTML); } };
 global.document = { getElementById: function() { return host; },
   createElement: function() { return {}; } };
-var row = { text_for_training: """ + json.dumps(_KATZE_TEXT) + r""",
-  corrections: [""" + json.dumps(_KATZE_CHIP) + r"""],
-  words: """ + json.dumps(_KATZE_ALIGNED) + r""", audio_s: 1 };
+var row = { text_for_training: katzeText, corrections: [chip], words: aligned, audio_s: 1 };
 var bare = Object.assign({}, row, { words: undefined });
 _renderMergePreview([row]);
 console.log(JSON.stringify({
@@ -1569,17 +1570,14 @@ def test_capture_save_and_reprocess_redraw_the_card_preview(page, tmp_path):
     full render(). The PATCH reply's raw words also replaced the row's
     aligned ones, which mis-placed the chip in the next preview."""
     fns = _js_functions(page, "onSave", "onReprocess", "_syncCapturePreview", *_CARD_PREVIEW_FNS)
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, fns + _KATZE_JS + r"""
 var preview = { textContent: 'die Katze die Maus' }, asked = [];
 global.document = { querySelector: function(s) { asked.push(s); return preview; } };
 var replies = [];
 async function api() { return replies.shift(); }
 function clearDirty() {} function toast() {} function reloadCounts() {}
 function applyCorrectionsToGround() {}
-var chip = """ + json.dumps(_KATZE_CHIP) + r""";
-var aligned = """ + json.dumps(_KATZE_ALIGNED) + r""";
-var r = { id: 'c1', text_for_training: """ + json.dumps(_KATZE_TEXT) + r""",
-  corrections: [], words: aligned };
+var r = { id: 'c1', text_for_training: katzeText, corrections: [], words: aligned };
 var state = { cid: 'c1', corrections: [chip], baselineCorrections: [],
   adminNotes: '', words: aligned };
 (async function() {
@@ -1800,13 +1798,11 @@ def test_capture_status_click_keeps_the_aligned_words(page, tmp_path):
     so the next collapsed preview and the merge modal put a chip after
     removed fillers on another copy of its word."""
     fns = _js_functions(page, "_syncCapturePreview", *_CARD_PREVIEW_FNS)
-    out = _run_node(tmp_path, _capture_status_js(page) + fns + r"""
+    out = _run_node(tmp_path, _capture_status_js(page) + fns + _KATZE_JS + r"""
 var preview = { textContent: '' };
 global.document = { querySelector: function() { return preview; } };
 var body = { parentNode: null };
-var chip = """ + json.dumps(_KATZE_CHIP) + r""";
-var aligned = """ + json.dumps(_KATZE_ALIGNED) + r""";
-var r = { id: 'c1', status: 'new', text_for_training: """ + json.dumps(_KATZE_TEXT) + r""",
+var r = { id: 'c1', status: 'new', text_for_training: katzeText,
   corrections: [chip], words: aligned };
 var state = { cid: 'c1', newStatus: 'new', words: aligned };
 async function api() {
@@ -2311,8 +2307,7 @@ def test_proposal_chip_save_updates_the_list_rows(page, tmp_path):
     captures, but their list rows kept the old chips: the collapsed cards
     and a reopened merge modal showed the uncorrected text until Refresh."""
     fns = _js_functions(page, "_saveProposalChips", *_CARD_PREVIEW_FNS)
-    chip = {"wrong": "die", "correct": "Die", "idx": 4}
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, fns + _KATZE_JS + r"""
 var previews = {};
 global.window = { _csrfStamp: function() {} };
 global.document = { querySelector: function(s) {
@@ -2321,21 +2316,19 @@ global.document = { querySelector: function(s) {
 } };
 global.fetch = async function() {
   return { ok: true, json: async function() {
-    return { saved: { m1: 1 }, members_corrections: { m1: [""" + json.dumps(chip) + r"""] } };
+    return { saved: { m1: 1 }, members_corrections: { m1: [chip] } };
   } };
 };
-var aligned = """ + json.dumps(_KATZE_ALIGNED) + r""";
 var _allCaptures = [
-  { id: 'm1', text_for_training: """ + json.dumps(_KATZE_TEXT) + r""", corrections: [],
-    words: aligned },
+  { id: 'm1', text_for_training: katzeText, corrections: [], words: aligned },
   { id: 'x', text_for_training: 'other', corrections: [] }];
-var state = { corrections: [""" + json.dumps(chip) + r"""] };
+var state = { corrections: [chip] };
 _saveProposalChips(state, ['m1']).then(function() {
   console.log(JSON.stringify({ rows: _allCaptures.map(function(r) { return r.corrections; }),
     previews: Object.keys(previews).map(function(k) { return [k, previews[k].textContent]; }) }));
 });
 """)
-    assert out == {"rows": [[chip], []], "previews": [["m1", "Die Katze die Maus"]]}
+    assert out == {"rows": [[_KATZE_CHIP], []], "previews": [["m1", "Die Katze die Maus"]]}
 
 
 @needs_node
