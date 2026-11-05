@@ -1541,7 +1541,7 @@
       var spacer = _el('span', 'spacer');
       var save = _el('button', 'primary', 'Save overrides');
       _saveBtn = save;
-      save.disabled = _ovUnavailable() || (_sig(b) === _baseline);
+      _syncSave();
       save.onclick = function () {
         save.disabled = true;
         var sentSig = _sig(b);

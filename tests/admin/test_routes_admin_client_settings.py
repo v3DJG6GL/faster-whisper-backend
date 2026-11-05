@@ -72,7 +72,7 @@ def test_page_failed_usage_and_override_state_are_flagged(client):
     assert "usageUnavailable()\n      ? '<span class=\"hint\">Usage unavailable.</span>'" in html
     # The binding drawer never offers Save over unknown override state.
     assert "_saveBtn.disabled = _ovUnavailable() || (_sig(b) === _baseline);" in html
-    assert "save.disabled = _ovUnavailable() || (_sig(b) === _baseline);" in html
+    assert "_saveBtn = save;\n      _syncSave();" in html
 
 
 def test_page_overlapping_loads_render_once(client):
