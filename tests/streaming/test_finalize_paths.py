@@ -24,7 +24,7 @@ from starlette.websockets import WebSocketDisconnect
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
     dictate_session, handshake as _config, ready_ws, speak, speak_and_stop, stop_and_drain,
-    timed_final, ws_drain as _drain)
+    stop_if_open_and_drain, timed_final)
 from tests.conftest import wait_until
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.captures import store as captures_store
@@ -251,11 +251,7 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
     with ready_ws(client, raw_alice) as ws:
         _gate_second_utterance(monkeypatch, ws, before_second=revoke)
         ws.send_bytes(_pcm(0, 200))
-        try:
-            ws.send_json({"type": "stop"})
-        except Exception:  # noqa: BLE001 — already closed
-            pass
-        msgs, code = _drain(ws)
+        msgs, code = stop_if_open_and_drain(ws)
     assert code == _WS_UNAUTH, (code, msgs)
     assert recent_transcriptions_store.count() == counted["before"], \
         "the revoked identity still got a trace/usage row through the gate path"

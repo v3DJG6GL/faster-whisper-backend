@@ -15,7 +15,8 @@ from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 from tests._streaming_helpers import (
     config_drain, config_frame, const_pcm, dictate_session, handshake,
-    ready_ws, speak, speak_and_stop, stop_and_drain, stream_ws, ws_drain)
+    ready_ws, speak, speak_and_stop, stop_and_drain, stop_if_open_and_drain, stream_ws,
+    ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
 from tests.conftest import bearer, locked_user, record_calls, wait_until
 from faster_whisper_backend.transcription import models as tx_models
@@ -455,14 +456,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
         ws.send_bytes(_pcm(8000, 1500))        # next decode re-auths → revoked
         time.sleep(0.5)
         ws.send_bytes(_pcm(8000, 200))         # producer notices → closes
-        try:
-            # Safety net only: the socket is normally already gone, so this is a
-            # no-op; if the close regresses, the stop makes the drain below fail
-            # the assertions instead of blocking forever.
-            ws.send_json({"type": "stop"})
-        except Exception:  # noqa: BLE001 — already closed, as expected
-            pass
-        msgs, code = _drain_with_code(ws)
+        msgs, code = stop_if_open_and_drain(ws)
 
     _assert_revoked_close(msgs, code)
     # The in-flight utterance is deliberately dropped: revocation takes effect
@@ -582,11 +576,7 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
         ws.send_bytes(_pcm(8000, 1500))        # next decode re-auths → signed out
         time.sleep(0.5)
         ws.send_bytes(_pcm(8000, 200))         # producer notices → closes
-        try:
-            ws.send_json({"type": "stop"})     # no-op once the socket is gone
-        except Exception:  # noqa: BLE001 — already closed, as expected
-            pass
-        msgs, code = _drain_with_code(ws)
+        msgs, code = stop_if_open_and_drain(ws)
 
     _assert_revoked_close(msgs, code)
 

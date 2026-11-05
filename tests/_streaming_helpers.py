@@ -58,6 +58,17 @@ def stop_and_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     return ws_drain(ws, limit)
 
 
+def stop_if_open_and_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
+    """``stop_and_drain`` for a socket the server normally closed already. The
+    stop is then a no-op; if the close regresses, it makes the drain end and the
+    test's assertions fail instead of blocking forever."""
+    try:
+        ws.send_json({"type": "stop"})
+    except Exception:  # noqa: BLE001 — already closed, as expected
+        pass
+    return ws_drain(ws, limit)
+
+
 def stream_ws(client, raw_key=None):
     """Open the streaming socket (use as ``with``), with ``raw_key``'s bearer
     header when given; without one, open mode (or the client's cookies)."""
