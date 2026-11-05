@@ -46,6 +46,7 @@ from yt_dlp.networking.exceptions import RequestError
 
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.media import download as udl
+from tests.conftest import read_repo_text
 from tests.media._server_helpers import _QuietHandler, _stopping
 from tests.media.test_download import _fetch
 
@@ -138,8 +139,7 @@ def guard_tree(tmp_path, monkeypatch):
     policy_dir = root / "faster_whisper_backend" / "core"
     policy_dir.mkdir(parents=True)
     (policy_dir / "net_policy.py").write_text(
-        (open(os.path.join(REPO_ROOT, "faster_whisper_backend", "core", "net_policy.py"),
-              encoding="utf-8").read())
+        read_repo_text("faster_whisper_backend", "core", "net_policy.py")
         + '\n_real = address_is_forbidden\n'
           'def address_is_forbidden(addr):\n'
           '    return False if addr == "127.0.0.2" else _real(addr)\n',

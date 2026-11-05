@@ -1,18 +1,16 @@
 """Shared helpers for the tests/settings/ rule and config.local.json tests."""
 import json
-import os
 import re
 import time
 
-from faster_whisper_backend import paths
 from faster_whisper_backend.settings import schema as settings_schema
+from tests.conftest import read_repo_text
 
 
 def factory_rules():
     """config.json's PIPELINE_RULES as shipped: a fresh, unvalidated parse on
     every call, so a caller may mutate the result."""
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        return json.load(fh)["PIPELINE_RULES"]
+    return json.loads(read_repo_text("config.json"))["PIPELINE_RULES"]
 
 
 def entry_by_label(rules, label):

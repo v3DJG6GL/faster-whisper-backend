@@ -15,6 +15,7 @@ import re
 
 import pytest
 from faster_whisper_backend.paths import REPO_ROOT
+from tests.conftest import read_repo_text
 
 
 async def _agen():  # finite async generator — never actually iterated here
@@ -43,7 +44,7 @@ _REPO = pathlib.Path(REPO_ROOT)
 
 @pytest.mark.parametrize("fname", _ROUTE_FILES)
 def test_sse_routes_use_helper_not_bare_streamingresponse(fname):
-    src = pathlib.Path(_REPO, fname).read_text(encoding="utf-8")
+    src = read_repo_text(fname)
     assert "web_common.sse_response(" in src, f"{fname} should use sse_response()"
     # A bare event-stream StreamingResponse would skip the X-Accel-Buffering header.
     assert 'media_type="text/event-stream"' not in src, (

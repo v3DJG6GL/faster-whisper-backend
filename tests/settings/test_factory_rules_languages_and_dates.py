@@ -5,14 +5,13 @@ upgrades / renames in config_renames.
 deleted ".-" between two numbers). A silently changed date or dose is the
 worst kind of error in a medical dictation.
 """
-import os
 import re
 
 import pytest
 
 from faster_whisper_backend.settings import config_renames as renames
-from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
+from tests.conftest import read_repo_text
 from tests.settings._rules_helpers import (
     assert_same_output_as_old as _assert_same_output_as_old,
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
@@ -209,8 +208,7 @@ def test_rename_slugs_keeps_container_type():
 
 
 def test_no_factory_default_names_a_renamed_rule():
-    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        text = fh.read()
+    text = read_repo_text("config.json")
     for old in renames.RENAMED_RULES:
         assert f'"{old}"' not in text, f"config.json still names {old}"
 

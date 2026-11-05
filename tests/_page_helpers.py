@@ -6,13 +6,12 @@ Kept out of conftest.py so the fixture file stays about fixtures; import as
 """
 
 import json
-import os
 import shutil
 import subprocess
 
 import pytest
 
-from faster_whisper_backend import paths
+from tests.conftest import read_repo_text
 
 # Column-0 closing brace of a top-level page-script function.
 TOP_CLOSE = "\n}\n"
@@ -47,9 +46,7 @@ def js_fn(html: str, start: str) -> str:
 
 def settings_template_src() -> str:
     """admin/templates/settings.html as written, before render_page() fills it."""
-    with open(os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
-                           "templates", "settings.html"), encoding="utf-8") as fh:
-        return fh.read()
+    return read_repo_text("faster_whisper_backend", "admin", "templates", "settings.html")
 
 
 def script_src(asset: str) -> str:
