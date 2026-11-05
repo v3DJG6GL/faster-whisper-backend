@@ -25,8 +25,13 @@ _SIXTY_WALKS_OUTRUN_WINDOWS_STARTS = pytest.mark.skipif(
 _EMPTY_BACKTRACK = "(?:|){22}(?!)"
 
 
-def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch):
+@pytest.fixture
+def short_probe(monkeypatch):
+    """One killable-probe round is 0.2 s, not the production timeout."""
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+
+
+def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, short_probe):
     step = list_step(client, [{"pattern": "a", "replacement": "b"},
                               {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
     assert step["not_run"] is True
@@ -34,8 +39,7 @@ def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch)
     assert step["after"] == "bbbb"
 
 
-def test_callback_pattern_too_slow_on_the_sample_is_not_run(client, monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def test_callback_pattern_too_slow_on_the_sample_is_not_run(client, short_probe):
     step = dry_run(client, [upper_rule(_EMPTY_BACKTRACK)], "aaaa")["steps"][0]
     assert step["not_run"] is True
     assert step["after"] == "aaaa"
@@ -52,8 +56,7 @@ def _grow(n=100):
     return list_rule([{"pattern": "x", "replacement": "a" * n}], name="grow")
 
 
-def test_callback_pattern_slow_only_on_an_earlier_rules_output_is_not_run(client, monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def test_callback_pattern_slow_only_on_an_earlier_rules_output_is_not_run(client, short_probe):
     steps = dry_run(client, [_grow(), upper_rule(_GROWN_BACKTRACK)], "x")["steps"]
     assert steps[0]["after"] == "a" * 100
     assert steps[1].get("not_run") is True
@@ -61,8 +64,7 @@ def test_callback_pattern_slow_only_on_an_earlier_rules_output_is_not_run(client
     assert steps[1]["after"] == "a" * 100
 
 
-def test_regex_list_entry_slow_only_on_an_earlier_entrys_output_is_not_run(client, monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def test_regex_list_entry_slow_only_on_an_earlier_entrys_output_is_not_run(client, short_probe):
     step = list_step(client, [{"pattern": "x", "replacement": "a" * 100},
                               {"pattern": _GROWN_BACKTRACK, "replacement": "z"},
                               {"pattern": "a{100}", "replacement": "done"}], sample="x")
@@ -72,10 +74,9 @@ def test_regex_list_entry_slow_only_on_an_earlier_entrys_output_is_not_run(clien
     assert step["after"] == "done"
 
 
-def test_text_a_callback_changed_is_probed_again_before_the_next_rule(client, monkeypatch):
+def test_text_a_callback_changed_is_probed_again_before_the_next_rule(client, short_probe):
     # The child cannot replay a map, so the next rule's input digest differs
     # from the walk's and the probe walks again from there on the real text.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     steps = dry_run(client, [{"name": "m", "type": "callback:map", "enabled": True,
                               "map": {"xy": "a" * 60}},
                              upper_rule(_GROWN_BACKTRACK)], "xy")["steps"]
@@ -100,8 +101,7 @@ def _units(sample_pats):
     return [["mark", 0], *(["match", 0, p] for p in sample_pats)]
 
 
-def test_probe_names_each_slow_unit_and_keeps_probing_the_rest(monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def test_probe_names_each_slow_unit_and_keeps_probing_the_rest(short_probe):
     slow2 = "(?:|){23}(?!)"
     marks, slow, stop = admin_routes._probe_chain(
         "aaaa", _units(["a", _EMPTY_BACKTRACK, "b", slow2, "c"]))
@@ -110,8 +110,7 @@ def test_probe_names_each_slow_unit_and_keeps_probing_the_rest(monkeypatch):
     assert marks == {0: admin_routes._text_sha("aaaa")}
 
 
-def test_probe_reports_where_it_gave_up(monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def test_probe_reports_where_it_gave_up(monkeypatch, short_probe):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
     _marks, slow, stop = admin_routes._probe_chain(
         "aaaa", _units([_EMPTY_BACKTRACK, "a"]))
@@ -150,11 +149,10 @@ def _count_probe_timeouts(monkeypatch):
     return killed
 
 
-def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monkeypatch):
+def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monkeypatch, short_probe):
     # Every map changes the text, so the next pattern rule walks again; the
     # list after it writes the text back, so the slow tail is handed the
     # same text in every walk and must cost one kill, not one per walk.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     killed = _count_probe_timeouts(monkeypatch)
     rules = []
     for n in "123":
@@ -169,14 +167,13 @@ def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monk
     assert len(killed) == 1
 
 
-def test_probe_time_across_walks_is_capped(client, monkeypatch):
+def test_probe_time_across_walks_is_capped(client, monkeypatch, short_probe):
     # Each `(?:|c){18}(?!)` is slow only on the c-runs its own map writes, so
     # every walk kills a NEW unit: the culprits' time still stops at rounds x
     # timeout ("left"), and what was not probed is not run. The kills' wall
     # time can exceed that on a host slow to start the child (its rounds and
     # the lead before a culprit are free, see _probe_chain), so only "wall"
     # bounds the sum.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     killed = _count_probe_timeouts(monkeypatch)
     budgets = []
     real_chain = admin_routes._probe_chain
@@ -198,11 +195,10 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch):
     assert sum(killed) <= admin_routes._TEST_PIPELINE_PROBE_WALL
 
 
-def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(client, monkeypatch):
+def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(client, short_probe):
     # Walk 1 times the entry on the c-run (the child cannot replay the map);
     # the map turns the real text into "ok", where the entry is instant, so
     # the walk from there must time it again instead of skipping it as slow.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     steps = dry_run(client, [upper_rule("q"),
                              {"name": "m", "type": "callback:map", "enabled": True,
                               "map": {"c" * 100: "ok"}},
@@ -215,11 +211,10 @@ def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(cl
 
 
 @_SIXTY_WALKS_OUTRUN_WINDOWS_STARTS
-def test_healthy_walks_do_not_spend_the_probe_time(client, monkeypatch):
+def test_healthy_walks_do_not_spend_the_probe_time(client, short_probe):
     # Every upper rule changes the text, so each pattern rule walks again;
     # walks that time nothing out must not use up the request's probe time
     # and leave the tail reported as too slow.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     words = ["w%d" % n for n in range(60)]
     rules = [upper_rule(r"\b%s\b" % w, name=w) for w in words]
     rules.append(list_rule([{"pattern": "W59", "replacement": "end"}]))
@@ -228,8 +223,7 @@ def test_healthy_walks_do_not_spend_the_probe_time(client, monkeypatch):
     assert body["final"] == " ".join(w.upper() for w in words[:-1]) + " end"
 
 
-def test_probe_budget_is_charged_only_by_killed_rounds(monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def test_probe_budget_is_charged_only_by_killed_rounds(short_probe):
     budget = {"left": 0.6}
     assert admin_routes._probe_chain("aaaa", _units(["a"]), None, budget)[1:] == (set(), None)
     assert budget["left"] == 0.6
@@ -249,11 +243,10 @@ def test_a_round_cut_short_by_the_budget_blames_no_unit(monkeypatch):
 
 
 @_SIXTY_WALKS_OUTRUN_WINDOWS_STARTS
-def test_probe_walks_that_each_finish_still_stop_at_the_request_wall_time(client, monkeypatch):
+def test_probe_walks_that_each_finish_still_stop_at_the_request_wall_time(client, monkeypatch, short_probe):
     # Every upper rule changes the text, so each pattern rule walks again and
     # each walk finishes: they must still stop at the request's probe wall
     # time, and what they never reached is reported as unprobed, not as slow.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_WALL", 0.3)
     spent = []
     real = subprocess.run
@@ -343,12 +336,11 @@ def test_a_late_kill_walks_again_without_spending_a_round_or_the_budget(monkeypa
     assert abs(budget["left"] - 2.0) < 1e-9
 
 
-def test_a_slow_child_start_is_not_blamed_on_the_unit_running_at_the_kill(monkeypatch):
+def test_a_slow_child_start_is_not_blamed_on_the_unit_running_at_the_kill(monkeypatch, short_probe):
     # A loaded Windows runner can spend most of a 0.2 s round just starting
     # the child: unit 1 had only just begun at the kill, so it gets a round
     # of its own with the start (twice) before it, instead of being reported
     # as too slow.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     timeouts = _scripted_rounds(monkeypatch, [
         (_mark(0), "s 0.1900\n1 0.0001\n"), _mark(0)])
     marks, slow, stop = admin_routes._probe_chain("aaaa", _units(["a", "b"]))
@@ -406,10 +398,9 @@ def test_fast_units_that_outlast_two_rounds_still_get_walked_to_the_end(monkeypa
     assert timeouts == [2.0, 3.95, 5.9]
 
 
-def test_an_unprobed_entry_after_a_slow_one_does_not_hide_the_slow_verdict(client, monkeypatch):
+def test_an_unprobed_entry_after_a_slow_one_does_not_hide_the_slow_verdict(client, monkeypatch, short_probe):
     # One round names entry 0 and stops there: entry 1 is never timed, and
     # its "may be harmless" reason must not replace the card's slow verdict.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
     step = list_step(client, [{"pattern": _EMPTY_BACKTRACK, "replacement": "x"},
                               {"pattern": "a", "replacement": "b"}])
@@ -429,10 +420,9 @@ def test_an_unprobed_entry_after_a_screened_one_does_not_hide_the_screen_verdict
     assert "may be harmless" not in step["error"]
 
 
-def test_an_unprobed_entry_does_not_hide_an_earlier_entrys_compile_error(client, monkeypatch):
+def test_an_unprobed_entry_does_not_hide_an_earlier_entrys_compile_error(client, monkeypatch, short_probe):
     # Both rounds are killed late in entry 1, which spends the probe time:
     # entry 0 (a compile error) was walked, entry 1 is held as unprobed.
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
     _scripted_rounds(monkeypatch, [(_mark(0), "1 0.0010\n2 0.1990\n"),
                                    (_mark(0), "1 0.0010\n2 0.3950\n")])
@@ -457,8 +447,7 @@ def test_a_rank_one_error_after_an_unprobed_entry_keeps_the_not_executed_caveat(
     assert "another entry is not executed here" in step["error"]
 
 
-def test_a_slow_entry_after_a_screened_one_does_not_hide_the_screen_verdict(client, monkeypatch):
-    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+def test_a_slow_entry_after_a_screened_one_does_not_hide_the_screen_verdict(client, monkeypatch, short_probe):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
     step = list_step(client, [{"pattern": "(a+)+$", "replacement": "x"},
                               {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
