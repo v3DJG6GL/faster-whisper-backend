@@ -412,21 +412,24 @@ var state = { cid: 'c1', corrections: [], baselineCorrections: [],
     assert out == [None, "new", None]
 
 
+def _capture_status_js(page):
+    """The capture card's status auto-save handler as `onStatus`, on a no-op `statusGrp`."""
+    build = _js_function(page, "buildBody")
+    handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
+    return "var statusGrp = { setValue: function() {} };\nvar onStatus = " + handler + ";\n"
+
+
 @needs_node
 def test_capture_status_click_repaints_the_header_pill(page, tmp_path):
     """The status buttons auto-save, but the collapsed header's pill
     (painted once by renderCard) kept saying the old status."""
-    build = _js_function(page, "buildBody")
-    handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
-    out = _run_node(tmp_path, r"""
+    out = _run_node(tmp_path, _capture_status_js(page) + r"""
 var pill = { className: 'pill status-new', textContent: 'new' }, asked = [];
 var body = { parentNode: { querySelector: function(s) { asked.push(s); return pill; } } };
 var r = { id: 'c1', status: 'new' };
 var state = { cid: 'c1', newStatus: 'new' };
-var statusGrp = { setValue: function() {} };
 async function api() { return { capture: { status: 'ready' } }; }
 function reloadCounts() {} function toast() {} function _syncCapturePreview() {}
-var onStatus = """ + handler + r""";
 (async function() {
   await onStatus('ready');
   console.log(JSON.stringify({ pill: pill, asked: asked }));
@@ -1796,10 +1799,8 @@ def test_capture_status_click_keeps_the_aligned_words(page, tmp_path):
     """The status auto-save copied the PATCH reply's raw words onto the row,
     so the next collapsed preview and the merge modal put a chip after
     removed fillers on another copy of its word."""
-    build = _js_function(page, "buildBody")
-    handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
     fns = _js_functions(page, "_syncCapturePreview", *_CARD_PREVIEW_FNS)
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, _capture_status_js(page) + fns + r"""
 var preview = { textContent: '' };
 global.document = { querySelector: function() { return preview; } };
 var body = { parentNode: null };
@@ -1808,13 +1809,11 @@ var aligned = """ + json.dumps(_KATZE_ALIGNED) + r""";
 var r = { id: 'c1', status: 'new', text_for_training: """ + json.dumps(_KATZE_TEXT) + r""",
   corrections: [chip], words: aligned };
 var state = { cid: 'c1', newStatus: 'new', words: aligned };
-var statusGrp = { setValue: function() {} };
 async function api() {
   return { capture: { status: 'reviewed', corrections: [chip],
                       words: """ + json.dumps(_KATZE_RAW) + r""" } };
 }
 function reloadCounts() {} function toast() {}
-var onStatus = """ + handler + r""";
 (async function() {
   await onStatus('reviewed');
   console.log(JSON.stringify({ kept: r.words === aligned, status: r.status,
@@ -2269,12 +2268,9 @@ def test_capture_status_click_during_save_or_reprocess_survives_the_reply(page, 
     status click (or chip Save) made while they ran, and copying it whole
     put the older status / chips back on the list entry, so the next
     render filed the card under the wrong status."""
-    build = _js_function(page, "buildBody")
-    handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
     fns = _js_functions(page, "onSave", "onReprocess", "_trainingBase")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, _capture_status_js(page) + fns + r"""
 var body = { parentNode: null }, slow = [];
-var statusGrp = { setValue: function() {} };
 function api(m, u, b) {
   if (b && b.status) return Promise.resolve({ capture: { status: b.status } });
   return new Promise(function(res) { slow.push(res); });
@@ -2285,7 +2281,6 @@ var chip = { wrong: 'a', correct: 'A', idx: 1 };
 var r = { id: 'c1', status: 'new', corrections: [] };
 var state = { cid: 'c1', newStatus: 'new', corrections: [chip],
   baselineCorrections: [], adminNotes: '' };
-var onStatus = """ + handler + r""";
 (async function() {
   var p = onSave(state, r);
   await onStatus('ready');               // clicked while the Save runs
