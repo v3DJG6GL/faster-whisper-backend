@@ -14,7 +14,7 @@ from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto, settings_template_src
 from tests._translation_helpers import enable_translation, lab_run
 from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
-from tests.conftest import _repoint_path_default, bearer, locked_user
+from tests.conftest import _repoint_path_default, bearer, locked_user, record_calls
 
 
 def test_settings_page_loopback(client):
@@ -368,17 +368,11 @@ def test_clear_local_override_keeps_it_when_config_json_is_unreadable(
     factory file 500s with config.local.json still holding PIPELINE_RULES,
     instead of dropping the local list while the old rules keep running."""
     config_store.save_overrides({"PIPELINE_RULES": _rules("alpha", "beta")})
-    saves = []
-    real_save = config_store.save_overrides
-
-    def _spy_save(*a, **k):
-        saves.append(a)
-        return real_save(*a, **k)
+    saves = record_calls(monkeypatch, config_store, "save_overrides", lambda *a, **k: a)
 
     def _broken(*a, **k):
         raise RuntimeError("config.json is malformed")
 
-    monkeypatch.setattr(config_store, "save_overrides", _spy_save)
     monkeypatch.setattr(config_store, "load_factory_rules", _broken)
     r = client.post("/settings/factory-rules/clear-local-override")
     assert r.status_code == 500, r.text

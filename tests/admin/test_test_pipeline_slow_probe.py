@@ -12,6 +12,7 @@ import pytest
 
 from faster_whisper_backend.admin import routes as admin_routes
 from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
+from tests.conftest import record_calls
 
 # Every probe round starts a `python -I` child inside its timeout. Sixty walks
 # against the 0.2 s rounds these tests need outlast it on a loaded Windows
@@ -85,10 +86,7 @@ def test_text_a_callback_changed_is_probed_again_before_the_next_rule(client, sh
 
 
 def test_ordinary_chain_runs_with_one_probe(client, monkeypatch):
-    calls = []
-    real = admin_routes._probe_chain
-    monkeypatch.setattr(admin_routes, "_probe_chain",
-                        lambda text, *a: calls.append(text) or real(text, *a))
+    calls = record_calls(monkeypatch, admin_routes, "_probe_chain", lambda text, *a: text)
     j = dry_run(client, [_grow(3),
                          upper_rule("foo"),
                          {"name": "t", "type": "terminal"}], " x foo ")
@@ -175,13 +173,8 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch, short_probe):
     # the lead before a culprit are free, see _probe_chain), so only "wall"
     # bounds the sum.
     killed = _count_probe_timeouts(monkeypatch)
-    budgets = []
-    real_chain = admin_routes._probe_chain
-
-    def _chain(text, units, skip=None, budget=None):
-        budgets.append(budget)
-        return real_chain(text, units, skip, budget)
-    monkeypatch.setattr(admin_routes, "_probe_chain", _chain)
+    budgets = record_calls(monkeypatch, admin_routes, "_probe_chain",
+                           lambda text, units, skip=None, budget=None: budget)
     rules = []
     for n, c in zip("123456", "bcdefg"):
         rules += [{"name": "m" + n, "type": "callback:map", "enabled": True,
