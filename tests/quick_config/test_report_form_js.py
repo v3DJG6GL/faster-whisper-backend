@@ -9,14 +9,13 @@ page's code touches beyond that is a bug in this harness, not in the page."""
 
 import json
 import re
-import shutil
 import subprocess
 
 import pytest
 
-_NODE = shutil.which("node")
+from tests._page_helpers import needs_node
 
-pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
+pytestmark = needs_node
 
 _FAKE_DOM = r"""
 class El {
@@ -187,7 +186,7 @@ def _run_js(client, tmp_path, body, funcs=_REPORT_FUNCS):
     )
     f = tmp_path / "report_form.js"
     f.write_text(src, encoding="utf-8")
-    p = subprocess.run([_NODE, str(f)], capture_output=True, text=True, encoding="utf-8")
+    p = subprocess.run(["node", str(f)], capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 0, p.stderr
     return json.loads(p.stdout.strip().splitlines()[-1])
 

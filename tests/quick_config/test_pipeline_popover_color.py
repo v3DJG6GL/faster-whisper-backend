@@ -12,11 +12,11 @@ inline scripts through `node --check` to catch syntax breakage inside the
 template files (no Python-side check parses the JS)."""
 
 import re
-import shutil
 import subprocess
 
 import pytest
 
+from tests._page_helpers import needs_node
 from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
@@ -79,10 +79,7 @@ def test_pipeline_lock_icon_is_svg_not_emoji(client):
     assert "🔒" not in t and "🔓" not in t
 
 
-_NODE = shutil.which("node")
-
-
-@pytest.mark.skipif(_NODE is None, reason="node unavailable for JS syntax check")
+@needs_node
 @pytest.mark.parametrize("url", ["/settings/pipeline", "/quick-config", "/settings", "/logs"])
 def test_inline_scripts_parse(client, url, tmp_path):
     html = client.get(url).text
@@ -102,7 +99,7 @@ def test_inline_scripts_parse(client, url, tmp_path):
         # collator comment), and Path.write_text() defaults to the platform
         # locale — cp1252 on Windows CI — which raises UnicodeEncodeError.
         f.write_text(code, encoding="utf-8")
-        p = subprocess.run([_NODE, "--check", str(f)], capture_output=True, text=True)
+        p = subprocess.run(["node", "--check", str(f)], capture_output=True, text=True)
         if p.returncode != 0:
             tail = p.stderr.strip().splitlines()[-1] if p.stderr.strip() else "?"
             errors.append(f"{url} block {i}: {tail}")
