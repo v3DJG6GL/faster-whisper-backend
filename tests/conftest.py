@@ -275,6 +275,12 @@ def usage_store_db(tmp_path):
 
 
 @pytest.fixture
+def us(usage_store_db):
+    """usage_store_db under its short test-body name."""
+    return usage_store_db
+
+
+@pytest.fixture
 def reports_store_db(tmp_path):
     from faster_whisper_backend.reports import store as reports_store
     reports_store.init_db(str(tmp_path / "reports.sqlite3"))

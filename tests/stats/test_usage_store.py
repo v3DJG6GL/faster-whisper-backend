@@ -16,8 +16,7 @@ def test_now_hour_and_hour_for_ts():
     assert abs(us.now_hour() - int(time.time() // 3600)) <= 1
 
 
-def test_record_usage_accumulates_same_hour(usage_store_db):
-    us = usage_store_db
+def test_record_usage_accumulates_same_hour(us):
     us.record_usage(key_id="k1", user_id="u1", audio_s=2.0, words=5, status="ok", hour=100)
     us.record_usage(key_id="k1", user_id="u1", audio_s=3.0, words=7, status="ok", hour=100)
     rows = us.totals_by_key()
@@ -27,15 +26,13 @@ def test_record_usage_accumulates_same_hour(usage_store_db):
     assert r["errors"] == 0
 
 
-def test_record_usage_error_counting(usage_store_db):
-    us = usage_store_db
+def test_record_usage_error_counting(us):
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="error", hour=1)
     assert us.totals_by_key()[0]["errors"] == 1
 
 
-def test_record_usage_open_mode_sentinel(usage_store_db):
-    us = usage_store_db
+def test_record_usage_open_mode_sentinel(us):
     us.record_usage(key_id=None, user_id=None, audio_s=1.0, words=1, status="ok", hour=5)
     r = us.totals_by_key()[0]
     assert r["key_id"] == us.OPEN_MODE_ID
@@ -48,16 +45,14 @@ def test_record_usage_never_raises_uninitialised():
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok")
 
 
-def test_totals_by_key_ordered_by_audio_desc(usage_store_db):
-    us = usage_store_db
+def test_totals_by_key_ordered_by_audio_desc(us):
     us.record_usage(key_id="small", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
     us.record_usage(key_id="big", user_id="u", audio_s=9.0, words=1, status="ok", hour=1)
     rows = us.totals_by_key()
     assert [r["key_id"] for r in rows] == ["big", "small"]
 
 
-def test_totals_by_user_keyed(usage_store_db):
-    us = usage_store_db
+def test_totals_by_user_keyed(us):
     us.record_usage(key_id="k1", user_id="a", audio_s=1.0, words=1, status="ok", hour=1)
     us.record_usage(key_id="k2", user_id="a", audio_s=1.0, words=1, status="ok", hour=1)
     us.record_usage(key_id="k3", user_id="b", audio_s=1.0, words=1, status="ok", hour=1)
@@ -66,22 +61,19 @@ def test_totals_by_user_keyed(usage_store_db):
     assert by_user["b"]["requests"] == 1
 
 
-def test_totals_for_user_zeros_on_empty(usage_store_db):
-    us = usage_store_db
+def test_totals_for_user_zeros_on_empty(us):
     z = us.totals_for_user("nobody")
     assert z == {"requests": 0, "errors": 0, "words": 0, "audio_s": 0.0}
 
 
-def test_totals_window_filtering(usage_store_db):
-    us = usage_store_db
+def test_totals_window_filtering(us):
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=10)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=20)
     rows = us.totals_by_key(start_hour=15, end_hour=25)
     assert rows[0]["requests"] == 1
 
 
-def test_leaderboard_invalid_metric_falls_back(usage_store_db):
-    us = usage_store_db
+def test_leaderboard_invalid_metric_falls_back(us):
     us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=1, status="ok", hour=1)
     rows = us.leaderboard(metric="words); DROP TABLE usage_hourly;--")
     assert rows and rows[0]["user_id"] == "u"
@@ -89,8 +81,7 @@ def test_leaderboard_invalid_metric_falls_back(usage_store_db):
     assert not _is_empty(us)
 
 
-def test_leaderboard_by_key_vs_user(usage_store_db):
-    us = usage_store_db
+def test_leaderboard_by_key_vs_user(us):
     us.record_usage(key_id="k1", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
     us.record_usage(key_id="k2", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
     assert len(us.leaderboard(by="key")) == 2
@@ -102,22 +93,19 @@ def _is_empty(us) -> bool:
         "SELECT 1 FROM usage_hourly LIMIT 1").fetchone() is None
 
 
-def test_record_usage_fills_the_hourly_table(usage_store_db):
-    us = usage_store_db
+def test_record_usage_fills_the_hourly_table(us):
     assert _is_empty(us)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
     assert not _is_empty(us)
 
 
-def test_prune_noop_when_non_positive(usage_store_db):
-    us = usage_store_db
+def test_prune_noop_when_non_positive(us):
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
     assert us.prune(retention_days=0) == 0
     assert not _is_empty(us)
 
 
-def test_prune_drops_old(usage_store_db):
-    us = usage_store_db
+def test_prune_drops_old(us):
     old_hour = us.now_hour() - 24 * 100
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=old_hour)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok")  # now
@@ -125,9 +113,8 @@ def test_prune_drops_old(usage_store_db):
     assert deleted == 1
 
 
-def test_series_day_buckets_utc(usage_store_db, set_tz):
+def test_series_day_buckets_utc(us, set_tz):
     set_tz("UTC")
-    us = usage_store_db
     # Two rows on day 0 (hours 0..23) and one on day 1 (hour 24), in UTC.
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=0)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=5)
@@ -137,9 +124,8 @@ def test_series_day_buckets_utc(usage_store_db, set_tz):
     assert s[0]["requests"] == 2 and s[1]["requests"] == 1
 
 
-def test_series_week_buckets_utc(usage_store_db, set_tz):
+def test_series_week_buckets_utc(us, set_tz):
     set_tz("UTC")
-    us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=0)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=24 * 8)
     s = us.series(bucket="week")
@@ -156,9 +142,8 @@ def test_epoch_day_and_local_midnight_utc(set_tz):
     assert us.local_day_start_hour(0) % 24 == 0
 
 
-def test_leaderboard_user_filter(usage_store_db):
+def test_leaderboard_user_filter(us):
     """`user_id=` narrows the board to one owner (own-scope key ranking)."""
-    us = usage_store_db
     us.record_usage(key_id="k1", user_id="alice", audio_s=1.0, words=1, status="ok", hour=1)
     us.record_usage(key_id="k2", user_id="alice", audio_s=2.0, words=1, status="ok", hour=1)
     us.record_usage(key_id="k3", user_id="bob", audio_s=9.0, words=1, status="ok", hour=1)
@@ -168,12 +153,11 @@ def test_leaderboard_user_filter(usage_store_db):
     assert len(us.leaderboard(by="user")) == 2
 
 
-def test_series_and_leaderboard_carry_proc_s_and_sessions(usage_store_db):
+def test_series_and_leaderboard_carry_proc_s_and_sessions(us):
     """processing_s and sessions are written on every request; the rollup
     readers series() and leaderboard() sum them and the leaderboard can rank
     by them. Neither has a /stats caller (overview() builds that page's
     series and leaderboard)."""
-    us = usage_store_db
     us.record_usage(key_id="k1", user_id="a", audio_s=10.0, words=1, status="ok",
                     hour=1, processing_s=2.0, job_id="j1", kind="file")
     us.record_usage(key_id="k1", user_id="a", audio_s=10.0, words=1, status="ok",
@@ -194,13 +178,12 @@ def test_series_and_leaderboard_carry_proc_s_and_sessions(usage_store_db):
 
 
 def test_record_usage_logs_the_real_error_when_sqlite_rolled_back(
-        usage_store_db, monkeypatch, caplog):
+        us, monkeypatch, caplog):
     """SQLite rolls back by itself on SQLITE_FULL, so a bare ROLLBACK raises
     "cannot rollback - no transaction is active"; the record_usage warning
     must log the disk-full cause, not that."""
     import logging
     import sqlite3
-    us = usage_store_db
     real = us._conn
 
     class _AutoRolledBackConn:

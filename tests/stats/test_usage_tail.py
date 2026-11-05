@@ -42,8 +42,7 @@ def _seed(us):
              model="large-v3", wait_s=10.0)
 
 
-def test_wait_quantiles_nearest_rank(usage_store_db):
-    us = usage_store_db
+def test_wait_quantiles_nearest_rank(us):
     _seed(us)
     s, e = _ts("2025-06-02", 0), _ts("2025-06-12", 0)
     q = us.wait_quantiles(start_ts=s, end_ts=e)
@@ -61,8 +60,7 @@ def test_wait_quantiles_nearest_rank(usage_store_db):
     assert days[4] == {"day": _D("2025-06-07"), "n": 1, "p50": 40.0, "p95": 40.0}
 
 
-def test_turnaround_histogram_buckets_and_wait_share(usage_store_db):
-    us = usage_store_db
+def test_turnaround_histogram_buckets_and_wait_share(us):
     _seed(us)
     h = us.turnaround_histogram(start_ts=_ts("2025-06-02", 0), end_ts=_ts("2025-06-12", 0))
     assert h["edges_s"] == [0, 1, 2, 5, 10, 30, 60, 120, 300, 900]
@@ -75,8 +73,7 @@ def test_turnaround_histogram_buckets_and_wait_share(usage_store_db):
     assert [sum(col) for col in zip(*h["by_kind"].values())] == h["counts"]
 
 
-def test_failures_union_terminal_and_soft(usage_store_db):
-    us = usage_store_db
+def test_failures_union_terminal_and_soft(us):
     _seed(us)
     f = us.failures(start_ts=_ts("2025-06-02", 0), end_ts=_ts("2025-06-12", 0))
     assert (f["jobs"], f["failed"]) == (6, 2)
@@ -89,8 +86,7 @@ def test_failures_union_terminal_and_soft(usage_store_db):
     assert own == {"jobs": 1, "failed": 0, "by_stage": {}, "by_class": {}}
 
 
-def test_by_model_with_wait_p50(usage_store_db):
-    us = usage_store_db
+def test_by_model_with_wait_p50(us):
     _seed(us)
     rows = {m["model"]: m for m in us.by_model(
         start_ts=_ts("2025-06-02", 0), end_ts=_ts("2025-06-12", 0))}
@@ -99,8 +95,7 @@ def test_by_model_with_wait_p50(usage_store_db):
     assert rows["large-v3"]["rtf"] == round(33.5 / 305.0, 3)
 
 
-def test_tail_document_and_compare(usage_store_db):
-    us = usage_store_db
+def test_tail_document_and_compare(us):
     _seed(us)
     doc = us.tail(user_id=None, tz=_UTC, tz_name="UTC", from_day=_D("2025-06-02"),
                   to_day=_D("2025-06-11"), jobs_retention_days=365, now=NOW)
@@ -122,11 +117,10 @@ def test_tail_document_and_compare(usage_store_db):
 
 
 
-def test_tail_half_hour_zone_keeps_wait_days_inside_the_range(usage_store_db):
+def test_tail_half_hour_zone_keeps_wait_days_inside_the_range(us):
     """In Asia/Kolkata (+5:30) the window starts at local midnight, not at
     23:30 the night before: a job at that hour stays out of wait.by_day
     and is counted in the previous window."""
-    us = usage_store_db
     ist = zoneinfo.ZoneInfo("Asia/Kolkata")
     for iso, w in (("2025-06-01", 1.0), ("2025-06-03", 2.0)):
         _rec(us, audio_s=1.0, words=1, kind="file", job_id=f"j{iso}",
@@ -136,12 +130,11 @@ def test_tail_half_hour_zone_keeps_wait_days_inside_the_range(usage_store_db):
     assert [(p["day"], p["n"]) for p in doc["wait"]["by_day"]] == [(_D("2025-06-03"), 1)]
     assert doc["compare"]["runs"] == {"cur": 1, "prev": 1, "delta": 0}
 
-def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
+def test_outcome_stubs_stay_out_of_the_tail_distributions(us):
     """record_outcome's stub (a hands-free session that ended without an
     utterance) is a session, not a decode: it must not count as a 0 s job of
     model "(unknown)" in the turnaround, wait, by-model or failure figures."""
     import time
-    us = usage_store_db
     _rec(us, audio_s=10.0, words=5, kind="dictation", job_id="r" * 32, processing_s=8.0,
          model="large-v3")
     for i in range(3):
@@ -155,11 +148,10 @@ def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
     assert [m["model"] for m in us.by_model(**win)] == ["large-v3"]
 
 
-def test_tail_all_time_reaches_jobs_older_than_the_hourly_retention(usage_store_db):
+def test_tail_all_time_reaches_jobs_older_than_the_hourly_retention(us):
     """usage_jobs prunes on its own (longer) clock: with the rollups kept 90
     days and the jobs 365, All time used to start at the oldest rollup and
     leave a 200-day-old job still on disk out of the tail."""
-    us = usage_store_db
     old = us.now_hour() - 200 * 24
     for jid, hour in (("o" * 32, old), ("n" * 32, None)):
         _rec(us, audio_s=10.0, words=5, kind="file", job_id=jid, hour=hour, processing_s=1.0)

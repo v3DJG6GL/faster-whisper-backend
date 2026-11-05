@@ -46,8 +46,7 @@ def _ov(us, **kw):
     return us.overview(**kw)
 
 
-def test_overview_dense_axis_and_buckets(usage_store_db):
-    us = usage_store_db
+def test_overview_dense_axis_and_buckets(us):
     _seed(us)
     ten = _ov(us, **_WIN)
     assert ten["v"] == 2 and ten["bucket"] == "day"
@@ -63,8 +62,7 @@ def test_overview_dense_axis_and_buckets(usage_store_db):
     assert us.bucket_mode(730) == "week"
 
 
-def test_overview_by_kind_lines_sum_to_totals(usage_store_db):
-    us = usage_store_db
+def test_overview_by_kind_lines_sum_to_totals(us):
     _seed(us)
     o = _ov(us, **_WIN, by="kind")
     ids = [ln["id"] for ln in o["lines"]]
@@ -80,8 +78,7 @@ def test_overview_by_kind_lines_sum_to_totals(usage_store_db):
     assert o["breakdown"] == {"source": "rollups", "key_scoped": True}
 
 
-def test_overview_by_user_top_k_and_others(usage_store_db):
-    us = usage_store_db
+def test_overview_by_user_top_k_and_others(us):
     _seed(us)
     o = _ov(us, **_WIN, by="user", top_k=2, limit=2)
     assert [ln["id"] for ln in o["lines"]] == ["carol", "alice", "__others__"]
@@ -99,8 +96,7 @@ def test_overview_by_user_top_k_and_others(usage_store_db):
                              "kinds": [], "kind_scoped": True}
 
 
-def test_overview_by_model_from_jobs(usage_store_db):
-    us = usage_store_db
+def test_overview_by_model_from_jobs(us):
     _seed(us)
     o = _ov(us, **_WIN, by="model", metric="sessions")
     assert o["breakdown"]["source"] == "jobs"
@@ -120,11 +116,10 @@ def test_overview_by_model_from_jobs(usage_store_db):
 
 
 
-def test_overview_by_model_half_hour_zone_lines_match_the_board(usage_store_db):
+def test_overview_by_model_half_hour_zone_lines_match_the_board(us):
     """In Asia/Kolkata (+5:30) a job at 23:30 the night before the window
     stays off the leaderboard as well as the axis, and one at 23:30 on the
     last day counts in both."""
-    us = usage_store_db
     ist = zoneinfo.ZoneInfo("Asia/Kolkata")
     for iso, words in (("2025-06-01", 10), ("2025-06-03", 5)):
         _rec(us, audio_s=1.0, words=words, kind="file", job_id=f"j{iso}", model="m",
@@ -135,8 +130,7 @@ def test_overview_by_model_half_hour_zone_lines_match_the_board(usage_store_db):
     assert [(r["id"], r["totals"]["words"]) for r in o["leaderboard"]] == [("m", 5)]
     assert [m["words"] for m in o["models"]] == [5]
 
-def test_overview_by_stage_from_stage_hourly(usage_store_db):
-    us = usage_store_db
+def test_overview_by_stage_from_stage_hourly(us):
     _seed(us)
     o = _ov(us, **_WIN, by="stage", metric="processing_s")
     assert [ln["id"] for ln in o["lines"]] == ["diarizing"]
@@ -148,8 +142,7 @@ def test_overview_by_stage_from_stage_hourly(usage_store_db):
     assert keyed["filter"]["key_scoped"] is False
 
 
-def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
-    us = usage_store_db
+def test_overview_compare_prev_and_yoy_aligned(us):
     _seed(us)
     # An earlier window with one file job for alice, and the same dates a
     # year before with a dictation for bob.
@@ -174,11 +167,10 @@ def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
     assert _ov(us, days=3, compare="off")["compare"] is None
 
 
-def test_overview_compare_others_line_sums_prev_tail(usage_store_db):
+def test_overview_compare_others_line_sums_prev_tail(us):
     """The compare line for the current "others" bucket carries every prev
     entity outside the current top-K (not prev's own, usually absent,
     "__others__" line), so the compare lines still sum to prev's total."""
-    us = usage_store_db
     _seed(us)
     for uid, key, secs, jid in (("alice", "k1", 5.0, "pa"), ("bob", "k3", 5.0, "pb"),
                                 ("carol", "k4", 40.0, "pc")):
@@ -193,19 +185,17 @@ def test_overview_compare_others_line_sums_prev_tail(usage_store_db):
     assert sum(sum(v) for v in cmp.values()) == c["totals"]["all"]["audio_s"] == 50.0
 
 
-def test_overview_unknown_params_fall_back(usage_store_db):
-    us = usage_store_db
+def test_overview_unknown_params_fall_back(us):
     o = _ov(us, by="zzz", metric="zzz", bucket="zzz", compare="zzz")
     assert (o["by"], o["metric"], o["bucket"], o["compare"]) == ("kind", "audio_s", "day", None)
     assert o["lines"] == [] and o["leaderboard"] == [] and o["models"] == []
 
 
-def test_overview_with_stages_narrows_every_breakdown(usage_store_db):
+def test_overview_with_stages_narrows_every_breakdown(us):
     """A `with=` stage filter recomputes the document from the per-job
     rows; the by=user / key / stage breakdowns and the leaderboard must
     come from the same rows (breakdown.source "jobs"), or the board sums
     to more sessions than the headline above it."""
-    us = usage_store_db
     _rec(us, key_id="k1", user_id="alice", audio_s=10.0, words=5, kind="dictation",
          hour=_hour("2025-06-03"), processing_s=1.0, job_id="j1",
          stages=[{"name": "translating", "secs": 1.0}])
@@ -235,13 +225,12 @@ def test_overview_with_stages_narrows_every_breakdown(usage_store_db):
     assert plain["breakdown"]["source"] == "rollups"
 
 
-def test_overview_compare_rebuckets_prev_onto_the_current_week_axis(usage_store_db):
+def test_overview_compare_rebuckets_prev_onto_the_current_week_axis(us):
     """A 180-day window bucketed by week: the previous window starts on a
     different weekday, so its own axis has one bucket more here (27 vs
     26). The prev lines are re-bucketed onto THIS axis, so audio on the
     last day of the previous window lands in the compare line instead of
     being truncated away while the totals still count it."""
-    us = usage_store_db
     t = _D("2025-06-07")
     f, pt = t - 179, t - 180
     _rec(us, key_id="k1", user_id="alice", audio_s=99.0, words=1, kind="file",
@@ -259,11 +248,10 @@ def test_overview_compare_rebuckets_prev_onto_the_current_week_axis(usage_store_
     assert line[-1] == 99.0
 
 
-def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
+def test_overview_by_model_leaves_out_outcome_stubs(us):
     """record_outcome's stub (a dictation session with no utterance) is not a
     decode: like the tail, the by=model breakdown and the models table leave
     it out rather than count an "(unknown)" session."""
-    us = usage_store_db
     _rec(us, key_id="k1", user_id="alice", audio_s=10.0, words=5, kind="dictation",
          processing_s=1.0, job_id="d1", model="large-v3")
     assert _outcome(us, "s" * 32, user_id="alice", translation="none") == "accepted"
@@ -273,12 +261,11 @@ def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
     assert [m["model"] for m in o["models"]] == ["large-v3"]
 
 
-def test_overview_all_time_models_reach_jobs_older_than_the_hourly_retention(usage_store_db):
+def test_overview_all_time_models_reach_jobs_older_than_the_hourly_retention(us):
     """usage_jobs prunes on its own (longer) clock: with the rollups kept 90
     days and the jobs 365, the All time models table starts at the oldest
     job, not the oldest rollup, so a 200-day-old job still on disk counts
     there as it does in the tail's per-model table."""
-    us = usage_store_db
     old = us.now_hour() - 200 * 24
     for jid, hour in (("o" * 32, old), ("n" * 32, None)):
         _rec(us, audio_s=10.0, words=5, kind="file", job_id=jid, hour=hour, processing_s=1.0,
