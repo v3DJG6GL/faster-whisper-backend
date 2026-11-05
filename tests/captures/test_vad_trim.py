@@ -13,11 +13,18 @@ from faster_whisper_backend.captures import vad_trim as audio_vad_trim
 from tests.conftest import RATE, read_wav_params
 
 
-def test_trim_wav_removes_leading_trailing(fake_vad, wav_factory, tmp_path):
+@pytest.fixture
+def trim_out(wav_factory, tmp_path):
+    """trim_wav a fresh WAV (`spec` or raw `pcm`) into a new path; returns (result, dst)."""
+    def _run(spec, pcm=None, **kw):
+        dst = str(tmp_path / "out.wav")
+        return audio_vad_trim.trim_wav(wav_factory(spec, pcm=pcm), dst, **kw), dst
+    return _run
+
+
+def test_trim_wav_removes_leading_trailing(fake_vad, trim_out, tmp_path):
     # 500 sil | 1000 speech | 500 sil ; margin 100ms keeps 100ms each side.
-    src = wav_factory([("sil", 500), ("speech", 1000), ("sil", 500)])
-    dst = str(tmp_path / "trimmed.wav")
-    res = audio_vad_trim.trim_wav(src, dst, margin_ms=100)
+    res, dst = trim_out([("sil", 500), ("speech", 1000), ("sil", 500)], margin_ms=100)
 
     assert res["trimmed"] is True
     assert res["orig_duration_ms"] == 2000
@@ -41,15 +48,12 @@ def test_trim_wav_margin_clamped_to_clip_inplace_identity(fake_vad,
     assert res["new_duration_ms"] == 500
 
 
-def test_trim_wav_margin_clamped_to_clip_outofplace_writes(fake_vad,
-                                                           wav_factory, tmp_path):
+def test_trim_wav_margin_clamped_to_clip_outofplace_writes(fake_vad, trim_out):
     # Same all-speech clip but dst != src: even though 0ms is actually saved,
     # the <50ms early-return only fires for in-place writes, so the function
     # still writes dst (the full clip) and reports trimmed=True. This is the
     # documented "caller can rely on dst existing" contract.
-    src = wav_factory([("speech", 500)])
-    dst = str(tmp_path / "out.wav")
-    res = audio_vad_trim.trim_wav(src, dst, margin_ms=300)
+    res, dst = trim_out([("speech", 500)], margin_ms=300)
     assert res["trimmed"] is True
     assert res["lead_ms"] == 0
     assert res["trail_ms"] == 0
@@ -57,10 +61,8 @@ def test_trim_wav_margin_clamped_to_clip_outofplace_writes(fake_vad,
     assert os.path.exists(dst)
 
 
-def test_trim_wav_vad_unavailable(no_vad, wav_factory, tmp_path):
-    src = wav_factory([("sil", 200), ("speech", 200), ("sil", 200)])
-    dst = str(tmp_path / "out.wav")
-    res = audio_vad_trim.trim_wav(src, dst)
+def test_trim_wav_vad_unavailable(no_vad, trim_out):
+    res, dst = trim_out([("sil", 200), ("speech", 200), ("sil", 200)])
     assert res["trimmed"] is False
     assert res["lead_ms"] == 0 and res["trail_ms"] == 0
     # VAD import fails before reading the WAV -> orig duration reported as 0.
@@ -69,19 +71,15 @@ def test_trim_wav_vad_unavailable(no_vad, wav_factory, tmp_path):
     assert not os.path.exists(dst)
 
 
-def test_trim_wav_empty_source(fake_vad, wav_factory, tmp_path):
-    src = wav_factory(None, pcm=b"")
-    dst = str(tmp_path / "out.wav")
-    res = audio_vad_trim.trim_wav(src, dst)
+def test_trim_wav_empty_source(fake_vad, trim_out):
+    res, dst = trim_out(None, pcm=b"")
     assert res["trimmed"] is False
     assert res["orig_duration_ms"] == 0
     assert not os.path.exists(dst)
 
 
-def test_trim_wav_no_speech_identity(fake_vad, wav_factory, tmp_path):
-    src = wav_factory([("sil", 800)])
-    dst = str(tmp_path / "out.wav")
-    res = audio_vad_trim.trim_wav(src, dst)
+def test_trim_wav_no_speech_identity(fake_vad, trim_out):
+    res, dst = trim_out([("sil", 800)])
     assert res["trimmed"] is False
     assert res["orig_duration_ms"] == 800
     assert res["new_duration_ms"] == 800
@@ -96,13 +94,10 @@ def test_trim_wav_tiny_trim_inplace_is_noop(fake_vad, wav_factory, tmp_path):
     assert res["orig_duration_ms"] == 540
 
 
-def test_trim_wav_tiny_trim_outofplace_still_writes(fake_vad, wav_factory,
-                                                    tmp_path):
+def test_trim_wav_tiny_trim_outofplace_still_writes(fake_vad, trim_out):
     # Same tiny trim but dst != src -> must still write dst (caller relies on
     # dst existing).
-    src = wav_factory([("sil", 20), ("speech", 500), ("sil", 20)])
-    dst = str(tmp_path / "copy.wav")
-    res = audio_vad_trim.trim_wav(src, dst, margin_ms=0)
+    res, dst = trim_out([("sil", 20), ("speech", 500), ("sil", 20)], margin_ms=0)
     assert res["trimmed"] is True
     assert os.path.exists(dst)
     assert res["lead_ms"] == 20
@@ -130,7 +125,7 @@ def _synth_speech_like(dur_s, sr=RATE):
     return sig.astype(np.int16)
 
 
-def test_trim_wav_real_silero_smoke(wav_factory, tmp_path):
+def test_trim_wav_real_silero_smoke(trim_out):
     pytest.importorskip("faster_whisper.vad")
     import numpy as np
 
@@ -139,10 +134,8 @@ def test_trim_wav_real_silero_smoke(wav_factory, tmp_path):
     edge = np.zeros(int(0.8 * sr), dtype=np.int16)
     mid = _synth_speech_like(2.0)
     pcm = np.concatenate([edge, mid, edge]).tobytes()
-    src = wav_factory(None, pcm=pcm)
-    dst = str(tmp_path / "real_trim.wav")
 
-    res = audio_vad_trim.trim_wav(src, dst, margin_ms=100, threshold=0.2)
+    res, dst = trim_out(None, pcm=pcm, margin_ms=100, threshold=0.2)
     assert res["trimmed"] is True
     assert res["new_duration_ms"] < res["orig_duration_ms"]
     assert os.path.exists(dst)
