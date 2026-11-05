@@ -40,6 +40,9 @@ import threading
 from unittest import mock
 
 import pytest
+import yt_dlp
+from yt_dlp.downloader import external, hls, rtmp
+from yt_dlp.networking.exceptions import RequestError
 
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.media import download as udl
@@ -165,7 +168,6 @@ def test_guard_registers_in_process():
 
 def test_guard_prefers_over_every_builtin():
     udl.guard_self_check(force=True)
-    import yt_dlp
 
     with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
         director = ydl._request_director
@@ -183,8 +185,6 @@ def test_guard_refuses_ffmpeg_delegation_of_an_aes128_manifest(monkeypatch, tmp_
     169.254.169.254 or a LAN host was a blind SSRF. The guard must refuse the
     hand-off (with the marker) before any external program is spawned."""
     udl.guard_self_check(force=True)
-    import yt_dlp
-    from yt_dlp.downloader import external, hls
 
     manifest = (
         "#EXTM3U\n#EXT-X-TARGETDURATION:4\n"
@@ -215,7 +215,6 @@ def test_guard_refuses_ffmpeg_delegation_of_an_aes128_manifest(monkeypatch, tmp_
 
 def test_guard_is_not_installed_without_the_downloader_refusal(monkeypatch):
     guard = _inproc_guard()
-    from yt_dlp.downloader import external, rtmp
     assert guard.is_installed()
     for cls in (external.ExternalFD, rtmp.RtmpFD):
         with monkeypatch.context() as m:
@@ -265,7 +264,6 @@ def test_guard_resolve_pinned_fails_closed_on_a_host_idna_cannot_encode():
     UnicodeError, not OSError; inside the yt-dlp child it must still end as
     the guard's RequestError (fail closed), never an unhandled error."""
     guard = _inproc_guard()
-    from yt_dlp.networking.exceptions import RequestError
     for host in ("a..com", "a" * 64 + ".com"):
         with pytest.raises(RequestError, match=guard.MARKER):
             guard._resolve_pinned(host, 443)
@@ -308,7 +306,6 @@ def test_launcher_check_sees_a_broken_plugin_import(tmp_path):
 def _ydl_opts(argv):
     """The YoutubeDL params the download subprocess would build from
     `argv` (interpreter and launcher dropped, and the trailing `-- url`)."""
-    import yt_dlp
     assert argv[-2] == "--"
     return yt_dlp.parse_options(argv[2:-2]).ydl_opts
 
@@ -321,7 +318,6 @@ def test_pinned_download_flags_parse_on_the_pinned_yt_dlp():
     when it builds a YoutubeDL, which `--version` never reaches."""
     import re
 
-    import yt_dlp
     from yt_dlp.downloader import get_suitable_downloader
     from yt_dlp.downloader.hls import HlsFD
     for build in (udl.build_download_argv, udl.build_video_download_argv):
@@ -609,7 +605,6 @@ def test_classify_error_tells_an_external_downloader_refusal_apart():
     is refused by the guard, which is no reason to retry."""
     guard = _inproc_guard()
     assert guard.EXTERNAL_FD_MARKER == udl.GUARD_EXTERNAL_FD_MARKER
-    from yt_dlp.downloader import external
     with pytest.raises(Exception) as ei:
         guard._refuse_external_fd(external.FFmpegFD.__new__(external.FFmpegFD),
                                   "f", {})
@@ -685,7 +680,6 @@ def test_net_policy_trusts_the_proxy_hop_but_not_a_direct_private_host(private_p
 def test_guard_trusts_the_proxy_hop_but_not_a_direct_private_host(private_proxy):
     """Same contract in yt-dlp's opener (the guard copy of the pin)."""
     guard = _inproc_guard()
-    from yt_dlp.networking.exceptions import RequestError
 
     direct = guard._PinnedHTTPConnection("proxy.example", 3128)
     with pytest.raises(RequestError, match="forbidden address"):
