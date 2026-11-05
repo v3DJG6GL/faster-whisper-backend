@@ -877,10 +877,8 @@ def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
 
 def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 4, raising=False)
-    calls = []
     # A batch above two lines is a count mismatch.
-    _install_complete(monkeypatch, _numbered_fake(
-        calls, lambda lines: len(lines) > 2))
+    calls = _install_numbered(monkeypatch, lambda lines: len(lines) > 2)
 
     segs = _segs("Eins zwei.", "Drei vier.", "Fuenf sechs.", "Sieben acht.")
     res, warns, _ = _de_en(segs)
@@ -904,9 +902,8 @@ def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
     batch unchanged: the identical numbered prompt must not go out again.
     Blank members on either side of the live ones are skipped, so they
     must not count towards the span that gets halved."""
-    calls = []
     # Every numbered batch is a count mismatch.
-    _install_complete(monkeypatch, _numbered_fake(calls, lambda lines: True))
+    calls = _install_numbered(monkeypatch, lambda lines: True)
 
     res, warns, _ = _de_en(_segs(*texts))
     assert warns == []
@@ -922,10 +919,8 @@ def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
     """One count mismatch on a batch that opens with blank cues halves the
     LIVE span only: the next batch starts at the blanks again, so k keeps
     them on top — otherwise every later batch of the target stays tiny."""
-    calls = []
     # The first batch mismatches.
-    _install_complete(monkeypatch, _numbered_fake(
-        calls, lambda lines: len(calls) == 1))
+    calls = _install_numbered(monkeypatch, lambda lines: len(calls) == 1)
 
     live = [f"Satz nummer {n}." for n in range(28)]
     res, warns, _ = _de_en(_segs(*([""] * 4 + live)))
@@ -941,19 +936,20 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
     """A halving gets past one failing position: once the halved batch went
     through, k grows back to TRANSLATION_BATCH_SEGMENTS instead of staying
     shrunk for every later cue of the target."""
-    calls = []
     # The first batch mismatches.
-    _install_complete(monkeypatch, _numbered_fake(
-        calls, lambda lines: len(calls) == 1))
+    calls = _install_numbered(monkeypatch, lambda lines: len(calls) == 1)
 
     live = [f"Satz nummer {n}." for n in range(32)]
     _assert_faithful_roundtrip(live)
     assert _batch_sizes(calls) == [8, 4, 8, 8, 8, 4]
 
 
-def _numbered_fake(calls, fails):
-    """A ``_complete`` fake that mis-numbers every numbered batch for which
-    ``fails(lines)`` holds and translates the rest line by line."""
+def _install_numbered(monkeypatch, fails):
+    """Stub translation._complete with a fake that mis-numbers every numbered
+    batch for which ``fails(lines)`` holds and translates the rest line by
+    line; returns the payload list."""
+    calls = []
+
     def fake(llm, family, prompt_or_msgs, max_tokens):
         payload = _payload_of(prompt_or_msgs)
         calls.append(payload)
@@ -963,7 +959,8 @@ def _numbered_fake(calls, fails):
         if fails(lines):
             return "one line only"
         return _numbered_reply(payload)
-    return fake
+    _install_complete(monkeypatch, fake)
+    return calls
 
 
 def _batch_sizes(calls):
@@ -984,9 +981,7 @@ def test_faithful_batch_size_stops_growing_to_a_size_that_keeps_failing(
     """A model that mis-numbers every batch above 4 lines: once a grown 8
     failed twice, k stays at 4 instead of paying a failed 8-line decode
     before every 4-batch for the rest of the target."""
-    calls = []
-    _install_complete(monkeypatch, _numbered_fake(
-        calls, lambda lines: len(lines) > 4))
+    calls = _install_numbered(monkeypatch, lambda lines: len(lines) > 4)
 
     live = [f"Satz nummer {n}." for n in range(32)]
     _assert_faithful_roundtrip(live)
@@ -997,10 +992,9 @@ def test_faithful_one_bad_cue_still_grows_back_to_the_full_batch(
         base_cfg, monkeypatch):
     """One cue that breaks every numbered batch holding it is no size the
     model cannot number: past it, k still grows back to the full size."""
-    calls = []
     live = [f"Satz nummer {n}." for n in range(32)]
-    _install_complete(monkeypatch, _numbered_fake(
-        calls, lambda lines: any(live[5] in ln for ln in lines)))
+    calls = _install_numbered(
+        monkeypatch, lambda lines: any(live[5] in ln for ln in lines))
 
     _assert_faithful_roundtrip(live)
     assert _batch_sizes(calls) == [8, 4, 8, 4, 2, 1, 2, 1, 2, 4, 8, 8, 4]
@@ -1011,11 +1005,10 @@ def test_faithful_two_bad_cues_apart_still_grow_back_to_the_full_batch(
     """Two isolated bad cues with full batches numbered fine between them
     are no size failing twice IN A ROW: past the second one, k still grows
     back to the full size instead of decoding every later cue alone."""
-    calls = []
     live = [f"Satz nummer {n}." for n in range(48)]
     bad = (live[5], live[29])
-    _install_complete(monkeypatch, _numbered_fake(
-        calls, lambda lines: any(b in ln for ln in lines for b in bad)))
+    calls = _install_numbered(
+        monkeypatch, lambda lines: any(b in ln for ln in lines for b in bad))
 
     _assert_faithful_roundtrip(live)
     ladder = [8, 4, 2, 1, 2, 1, 2, 4]           # around one bad cue
