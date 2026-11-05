@@ -87,14 +87,18 @@ function find(el, pred) {
 }
 """
 
-# disableEnvPinnedEditor() needs el.matches() / el.querySelectorAll() over the
-# form controls under an element.
+# disableEnvPinnedEditor() needs el.matches() over the form controls, and it and
+# the rule-list painters need el.querySelectorAll() under an element, for the
+# comma-separated tag and .class selectors the page uses.
 _CONTROL_QSA = r"""
 const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
 El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
-El.prototype.querySelectorAll = function () {
+El.prototype.querySelectorAll = function (sel) {
+  const want = sel.split(',').map(s => s.trim());
+  const hit = (n) => want.some(s => s.startsWith('.')
+    ? n.classList.contains(s.slice(1)) : n.tagName === s.toUpperCase());
   const out = [];
-  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
+  (function walk(n) { n.children.forEach(c => { if (hit(c)) out.push(c); walk(c); }); })(this);
   return out;
 };
 """
@@ -1003,15 +1007,7 @@ def test_locked_rule_freezes_its_regex_entry_grips(client):
     rule shown read-only and the next Save wrote the new order."""
     lock = _block(_html(client, "/settings/pipeline"),
                   "    function _applyLockState() {", "\n    }\n")
-    out = _node(_FAKE_DOM + """
-El.prototype.querySelectorAll = function (sel) {
-  const want = sel.split(',').map(s => s.trim());
-  const hit = (n) => want.some(s => s.startsWith('.')
-    ? n.classList.contains(s.slice(1)) : n.tagName === s.toUpperCase());
-  const out = [];
-  (function walk(n) { n.children.forEach(c => { if (hit(c)) out.push(c); walk(c); }); })(this);
-  return out;
-};
+    out = _node(_FAKE_DOM + _CONTROL_QSA + """
 const rule = { type: 'regex-list', locked: true };
 const body = document.createElement('div');
 const headLine1 = document.createElement('div');
@@ -1042,17 +1038,7 @@ def test_env_pinned_rule_list_repaint_stays_read_only(client):
         _block(html, "  function paintAll() {"),
         _fns(html, "disableEnvPinnedEditor"),
     ])
-    out = _node(_FAKE_DOM + """
-const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
-El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
-El.prototype.querySelectorAll = function (sel) {
-  const want = sel.split(',').map(s => s.trim());
-  const hit = (n) => want.some(s => s.startsWith('.')
-    ? n.classList.contains(s.slice(1)) : n.tagName === s.toUpperCase());
-  const out = [];
-  (function walk(n) { n.children.forEach(c => { if (hit(c)) out.push(c); walk(c); }); })(this);
-  return out;
-};
+    out = _node(_FAKE_DOM + _CONTROL_QSA + """
 const name = 'PIPELINE_RULES';
 const rules = [{ name: 'a' }, { name: 'b' }];
 function isEnvPinned(n) { return n === 'PIPELINE_RULES'; }
