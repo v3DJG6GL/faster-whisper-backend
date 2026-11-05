@@ -18,6 +18,12 @@ def ak(api_keys_db):
     return api_keys_db
 
 
+@pytest.fixture
+def uid(ak):
+    """A fresh non-admin user "u"."""
+    return ak.create_user("u", is_admin=False)
+
+
 def _store_user_binding(ak, uid, binding):
     """Write a raw stored user binding, bypassing set_user_permissions."""
     ak._require_conn().execute("UPDATE users SET permissions=? WHERE id=?",
@@ -102,8 +108,7 @@ def test_lockdown_transitions(ak):
         ak.revoke_key(rec2["id"])
 
 
-def test_lookup_hit_miss_and_falsy(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_lookup_hit_miss_and_falsy(ak, uid):
     raw, rec = ak.create_key(uid, label="my-laptop")
     got = ak.lookup_by_raw_key(raw)
     assert got["user_id"] == uid and got["key_id"] == rec["id"]
@@ -113,8 +118,7 @@ def test_lookup_hit_miss_and_falsy(ak):
     assert ak.lookup_by_raw_key("") is None
 
 
-def test_last_used_debounce(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_last_used_debounce(ak, uid):
     raw, rec = ak.create_key(uid)
     ak.lookup_by_raw_key(raw)
     t1 = ak.get_key(rec["id"])["last_used_ts"]
@@ -280,14 +284,12 @@ def test_create_key_user_missing(ak):
         ak.create_key("nonexistent")
 
 
-def test_create_key_label_too_long(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_create_key_label_too_long(ak, uid):
     with pytest.raises(ValueError):
         ak.create_key(uid, label="x" * 129)
 
 
-def test_create_key_returns_prefixed_raw(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_create_key_returns_prefixed_raw(ak, uid):
     raw, rec = ak.create_key(uid, label="laptop")
     assert raw.startswith("wk_")
     assert rec["label"] == "laptop" and rec["revoked_ts"] is None
@@ -411,25 +413,22 @@ def test_concurrent_revoke_of_two_admin_keys_keeps_one(ak):
     assert ak.is_locked_down() is True
 
 
-def test_set_permissions_validates_page_and_scope(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_set_permissions_validates_page_and_scope(ak, uid):
     with pytest.raises(ValueError):
         ak.set_user_permissions(uid, {"pages": {"nosuchpage": "all"}})
     with pytest.raises(ValueError):
         ak.set_user_permissions(uid, {"pages": {"captures": "sideways"}})
 
 
-def test_set_permissions_access_only_rejects_own(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_set_permissions_access_only_rejects_own(ak, uid):
     # logs is access-only: none|all, not own.
     with pytest.raises(ValueError):
         ak.set_user_permissions(uid, {"pages": {"logs": "own"}})
     ak.set_user_permissions(uid, {"pages": {"logs": "all"}})
 
 
-def test_stats_accepts_own_scope(ak):
+def test_stats_accepts_own_scope(ak, uid):
     """stats is a scoped page, not access-only: "own" is a legal stored value."""
-    uid = ak.create_user("u", is_admin=False)
     ak.set_user_permissions(uid, {"pages": {"stats": "own"}})
     assert ak.get_user_permissions(uid)["pages"]["stats"] == "own"
     assert "stats" in ak.SCOPED_PAGES
@@ -437,12 +436,11 @@ def test_stats_accepts_own_scope(ak):
 
 
 def test_binding_saves_keep_a_stored_slug_a_rules_edit_removed(
-        ak, monkeypatch):
+        ak, uid, monkeypatch):
     """The binding drawer sends the whole overrides blob back: a rule slug the
     stored user / key binding already names (removed from the rules since)
     must not 422 an edit of another field, while a newly added unknown slug
     still does."""
-    uid = ak.create_user("u", is_admin=False)
     _raw, rec = ak.create_key(uid)
     slugs = {"x", "known"}
     monkeypatch.setattr(config_store, "_canonical_rule_slugs", lambda: set(slugs))
@@ -477,25 +475,22 @@ def test_default_nonadmin_perms_stats_own(ak):
     assert pages["logs"] == "none"
 
 
-def test_existing_stats_all_survives_merge(ak):
+def test_existing_stats_all_survives_merge(ak, uid):
     """Widening the allowed scopes must not touch rows that already hold
     "all": a later edit to another page merges around it."""
-    uid = ak.create_user("u", is_admin=False)
     ak.set_user_permissions(uid, {"pages": {"stats": "all"}})
     ak.set_user_permissions(uid, {"pages": {"captures": "none"}})
     assert ak.get_user_permissions(uid)["pages"]["stats"] == "all"
 
 
-def test_set_permissions_merge_preserves_untouched(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_set_permissions_merge_preserves_untouched(ak, uid):
     ak.set_user_permissions(uid, {"pages": {"captures": "all"}})
     clean = ak.set_user_permissions(uid, {"pages": {"reports": "all"}})
     assert clean["pages"]["captures"] == "all"
     assert clean["pages"]["reports"] == "all"
 
 
-def test_set_permissions_normalises_tags(ak):
-    uid = ak.create_user("u", is_admin=False)
+def test_set_permissions_normalises_tags(ak, uid):
     clean = ak.set_user_permissions(uid, {"pages": {}, "quick_config_tags": ["B", "a", "a"]})
     assert clean["quick_config_tags"] == ["a", "b"]
 
@@ -701,11 +696,10 @@ def test_parse_binding_keeps_a_split_card_the_rules_in_force_still_hold(monkeypa
         "strip-whisper-punctuation"]
 
 
-def test_list_users_migrates_the_user_binding_the_drawer_sends_back(ak):
+def test_list_users_migrates_the_user_binding_the_drawer_sends_back(ak, uid):
     """The per-user drawer reads list_users() and sends the blob back on
     every save; a raw stored guard at 1 or a pre-rename key would 422 any edit
     (keys already arrive migrated through _row_to_key_dict)."""
-    uid = ak.create_user("u", is_admin=False)
     _store_user_binding(ak, uid, {"direct": {
         "SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "SEGMENT_MAX_WORDS_PER_SEC": 3.0},
         "profiles": []})
@@ -731,10 +725,9 @@ def test_first_admin_key_bumps_the_config_version(ak):
 
 
 def test_last_used_debounce_survives_a_backwards_wall_clock_step(
-        ak, monkeypatch):
+        ak, uid, monkeypatch):
     # The debounce runs on the monotonic clock: a backwards wall-clock step
     # must not hold back last_used_ts writes for the step plus 60 s.
-    uid = ak.create_user("u", is_admin=False)
     raw, rec = ak.create_key(uid)
     mono = [1000.0]
     wall = [2_000_000.0]
@@ -750,12 +743,11 @@ def test_last_used_debounce_survives_a_backwards_wall_clock_step(
 
 
 def test_binding_saves_keep_a_stored_profile_name_that_vanished(
-        ak, monkeypatch):
+        ak, uid, monkeypatch):
     """A bound profile name can vanish without the delete guard (env pin,
     hand edit); the drawer sends it back unseen, so only names a save ADDS
     must exist."""
     from faster_whisper_backend.settings import config as cfg
-    uid = ak.create_user("u", is_admin=False)
     _raw, rec = ak.create_key(uid)
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"gone": {"BEAM_SIZE": 2},
                                                    "here": {"BEAM_SIZE": 3}})
