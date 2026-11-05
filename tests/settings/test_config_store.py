@@ -21,7 +21,7 @@ from faster_whisper_backend.core import atomic_json
 from tests.settings._rules_helpers import (
     load_saved,
     map_rule as _map_rule,
-    old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
+    pre_june_rules as _pre_june_rules,
     regex_list_rules,
     regex_rule as _regex,
     seed_local as _seed_local,
@@ -1176,10 +1176,8 @@ def test_removing_a_local_copy_of_a_split_card_writes_its_refs_as_the_successors
     # excludes name it. The factory list has its two successor cards, which
     # the next load maps the slug to: the clear must not 422 on it.
     split = ["strip-trailing-period", "strip-auto-punctuation"]
-    rules = [r for r in cs.load_factory_rules() if r["name"] not in split]
-    rules.insert(-1, _old_strip_whisper_punctuation())
     p = _seed_local(tmp_path, {
-        "PIPELINE_RULES": rules,
+        "PIPELINE_RULES": _pre_june_rules(),
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}},

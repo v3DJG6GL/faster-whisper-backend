@@ -15,6 +15,7 @@ from tests._page_helpers import TOP_CLOSE, js_body, js_upto, settings_template_s
 from tests._translation_helpers import enable_translation, lab_run
 from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
 from tests.conftest import _repoint_path_default, bearer, locked_user, record_calls
+from tests.settings._rules_helpers import pre_june_rules
 
 
 def test_settings_page_loopback(client):
@@ -1401,14 +1402,9 @@ def test_clear_local_override_puts_split_card_refs_live(
     same, or until a restart they name a card the live list no longer has and
     the excluded successors run everywhere."""
     split = ["strip-trailing-period", "strip-auto-punctuation"]
-    rules = [r for r in config_store.load_factory_rules()
-             if r["name"] not in split]
-    rules.insert(-1, {"name": "strip-whisper-punctuation",
-                      "label": "Strip Whisper punctuation", "type": "regex-list",
-                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
     with open(config_store.OVERRIDES_PATH, "w", encoding="utf-8") as f:
         json.dump({
-            "PIPELINE_RULES": rules,
+            "PIPELINE_RULES": pre_june_rules(),
             "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
             "MODEL_OVERRIDES": {"large-v3": {
                 "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}},
