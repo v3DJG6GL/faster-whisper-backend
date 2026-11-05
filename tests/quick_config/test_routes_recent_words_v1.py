@@ -102,13 +102,10 @@ def test_v1_recent_words_requires_auth_when_locked_down(client, make_user_key):
     assert client.get("/v1/recent-words").status_code == 401  # no bearer
 
 
-def test_v1_recent_words_not_host_gated(app_module, make_user_key):
-    from starlette.testclient import TestClient
+def test_v1_recent_words_not_host_gated(narrowed_remote_client, make_user_key):
     # Narrow the user-WebUI allowlist to loopback, then call from a non-loopback
     # client WITH a key: the browser /quick-config/recent is host-gated (403
     # before the key is even looked at), but the /v1 client API is reachable.
-    app_module.cfg.USER_WEBUI_ALLOWED_HOSTS = ["127.0.0.1/32"]
-    with TestClient(app_module.app, client=("203.0.113.9", 9999)) as c:
-        _uid, raw = make_user_key("root", is_admin=True)
-        assert c.get("/quick-config/recent", headers=bearer(raw)).status_code == 403
-        assert c.get("/v1/recent-words", headers=bearer(raw)).status_code == 200
+    _uid, raw = make_user_key("root", is_admin=True)
+    assert narrowed_remote_client.get("/quick-config/recent", headers=bearer(raw)).status_code == 403
+    assert narrowed_remote_client.get("/v1/recent-words", headers=bearer(raw)).status_code == 200
