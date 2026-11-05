@@ -750,49 +750,39 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
                    for w in body.get("warnings") or [])
 
 
-def _record_captures_on(app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
-                        raising=False)
-
-
 def test_a_full_capture_store_still_records_a_batch_request(
-        client, app_module, fake_model, monkeypatch, created_captures):
+        client, app_module, fake_model, monkeypatch, recording_captures):
     """At CAPTURES_MAX the batch gate must still reach create_capture so its
     _evict_to_cap rotates oldest-first; refusing up front means no later
     request records anything (streaming twin: tests/streaming/test_finalize_paths.py)."""
-    _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
     # Not a store full of "ready" rows (the real DB state must not decide).
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
 
     post_json_ok(client)
-    assert len(created_captures) == 1
+    assert len(recording_captures) == 1
     assert fake_model.last_kwargs["word_timestamps"] is True   # forced DTW
 
 
 def test_a_store_full_of_ready_captures_skips_the_batch_capture(
-        client, app_module, fake_model, monkeypatch, created_captures):
+        client, app_module, fake_model, monkeypatch, recording_captures):
     """Ready rows alone fill CAPTURES_MAX: _evict_to_cap would evict the new
     row itself, so the gate records nothing and does not force DTW."""
-    _record_captures_on(app_module, monkeypatch)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
 
     post_json_ok(client)
-    assert created_captures == []
+    assert recording_captures == []
     # The costly half: a json response with no timestamp_granularities runs
     # without DTW once the gate declines.
     assert not fake_model.last_kwargs.get("word_timestamps")
 
 
 def test_batch_capture_gate_reads_the_store_off_the_event_loop(
-        client, app_module, fake_model, monkeypatch):
+        client, app_module, fake_model, monkeypatch, recording_captures):
     """ready_fills_cap queries the shared captures connection, which clear_all
     holds across a full VACUUM: called on the loop, that VACUUM would freeze
     every request and stream. It must run in a worker thread."""
-    _record_captures_on(app_module, monkeypatch)
     on_loop = []
 
     def _probe():
