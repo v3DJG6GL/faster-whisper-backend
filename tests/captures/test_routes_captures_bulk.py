@@ -119,10 +119,8 @@ def test_list_user_id_rejects_an_oversized_speaker_list(client, root_key):
     cap = captures_routes._MAX_OWNER_FILTER_IDS
     ok = ",".join(f"u{i}" for i in range(cap))
     assert _get(client, root_key, "list?user_id=" + ok).status_code == 200
-    for path in ("/captures/api/list", "/captures/api/stats",
-                 "/captures/api/samples"):
-        r = client.get(f"{path}?user_id={ok},one-too-many",
-                       headers=bearer(root_key))
+    for path in ("list", "stats", "samples"):
+        r = _get(client, root_key, f"{path}?user_id={ok},one-too-many")
         assert r.status_code == 422, path
 
 
@@ -312,7 +310,7 @@ def test_bulk_routes_require_captures_page_when_locked(client, make_user_key):
     assert _bulk(client, raw, ["x" * 12], "ready").status_code == 403
     assert client.post("/captures/api/bulk-delete", headers=h,
                        json={"ids": ["x" * 12]}).status_code == 403
-    assert client.get("/captures/api/stats", headers=h).status_code == 403
+    assert _get(client, raw, "stats").status_code == 403
 
 
 def test_bulk_delete_removes_rows_and_skips_locked(client, make_user_key):

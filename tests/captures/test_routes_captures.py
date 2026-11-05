@@ -362,16 +362,14 @@ def test_locked_member_view_does_not_rewrite_text(
 
     monkeypatch.setattr(pl_engine, "_postprocess_text", _pp)
 
-    h = bearer(raw)
     # Locked member: the GET succeeds but the stored text stays frozen.
-    assert client.get("/captures/api/locked02cid", headers=h).status_code == 200
+    assert _get(client, raw, "locked02cid").status_code == 200
     assert captures_store.get_capture("locked02cid")["final"] == "f"
     # Locked sample view (the _enrich_sample member loop): still frozen.
-    assert client.get(
-        "/captures/api/samples/locked02sid", headers=h).status_code == 200
+    assert _get(client, raw, "samples/locked02sid").status_code == 200
     assert captures_store.get_capture("locked02cid")["final"] == "f"
     # Contrast: an unlocked member self-heals to the current pipeline output.
-    assert client.get("/captures/api/open0002cid", headers=h).status_code == 200
+    assert _get(client, raw, "open0002cid").status_code == 200
     assert captures_store.get_capture("open0002cid")["final"] == "REWRITTEN"
 
 
@@ -406,13 +404,12 @@ def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key)
         _insert_sample(conn, gs, f"page{i}sid00000", locked=False, ts=ts,
                        user_id=uid)
 
-    h = bearer(raw)
     seen, cursor, pages = [], None, 0
     while True:
-        q = "/captures/api/samples?limit=2"
+        q = "samples?limit=2"
         if cursor:
             q += f"&before_ts={cursor['before_ts']}&before_id={cursor['before_id']}"
-        body = client.get(q, headers=h).json()
+        body = _get(client, raw, q).json()
         assert len(body["samples"]) <= 2
         seen.extend(s["id"] for s in body["samples"])
         cursor = body["next"]
@@ -1521,7 +1518,7 @@ def test_reprocess_and_self_heal_scope_a_translate_capture_by_english(
     h = bearer(raw_key)
 
     # Page view (self-heal) — no rewrite of the stored English text.
-    assert client.get("/captures/api/transl000001", headers=h).status_code == 200
+    assert _get(client, raw_key, "transl000001").status_code == 200
     row = captures_store.get_capture("transl000001")
     assert row["final"] == text and row["text_for_training"] == text
     r = client.post("/captures/api/transl000001/reprocess", headers=h)
@@ -1580,14 +1577,11 @@ def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
         return real(cid)
 
     monkeypatch.setattr(captures_store, "get_capture", _spy)
-    h = bearer(raw_key)
     # No WAV on disk: the row is found, then the file probe answers 410.
-    assert client.get("/captures/api/offloop00001/audio",
-                      headers=h).status_code == 410
-    assert client.get("/captures/api/offloop00001",
-                      headers=h).status_code == 200
+    assert _get(client, raw_key, "offloop00001/audio").status_code == 410
+    assert _get(client, raw_key, "offloop00001").status_code == 200
     assert client.delete("/captures/api/offloop00001",
-                         headers=h).status_code == 200
+                         headers=bearer(raw_key)).status_code == 200
     assert seen and not any(seen)
 
 
@@ -1750,9 +1744,7 @@ def test_group_chip_save_keeps_a_members_anchorless_chip(
                      [{"wrong": "x", "correct": "X", "idx": 0}, free])
     _two_word_member(conn, "anchlessmem2", sid, uid, 1,
                      [{"wrong": "x", "correct": "P", "idx": 0}])
-    h = bearer(raw_key)
-    proj = client.get(f"/captures/api/samples/{sid}",
-                      headers=h).json()["sample"]["corrections"]
+    proj = _get(client, raw_key, f"samples/{sid}").json()["sample"]["corrections"]
     assert [c["idx"] for c in proj] == [0, 2]
     edited = [proj[0], dict(proj[1], correct="Q")]
     r = _patch(client, raw_key, f"samples/{sid}", corrections=edited,
