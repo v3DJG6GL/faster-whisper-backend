@@ -101,27 +101,18 @@ def test_delete_last_admin_409(client, make_user_key):
 def test_patch_permissions_invalid_scope_400(client):
     uid = _new_user(client, "dan")
     # "bogus" is not a valid scope -> set_user_permissions raises ValueError -> 400.
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions",
-        json={"pages": {"reports": "bogus"}},
-    )
+    r = _patch_permissions(client, uid, pages={"reports": "bogus"})
     assert r.status_code == 400
 
 
 def test_patch_permissions_unknown_field_422(client):
     uid = _new_user(client, "eve")
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions",
-        json={"pages": {}, "nope": True},
-    )
+    r = _patch_permissions(client, uid, pages={}, nope=True)
     assert r.status_code == 422
 
 
 def test_patch_permissions_unknown_user_404(client):
-    r = client.patch(
-        "/settings/api-keys/api/users/missing/permissions",
-        json={"pages": {"reports": "own"}},
-    )
+    r = _patch_permissions(client, "missing", pages={"reports": "own"})
     assert r.status_code == 404
 
 
@@ -149,6 +140,10 @@ def _new_key(client, uid, label="k1"):
 
 def _rename(client, uid, kid, **body):
     return client.patch(f"/settings/api-keys/api/users/{uid}/keys/{kid}/label", json=body)
+
+
+def _patch_permissions(client, uid, **body):
+    return client.patch(f"/settings/api-keys/api/users/{uid}/permissions", json=body)
 
 
 def test_create_key_blank_label_400(client):
