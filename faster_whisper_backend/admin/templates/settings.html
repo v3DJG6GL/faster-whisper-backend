@@ -561,9 +561,7 @@
   .field.env-pinned .env-pinned-editor button:disabled,
   .field.env-pinned .env-pinned-editor:disabled { cursor: not-allowed; }
   .help.help-env-pinned { color: var(--magenta); opacity: 1; }
-  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
-    align-items: center; justify-content: center; z-index: 100; }
-  .modal.show { display: flex; }
+  .modal { background: rgba(0,0,0,0.7); z-index: 100; }
   /* Capped like .rule-modal: a long restart-field list on a small screen
      pushed Cancel / "Restart now" off it. The list scrolls first, so the
      buttons stay in view; the box scrolls only when even that is too tall. */

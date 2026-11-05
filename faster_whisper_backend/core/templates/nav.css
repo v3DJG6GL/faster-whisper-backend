@@ -606,6 +606,11 @@ header .page-link.allowed { display: inline-flex; }
   background: #21262d; color: var(--bold);
 }
 
+/* Full-screen modal overlay; .show opens it. Each page's own rule sets the
+   background and z-index. */
+.modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; }
+.modal.show { display: flex; }
+
 /* Tag-picker widget — shared by the /settings rule editor and the
    /settings/api-keys permissions matrix. position:relative anchors the
    suggest list on the no-Popover-API fallback path (see below). */

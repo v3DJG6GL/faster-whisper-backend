@@ -161,11 +161,7 @@
   }
 
   /* Clear-all confirm modal — same pattern as the .modal in /captures */
-  .modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.65);
-    display: none; align-items: center; justify-content: center; z-index: 30;
-  }
-  .modal.show { display: flex; }
+  .modal { background: rgba(0,0,0,0.65); z-index: 30; }
   .modal .box {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 1.25rem; min-width: 20rem;

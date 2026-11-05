@@ -413,12 +413,12 @@
   .cc-actions .dirty { color: var(--yellow); font-size: var(--fs-sm); }
   .cc-actions .dirty.hidden { display: none; }
 
-  /* The full-screen overlay chrome every modal on this page shares. */
-  .modal, #merge-modal, #propose-modal {
+  /* The same full-screen overlay as .modal (nav.css), for the two id-styled modals. */
+  #merge-modal, #propose-modal {
     position: fixed; inset: 0;
     display: none; align-items: center; justify-content: center;
   }
-  .modal.show, #merge-modal.show, #propose-modal.show { display: flex; }
+  #merge-modal.show, #propose-modal.show { display: flex; }
   .modal .box, #merge-modal .box, #propose-modal .box {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 1.25rem;
