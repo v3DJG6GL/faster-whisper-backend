@@ -130,12 +130,8 @@ def test_cancelled_load_holds_the_lock_until_its_queued_register_lands(
         await asyncio.sleep(0.05)
         assert not evicting.done()      # the cancelled load still holds it
         gate.set()
-        try:
+        with pytest.raises(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
-        else:
-            raise AssertionError("the cancelled load must re-raise")
         assert await evicting is True
         await loop.run_in_executor(None, lambda: None)
 
@@ -165,12 +161,8 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
         await asyncio.sleep(0.05)
         assert len(built) == 1          # B waits on the lock A still holds
         go.set()
-        try:
+        with pytest.raises(asyncio.CancelledError):
             await a
-        except asyncio.CancelledError:
-            pass
-        else:
-            raise AssertionError("the cancelled load must re-raise")
         return await b
 
     try:
