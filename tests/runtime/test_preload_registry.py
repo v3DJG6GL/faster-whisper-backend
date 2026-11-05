@@ -14,6 +14,7 @@ import time
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.core import jobs
+from faster_whisper_backend.core import loop_lock
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import model_registry
@@ -326,11 +327,7 @@ def test_ttl_sweep_drops_a_plans_keys_together_overlap_survives(monkeypatch):
     async def _one_sweep():
         task = asyncio.ensure_future(preload.sweeper_loop())
         await asyncio.sleep(0.05)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await loop_lock.cancel_and_wait(task)
     monkeypatch.setattr(preload, "_SWEEP_S", 0.01)
     asyncio.run(_one_sweep())
 
@@ -563,11 +560,7 @@ def test_sync_entry_points_are_thread_safe_against_the_sweeper(monkeypatch):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
             await asyncio.gather(*[
                 loop.run_in_executor(ex, _hammer, i) for i in range(8)])
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await loop_lock.cancel_and_wait(task)
 
     asyncio.run(_run())
     # The invariant that matters: the registry stayed bounded and _warm never
