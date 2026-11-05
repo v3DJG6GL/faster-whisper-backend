@@ -288,7 +288,7 @@ def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
 
 
 def test_patch_response_hides_global_capture_count_from_nonadmin(
-    client, app_module, make_user_key,
+    client, app_module, make_user_key, root_key,
 ):
     """captures_store.count() with no args is the unfiltered admin-scope total,
     and a quick_config-only identity has captures scope "none" — so a non-admin
@@ -309,7 +309,6 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
 
     captures_store.count = _counting
     try:
-        _uid, admin_raw = make_user_key("root", is_admin=True)
         _uid2, user_raw = make_user_key("alice", pages={"quick_config": "own"})
 
         r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(user_raw))
@@ -317,7 +316,7 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
         assert r.json()["captures_count"] == 0
         assert calls == []
 
-        r = _post_patch(client, {slug: {"enabled": True}}, headers=bearer(admin_raw))
+        r = _post_patch(client, {slug: {"enabled": True}}, headers=bearer(root_key))
         assert r.status_code == 200, r.text
         assert r.json()["captures_count"] == 7
         assert len(calls) == 1

@@ -144,11 +144,9 @@ def _alice_alpha_key(make_user_key):
     """A non-admin 'alice' with quick_config=own and only the alpha tag —
     flips lockdown first. Returns her raw bearer key."""
     from faster_whisper_backend.auth import api_keys_store
-    make_user_key("root", is_admin=True)
-    uid = api_keys_store.create_user("alice", is_admin=False)
+    uid, raw = locked_user(make_user_key)
     api_keys_store.set_user_permissions(
         uid, {"pages": {"quick_config": "own"}, "quick_config_tags": ["alpha"]})
-    raw, _rec = api_keys_store.create_key(uid)
     return raw
 
 
@@ -201,8 +199,7 @@ def test_v1_requires_quick_config_page(client, make_user_key):
     assert r.status_code == 403
 
 
-def test_v1_requires_auth_when_locked_down(client, make_user_key):
-    make_user_key("root", is_admin=True)  # lockdown
+def test_v1_requires_auth_when_locked_down(client, root_key):
     r = client.get("/v1/pipeline-rules")  # no bearer
     assert r.status_code == 401
 

@@ -82,13 +82,12 @@ def test_v1_recent_words_scoped_per_user(client, make_user_key):
     assert "bravo-word" in b_words and "alpha-word" not in b_words
 
 
-def test_v1_recent_words_admin_sees_all(client, make_user_key):
+def test_v1_recent_words_admin_sees_all(client, root_key):
     from faster_whisper_backend.auth import api_keys_store
-    _uid_root, raw_root = make_user_key("root", is_admin=True)
     uid_a = api_keys_store.create_user("alice", is_admin=False)
     _seed(uid_a, ["alpha-word"], request_id="ra")
     _seed("someone-else", ["bravo-word"], request_id="rb")
-    words = client.get("/v1/recent-words", headers=bearer(raw_root)).json()["words"]
+    words = client.get("/v1/recent-words", headers=bearer(root_key)).json()["words"]
     assert "alpha-word" in words and "bravo-word" in words
 
 
@@ -97,8 +96,7 @@ def test_v1_recent_words_requires_quick_config_page(client, make_user_key):
     assert client.get("/v1/recent-words", headers=bearer(raw)).status_code == 403
 
 
-def test_v1_recent_words_requires_auth_when_locked_down(client, make_user_key):
-    make_user_key("root", is_admin=True)  # lockdown
+def test_v1_recent_words_requires_auth_when_locked_down(client, root_key):
     assert client.get("/v1/recent-words").status_code == 401  # no bearer
 
 
