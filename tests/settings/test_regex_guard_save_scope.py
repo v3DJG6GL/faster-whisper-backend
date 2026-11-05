@@ -14,19 +14,14 @@ import json
 import pytest
 
 from faster_whisper_backend.settings import config_store as cs
-from tests.settings._rules_helpers import regex_list_rules
+from tests.settings._rules_helpers import regex_list_rules, seed_local
 
 
 _LEGACY_RULES = regex_list_rules("legacy", r"(\w+ ?)+")
 
 
-def _write_legacy(path):
-    path.write_text(json.dumps({"PIPELINE_RULES": _LEGACY_RULES}), encoding="utf-8")
-
-
 def test_settings_only_save_ignores_a_stored_rule_that_fails_the_screen(tmp_path):
-    p = tmp_path / "config.local.json"
-    _write_legacy(p)
+    p = seed_local(tmp_path, {"PIPELINE_RULES": _LEGACY_RULES})
     changed = cs.save_overrides({"BEST_OF": 3}, str(p))
     assert changed == {"BEST_OF": 3}
     on_disk = json.loads(p.read_text(encoding="utf-8"))
@@ -37,8 +32,7 @@ def test_settings_only_save_ignores_a_stored_rule_that_fails_the_screen(tmp_path
 
 
 def test_submitting_the_rules_themselves_still_trips_the_screen(tmp_path):
-    p = tmp_path / "config.local.json"
-    _write_legacy(p)
+    p = seed_local(tmp_path, {"PIPELINE_RULES": _LEGACY_RULES})
     with pytest.raises(cs.ValidationError) as ei:
         cs.save_overrides({"PIPELINE_RULES": _LEGACY_RULES}, str(p))
     assert "nested repetition" in str(ei.value)

@@ -16,7 +16,7 @@ from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
 from tests.settings._rules_helpers import (
     entry_by_label, map_rule as _map_rule, regex_rule as _regex_rule,
-    terminal_rule as _terminal)
+    seed_local as _seed_local, terminal_rule as _terminal)
 
 
 @pytest.fixture
@@ -142,15 +142,15 @@ def test_factory_save_refuses_dropping_a_slug_stored_overrides_name(tmp_path, pa
             {"OVERRIDE_PROFILES": {"fast": {"BEAM_SIZE": 1,
                                             "PIPELINE_RULES_EXCLUDE": ["gone"]}}},
             {"CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]}):
-        local.write_text(json.dumps(stored), encoding="utf-8")
+        _seed_local(tmp_path, stored)
         with pytest.raises(ValidationError, match="gone"):
             cs.save_factory_rules([_regex_rule("keep"), _terminal()],
                                   path=path, overrides_path=str(local))
         assert open(path, encoding="utf-8").read() == before
     # A local PIPELINE_RULES copy owns the slugs: the factory save goes through.
-    local.write_text(json.dumps({
+    _seed_local(tmp_path, {
         "PIPELINE_RULES": [_regex_rule("gone"), _terminal()],
-        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]}), encoding="utf-8")
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]})
     cs.save_factory_rules([_regex_rule("keep"), _terminal()],
                           path=path, overrides_path=str(local))
     assert [r["name"] for r in cs.load_factory_rules(path)] == ["keep", "trim-edges"]
@@ -164,8 +164,8 @@ def test_factory_save_ignores_a_ref_that_already_dangles(tmp_path, path):
     rules = [_regex_rule("keep"), _regex_rule("other"), _regex_rule("gone"),
              _terminal()]
     cs.save_factory_rules(rules, path=path, overrides_path=str(local))
-    local.write_text(json.dumps({"MODEL_OVERRIDES": {"large-v3": {
-        "PIPELINE_RULES_EXCLUDE": ["my-local-rule", "gone"]}}}), encoding="utf-8")
+    _seed_local(tmp_path, {"MODEL_OVERRIDES": {"large-v3": {
+        "PIPELINE_RULES_EXCLUDE": ["my-local-rule", "gone"]}}})
     cs.save_factory_rules(rules, path=path, overrides_path=str(local))   # no-op
     cs.save_factory_rules([_regex_rule("keep"), _regex_rule("gone"), _terminal()],
                           path=path, overrides_path=str(local))   # drops "other"
