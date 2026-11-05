@@ -25,6 +25,10 @@ def _hour(y, m, d, hh=12, mm=0, tz=_UTC) -> int:
     return int(_ts(y, m, d, hh, mm, tz) // 3600)
 
 
+def _row(us, sql):
+    return us._require_conn().execute(sql).fetchone()
+
+
 _LEGACY_SCHEMA = """
 CREATE TABLE usage_hourly (
   hour INTEGER NOT NULL, key_id TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -96,11 +100,9 @@ def test_sessions_counted_once_per_job_across_utterances(usage_store_db):
     us = usage_store_db
     for words in (5, 7, 9):
         _rec(us, audio_s=2.0, words=words, kind="dictation", job_id="a" * 32, processing_s=0.5)
-    row = us._require_conn().execute(
-        "SELECT requests, sessions, words, processing_s FROM usage_hourly").fetchone()
+    row = _row(us, "SELECT requests, sessions, words, processing_s FROM usage_hourly")
     assert tuple(row) == (3, 1, 21, 1.5)
-    job = us._require_conn().execute(
-        "SELECT utterances, words, audio_s, kind FROM usage_jobs").fetchone()
+    job = _row(us, "SELECT utterances, words, audio_s, kind FROM usage_jobs")
     assert tuple(job) == (3, 21, 6.0, "dictation")
     # Without a job id every request is its own session.
     _rec(us, audio_s=1.0, words=1, kind="file")
@@ -118,8 +120,7 @@ def test_colliding_job_id_of_another_user_is_not_merged(usage_store_db):
                     status="ok", kind="dictation", job_id="c" * 32)
     us.record_usage(key_id="kb", user_id="bob", audio_s=1.0, words=20,
                     status="ok", kind="dictation", job_id="c" * 32)
-    job = us._require_conn().execute(
-        "SELECT user_id, words, utterances FROM usage_jobs").fetchone()
+    job = _row(us, "SELECT user_id, words, utterances FROM usage_jobs")
     assert tuple(job) == ("alice", 10, 1)
     # Bob's work is still counted — as a session of its own.
     assert _doc(us, "bob", days=1)["today"]["dictation"]["sessions"] == 1
@@ -130,8 +131,7 @@ def test_job_language_is_capped(usage_store_db):
     # stored at most 32 chars, like recent_transcriptions_store.
     us = usage_store_db
     _rec(us, audio_s=1.0, words=1, kind="dictation", job_id="l" * 32, language="x" * 500)
-    row = us._require_conn().execute(
-        "SELECT language FROM usage_jobs").fetchone()
+    row = _row(us, "SELECT language FROM usage_jobs")
     assert row["language"] == "x" * 32
 
 
@@ -142,8 +142,7 @@ def test_job_model_is_capped(usage_store_db):
     us = usage_store_db
     _rec(us, audio_s=1.0, words=1, status="error", kind="dictation", job_id="m" * 32,
          model="m" * 10000)
-    row = us._require_conn().execute(
-        "SELECT model FROM usage_jobs").fetchone()
+    row = _row(us, "SELECT model FROM usage_jobs")
     assert len(row["model"]) == 128
 
 
@@ -697,8 +696,7 @@ def test_outcome_is_idempotent_and_rolls_once(usage_store_db):
     assert d["delivery"] == {"typed": 1, "clipboard": 0, "none": 0, "unreported": 0}
     assert d["translation"]["not_asked"] == 1 and d["translation"]["translated"] == 0
     assert doc["apps"] == [{"app_id": "thunderbird", "sessions": 1, "words": 50}]
-    job = us._require_conn().execute(
-        "SELECT activation, delivery, app_id FROM usage_jobs").fetchone()
+    job = _row(us, "SELECT activation, delivery, app_id FROM usage_jobs")
     assert tuple(job) == ("hold", "typed", "thunderbird")
 
 
@@ -706,9 +704,7 @@ def test_outcome_for_unknown_job_creates_a_stub(usage_store_db):
     us = usage_store_db
     assert us.record_outcome(user_id="u", job_id="e" * 32, activation="hold",
                              delivery="none", translation="aborted") == "accepted"
-    job = us._require_conn().execute(
-        "SELECT kind, words, audio_s, utterances, reported_ts FROM usage_jobs"
-    ).fetchone()
+    job = _row(us, "SELECT kind, words, audio_s, utterances, reported_ts FROM usage_jobs")
     assert tuple(job)[:4] == ("dictation", 0, 0.0, 0)
     assert job["reported_ts"] is not None
     doc = _doc(us, days=1)
@@ -724,8 +720,7 @@ def test_outcome_scoped_to_owner(usage_store_db):
                     status="ok", kind="dictation", job_id="a" * 32)
     assert us.record_outcome(user_id="bob", job_id="a" * 32, activation="hold",
                              delivery="typed", translation="not_asked") == "duplicate"
-    assert us._require_conn().execute(
-        "SELECT reported_ts FROM usage_jobs").fetchone()["reported_ts"] is None
+    assert _row(us, "SELECT reported_ts FROM usage_jobs")["reported_ts"] is None
     assert _doc(us, "bob", days=1)["dictation"]["delivery"]["typed"] == 0
 
 
@@ -974,16 +969,14 @@ def test_wait_s_accumulates_and_error_class_is_kept(usage_store_db):
     _rec(us, audio_s=1.0, words=1, status="error", kind="dictation", job_id="d1", hour=h,
          wait_s=1.5, error_class="timeout", error_stage="transcribing")
     _rec(us, audio_s=1.0, words=1, kind="dictation", job_id="d1", hour=h, wait_s=0.5)
-    row = us._require_conn().execute(
-        "SELECT wait_s, error_class, error_stage, utterances FROM usage_jobs"
-        " WHERE job_id = 'd1'").fetchone()
+    row = _row(us, "SELECT wait_s, error_class, error_stage, utterances FROM usage_jobs"
+                   " WHERE job_id = 'd1'")
     assert (row["wait_s"], row["error_class"], row["error_stage"],
             row["utterances"]) == (2.0, "timeout", "transcribing", 2)
     # A negative wait is a clock artefact, stored as 0; a job without an
     # error keeps NULLs.
     _rec(us, audio_s=1.0, words=1, kind="file", job_id="f1", hour=h, wait_s=-2)
-    row = us._require_conn().execute(
-        "SELECT wait_s, error_class FROM usage_jobs WHERE job_id = 'f1'").fetchone()
+    row = _row(us, "SELECT wait_s, error_class FROM usage_jobs WHERE job_id = 'f1'")
     assert (row["wait_s"], row["error_class"]) == (0.0, None)
 
 
@@ -996,9 +989,7 @@ def test_a_failed_utterance_keeps_the_dictation_session_failed(usage_store_db):
     for status, ecls in (("ok", None), ("error", "cuda_oom"), ("ok", None)):
         _rec(us, audio_s=1.0, words=1, status=status, kind="dictation", job_id="s1", hour=h,
              error_class=ecls, error_stage="transcribing" if ecls else None)
-    row = us._require_conn().execute(
-        "SELECT status, error_class, utterances FROM usage_jobs"
-        " WHERE job_id = 's1'").fetchone()
+    row = _row(us, "SELECT status, error_class, utterances FROM usage_jobs WHERE job_id = 's1'")
     assert (row["status"], row["error_class"], row["utterances"]) == (
         "error", "cuda_oom", 3)
     out = us.failures(start_ts=h * 3600 - 1, end_ts=h * 3600 + 3600)
@@ -1007,8 +998,7 @@ def test_a_failed_utterance_keeps_the_dictation_session_failed(usage_store_db):
     _rec(us, audio_s=1.0, words=1, status="error", kind="file", job_id="f1", hour=h,
          error_class="timeout")
     _rec(us, audio_s=1.0, words=1, kind="file", job_id="f1", hour=h)
-    assert us._require_conn().execute(
-        "SELECT status FROM usage_jobs WHERE job_id = 'f1'").fetchone()[0] == "ok"
+    assert _row(us, "SELECT status FROM usage_jobs WHERE job_id = 'f1'")[0] == "ok"
 
 
 def test_stage_error_lands_on_the_stage_row_and_bumps_hourly_errors(usage_store_db):
