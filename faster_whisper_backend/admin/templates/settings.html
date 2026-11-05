@@ -4388,25 +4388,17 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       : 'config.json now holds your rules. This server still keeps its own saved '
         + 'rule list, which is used instead of config.json. Drop it so config.json '
         + 'runs directly here? config.json can be committed either way.'));
-    const _warn = (text) => {
-      const w = _el('div', 'promote-unsaved-note', text);
-      body.appendChild(w);
+    const _warn = (names, head, tail, after) => {
+      if (!names.length) return;
+      body.appendChild(_el('div', 'promote-unsaved-note', '⚠ Dropping this server\'s list would '
+        + head + ' ' + names.length + ' ' + tail + ': ' + names.join(', ') + after));
     };
-    if (orphaned.length) {
-      _warn('⚠ Dropping this server\'s list would REMOVE ' + orphaned.length
-        + ' rule(s) from the running pipeline: ' + orphaned.join(', ')
-        + '. They are not in config.json. Keep the list, or run "↑ Promote all" '
-        + 'first to write them into config.json.');
-    }
-    if (unpromoted.length) {
-      _warn('⚠ Dropping this server\'s list would DISCARD the local edits to '
-        + unpromoted.length + ' rule(s) that were not promoted: '
-        + unpromoted.join(', ') + '. config.json still holds their committed version.');
-    }
-    if (returning.length) {
-      _warn('⚠ Dropping this server\'s list would bring BACK ' + returning.length
-        + ' config.json rule(s) removed on this server: ' + returning.join(', ') + '.');
-    }
+    _warn(orphaned, 'REMOVE', 'rule(s) from the running pipeline',
+      '. They are not in config.json. Keep the list, or run "↑ Promote all" '
+      + 'first to write them into config.json.');
+    _warn(unpromoted, 'DISCARD the local edits to', 'rule(s) that were not promoted',
+      '. config.json still holds their committed version.');
+    _warn(returning, 'bring BACK', 'config.json rule(s) removed on this server', '.');
     const _doClear = async (close) => {
       let r;
       try {
