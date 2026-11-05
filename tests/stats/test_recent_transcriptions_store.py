@@ -20,8 +20,8 @@ def _trace(ts, request_id, raw="x", final="y", **kw):
     ts.record_trace(request_id=request_id, model="m", raw=raw, final=final, **kw)
 
 
-def _timing(ts, request_id, audio_s, processing_s, status="ok", words=1, **kw):
-    ts.record_timing(request_id=request_id, model="m", audio_s=audio_s,
+def _timing(ts, request_id, audio_s, processing_s, status="ok", words=1, model="m", **kw):
+    ts.record_timing(request_id=request_id, model=model, audio_s=audio_s,
                      processing_s=processing_s, status=status, words=words, **kw)
 
 
@@ -32,9 +32,8 @@ def _timing(ts, request_id, audio_s, processing_s, status="ok", words=1, **kw):
 def test_kind_stages_key_label_roundtrip(ts):
     stages = [{"name": "translate", "secs": 1.25, "model": "org/m:Q4",
                "detail": "3 segs → en"}]
-    ts.record_timing(request_id="t1", model="org/m:Q4", audio_s=None,
-                     processing_s=1.25, status="ok", words=0,
-                     kind="translate", stages=stages, key_label="ci-key")
+    _timing(ts, "t1", None, 1.25, words=0, model="org/m:Q4", kind="translate",
+            stages=stages, key_label="ci-key")
     row = ts.list_recent(limit=10)[0]
     assert row["kind"] == "translate"
     assert row["key_label"] == "ci-key"
@@ -396,16 +395,14 @@ def test_record_timing_carries_username_for_rows_without_a_trace(tx_store):
     """A translate row (and every error-path row) has no record_trace()
     half, so the username must land through record_timing itself —
     otherwise /stats shows '—' in USER·KEY for a job whose user is known."""
-    tx_store.record_timing(request_id="tr1", model="mt", audio_s=None,
-                           processing_s=0.7, status="ok", words=0,
-                           user_id="u1", username="John Doe", kind="translate")
+    _timing(tx_store, "tr1", None, 0.7, words=0, model="mt", user_id="u1",
+            username="John Doe", kind="translate")
     row = tx_store.list_recent(limit=5)[0]
     assert row["request_id"] == "tr1"
     assert row["username"] == "John Doe"
     assert row["user_id"] == "u1"
     # A later timing write without a username never blanks the recorded one.
-    tx_store.record_timing(request_id="tr1", model="mt", audio_s=None,
-                           processing_s=0.9, status="ok", words=0, user_id="u1")
+    _timing(tx_store, "tr1", None, 0.9, words=0, model="mt", user_id="u1")
     assert tx_store.list_recent(limit=5)[0]["username"] == "John Doe"
 
 
@@ -414,10 +411,8 @@ def test_append_stage_folds_a_later_stage_into_the_row(tx_store):
     a second stage on the utterance's row, adding its wall time — one row,
     two stages, like a batch job. A miss returns False so the caller can
     still record its own row."""
-    tx_store.record_timing(request_id="u1", model="w", audio_s=4.0,
-                           processing_s=0.9, status="ok", words=7,
-                           user_id="u", kind="dictate",
-                           stages=[{"name": "transcribing", "secs": 0.9}])
+    _timing(tx_store, "u1", 4.0, 0.9, words=7, model="w", user_id="u", kind="dictate",
+            stages=[{"name": "transcribing", "secs": 0.9}])
     ok = tx_store.append_stage("u1", {"name": "translating", "secs": 12.5,
                                       "model": "mt"}, add_processing_s=12.5)
     assert ok is True
