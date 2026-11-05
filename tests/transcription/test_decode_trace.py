@@ -186,15 +186,15 @@ def test_installed_model_is_freed_by_refcount_alone():
         gc.enable()
 
 
-def _run(m):
-    with dt.capture(_KW) as tr:
+def _run_stop(m, kw=_KW, drain=dt.consume, **opts):
+    with dt.capture(kw, **opts) as tr:
         segs, info = m.transcribe(None)
-        segs = list(segs)
-        return dt.finish(tr, segs, info)
+        segs = drain(segs)
+        return segs, dt.finish(tr, segs, info)
 
 
 def test_incident_shape_is_traced_window_by_window():
-    t = _run(dt.install(_incident_model()))
+    _, t = _run_stop(dt.install(_incident_model()), drain=list)
     assert t["n_windows"] == 2
     assert t["n_rungs"] == 7
     assert t["tokens"] == 5 + 6 * 440
@@ -282,7 +282,7 @@ def test_receipt_renders_the_section_and_stays_unchanged_without_it(app_module):
     assert _block(decode_trace=None) == plain
     assert _block(decode_trace={"windows": []}) == plain
 
-    t = _run(dt.install(_incident_model()))
+    _, t = _run_stop(dt.install(_incident_model()), drain=list)
     block = _block(decode_trace=t)
     assert "Decode trace  (2 windows · 7 generate calls · 2645 tokens" in block
     assert "kept · 1 segment" in block
@@ -315,13 +315,6 @@ def test_plain_text_guard_value_renders_without_quotes(app_module):
                                 tx_receipt.PlainText("1.52s  (3.74s → 2.22s)"))
     assert row.endswith("1.52s  (3.74s → 2.22s)")
     assert "'" not in row
-
-
-def _run_stop(m, **kw):
-    with dt.capture(_KW, **kw) as tr:
-        segs, info = m.transcribe(None)
-        segs = dt.consume(segs)
-        return segs, dt.finish(tr, segs, info)
 
 
 def test_residual_window_is_refused_before_it_is_encoded():
@@ -434,7 +427,7 @@ def test_full_middle_window_without_text_claims_no_foreign_seek():
                       {"frames": 3000, "seek": 3000, "yield": 0},
                       {"frames": 3000, "seek": 6000, "yield": 2},
                       {"frames": 500, "seek": 9000, "yield": 1}], duration=95.0)
-    t = _run(dt.install(m))
+    _, t = _run_stop(dt.install(m), drain=list)
     w1, w2, w3, w4 = t["windows"]
     assert w2["start_s"] is None and w2["segments"] == 0
     assert w2["rungs"][-1]["outcome"] == "no text"
@@ -447,7 +440,7 @@ def test_unknown_duration_places_no_window_at_zero():
     must not resolve to frame 0 and inherit window 1's segments."""
     m = _incident_model()
     m.duration = 0.0
-    t = _run(dt.install(m))
+    _, t = _run_stop(dt.install(m), drain=list)
     w1, w2 = t["windows"]
     assert w1["segments"] == 1
     assert w2["start_s"] is None and w2["segments"] == 0
@@ -641,10 +634,7 @@ def test_residual_stop_yields_to_the_hallucination_silence_skip():
     with dt.capture(dict(kw, word_timestamps=False), skip_residual=True) as tr:
         assert tr.skip_residual is True, "inert without word timestamps"
     m = dt.install(_incident_model())
-    with dt.capture(kw, skip_residual=True) as tr:
-        segs, info = m.transcribe(None)
-        segs = dt.consume(segs)
-        t = dt.finish(tr, segs, info)
+    _, t = _run_stop(m, kw, skip_residual=True)
     assert len(m.model.calls) == 7, "the window after the short one is decoded"
     assert t["skipped_windows"] == 0
 
