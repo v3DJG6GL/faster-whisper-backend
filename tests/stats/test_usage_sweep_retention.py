@@ -2,11 +2,7 @@
 must keep an unreported dictation job until the grace ends, then close it
 out and delete it — counted once either way."""
 
-import zoneinfo
-
-from tests.stats._usage_helpers import rec as _rec
-
-_UTC = zoneinfo.ZoneInfo("UTC")
+from tests.stats._usage_helpers import rec as _rec, utc_doc as _doc
 
 
 def test_sweep_marks_unreported_jobs_once_the_grace_ends(usage_store_db):
@@ -19,7 +15,7 @@ def test_sweep_marks_unreported_jobs_once_the_grace_ends(usage_store_db):
 
     assert counts["marked"] == 1
     assert counts["jobs"] == 1
-    doc = us.document("u", days=60, tz=_UTC, tz_name="UTC")
+    doc = _doc(us, days=60)
     assert doc["dictation"]["delivery"]["unreported"] == 1
 
 
@@ -34,7 +30,7 @@ def test_late_outcome_inside_the_grace_counts_the_session_once(usage_store_db):
     assert us.record_outcome(user_id="u", job_id="2" * 32, activation="hold",
                              delivery="typed", translation="not_asked") == "accepted"
 
-    doc = us.document("u", days=30, tz=_UTC, tz_name="UTC")
+    doc = _doc(us, days=30)
     assert doc["dictation"]["delivery"]["typed"] == 1
     assert doc["dictation"]["delivery"]["unreported"] == 0
     assert doc["dictation"]["activation"] == {"hold": 1, "handsfree": 0, "unreported": 0}
@@ -88,8 +84,7 @@ def test_app_retention_scrubs_the_program_name_off_old_job_rows(usage_store_db):
 
     assert counts["apps"] == 1
     assert counts["jobs"] == 0
-    doc = us.document("u", days=365, tz=_UTC, tz_name="UTC",
-                      with_stages=("translating",))
+    doc = _doc(us, days=365, with_stages=("translating",))
     assert doc["apps"] == [{"app_id": "vim", "sessions": 1, "words": 20}]
     conn = us._require_conn()
     rows = conn.execute("SELECT job_id, app_id FROM usage_jobs ORDER BY job_id")

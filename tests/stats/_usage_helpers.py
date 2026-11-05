@@ -7,8 +7,10 @@ change to the wire form of `day` still fails the suites.
 """
 
 import datetime
+import zoneinfo
 
 _EPOCH = datetime.date(1970, 1, 1)
+_UTC = zoneinfo.ZoneInfo("UTC")
 
 
 def epoch_day(iso: str) -> int:
@@ -19,3 +21,8 @@ def epoch_day(iso: str) -> int:
 def rec(us, *, key_id="k", user_id="u", status="ok", **kw):
     """record_usage for the suites' default caller and a good outcome."""
     us.record_usage(key_id=key_id, user_id=user_id, status=status, **kw)
+
+
+def utc_doc(us, user_id="u", **kw):
+    """document() for a UTC caller; user_id=None is the whole server."""
+    return us.document(user_id, tz=_UTC, tz_name="UTC", **kw)
