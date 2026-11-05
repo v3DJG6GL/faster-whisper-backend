@@ -4,7 +4,15 @@ prune, step truncation, and the row-to-dict derivations."""
 import sqlite3
 import time
 
+import pytest
+
 from faster_whisper_backend.stats import recent_transcriptions_store as rts
+
+
+@pytest.fixture
+def ts(tx_store):
+    """tx_store under its short test-body name."""
+    return tx_store
 
 
 def _trace(ts, request_id, raw="x", final="y", **kw):
@@ -20,8 +28,7 @@ def _timing(ts, request_id, audio_s, processing_s, status="ok", words=1, **kw):
 # Recent-jobs columns (kind / stages / key_label) + migration
 # ---------------------------------------------------------------------------
 
-def test_kind_stages_key_label_roundtrip(tx_store):
-    ts = tx_store
+def test_kind_stages_key_label_roundtrip(ts):
     stages = [{"name": "translate", "secs": 1.25, "model": "org/m:Q4",
                "detail": "3 segs → en"}]
     ts.record_timing(request_id="t1", model="org/m:Q4", audio_s=None,
@@ -33,8 +40,7 @@ def test_kind_stages_key_label_roundtrip(tx_store):
     assert row["stages"] == stages
 
 
-def test_timing_without_kind_keeps_earlier_values(tx_store):
-    ts = tx_store
+def test_timing_without_kind_keeps_earlier_values(ts):
     _timing(ts, "k1", None, 1.0, words=0, kind="download",
             stages=[{"name": "download", "secs": 1}], key_label="lbl")
     # A later write without kind / stages / key_label must not blank them:
@@ -104,8 +110,7 @@ def test_migration_adds_columns_to_old_db(tmp_path):
 # record_trace / record_timing UPSERT
 # ---------------------------------------------------------------------------
 
-def test_trace_then_timing_merges_one_row(tx_store):
-    ts = tx_store
+def test_trace_then_timing_merges_one_row(ts):
     _trace(ts, "r1", raw="hallo welt", final="Hallo Welt",
            tokens=["Hallo", "Welt"], language="de", user_id="u")
     _timing(ts, "r1", 2.0, 1.0, words=2, user_id="u")
@@ -117,8 +122,7 @@ def test_trace_then_timing_merges_one_row(tx_store):
     assert row["rtf"] == 2.0  # audio/proc
 
 
-def test_timing_only_inserts_minimal_row(tx_store):
-    ts = tx_store
+def test_timing_only_inserts_minimal_row(ts):
     _timing(ts, "err1", None, 0.5, status="error", words=0)
     row = ts.list_recent(limit=10)[0]
     assert row["status"] == "error"
@@ -127,15 +131,13 @@ def test_timing_only_inserts_minimal_row(tx_store):
     assert row["rtf"] is None
 
 
-def test_falsy_request_id_skipped(tx_store):
-    ts = tx_store
+def test_falsy_request_id_skipped(ts):
     _trace(ts, "")
     _timing(ts, "", 1.0, 1.0)
     assert ts.count() == 0
 
 
-def test_trace_coalesce_preserves_user_on_timing(tx_store):
-    ts = tx_store
+def test_trace_coalesce_preserves_user_on_timing(ts):
     _trace(ts, "r", raw="a", final="b", user_id="alice")
     # timing with user_id None must not wipe the existing user: record_timing's
     # ON CONFLICT clause never assigns user_id.
@@ -148,8 +150,7 @@ def test_trace_coalesce_preserves_user_on_timing(tx_store):
 # list_recent pagination
 # ---------------------------------------------------------------------------
 
-def test_list_recent_newest_first_and_limit(tx_store):
-    ts = tx_store
+def test_list_recent_newest_first_and_limit(ts):
     for i in range(5):
         _trace(ts, f"r{i}", created_ts=1000.0 + i)
     rows = ts.list_recent(limit=3)
@@ -157,8 +158,7 @@ def test_list_recent_newest_first_and_limit(tx_store):
     assert [r["request_id"] for r in rows] == ["r4", "r3", "r2"]
 
 
-def test_list_recent_before_ts_cursor(tx_store):
-    ts = tx_store
+def test_list_recent_before_ts_cursor(ts):
     for i in range(5):
         _trace(ts, f"r{i}", created_ts=1000.0 + i)
     rows = ts.list_recent(before_ts=1002.0, limit=10)
@@ -166,22 +166,19 @@ def test_list_recent_before_ts_cursor(tx_store):
     assert [r["request_id"] for r in rows] == ["r1", "r0"]
 
 
-def test_list_recent_before_ts_zero_ignored(tx_store):
-    ts = tx_store
+def test_list_recent_before_ts_zero_ignored(ts):
     _trace(ts, "r", created_ts=10.0)
     assert len(ts.list_recent(before_ts=0, limit=10)) == 1
 
 
-def test_list_recent_user_filter(tx_store):
-    ts = tx_store
+def test_list_recent_user_filter(ts):
     _trace(ts, "a", user_id="u1", created_ts=1.0)
     _trace(ts, "b", user_id="u2", created_ts=2.0)
     rows = ts.list_recent(user_id_filter="u1", limit=10)
     assert [r["request_id"] for r in rows] == ["a"]
 
 
-def test_list_recent_query_matches_raw_or_final(tx_store):
-    ts = tx_store
+def test_list_recent_query_matches_raw_or_final(ts):
     _trace(ts, "r1", raw="patient hat Fieber", final="Patient hat Fieber", created_ts=1.0)
     _trace(ts, "r2", raw="kein treffer hier", final="Aspirin verordnet", created_ts=2.0)
     _trace(ts, "r3", raw="nichts", final="nichts", created_ts=3.0)
@@ -191,8 +188,7 @@ def test_list_recent_query_matches_raw_or_final(tx_store):
     assert ts.list_recent(query="zzzznope", limit=10) == []
 
 
-def test_list_recent_query_composes_with_user_and_cursor(tx_store):
-    ts = tx_store
+def test_list_recent_query_composes_with_user_and_cursor(ts):
     _trace(ts, "a", raw="alpha note", final="x", user_id="u1", created_ts=1.0)
     _trace(ts, "b", raw="alpha note", final="x", user_id="u2", created_ts=2.0)
     _trace(ts, "c", raw="alpha note", final="x", user_id="u1", created_ts=3.0)
@@ -200,15 +196,13 @@ def test_list_recent_query_composes_with_user_and_cursor(tx_store):
     assert [r["request_id"] for r in rows] == ["a"]
 
 
-def test_list_recent_query_escapes_like_wildcards(tx_store):
-    ts = tx_store
+def test_list_recent_query_escapes_like_wildcards(ts):
     _trace(ts, "lit", raw="50% done", final="x", created_ts=1.0)
     _trace(ts, "other", raw="50 percent", final="x", created_ts=2.0)
     assert {r["request_id"] for r in ts.list_recent(query="50%", limit=10)} == {"lit"}
 
 
-def test_list_recent_limit_floored_to_one(tx_store):
-    ts = tx_store
+def test_list_recent_limit_floored_to_one(ts):
     _trace(ts, "r")
     assert len(ts.list_recent(limit=0)) == 1
 
@@ -217,15 +211,13 @@ def test_list_recent_limit_floored_to_one(tx_store):
 # prune
 # ---------------------------------------------------------------------------
 
-def test_prune_noop_when_both_zero(tx_store):
-    ts = tx_store
+def test_prune_noop_when_both_zero(ts):
     _trace(ts, "r")
     assert ts.prune(max_rows=0, ttl_days=0) == 0
     assert ts.count() == 1
 
 
-def test_prune_max_rows_keeps_newest(tx_store):
-    ts = tx_store
+def test_prune_max_rows_keeps_newest(ts):
     # Use non-zero timestamps: created_ts=0.0 is falsy and falls back to now().
     for i in range(10):
         _trace(ts, f"r{i}", created_ts=1000.0 + i)
@@ -236,8 +228,7 @@ def test_prune_max_rows_keeps_newest(tx_store):
     assert ids == {"r7", "r8", "r9"}
 
 
-def test_prune_ttl_drops_old(tx_store):
-    ts = tx_store
+def test_prune_ttl_drops_old(ts):
     _trace(ts, "old", created_ts=time.time() - 40 * 86400)
     _trace(ts, "new")
     deleted = ts.prune(max_rows=0, ttl_days=30)
@@ -245,11 +236,10 @@ def test_prune_ttl_drops_old(tx_store):
     assert {r["request_id"] for r in ts.list_recent(limit=10)} == {"new"}
 
 
-def test_sweep_retention_applies_configured_cap_and_ttl(tx_store, monkeypatch):
+def test_sweep_retention_applies_configured_cap_and_ttl(ts, monkeypatch):
     # The startup / hourly sweep: no insert counter involved, so a quiet
     # server still ages its rows out.
     from faster_whisper_backend.settings import config as cfg
-    ts = tx_store
     monkeypatch.setattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30, raising=False)
     monkeypatch.setattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 2, raising=False)
     _trace(ts, "old", created_ts=time.time() - 40 * 86400)
@@ -259,8 +249,7 @@ def test_sweep_retention_applies_configured_cap_and_ttl(tx_store, monkeypatch):
     assert {r["request_id"] for r in ts.list_recent(limit=10)} == {"n1", "n2"}
 
 
-def test_clear_all(tx_store):
-    ts = tx_store
+def test_clear_all(ts):
     for i in range(3):
         _trace(ts, f"r{i}")
     assert ts.clear_all() == 3
@@ -292,17 +281,15 @@ def test_truncate_steps_front_trim(monkeypatch):
 # _row_to_dict rtf guards
 # ---------------------------------------------------------------------------
 
-def test_row_to_dict_rtf_guard_proc_zero(tx_store):
-    ts = tx_store
+def test_row_to_dict_rtf_guard_proc_zero(ts):
     _timing(ts, "z", 5.0, 0.0)
     row = ts.list_recent(limit=1)[0]
     assert row["rtf"] is None
 
 
-def test_schema_is_canonical_no_migration_on_fresh_db(tx_store):
+def test_schema_is_canonical_no_migration_on_fresh_db(ts):
     """A fresh DB gets kind/stages/key_label from _SCHEMA itself: the
     ALTER-TABLE migration loop adds nothing on a fresh create."""
-    ts = tx_store
     live = [r["name"] for r in
             ts._require_conn().execute("PRAGMA table_info(recent_transcriptions)")]
     bare = sqlite3.connect(":memory:")
@@ -324,10 +311,9 @@ def _raw_insert(ts, request_id, **cols):
         f"VALUES ({', '.join('?' * len(vals))})", vals)
 
 
-def test_row_to_dict_json_columns_normalised_to_list(tx_store):
+def test_row_to_dict_json_columns_normalised_to_list(ts):
     """NULL, a JSON object and malformed text all read back as [] for both
     the recent-jobs `stages` column and the legacy `steps` column."""
-    ts = tx_store
     _raw_insert(ts, "null", stages=None, steps=None)
     _raw_insert(ts, "obj", stages='{"a": 1}', steps='{"a": 1}')
     _raw_insert(ts, "bad", stages="not json", steps="not json")
@@ -374,11 +360,10 @@ def test_list_recent_filters_compose_with_the_cursor(tx_store):
                                     before_ts=page[-1]["ts"])) == ["r1"]
 
 
-def test_list_recent_kind_filter_resolves_null_kind_like_projection(tx_store):
+def test_list_recent_kind_filter_resolves_null_kind_like_projection(ts):
     """Batch /transcribe rows are stored with kind NULL (resolved via source
     on read); kind=transcribe / kind=dictate must find them the way
     metrics.project_recent_row labels them."""
-    ts = tx_store
     _trace(ts, "b1", source="file", created_ts=1001.0)
     _timing(ts, "b1", 10.0, 1.0, created_ts=1001.0)
     _timing(ts, "b2", None, 0.5, status="error", words=0, created_ts=1002.0)
@@ -392,12 +377,11 @@ def test_list_recent_kind_filter_resolves_null_kind_like_projection(tx_store):
     assert ids(ts.list_recent(limit=10, kind="translate")) == ["t1"]
 
 
-def test_list_recent_kind_accepts_a_sequence(tx_store):
+def test_list_recent_kind_accepts_a_sequence(ts):
     """The /stats jobs page sends its kind chips as a set (the chosen kinds
     plus preload + download, which always show): list_recent takes it as an
     IN-style OR, each member resolved like the single-kind filter (NULL-kind
     batch rows included)."""
-    ts = tx_store
     _trace(ts, "b1", source="file", created_ts=1001.0)
     _timing(ts, "b1", 10.0, 1.0, created_ts=1001.0)
     _timing(ts, "dl", None, 2.0, words=0, kind="download", created_ts=1002.0)
@@ -448,8 +432,6 @@ def test_failed_init_leaves_the_store_closed(tmp_path, monkeypatch):
     """A schema step that raises after the DB opened (here: an index on a
     column an old table lacks) must leave is_open() False, so metrics_snapshot
     does not re-read and re-log the broken store on every /stats frame."""
-    import pytest
-
     monkeypatch.setattr(rts, "_conn", None)
     path = str(tmp_path / "broken.sqlite3")
     conn = sqlite3.connect(path)
