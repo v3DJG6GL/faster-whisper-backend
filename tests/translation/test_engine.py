@@ -32,6 +32,7 @@ from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core import languages
 from tests._transcription_helpers import (
     blocked_register, cancel_while_register_held, cancel_with_register_queued)
+from tests.conftest import record_calls
 
 
 # ---------------------------------------------------------------------------
@@ -848,14 +849,10 @@ def test_traditional_region_target_is_translated_as_traditional(base_cfg,
     must reach the model (not come back as a copy of the Simplified text),
     and the prompt must ask for Traditional Chinese under the client's own
     "zh-TW" key."""
-    prompts = []
     _install_fake(monkeypatch, lambda t: "我們昨天重複了測量。")
-    fake = translation._complete
-
-    def recording(llm, family, prompt_or_msgs, max_tokens):
-        prompts.append(str(prompt_or_msgs))
-        return fake(llm, family, prompt_or_msgs, max_tokens)
-    monkeypatch.setattr(translation, "_complete", recording)
+    prompts = record_calls(
+        monkeypatch, translation, "_complete",
+        lambda llm, family, prompt_or_msgs, max_tokens: str(prompt_or_msgs))
     res, _, _ = _translate(_segs("我们昨天重复了测量。"), ["zh-TW"], "zh")
     assert len(prompts) == 1
     assert "Traditional Chinese" in prompts[0]
