@@ -6,7 +6,7 @@ import pytest
 
 from faster_whisper_backend.transcription import jobs_store as js
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._transcription_helpers import post_transcription as _post, post_translation
+from tests._transcription_helpers import post_transcription as _post, post_translation, record_runs
 from tests.conftest import bearer
 from faster_whisper_backend.media import video as media_video
 
@@ -85,16 +85,11 @@ def test_undecodable_upload_is_a_400_not_a_server_fault(client, fake_model,
         raise av.error.InvalidDataError(
             1094995529, "Invalid data found when processing input", path)
     fake_model.transcribe = _not_audio
-    seen = {}
-    real = app_module.metrics.record_transcription
-    def _record(**kw):
-        seen.update(kw)
-        return real(**kw)
-    monkeypatch.setattr(app_module.metrics, "record_transcription", _record)
+    runs = record_runs(app_module, monkeypatch)
     r = _post(client, progress_id=_PID)
     assert r.status_code == 400
     assert r.json()["detail"] == "the file could not be decoded as audio"
-    assert seen["status"] == "error" and seen["error_class"] == "decode_failed"
+    assert runs[-1]["status"] == "error" and runs[-1]["error_class"] == "decode_failed"
     row = client.get(f"/v1/jobs/{_PID}").json()
     assert row["state"] == "failed"
     # The row is what a client that lost the connection reads back: it must
