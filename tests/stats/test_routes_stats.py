@@ -1,18 +1,22 @@
 """Integration tests for the /stats router (host-gated dashboard)."""
 
+import asyncio
 import inspect
 import re
 import time
 
 import pytest
+from fastapi import HTTPException
 
 from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.core import jobs, web_common
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.stats import recent_transcriptions_store as rts
 from faster_whisper_backend.stats import routes as stats_routes
+from faster_whisper_backend.stats import system_metrics_store
 from faster_whisper_backend.stats import usage_store as us
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_upto
@@ -217,8 +221,6 @@ def test_stats_stream_frame_is_built_off_the_loop(client):
     no way to cancel it — so pin the offload at the source and check the
     payload shape the frame carries survives being built in a worker
     thread."""
-    import asyncio
-
     src = inspect.getsource(stats_routes.stats_stream)
     assert "await asyncio.to_thread(" in src
     assert any("_build_payload" in call[:80]
@@ -499,9 +501,6 @@ def test_snapshot_route_own_user_over_http(client, make_user_key, monkeypatch):
 def test_stream_rechecks_version(client, make_user_key, app_module):
     """The stream re-resolves its StatsScope when the config version moves
     (a permission edit) and ends only when the caller lost access."""
-    from faster_whisper_backend.settings import version as settings_version
-    from fastapi import HTTPException
-
     src = inspect.getsource(stats_routes.stats_stream)
     assert "_rescope_on_version_change, request, seen, resolved_at)" in src
     assert "await asyncio.to_thread(" in src   # SQLite lookups off the loop
@@ -528,8 +527,6 @@ def test_stream_rechecks_the_caller_before_its_first_frame(
     caller and the stream's first frame must apply to that first frame, not
     up to _REAUTH_INTERVAL_S later. The generator is driven directly (never
     through TestClient)."""
-    import asyncio
-
     uid, raw = _stats_user(make_user_key, "alice", "all")
     req = fake_request(headers=bearer(raw))
 
@@ -567,10 +564,7 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
     the stream must still re-resolve once _REAUTH_INTERVAL_S has passed, and
     end for a cookie session past SESSION_TTL_S (the helper is called
     directly — the stream itself is never driven)."""
-    from fastapi import HTTPException
-
     from faster_whisper_backend.auth import sessions_store
-    from faster_whisper_backend.settings import version as settings_version
 
     uid, _raw = _stats_user(make_user_key, "alice", "all")
     token, _csrf = sessions_store.create_session(uid, 3600.0)
@@ -894,7 +888,6 @@ def test_transcription_records_the_gate_wait(client):
 
 
 def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
-    from faster_whisper_backend.stats import system_metrics_store
     now = int(time.time()) // 10 * 10
     system_metrics_store.record(
         [{"ts": now - 600 + i * 10, "gpu_util": float(i), "slot_busy": 0.25}
@@ -918,7 +911,6 @@ def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
 def test_stats_history_503_when_store_failed_to_open(client, monkeypatch):
     """init_db failing at startup is logged and non-fatal, so the history
     route must answer 503, not a bare 500 from _require_conn()."""
-    from faster_whisper_backend.stats import system_metrics_store
     monkeypatch.setattr(system_metrics_store, "_conn", None)
     r = client.get("/stats/history?metric=cpu_pct")
     assert r.status_code == 503

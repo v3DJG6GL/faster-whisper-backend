@@ -2,11 +2,13 @@
 flush / prune, and the loop's off-thread contract."""
 
 import inspect
+import time
 
 import pytest
 
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.stats import sampler as stats_sampler
+from faster_whisper_backend.stats import system_metrics_store
 from faster_whisper_backend.runtime import system_stats
 from tests.conftest import read_repo_text
 
@@ -82,7 +84,6 @@ def test_slot_busy_covers_a_sample_window_longer_than_the_ring(sampler, monkeypa
 def test_flush_failure_keeps_the_newest_rows_up_to_the_cap(sampler, sm_store, monkeypatch):
     """A store failure keeps the queued rows for the next flush, capped at
     600 // sample_every() (the newest), warns, and a later flush writes them."""
-    from faster_whisper_backend.stats import system_metrics_store
     monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 60, raising=False)
     warned = []
     monkeypatch.setattr(sampler, "_warn", lambda *a: warned.append(a))
@@ -91,7 +92,6 @@ def test_flush_failure_keeps_the_newest_rows_up_to_the_cap(sampler, sm_store, mo
     def _boom(rows):
         raise RuntimeError("disk full")
     monkeypatch.setattr(system_metrics_store, "record", _boom)
-    import time
     base = (int(time.time()) - 3600) // 60 * 60
     for i in range(15 * 60):
         sampler.tick(base + i)
@@ -109,7 +109,6 @@ def test_flush_failure_keeps_the_newest_rows_up_to_the_cap(sampler, sm_store, mo
 def test_flush_writes_once_and_prune_drops_old(sampler, sm_store, monkeypatch):
     monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 7, raising=False)
     monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 14, raising=False)
-    import time
     now = int(time.time())
     for i in range(30):
         sampler.tick(now - 300 + i)
@@ -128,7 +127,6 @@ def test_flush_without_an_open_store_drops_quietly(sampler, monkeypatch):
     """init_db failed at startup: flush() drops the queued rows without a
     warning (one per flush for the life of the process would eat the shared
     _warn budget); prune() skips too."""
-    from faster_whisper_backend.stats import system_metrics_store
     monkeypatch.setattr(system_metrics_store, "_conn", None)
     monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 1, raising=False)
     warned = []
