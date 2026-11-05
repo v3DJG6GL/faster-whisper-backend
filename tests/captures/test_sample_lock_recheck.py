@@ -11,7 +11,7 @@ from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.captures import samples_store as gs
 from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import _insert_sample
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 
 
 def _lock_while_waiting(monkeypatch, conn, sid):
@@ -30,8 +30,7 @@ def _lock_while_waiting(monkeypatch, conn, sid):
 
 def _alice_sample(make_user_key, sid):
     """Admin root + own-scope alice owning unlocked sample `sid`; returns (conn, uid, raw)."""
-    make_user_key("root", is_admin=True)
-    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    uid, raw = locked_user(make_user_key, pages={"captures": "own"})
     conn = captures_store._require_conn()
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
     return conn, uid, raw
