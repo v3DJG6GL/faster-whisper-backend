@@ -633,12 +633,10 @@ def _export_manifest(only_status="ready"):
 
 def _mark_trimmed(captures_store, cid, trimmed_rel):
     """A legacy VAD trim of a 12.4 s capture: 2 s lead + 1.3 s trail, 9.1 s left."""
-    with captures_store._lock:
-        with captures_store._require_conn() as conn:
-            conn.execute(
-                "UPDATE captures SET audio_s = 12.4, audio_trimmed_relpath = ?,"
-                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
-                " WHERE id = ?", (trimmed_rel, cid))
+    captures_store._require_conn().execute(
+        "UPDATE captures SET audio_s = 12.4, audio_trimmed_relpath = ?,"
+        " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
+        " WHERE id = ?", (trimmed_rel, cid))
 
 
 def _ready_capture(captures_store, monkeypatch, tmp_path, *, language="de", translations=None):
@@ -683,10 +681,8 @@ def test_export_skips_translate_row_for_translate_task_capture(
     captures_store = captures_store_db
     cid = _ready_capture(captures_store, monkeypatch, tmp_path,
                          language="de", translations={"en": "other text"})
-    with captures_store._lock:
-        with captures_store._require_conn() as conn:
-            conn.execute("UPDATE captures SET task = 'translate' WHERE id = ?",
-                         (cid,))
+    captures_store._require_conn().execute(
+        "UPDATE captures SET task = 'translate' WHERE id = ?", (cid,))
     rows = _export_manifest()
     assert [r["task"] for r in rows] == ["translate"]
     assert rows[0]["text"] == "quelle"
@@ -823,9 +819,8 @@ def test_export_skips_a_sample_whose_members_no_longer_match_its_wav(
             sid=sid, **_sample_kwargs(cids, "quelle quelle", **over))
         _write_merged_wav(gs, sid, b"both members audio")
     gone = gs.get_members(drifted)[1]["id"]
-    with captures_store_db._lock:
-        with captures_store_db._require_conn() as conn:
-            conn.execute("DELETE FROM captures WHERE id = ?", (gone,))
+    captures_store_db._require_conn().execute(
+        "DELETE FROM captures WHERE id = ?", (gone,))
     with _export_tar(None, True) as tar:
         rows = _manifest_rows(tar)
         assert [n for n in tar.getnames() if n.startswith("audio/")] == [
