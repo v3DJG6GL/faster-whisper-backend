@@ -67,3 +67,16 @@ def node_json(script: str, timeout: float = 30):
     """Run ``script`` under ``node -`` over stdin; its whole stdout parsed as
     JSON."""
     return json.loads(node_stdout(script, timeout))
+
+
+def node_file_json(tmp_path, script: str):
+    """Run ``script`` under node as ``tmp_path``/probe.js; its last stdout line
+    parsed as JSON. A non-zero exit fails with node's stderr as the message."""
+    f = tmp_path / "probe.js"
+    # UTF-8 explicitly: the templates have non-Latin-1 chars and Windows CI
+    # defaults to cp1252.
+    f.write_text(script, encoding="utf-8")
+    p = subprocess.run(["node", str(f)], capture_output=True, text=True,
+                       encoding="utf-8", timeout=30)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout.strip().splitlines()[-1])

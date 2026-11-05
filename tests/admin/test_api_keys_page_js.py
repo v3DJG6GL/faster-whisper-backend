@@ -6,11 +6,10 @@ function touches). Skipped when node is not installed."""
 
 import json
 import shutil
-import subprocess
 
 import pytest
 
-from tests._page_helpers import js_fn, js_through as _between
+from tests._page_helpers import js_fn, js_through as _between, node_file_json
 
 _NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
@@ -27,12 +26,7 @@ def _url_fns(html):
 
 
 def _run(js, tmp_path):
-    f = tmp_path / "probe.js"
-    f.write_text(js, encoding="utf-8")
-    p = subprocess.run([_NODE, str(f)], capture_output=True, text=True,
-                       encoding="utf-8", timeout=30)
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout.strip().splitlines()[-1])
+    return node_file_json(tmp_path, js)
 
 
 # Minimal DOM: elements are created on first getElementById and keep a real

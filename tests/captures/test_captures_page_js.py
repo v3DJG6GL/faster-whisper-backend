@@ -8,11 +8,11 @@ too DOM-bound to isolate, the test pins the served source instead."""
 import json
 import re
 import shutil
-import subprocess
 
 import pytest
 
 from faster_whisper_backend.captures.samples import _build_default_transcript
+from tests._page_helpers import node_file_json
 
 _NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(_NODE is None, reason="node unavailable")
@@ -70,14 +70,7 @@ _TICK_JS = "function tick() { return new Promise(function(r) { setTimeout(r, 0);
 
 def _run_node(tmp_path, code):
     """Every probe gets `tick()`: await it for one macrotask turn."""
-    f = tmp_path / "probe.js"
-    # UTF-8 explicitly: the template has non-Latin-1 chars and Windows CI
-    # defaults to cp1252.
-    f.write_text(_TICK_JS + code, encoding="utf-8")
-    p = subprocess.run([_NODE, str(f)], capture_output=True, text=True,
-                       encoding="utf-8", timeout=30)
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout.strip().splitlines()[-1])
+    return node_file_json(tmp_path, _TICK_JS + code)
 
 
 @pytest.fixture

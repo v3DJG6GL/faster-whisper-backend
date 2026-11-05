@@ -3,13 +3,11 @@ node: append() and the Load older click handler are cut out of the served
 page and driven against a list-backed fake #log. Skipped when node is not
 installed."""
 
-import json
 import shutil
-import subprocess
 
 import pytest
 
-from tests._page_helpers import js_through as _block
+from tests._page_helpers import js_through as _block, node_file_json
 
 _NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
@@ -83,12 +81,7 @@ def test_load_older_stays_contiguous_when_live_lines_trim_during_the_fetch(clien
   console.log(JSON.stringify(out));
 })();
 """)
-    f = tmp_path / "probe.js"
-    f.write_text(js, encoding="utf-8")
-    p = subprocess.run([_NODE, str(f)], capture_output=True, text=True,
-                       encoding="utf-8", timeout=30)
-    assert p.returncode == 0, p.stderr
-    out = json.loads(p.stdout.strip().splitlines()[-1])
+    out = node_file_json(tmp_path, js)
     # Every row shown is the chain's newest lines in order: no gap, no repeat.
     assert out["dom"] == out["chain_tail"]
     assert len(out["dom"]) == 5 + 2 + 4 + 4
@@ -121,12 +114,7 @@ def test_load_older_after_clear_resumes_right_behind_the_screen(client, tmp_path
   console.log(JSON.stringify(out));
 })();
 """)
-    f = tmp_path / "probe.js"
-    f.write_text(js, encoding="utf-8")
-    p = subprocess.run([_NODE, str(f)], capture_output=True, text=True,
-                       encoding="utf-8", timeout=30)
-    assert p.returncode == 0, p.stderr
-    out = json.loads(p.stdout.strip().splitlines()[-1])
+    out = node_file_json(tmp_path, js)
     assert out["after_trim"]["dom"] == out["after_trim"]["chain_tail"]
     assert len(out["after_trim"]["dom"]) == 5 + 4 + 4
     assert out["in_flight"]["dom"] == out["in_flight"]["chain_tail"]
