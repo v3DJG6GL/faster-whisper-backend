@@ -36,6 +36,13 @@ def _insert_capture(cs, cid, *, sample_id=None, sample_order=None, language="de"
                    sample_id=sample_id, sample_order=sample_order, **cols)
 
 
+@pytest.fixture
+def seeded_sample(groups_store_db):
+    """The samples store holding one default sample; returns (store, sid)."""
+    _insert_group(groups_store_db, "gseeded000000001")
+    return groups_store_db, "gseeded000000001"
+
+
 def test_relpath_for_fanout(groups_store_db):
     rel = groups_store_db._relpath_for("abcdef0123")
     assert rel == os.path.join("groups", "ab", "cd", "abcdef0123.wav")
@@ -145,10 +152,8 @@ def test_get_members_empty(groups_store_db):
     assert groups_store_db.get_members("gempty0000000000") == []
 
 
-def test_update_group_whitelist_fields(groups_store_db):
-    gs = groups_store_db
-    sid = "gupdate000000001"
-    _insert_group(gs, sid)
+def test_update_group_whitelist_fields(seeded_sample):
+    gs, sid = seeded_sample
     g = gs.update_sample(sid, {
         "transcript": "new transcript",
         "inter_segment_silence_ms": 500,
@@ -163,41 +168,31 @@ def test_update_group_whitelist_fields(groups_store_db):
     assert g["language"] == "en"
 
 
-def test_update_group_unknown_field_raises(groups_store_db):
-    gs = groups_store_db
-    sid = "gupdate000000002"
-    _insert_group(gs, sid)
+def test_update_group_unknown_field_raises(seeded_sample):
+    gs, sid = seeded_sample
     with pytest.raises(ValueError):
         gs.update_sample(sid, {"not_a_field": 1})
 
 
-def test_update_group_invalid_status_raises(groups_store_db):
-    gs = groups_store_db
-    sid = "gupdate000000003"
-    _insert_group(gs, sid)
+def test_update_group_invalid_status_raises(seeded_sample):
+    gs, sid = seeded_sample
     with pytest.raises(ValueError):
         gs.update_sample(sid, {"status": "bogus"})
 
 
-def test_update_group_status_valid(groups_store_db):
-    gs = groups_store_db
-    sid = "gupdate000000004"
-    _insert_group(gs, sid)
+def test_update_group_status_valid(seeded_sample):
+    gs, sid = seeded_sample
     assert gs.update_sample(sid, {"status": "ready"})["status"] == "ready"
 
 
-def test_update_group_admin_notes_capped(groups_store_db):
-    gs = groups_store_db
-    sid = "gupdate000000005"
-    _insert_group(gs, sid)
+def test_update_group_admin_notes_capped(seeded_sample):
+    gs, sid = seeded_sample
     g = gs.update_sample(sid, {"admin_notes": "x" * (gs._CAP_ADMIN_NOTES + 100)})
     assert len(g["admin_notes"]) == gs._CAP_ADMIN_NOTES
 
 
-def test_update_group_empty_patch_returns_current(groups_store_db):
-    gs = groups_store_db
-    sid = "gupdate000000006"
-    _insert_group(gs, sid)
+def test_update_group_empty_patch_returns_current(seeded_sample):
+    gs, sid = seeded_sample
     assert gs.update_sample(sid, {})["id"] == sid
 
 
@@ -245,28 +240,22 @@ def test_dissolve_rolls_back_the_member_release_when_the_delete_fails(
     assert cs.get_capture("capdissolverb001")["sample_id"] == sid
 
 
-def test_dissolve_waits_for_an_in_flight_rebuild(captures_store_db,
-                                                 groups_store_db):
+def test_dissolve_waits_for_an_in_flight_rebuild(captures_store_db, seeded_sample):
     """dissolve_sample takes the per-sid rebuild lock, so it cannot delete the
     row (and unlink the WAV) under a regenerate that is mid-build."""
-    gs = groups_store_db
-    sid = "gdissolvewait001"
-    _insert_group(gs, sid)
+    gs, sid = seeded_sample
     with _waits_on(capture_samples._rebuild_lock(sid), lambda: gs.dissolve_sample(sid)):
         assert gs.get_sample(sid) is not None
     assert gs.get_sample(sid) is None
 
 
-def test_racing_dissolves_drop_the_lock_entry(captures_store_db,
-                                              groups_store_db):
+def test_racing_dissolves_drop_the_lock_entry(captures_store_db, seeded_sample):
     """Two dissolves of one sid: the winner's release is a no-op while the
     loser is still pinned, so the loser (which finds the row gone) must drop
     the dead sid's lock entry itself."""
     import threading
 
-    gs = groups_store_db
-    sid = "gdissolverace001"
-    _insert_group(gs, sid)
+    gs, sid = seeded_sample
     with capture_samples._rebuild_lock(sid):
         threads = [threading.Thread(target=gs.dissolve_sample, args=(sid,))
                    for _ in range(2)]
@@ -313,14 +302,11 @@ def test_clear_all_groups(groups_store_db):
     assert gs.list_samples() == []
 
 
-def test_clear_all_waits_for_an_in_flight_rebuild(captures_store_db,
-                                                  groups_store_db):
+def test_clear_all_waits_for_an_in_flight_rebuild(captures_store_db, seeded_sample):
     """clear_all_samples takes each sample's rebuild lock like dissolve_sample,
     so the admin wipe cannot delete a row under a regenerate that is mid-build
     (whose merged WAV would then outlive the wipe)."""
-    gs = groups_store_db
-    sid = "gclearwait000001"
-    _insert_group(gs, sid)
+    gs, sid = seeded_sample
     with _waits_on(capture_samples._rebuild_lock(sid), gs.clear_all_samples):
         assert gs.get_sample(sid) is not None
     assert gs.get_sample(sid) is None
