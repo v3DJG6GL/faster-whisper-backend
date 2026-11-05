@@ -2642,9 +2642,7 @@
               && (nsTail.test(prevText) || nsHead.test(txt))) ? '' : ' ';
     }
     items.forEach(function(it) {
-      var sp = document.createElement('span');
-      sp.className = 'word';
-      sp.textContent = sep(words[it.from], it.txt) + it.txt;
+      var sp = _el('span', 'word', sep(words[it.from], it.txt) + it.txt);
       memberText = (first || it.member !== prevMember ? '' : memberText) + it.txt;
       prevText = it.txt;
       prevMember = it.member;
@@ -3391,8 +3389,7 @@
     var el = document.getElementById('merge-members');
     el.innerHTML = '';
     rows.forEach(function(r, i) {
-      var line = document.createElement('div');
-      line.className = 'seg-line';
+      var line = _el('div', 'seg-line');
       var memberText = _chippedText(r, r.words);
       line.innerHTML = '<span class="seg-time">[' + (i + 1) + '] '
         + (r.audio_s || 0).toFixed(1) + 's</span>'
@@ -3717,9 +3714,8 @@
     strip._kbBound = true;
     strip.setAttribute('tabindex', '0');
     // Hint line: visible only while the strip itself has focus.
-    var hint = document.createElement('div');
-    hint.className = 'word-strip-hint';
-    hint.textContent = '← / → word · ↑ / ↓ line · type to edit · Enter accept · Del remove · Esc release';
+    var hint = _el('div', 'word-strip-hint',
+      '← / → word · ↑ / ↓ line · type to edit · Enter accept · Del remove · Esc release');
     if (strip.parentNode) {
       strip.parentNode.insertBefore(hint, strip.nextSibling);
     }
@@ -4860,10 +4856,8 @@
         if (typeof s[p[0]] === 'undefined') return;
         var el = head.querySelector('.' + p[1]);
         if (s[p[0]] && !el) {
-          el = document.createElement('span');
-          el.className = 'pill ' + p[1];
+          el = _el('span', 'pill ' + p[1], p[3]);
           el.title = p[2];
-          el.textContent = p[3];
           head.insertBefore(el, head.querySelector('.lock-pill')
             || head.querySelector('.spacer'));
         } else if (!s[p[0]] && el) {

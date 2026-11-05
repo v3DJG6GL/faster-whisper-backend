@@ -705,7 +705,7 @@ def test_strip_keyboard_follows_the_latest_preview_activation(page, tmp_path):
     fresh state. The keyboard handlers bound once kept the first state, so
     from the second activation on a typed chip saved activation 1's stale
     list over the members' chips."""
-    fn = _js_function(page, "_bindStripKeyboard")
+    fn = _js_functions(page, "_bindStripKeyboard", "_el")
     out = _run_node(tmp_path, fn + r"""
 var handlers = {};
 var strip = { parentNode: null, setAttribute: function() {},
@@ -1244,7 +1244,7 @@ def test_group_status_lock_and_save_repaint_the_header_pills(page, tmp_path):
     is_stale kept the "stale" pill, until the next full render()."""
     anchor = "async function(v) {\n            var prev = sampleState.newStatus;"
     on_status = _js_block(page, page.index(anchor))
-    out = _run_node(tmp_path, _js_function(page, "_syncSampleHead") + r"""
+    out = _run_node(tmp_path, _js_functions(page, "_syncSampleHead", "_el") + r"""
 function mk(cls, text) { return { className: cls, textContent: text }; }
 var kids = [mk('expand-arrow'), mk('pill group-pill', 'sample'),
   mk('pill status-new', 'new'), mk('pill stale-pill', 'stale'), mk('spacer')];
@@ -1370,7 +1370,7 @@ def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     capture card's preview, applied chips without the aligned words, so a
     chip on a repeated word after removed fillers landed on the wrong copy:
     the reviewer approved a text the export would not emit."""
-    fns = _js_functions(page, *_TRANSCRIPT_FNS, "_renderMergePreview", "_capturePreviewText")
+    fns = _js_functions(page, *_TRANSCRIPT_FNS, "_renderMergePreview", "_capturePreviewText", "_el")
     out = _run_node(tmp_path, fns + _KATZE_JS + r"""
 function escapeHtml(s) { return String(s); }
 var lines = [];
@@ -2414,7 +2414,7 @@ def test_blank_chip_correction_leaves_the_final_result_preview_alone(page, tmp_p
     """Save drops a chip whose correction is only spaces (as does the
     server), but the Final-result preview applied it: "um" vanished from
     the preview while the export kept it."""
-    fns = _js_functions(page, "_applyChipsToText", "_renderGroundSpans", "_dispWord", "_dispRemoved")
+    fns = _js_functions(page, "_applyChipsToText", "_renderGroundSpans", "_dispWord", "_dispRemoved", "_el")
     out = _run_node(tmp_path, fns + r"""
 global.document = { createElement: function() { return {}; } };
 var spans = [];
@@ -2434,7 +2434,7 @@ console.log(JSON.stringify([
 def _ground_spans_harness(page):
     """_renderGroundSpans on a stand-in area: `render(words, corrections)`
     returns the joined span text."""
-    return _js_functions(page, "_cjkEdge", "_renderGroundSpans", "_dispWord", "_dispRemoved") + r"""
+    return _js_functions(page, "_cjkEdge", "_renderGroundSpans", "_dispWord", "_dispRemoved", "_el") + r"""
 global.document = { createElement: function() { return {}; } };
 function render(words, corrections) {
   var spans = [];
@@ -2600,7 +2600,7 @@ def _strip_focus_harness(page, scroll_top=200):
     or the wheel; the default leaves word 0 above its visible top); `handlers`
     holds the strip's listeners."""
     fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor",
-                        "_bindStripKeyboard")
+                        "_bindStripKeyboard", "_el")
     return fns + _STRIP_WORD_JS + r"""
 var handlers = {};
 Object.assign(strip, { scrollTop: """ + str(scroll_top) + r""", parentNode: null,
