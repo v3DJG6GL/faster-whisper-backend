@@ -972,6 +972,7 @@
       addBtn.disabled = addBusy || !has;
       addBtn.title = has ? '' : 'Enter a label first';
     };
+    function settleAdd() { addBusy = false; labelInp.oninput(); }
     addBtn.onclick = function () {
       if (addBusy) return;
       var label = labelInp.value.trim();
@@ -981,15 +982,11 @@
       api('POST', _userUrl(u.id) + '/keys', { label: label })
         .then(_okJson)
         .then(function (j) {
-          showKeyModal(j.key, u.username, label, function () {
-            addBusy = false;
-            addBtn.disabled = !labelInp.value.trim();
-          });
+          showKeyModal(j.key, u.username, label, settleAdd);
         })
         .catch(function (e) {
           showToast(String(e.message || e), 'err');
-          addBusy = false;
-          addBtn.disabled = !labelInp.value.trim();
+          settleAdd();
         });
     };
     labelInp.onkeydown = function (e) {
