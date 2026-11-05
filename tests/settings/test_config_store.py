@@ -52,6 +52,11 @@ def _seed_local(tmp_path, doc):
     return p
 
 
+@pytest.fixture
+def local_json(tmp_path):
+    return str(tmp_path / "config.local.json")
+
+
 def test_unknown_key_rejected():
     _bad(NOT_A_REAL_FIELD=1)
 
@@ -382,7 +387,7 @@ def test_allowed_hosts_ip_cidr():
     _bad(USER_WEBUI_ALLOWED_HOSTS=["example.com"])  # hostname is not an IP/CIDR
 
 
-def test_allowed_hosts_rewrites_ipv4_mapped_entries(tmp_path):
+def test_allowed_hosts_rewrites_ipv4_mapped_entries(local_json):
     """auth/hosts folds a "::ffff:a.b.c.d" client to a.b.c.d, so a mapped
     entry copied from the "::" bind's log saved cleanly and then 403ed that
     client. It is stored as the IPv4 spelling; other entries stay as written."""
@@ -398,9 +403,8 @@ def test_allowed_hosts_rewrites_ipv4_mapped_entries(tmp_path):
     assert host_in_allowlist(req, got)
     req = SimpleNamespace(client=SimpleNamespace(host="::ffff:10.0.0.77"))
     assert host_in_allowlist(req, got)
-    p = str(tmp_path / "config.local.json")
-    cs.save_overrides({"USER_WEBUI_ALLOWED_HOSTS": ["::ffff:192.168.1.5"]}, p)
-    on_disk = _read_json(p)
+    cs.save_overrides({"USER_WEBUI_ALLOWED_HOSTS": ["::ffff:192.168.1.5"]}, local_json)
+    on_disk = _read_json(local_json)
     assert on_disk["USER_WEBUI_ALLOWED_HOSTS"] == ["192.168.1.5"]
 
 
@@ -960,21 +964,21 @@ def test_load_overrides_coerces_captures_excludes_to_set(tmp_path):
     assert out["CAPTURES_PIPELINE_RULES_EXCLUDE"] == {"r1", "r2"}
 
 
-def test_save_overrides_rejects_unknown_slug_without_local_rules(tmp_path, monkeypatch):
+def test_save_overrides_rejects_unknown_slug_without_local_rules(local_json, monkeypatch):
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
-    p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
-        cs.save_overrides({"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["dictashion-map"]}}}, p)
-    assert not os.path.exists(p)
-    cs.save_overrides({"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["known"]}}}, p)
-    assert os.path.exists(p)
+        cs.save_overrides(
+            {"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["dictashion-map"]}}}, local_json)
+    assert not os.path.exists(local_json)
+    cs.save_overrides({"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["known"]}}}, local_json)
+    assert os.path.exists(local_json)
     # A stale slug on disk must not brick unrelated saves.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"renamed"})
-    cs.save_overrides({"BEAM_SIZE": 5}, p)
-    assert _read_json(p)["BEAM_SIZE"] == 5
+    cs.save_overrides({"BEAM_SIZE": 5}, local_json)
+    assert _read_json(local_json)["BEAM_SIZE"] == 5
 
 
-def test_empty_rule_list_leaves_no_valid_slug_on_save(tmp_path):
+def test_empty_rule_list_leaves_no_valid_slug_on_save(local_json):
     """An explicit PIPELINE_RULES of [] read as "unknown, skip", so every
     EXCLUDE / INCLUDE ref saved with it dangled silently. On a save touching
     the rules or a ref it now means "no valid slug"; a load (no context)
@@ -991,14 +995,13 @@ def test_empty_rule_list_leaves_no_valid_slug_on_save(tmp_path):
     settings_schema.AdminConfig.model_validate(bad)      # load: still skips
     # A partial validation with neither rules nor context still skips.
     _ok(MODEL_OVERRIDES={"small": {"PIPELINE_RULES_EXCLUDE": ["nope"]}})
-    p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
-        cs.save_overrides(bad, p)
-    assert not os.path.exists(p)
+        cs.save_overrides(bad, local_json)
+    assert not os.path.exists(local_json)
     # A stored [] with a dangling ref does not refuse an unrelated save.
-    _write_json(p, bad)
-    cs.save_overrides({"BEAM_SIZE": 3}, p)
-    assert cs.load_overrides(p)["BEAM_SIZE"] == 3
+    _write_json(local_json, bad)
+    cs.save_overrides({"BEAM_SIZE": 3}, local_json)
+    assert cs.load_overrides(local_json)["BEAM_SIZE"] == 3
 
 
 def test_validate_binding_checks_slugs_against_an_empty_live_rule_list(monkeypatch):
@@ -1202,28 +1205,25 @@ def test_removing_a_local_copy_of_a_split_card_writes_its_refs_as_the_successors
     assert on_disk["OVERRIDE_PROFILES"]["p"]["PIPELINE_RULES_EXCLUDE"] == split
 
 
-def test_save_overrides_roundtrip_and_merge(tmp_path):
-    p = str(tmp_path / "config.local.json")
-    changed = cs.save_overrides({"BEAM_SIZE": 5}, p)
+def test_save_overrides_roundtrip_and_merge(local_json):
+    changed = cs.save_overrides({"BEAM_SIZE": 5}, local_json)
     assert changed == {"BEAM_SIZE": 5}
-    cs.save_overrides({"BEST_OF": 3}, p)
-    on_disk = _read_json(p)
+    cs.save_overrides({"BEST_OF": 3}, local_json)
+    on_disk = _read_json(local_json)
     assert on_disk["BEAM_SIZE"] == 5 and on_disk["BEST_OF"] == 3
 
 
-def test_save_overrides_none_removes(tmp_path):
-    p = str(tmp_path / "config.local.json")
-    cs.save_overrides({"BEAM_SIZE": 5, "BEST_OF": 3}, p)
-    changed = cs.save_overrides({"BEAM_SIZE": None}, p)
+def test_save_overrides_none_removes(local_json):
+    cs.save_overrides({"BEAM_SIZE": 5, "BEST_OF": 3}, local_json)
+    changed = cs.save_overrides({"BEAM_SIZE": None}, local_json)
     assert "BEAM_SIZE" in changed and changed["BEAM_SIZE"] is None
-    on_disk = _read_json(p)
+    on_disk = _read_json(local_json)
     assert "BEAM_SIZE" not in on_disk and on_disk["BEST_OF"] == 3
 
 
-def test_save_overrides_changed_excludes_unchanged(tmp_path):
-    p = str(tmp_path / "config.local.json")
-    cs.save_overrides({"BEAM_SIZE": 5}, p)
-    changed = cs.save_overrides({"BEAM_SIZE": 5}, p)
+def test_save_overrides_changed_excludes_unchanged(local_json):
+    cs.save_overrides({"BEAM_SIZE": 5}, local_json)
+    changed = cs.save_overrides({"BEAM_SIZE": 5}, local_json)
     assert changed == {}
 
 
@@ -1298,7 +1298,7 @@ def test_overrides_file_with_utf8_bom_is_read_and_saved_onto(tmp_path):
     assert _read_json(p) == {"DEFAULT_PROMPT": "x", "BEAM_SIZE": 7}
 
 
-def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,
+def test_save_overrides_checks_cross_field_pairs_against_env_pins(local_json,
                                                                   monkeypatch):
     """A save must see the env-pinned sibling that will be in force: with env
     KEEP_S=12 pinned, TRIM_S=11 passed against the baseline KEEP_S=10, ran
@@ -1306,16 +1306,15 @@ def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,
     monkeypatch.setattr(cs, "env_pinned_fields", lambda: {
         "STREAMING_BUFFER_TRIM_KEEP_S": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_S"})
     monkeypatch.setattr(cs_config, "STREAMING_BUFFER_TRIM_KEEP_S", 12.0)
-    p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
-        cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 11}, p)
-    assert not os.path.exists(p)
-    cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 13}, p)   # consistent: saved
+        cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 11}, local_json)
+    assert not os.path.exists(local_json)
+    cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 13}, local_json)   # consistent: saved
     # The import-time path (no context) still checks the bare baseline.
     settings_schema.AdminConfig.model_validate({"STREAMING_BUFFER_TRIM_S": 11})
 
 
-def test_save_overrides_refuses_a_file_only_an_env_pin_makes_valid(tmp_path,
+def test_save_overrides_refuses_a_file_only_an_env_pin_makes_valid(local_json,
                                                                    monkeypatch):
     """load_overrides validates the file without the env context and drops
     EVERY override when it fails (at boot and in the hot-apply right after a
@@ -1326,29 +1325,27 @@ def test_save_overrides_refuses_a_file_only_an_env_pin_makes_valid(tmp_path,
         "STREAMING_BUFFER_TRIM_KEEP_S": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_S"})
     monkeypatch.setattr(cs_config, "MEDIA_MAX_BYTES", 2_000_000_000)
     monkeypatch.setattr(cs_config, "STREAMING_BUFFER_TRIM_KEEP_S", 5.0)
-    p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
-        cs.save_overrides({"MAX_REQUEST_BYTES": 3_000_000_000}, p)
+        cs.save_overrides({"MAX_REQUEST_BYTES": 3_000_000_000}, local_json)
     with pytest.raises(ValidationError):
-        cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 8}, p)
-    assert not os.path.exists(p)
+        cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 8}, local_json)
+    assert not os.path.exists(local_json)
     # What a save does accept round-trips through the bare load.
-    cs.save_overrides({"DEFAULT_PROMPT": "hello", "STREAMING_BUFFER_TRIM_S": 13}, p)
-    assert cs.load_overrides(p) == {"DEFAULT_PROMPT": "hello",
-                                    "STREAMING_BUFFER_TRIM_S": 13.0}
+    cs.save_overrides({"DEFAULT_PROMPT": "hello", "STREAMING_BUFFER_TRIM_S": 13}, local_json)
+    assert cs.load_overrides(local_json) == {"DEFAULT_PROMPT": "hello",
+                                             "STREAMING_BUFFER_TRIM_S": 13.0}
 
 
-def test_save_overrides_prefixed_cookie_name_with_env_pinned_secure(tmp_path,
+def test_save_overrides_prefixed_cookie_name_with_env_pinned_secure(tmp_path, local_json,
                                                                   monkeypatch):
     """An env-pinned SESSION_COOKIE_SECURE=True counts for the save-only
     __Host- prefix check: the bare re-check an env pin triggers must not fall
     back to the baseline Secure=False."""
     monkeypatch.setattr(cs, "_env_effective_values",
                         lambda: {"SESSION_COOKIE_SECURE": True})
-    p = str(tmp_path / "config.local.json")
-    cs.save_overrides({"SESSION_COOKIE_NAME": "__Host-s"}, p)
-    assert cs.load_overrides(p)["SESSION_COOKIE_NAME"] == "__Host-s"
-    cs.save_overrides({"BEAM_SIZE": 3}, p)   # later unrelated save passes
+    cs.save_overrides({"SESSION_COOKIE_NAME": "__Host-s"}, local_json)
+    assert cs.load_overrides(local_json)["SESSION_COOKIE_NAME"] == "__Host-s"
+    cs.save_overrides({"BEAM_SIZE": 3}, local_json)   # later unrelated save passes
     # Without the env pin the same save is still refused.
     monkeypatch.setattr(cs, "_env_effective_values", lambda: {})
     q = str(tmp_path / "other.json")
@@ -1392,11 +1389,10 @@ def test_save_overrides_silence_pair_checked_on_save_not_load(tmp_path,
     cs.save_overrides({"STREAMING_HARD_BREAK_SILENCE_MS": 0}, str(p))
 
 
-def test_save_overrides_invalid_raises(tmp_path):
-    p = str(tmp_path / "config.local.json")
+def test_save_overrides_invalid_raises(local_json):
     with pytest.raises(ValidationError):
-        cs.save_overrides({"BEAM_SIZE": 999}, p)
-    assert not os.path.exists(p)
+        cs.save_overrides({"BEAM_SIZE": 999}, local_json)
+    assert not os.path.exists(local_json)
 
 
 def test_pipeline_rule_tags_union():
@@ -1453,7 +1449,7 @@ def test_format_validation_errors_shape():
     assert "BEAM_SIZE" in out[0]["loc"]
 
 
-def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
+def test_concurrent_save_overrides_keep_both_keys(local_json, monkeypatch):
     """Two saves touching DIFFERENT keys must both survive.
 
     save_overrides() is a read-modify-write that rewrites the WHOLE merged
@@ -1468,8 +1464,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     parked inside its window and only released once the fast save has run to
     completion, which is the exact interleaving that lost the update.
     """
-    p = str(tmp_path / "config.local.json")
-    cs.save_overrides({"BEAM_SIZE": 5}, p)
+    cs.save_overrides({"BEAM_SIZE": 5}, local_json)
 
     slow_inside = threading.Event()
     fast_started = threading.Event()
@@ -1490,7 +1485,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
 
     def slow():
         try:
-            cs.save_overrides({"BEST_OF": 3}, p)
+            cs.save_overrides({"BEST_OF": 3}, local_json)
         except Exception as e:               # noqa: BLE001
             errors.append(e)
 
@@ -1501,7 +1496,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
             # was overwritten by the slow saver's stale document.
             slow_inside.wait(10)
             fast_started.set()
-            cs.save_overrides({"ADMIN_WEBUI_ALLOWED_HOSTS": ["10.0.0.1"]}, p)
+            cs.save_overrides({"ADMIN_WEBUI_ALLOWED_HOSTS": ["10.0.0.1"]}, local_json)
         except Exception as e:               # noqa: BLE001
             errors.append(e)
         finally:
@@ -1527,23 +1522,22 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     assert not [t for t in ts if t.is_alive()]
     assert errors == []
 
-    on_disk = _read_json(p)
+    on_disk = _read_json(local_json)
     assert on_disk["BEST_OF"] == 3
     assert on_disk["ADMIN_WEBUI_ALLOWED_HOSTS"] == ["10.0.0.1"]
     assert on_disk["BEAM_SIZE"] == 5          # the pre-existing key survived too
 
 
-def test_save_lock_timeout_surfaces_as_oserror(tmp_path, monkeypatch):
+def test_save_lock_timeout_surfaces_as_oserror(local_json, monkeypatch):
     """Callers wrap save_overrides in `except OSError`. A same-process peer
     holding the save lock trips the in-process threading.Lock timeout, which
     must surface as an OSError naming the peer save."""
-    p = str(tmp_path / "config.local.json")
     monkeypatch.setattr(atomic_json, "SAVE_LOCK_TIMEOUT_S", 0.05)
     holder_in = threading.Event()
     release = threading.Event()
 
     def hold():
-        with atomic_json.save_lock(p):
+        with atomic_json.save_lock(local_json):
             holder_in.set()
             release.wait(10)
 
@@ -1552,13 +1546,13 @@ def test_save_lock_timeout_surfaces_as_oserror(tmp_path, monkeypatch):
     try:
         holder_in.wait(10)
         with pytest.raises(OSError, match="peer save in progress"):
-            cs.save_overrides({"BEAM_SIZE": 5}, p)
+            cs.save_overrides({"BEAM_SIZE": 5}, local_json)
     finally:
         release.set()
         t.join(10)
 
 
-def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(tmp_path, monkeypatch):
+def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(local_json, monkeypatch):
     """The cross-worker path: another process holds `<path>.lock`. filelock's
     Timeout already subclasses OSError, so `pytest.raises(OSError)` alone
     would not prove the conversion — pin the plain OSError type and the
@@ -1567,8 +1561,7 @@ def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(tmp_path, mon
     import sys
 
     pytest.importorskip("filelock")
-    p = str(tmp_path / "config.local.json")
-    lock_path = os.path.abspath(p) + ".lock"
+    lock_path = os.path.abspath(local_json) + ".lock"
     child = subprocess.Popen(
         [sys.executable, "-c",
          "import sys, filelock\n"
@@ -1580,7 +1573,7 @@ def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(tmp_path, mon
         assert child.stdout.readline().strip() == "ready"
         monkeypatch.setattr(atomic_json, "SAVE_LOCK_TIMEOUT_S", 0.2)
         with pytest.raises(OSError, match="peer worker save in progress") as ei:
-            cs.save_overrides({"BEAM_SIZE": 5}, p)
+            cs.save_overrides({"BEAM_SIZE": 5}, local_json)
         assert type(ei.value) is OSError
     finally:
         try:
@@ -1590,11 +1583,10 @@ def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(tmp_path, mon
             child.kill()
 
 
-def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
+def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path, local_json):
     """The lock file must not look like atomic_write_json's tempfiles (or the
     config itself) to anything scanning the data dir."""
-    p = str(tmp_path / "config.local.json")
-    cs.save_overrides({"BEAM_SIZE": 5}, p)
+    cs.save_overrides({"BEAM_SIZE": 5}, local_json)
     names = sorted(os.listdir(tmp_path))
     assert "config.local.json" in names
     assert not [n for n in names if n.endswith(".tmp")]
@@ -1650,15 +1642,14 @@ def test_origins_uppercase_scheme_is_lowercased_not_refused():
         "http://b.com:8080"]
 
 
-def test_origins_default_port_dropped_on_save_and_load(tmp_path):
+def test_origins_default_port_dropped_on_save_and_load(local_json):
     # The browser omits the scheme's default port from Origin, so a stored
     # 'https://x:443' would never match exactly: every POST/WebSocket from
     # that proxy origin would get the CSRF 403.
-    p = str(tmp_path / "config.local.json")
     cs.save_overrides({"TRUSTED_ORIGINS": ["https://w.example.com:443",
                                            "http://[::1]:80", "https://a.com:80",
-                                           "http://a.com:8443"]}, p)
-    assert _read_json(p)["TRUSTED_ORIGINS"] == [
+                                           "http://a.com:8443"]}, local_json)
+    assert _read_json(local_json)["TRUSTED_ORIGINS"] == [
         "https://w.example.com", "http://[::1]", "https://a.com:80",
         "http://a.com:8443"]
     # A hand-written stored entry is normalised at load too.
@@ -1668,33 +1659,31 @@ def test_origins_default_port_dropped_on_save_and_load(tmp_path):
 
 @pytest.mark.parametrize("bad", ["http://a.com:99999", "http://a.com:080",
                                  "http://a.com:0", "https://bücher.de"])
-def test_origins_impossible_port_or_non_ascii_host_refused_on_save(tmp_path, bad):
+def test_origins_impossible_port_or_non_ascii_host_refused_on_save(local_json, bad):
     # A browser sends neither an out-of-range / zero-padded port nor a
     # non-punycode host, so the entry would save and never match.
-    p = str(tmp_path / "config.local.json")
     for key in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
         with pytest.raises(ValidationError):
-            cs.save_overrides({key: [bad]}, p)
+            cs.save_overrides({key: [bad]}, local_json)
         _ok(**{key: [bad]})
-    assert not os.path.exists(p)
+    assert not os.path.exists(local_json)
 
 
 @pytest.mark.parametrize("bad", ["https://u@a.com", "https://a.com:1:2",
                                  "https://a.com:x"])
-def test_origins_with_userinfo_or_junk_port_refused_on_save(tmp_path, bad):
+def test_origins_with_userinfo_or_junk_port_refused_on_save(local_json, bad):
     # Such an entry never equals a browser Origin header, so it saved cleanly
     # and silently did nothing. Refused on a save that submits the list;
     # load keeps accepting it (a load failure drops every override).
-    p = str(tmp_path / "config.local.json")
     for key in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
         with pytest.raises(ValidationError):
-            cs.save_overrides({key: [bad]}, p)
+            cs.save_overrides({key: [bad]}, local_json)
         _ok(**{key: [bad]})
-    assert not os.path.exists(p)
-    cs.save_overrides({"TRUSTED_ORIGINS": ["https://a.com:8443", "http://[::1]:8000"]}, p)
+    assert not os.path.exists(local_json)
+    cs.save_overrides({"TRUSTED_ORIGINS": ["https://a.com:8443", "http://[::1]:8000"]}, local_json)
     # A stored one does not block an unrelated save.
-    _write_json(p, {"TRUSTED_ORIGINS": [bad]})
-    cs.save_overrides({"BEAM_SIZE": 3}, p)
+    _write_json(local_json, {"TRUSTED_ORIGINS": [bad]})
+    cs.save_overrides({"BEAM_SIZE": 3}, local_json)
 
 
 def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
