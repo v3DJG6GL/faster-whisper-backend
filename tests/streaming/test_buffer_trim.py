@@ -16,11 +16,11 @@ import asyncio
 import numpy as np
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm,
-    discard as _discard, fast_config, inert_session, ready_ws, stop_and_drain, timed_final)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm,
+    fast_config, inert_session, ready_ws, stop_and_drain, timed_final)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
-from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
+from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES
 
 SR = 16000
 WORD_SEC = 0.2  # deterministic word grid: word i spans [i*0.2, (i+1)*0.2)
@@ -46,15 +46,13 @@ def _grid_partial(box):
     return decode_partial
 
 
-def _grid_session(box, cfg, decode_final, *, endpointer=None, emit=_discard, **kw):
-    """Session whose partials transcribe the grid of their buffer; appended to box."""
-    s = StreamSession(
-        config=cfg, endpointer=endpointer or EnergyEndpointer(),
-        decode_partial=_grid_partial(box), decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit, **kw,
-    )
+def _grid_session(box, cfg, decode_final, *, endpointer=None, **kw):
+    """Session whose partials transcribe the grid of their buffer; appended to box.
+    Returns (session, msgs)."""
+    s, msgs = inert_session(cfg, decode_partial=_grid_partial(box), decode_final=decode_final,
+                            endpointer=endpointer, **kw)
     box.append(s)
-    return s
+    return s, msgs
 
 
 def _run_long_utterance(speech_ms: int):
@@ -64,7 +62,6 @@ def _run_long_utterance(speech_ms: int):
     trimmed audio)."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
     finals_meta, on_final = collector()
-    msgs, emit = collector()
     session_box: list[StreamSession] = []
 
     async def decode_final(audio, prompt):
@@ -76,7 +73,7 @@ def _run_long_utterance(speech_ms: int):
         words = [{"word": t, "start": a - off, "end": b - off} for a, b, t in gw]
         return (raw, words, False)
 
-    s = _grid_session(session_box, cfg, decode_final, emit=emit, on_final=on_final)
+    s, msgs = _grid_session(session_box, cfg, decode_final, on_final=on_final)
 
     # _trimmed_text is cleared by the finalize, so watch it live while feeding.
     trimmed: list[str] = []
@@ -137,7 +134,7 @@ def test_trim_folds_cut_words_into_rolling_prompt():
         final_prompts.append(prompt)
         return (" tail.", [], False)
 
-    s = _grid_session([], cfg, decode_final)
+    s, _msgs = _grid_session([], cfg, decode_final)
 
     feed_levels(s, (8000, 3500), (0, 400))
     assert final_prompts, "final decode never ran"
@@ -159,7 +156,7 @@ def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
         banked[:] = session_box[0]._trimmed_text.split()
         return (" tail.", [], False)
 
-    s = _grid_session(session_box, cfg, decode_final, base_prompt="Ibuprofen Metoprolol")
+    s, _msgs = _grid_session(session_box, cfg, decode_final, base_prompt="Ibuprofen Metoprolol")
 
     feed_levels(s, (8000, 3500), (0, 400))
     assert len(banked) > 3, "setup failed: the cap never bit"
@@ -191,14 +188,9 @@ def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = 
     only those entered before close(), whose own forced finalize would make
     ``forced`` non-empty anyway), and the duration of each buffer that
     reached the final decode."""
-    msgs, emit = collector()
     decoded, decode_final = timed_final(" chunk.", SR)
 
-    s = StreamSession(
-        config=cfg, endpointer=_AlwaysSpeech(),
-        decode_partial=const_partial(), decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit,
-    )
+    s, msgs = inert_session(cfg, decode_final=decode_final, endpointer=_AlwaysSpeech())
     s._skip_partials = skip_partials
     seen: list[bool] = []
     _finalize = s._finalize
@@ -274,12 +266,10 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
     emitted, not silently discarded with the quiet tail."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
                       rms_gate_dbfs=-42.0, max_buffer_sec=6.0)
-    msgs, emit = collector()
     finals_meta, on_final = collector()
     final_decodes, decode_final = timed_final(" should-not-run.", SR)
 
-    s = _grid_session([], cfg, decode_final, endpointer=_AlwaysSpeech(),
-                      emit=emit, on_final=on_final)
+    s, msgs = _grid_session([], cfg, decode_final, endpointer=_AlwaysSpeech(), on_final=on_final)
 
     async def run():
         # 3.5 s loud: partials commit grid words, a trim banks the opening.
@@ -355,7 +345,7 @@ def test_buffer_counter_matches_the_array_after_every_frame():
     """Drive the real pump through speech, a mid-utterance trim, a finalize and
     trailing silence — every writer must leave counter and array agreeing."""
     cfg = fast_config(buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0)
-    s = _grid_session([], cfg, const_final(" tail."))
+    s, _msgs = _grid_session([], cfg, const_final(" tail."))
 
     trimmed = []  # _trimmed_text is cleared by the finalize, so watch it live
 

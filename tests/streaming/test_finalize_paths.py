@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
     AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm,
-    discard as _discard, fast_config, dictate_session, handshake as _config, ready_ws, speak,
+    fast_config, dictate_session, handshake as _config, inert_session, ready_ws, speak,
     speak_and_stop, stop_and_drain, stop_if_open_and_drain, timed_final)
 from tests.conftest import wait_until
 from tests.streaming._feed_helpers import feed_levels
@@ -34,7 +34,7 @@ from faster_whisper_backend.streaming import session as streaming_session
 from faster_whisper_backend.streaming.routes import (
     _WS_BAD_ORIGIN, _WS_DISABLED, _WS_TOO_MANY, _WS_UNAUTH)
 from faster_whisper_backend.streaming.session import StreamSession
-from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
+from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt_hold
 
@@ -59,13 +59,10 @@ def _grid_partial(box):
     return decode_partial
 
 
-def _grid_session(box, cfg, decode_final, *, endpointer=None, emit=_discard, **kw):
+def _grid_session(box, cfg, decode_final, *, endpointer=None, **kw):
     """Session whose partials transcribe the grid of their buffer; appended to box."""
-    s = StreamSession(
-        config=cfg, endpointer=endpointer or EnergyEndpointer(),
-        decode_partial=_grid_partial(box), decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit, **kw,
-    )
+    s, _msgs = inert_session(cfg, decode_partial=_grid_partial(box), decode_final=decode_final,
+                             endpointer=endpointer, **kw)
     box.append(s)
     return s
 
