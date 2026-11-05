@@ -73,8 +73,7 @@ def test_http_route_single_bearer_admits(client, root_key):
     assert client.get("/settings/state", headers=bearer(root_key)).status_code == 200
 
 
-def test_http_route_only_basic_is_401(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_http_route_only_basic_is_401(client, locked_down):
     r = client.get("/settings/state", headers={"Authorization": _BASIC})
     assert r.status_code == 401
 
@@ -94,8 +93,7 @@ def test_csrf_stale_cookie_with_basic_then_bearer_passes(client, root_key):
     assert r.status_code == 200
 
 
-def test_csrf_stale_cookie_with_only_basic_is_403(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_csrf_stale_cookie_with_only_basic_is_403(client, locked_down):
     client.cookies.set("whisper_session", "stale-token-with-no-row")
     # Not /auth/logout: the guard lets a dead cookie sign out (nothing to
     # protect), so the fail-closed contract is pinned on another mutation.

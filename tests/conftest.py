@@ -843,6 +843,11 @@ def root_key(client, make_user_key):
     return make_user_key("root", is_admin=True)[1]
 
 
+@pytest.fixture
+def locked_down(root_key):
+    """The server locked down by a root admin key the test never presents."""
+
+
 def schema_map_cap():
     """MapRule.map's max_length read straight off the schema, with NO fallback
     (web_common's 10_000 default would hide a blind introspection)."""

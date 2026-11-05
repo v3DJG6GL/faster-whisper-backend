@@ -17,9 +17,7 @@ def test_open_mode_admin_everywhere(client):
     assert client.get("/settings/state").status_code == 200
 
 
-def test_locked_down_no_bearer_is_401(client, make_user_key):
-    # Creating the first admin key flips the server to locked-down.
-    make_user_key("root", is_admin=True)
+def test_locked_down_no_bearer_is_401(client, locked_down):
     r = client.get("/settings/state")
     assert r.status_code == 401
 
@@ -29,8 +27,7 @@ def test_locked_down_admin_bearer_ok(client, root_key):
     assert r.status_code == 200
 
 
-def test_locked_down_bad_bearer_is_401(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_locked_down_bad_bearer_is_401(client, locked_down):
     r = client.get("/settings/state", headers=bearer("wk_not_a_real_key"))
     assert r.status_code == 401
 
@@ -113,8 +110,7 @@ def test_sse_key_query_param_rejected(client, make_user_key):
     assert _status_of(quick_config_routes.require_user_or_admin_sse, req) == 401
 
 
-def test_sse_missing_key_rejected_when_locked(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_sse_missing_key_rejected_when_locked(client, locked_down):
     req = _fake_request()  # no bearer, no cookie
     assert _status_of(quick_config_routes.require_user_or_admin_sse, req) == 401
 
@@ -129,17 +125,15 @@ _REMOTE = ("203.0.113.9", 1234)  # TEST-NET-3, not in the admin allowlist
 _DOCS_SHELLS = ("/docs", "/redoc")
 
 
-def test_docs_shells_loopback_ok(client, make_user_key):
-    make_user_key("root", is_admin=True)  # locked down
+def test_docs_shells_loopback_ok(client, locked_down):
     for path in _DOCS_SHELLS:
         assert client.get(path).status_code == 200, path
 
 
-def test_docs_shells_have_no_external_refs(client, make_user_key):
+def test_docs_shells_have_no_external_refs(client, locked_down):
     # The bundles are vendored and the two known helper defaults that re-add
     # third-party URLs (swagger's validatorUrl badge, redoc's Google Fonts
     # stylesheet) are explicitly disabled — see static/VENDOR.md.
-    make_user_key("root", is_admin=True)
     for path in _DOCS_SHELLS:
         body = client.get(path).text
         for host in ("fonts.googleapis.com", "cdn.jsdelivr.net",
@@ -215,8 +209,7 @@ def test_open_mode_remote_admits_from_widened_admin_allowlist(
         assert c.get("/sev").status_code == 401
 
 
-def test_sev_locked_remote_no_key_401(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_sev_locked_remote_no_key_401(client, locked_down):
     with TestClient(client.app, client=_REMOTE) as c:
         assert c.get("/sev").status_code == 401
 
@@ -229,25 +222,22 @@ def test_sev_locked_remote_any_key_ok(client, make_user_key):
         assert c.get("/sev", headers=bearer(raw)).status_code == 200
 
 
-def test_logs_shell_remote_open_host_ok(client, make_user_key):
+def test_logs_shell_remote_open_host_ok(client, locked_down):
     # The /logs SHELL is host-only on the OPEN user allowlist → reachable from
     # any host even locked-down with no key (the login popup runs in-page).
-    make_user_key("root", is_admin=True)
     with TestClient(client.app, client=_REMOTE) as c:
         assert c.get("/logs").status_code == 200
 
 
-def test_logs_data_locked_no_key_401(client, make_user_key):
+def test_logs_data_locked_no_key_401(client, locked_down):
     # The data endpoint stacks require_page("logs") → no key is 401.
-    make_user_key("root", is_admin=True)
     with TestClient(client.app, client=_REMOTE) as c:
         assert c.get("/logs/older").status_code == 401
 
 
-def test_user_host_narrowing_blocks_shell(client, make_user_key, narrowed_remote_client):
+def test_user_host_narrowing_blocks_shell(client, narrowed_remote_client, locked_down):
     # Narrowing USER_WEBUI_ALLOWED_HOSTS to loopback blocks a remote host from
     # even the user-page shell (the host gate fires before the in-page login).
-    make_user_key("root", is_admin=True)
     assert narrowed_remote_client.get("/stats").status_code == 403
     assert narrowed_remote_client.get("/logs").status_code == 403
 

@@ -97,15 +97,13 @@ def test_whoami_names_the_csrf_cookie(client, make_user_key, monkeypatch):
     assert body["csrf_token"] and body["csrf_cookie"] == "fw_csrf"
 
 
-def test_login_bad_key_is_401_no_cookie(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_login_bad_key_is_401_no_cookie(client, locked_down):
     r = client.post("/auth/login", json={"key": "wk_not_real"})
     assert r.status_code == 401
     assert not _set_cookie_lines(r)
 
 
-def test_login_non_string_key_is_401_not_500(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_login_non_string_key_is_401_not_500(client, locked_down):
     for bad in (123, ["x"], {"a": 1}, True):
         r = client.post("/auth/login", json={"key": bad})
         assert r.status_code == 401, bad
@@ -589,10 +587,9 @@ def test_revoke_failing_on_the_counter_leaves_no_half_revoked_session(tmp_path):
     assert real.execute("SELECT revoked_ts FROM sessions").fetchone()[0] is not None
 
 
-def test_login_failures_are_throttled(client, app_module, make_user_key):
+def test_login_failures_are_throttled(client, app_module, locked_down):
     """Keyed by client host (a login has no identity yet). The attempt past
     LOGIN_FAILURE_RATE is refused before the key is even looked up."""
-    make_user_key("root", is_admin=True)
     limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
     _fail_logins(client, limit)
     r = client.post("/auth/login", json={"key": "wk_nope"})
@@ -605,10 +602,9 @@ def test_login_failures_are_throttled(client, app_module, make_user_key):
 
 
 def test_login_with_lone_surrogate_key_is_401_and_counted(
-        client, app_module, make_user_key):
+        client, app_module, locked_down):
     """A lone-surrogate JSON escape made hash_key raise UnicodeEncodeError:
     an unauthenticated 500 that the failure throttle never counted."""
-    make_user_key("root", is_admin=True)
     body = b'{"key":"\\ud800"}'
     hdrs = {"content-type": "application/json"}
     limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
@@ -637,8 +633,7 @@ def test_login_open_mode_is_never_throttled(client, app_module, monkeypatch):
 
 
 def test_login_failure_rate_zero_is_unlimited(client, app_module,
-                                              make_user_key, monkeypatch):
-    make_user_key("root", is_admin=True)
+                                              locked_down, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "LOGIN_FAILURE_RATE", 0,
                         raising=False)
     _fail_logins(client, 30)
@@ -669,12 +664,11 @@ def test_csrf_non_ascii_token_is_403_not_500(client, make_user_key):
     assert r.json()["detail"] == "CSRF token missing or invalid"
 
 
-def test_revoke_unknown_session_does_not_bump(client, make_user_key):
+def test_revoke_unknown_session_does_not_bump(client, locked_down):
     """/auth/logout is unauthenticated: a junk cookie (plus a junk bearer and
     no Origin, which passes the CSRF middleware) must not move the global
     config version — every live stream re-resolves auth on each move."""
     from faster_whisper_backend.settings import config as cfg
-    make_user_key("root", is_admin=True)
     v0 = settings_version._CONFIG_VERSION
     sessions_store.revoke_session("junk")
     assert settings_version._CONFIG_VERSION == v0

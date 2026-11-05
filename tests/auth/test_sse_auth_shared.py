@@ -25,8 +25,7 @@ def test_bearer_header_admits_with_page_access(client, make_user_key):
     assert rec["permissions"].can("stats")
 
 
-def test_no_credential_is_401(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_no_credential_is_401(client, locked_down):
     assert _status_of(auth.resolve_user_for_page_sse,
                       _fake_request(), "stats") == 401
 
