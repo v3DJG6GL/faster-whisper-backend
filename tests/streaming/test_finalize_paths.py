@@ -262,13 +262,11 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
 
 
 def test_translate_expect_is_ignored_when_translation_is_disabled(
-        client, app_module, monkeypatch, energy_vad):
+        client, app_module, monkeypatch, energy_vad, recording_captures):
     """/v1/text/translations refuses before it can claim a receipt, so a
     declaration on a TRANSLATION_ENABLED=0 server must park nothing: the
     receipt is logged inline and no `captured` frame invites a claim."""
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False, raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
-    monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
 
     msgs = dictate_session(client, translate_expect={"targets": ["en"], "per_utterance": True})
     assert any(m["type"] == "final" for m in msgs)
@@ -277,11 +275,9 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
 
 
 def test_translate_expect_parks_when_translation_is_enabled(
-        client, app_module, monkeypatch, energy_vad):
+        client, app_module, monkeypatch, energy_vad, recording_captures):
     """The other direction, so the gate above is not just disabling the hold."""
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
-    monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
 
     msgs = dictate_session(client, translate_expect={"targets": ["en"], "per_utterance": True})
     assert any(m.get("type") == "captured" for m in msgs), msgs
@@ -289,11 +285,10 @@ def test_translate_expect_parks_when_translation_is_enabled(
 
 
 def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
-        client, app_module, monkeypatch, energy_vad, created_captures):
+        client, app_module, monkeypatch, energy_vad, recording_captures):
     """At CAPTURES_MAX the gate still hands the utterance to create_capture:
     its _evict_to_cap does the documented oldest-first rotation, and refusing
     first would silently record nothing from then on."""
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
     # Not a store full of "ready" rows (the real DB state must not decide).
@@ -301,34 +296,31 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
 
     msgs = dictate_session(client)
     assert any(m["type"] == "final" for m in msgs)
-    assert len(created_captures) == 1
+    assert len(recording_captures) == 1
 
 
 def test_a_store_full_of_ready_captures_skips_the_stream_capture(
-        client, app_module, monkeypatch, energy_vad, created_captures):
+        client, app_module, monkeypatch, energy_vad, recording_captures):
     """Ready rows alone fill CAPTURES_MAX: the new row would be evicted by its
     own insert, so the utterance is not handed to create_capture (no WAV)."""
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
 
     msgs = dictate_session(client)
     assert any(m["type"] == "final" for m in msgs)
-    assert created_captures == []
+    assert recording_captures == []
 
 
 def test_turning_capture_recording_off_mid_session_stops_recording(
-        client, app_module, monkeypatch, energy_vad, created_captures):
+        client, app_module, monkeypatch, energy_vad, recording_captures):
     """CAPTURES_RECORDING_ENABLED is a privacy switch: switched off while a
     dictation socket is open, the next utterance on that socket is not
     written to the captures store."""
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
-
     with ready_ws(client) as ws:
         monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", False,
                             raising=False)
         msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
-    assert created_captures == []
+    assert recording_captures == []
 
 
 @pytest.fixture

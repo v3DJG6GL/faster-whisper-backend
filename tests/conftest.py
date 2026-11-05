@@ -381,6 +381,14 @@ def created_captures(app_module, monkeypatch):
 
 
 @pytest.fixture
+def recording_captures(app_module, monkeypatch, created_captures):
+    """created_captures with CAPTURES_RECORDING_ENABLED switched on. List it
+    after `client` so the flag is set once the lifespan has started."""
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
+    return created_captures
+
+
+@pytest.fixture
 def wav_factory(tmp_path):
     """Return write(name_or_spec) -> path; writes a 1ch/16k/s16 WAV."""
     counter = {"n": 0}

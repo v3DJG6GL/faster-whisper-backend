@@ -8,7 +8,7 @@ from tests._streaming_helpers import const_pcm as _pcm, ready_ws, stop_and_drain
 from tests.conftest import FakeInfo
 
 
-def _gate_skipped_utterance(client, app_module, monkeypatch):
+def _gate_skipped_utterance(client, app_module, monkeypatch, created):
     """One utterance whose text the previews commit; the RMS gate is then
     forced shut so its finalize skips the decode. Returns the capture kwargs
     and the stream ledger rows."""
@@ -17,11 +17,7 @@ def _gate_skipped_utterance(client, app_module, monkeypatch):
     from faster_whisper_backend.streaming import session as streaming_session
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
-    created = []
-    monkeypatch.setattr(captures_store, "create_capture",
-                        lambda **kw: created.append(kw) or "cap-test-id")
 
     # No `language` key: the session inherits DEFAULT_LANGUAGE.
     with ready_ws(client) as ws:
@@ -38,19 +34,19 @@ def _gate_skipped_utterance(client, app_module, monkeypatch):
 
 
 def test_gate_skipped_utterance_stores_the_previews_language(
-        client, app_module, monkeypatch):
-    created, rows = _gate_skipped_utterance(client, app_module, monkeypatch)
+        client, app_module, monkeypatch, recording_captures):
+    created, rows = _gate_skipped_utterance(client, app_module, monkeypatch, recording_captures)
     assert created, "setup failed: no capture was handed to the store"
     assert created[0]["language"] == "de"
     assert rows and rows[0]["language"] == "de"
 
 
 def test_gate_skipped_utterance_falls_back_to_default_language(
-        client, app_module, monkeypatch, fake_model):
+        client, app_module, monkeypatch, fake_model, recording_captures):
     # Previews that report no language: only the inherited default is known.
     fake_model._info = FakeInfo(language=None)
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", "fr", raising=False)
-    created, rows = _gate_skipped_utterance(client, app_module, monkeypatch)
+    created, rows = _gate_skipped_utterance(client, app_module, monkeypatch, recording_captures)
     assert created, "setup failed: no capture was handed to the store"
     assert created[0]["language"] == "fr"
     assert rows and rows[0]["language"] == "fr"
