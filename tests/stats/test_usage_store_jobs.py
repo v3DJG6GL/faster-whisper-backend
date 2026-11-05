@@ -12,10 +12,9 @@ import zoneinfo
 import pytest
 
 from tests.conftest import _close_store
-from tests.stats._usage_helpers import epoch_day as _D, rec as _rec, utc_doc as _doc
+from tests.stats._usage_helpers import _UTC, epoch_day as _D, rec as _rec, utc_doc as _doc
 
 _ZH = zoneinfo.ZoneInfo("Europe/Zurich")
-_UTC = zoneinfo.ZoneInfo("UTC")
 
 
 def _ts(y, m, d, hh=12, mm=0, tz=_UTC) -> float:

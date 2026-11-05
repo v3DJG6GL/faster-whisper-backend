@@ -4,9 +4,7 @@ breakdowns, leaderboard, compare window, per-model table."""
 import datetime
 import zoneinfo
 
-from tests.stats._usage_helpers import epoch_day as _D
-
-_UTC = zoneinfo.ZoneInfo("UTC")
+from tests.stats._usage_helpers import _UTC, epoch_day as _D
 
 
 def _ts(iso, hh=12):
