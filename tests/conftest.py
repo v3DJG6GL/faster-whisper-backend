@@ -438,6 +438,19 @@ def wait_until(done, timeout=5, interval=0.01):
         time.sleep(interval)
 
 
+def record_calls(monkeypatch, owner, name, pick):
+    """Patch owner.name with a pass-through that logs pick(*args, **kw) per
+    call and returns the real result; returns the log."""
+    log = []
+    real = getattr(owner, name)
+
+    def _spy(*a, **kw):
+        log.append(pick(*a, **kw))
+        return real(*a, **kw)
+    monkeypatch.setattr(owner, name, _spy)
+    return log
+
+
 def fake_wav_transcode(src_path, dst_path):
     """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
     write_wav(dst_path, b"\x00\x00" * 100)

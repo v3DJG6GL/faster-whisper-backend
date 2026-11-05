@@ -14,6 +14,7 @@ import pytest
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.settings import config as cfg
+from tests.conftest import record_calls
 
 
 # A registration with a positive VRAM delta records into the measured-size
@@ -158,13 +159,7 @@ def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
     existing ancestor's drive."""
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
-    seen = []
-    real = system_stats.psutil.disk_usage
-
-    def _spy(path):
-        seen.append(path)
-        return real(path)
-    monkeypatch.setattr(system_stats.psutil, "disk_usage", _spy)
+    seen = record_calls(monkeypatch, system_stats.psutil, "disk_usage", lambda path: path)
     host = system_stats._build_host()
     assert seen == [str(tmp_path)]           # hf/hub, hf/ absent -> tmp_path
     assert host["disk_free_gb"] is not None
@@ -186,13 +181,7 @@ def test_disk_free_walks_a_relative_download_root_up_to_cwd(monkeypatch,
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "models", raising=False)
-    seen = []
-    real = system_stats.psutil.disk_usage
-
-    def _spy(path):
-        seen.append(path)
-        return real(path)
-    monkeypatch.setattr(system_stats.psutil, "disk_usage", _spy)
+    seen = record_calls(monkeypatch, system_stats.psutil, "disk_usage", lambda path: path)
     host = system_stats._build_host()
     assert seen == [os.getcwd()]
     assert host["disk_free_gb"] is not None

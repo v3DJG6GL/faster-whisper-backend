@@ -9,6 +9,7 @@ import json
 import pytest
 
 from faster_whisper_backend.runtime import stage_rates
+from tests.conftest import record_calls
 
 
 @pytest.fixture
@@ -113,13 +114,7 @@ def test_an_overflowing_or_deeply_nested_file_degrades_to_seeds(ledger, body):
 
 def test_record_many_is_one_write_folded_in_order(ledger, monkeypatch):
     from faster_whisper_backend.core import atomic_json
-    writes = []
-    real = atomic_json.atomic_write_json
-
-    def counting(*a, **kw):
-        writes.append(1)
-        return real(*a, **kw)
-    monkeypatch.setattr(atomic_json, "atomic_write_json", counting)
+    writes = record_calls(monkeypatch, atomic_json, "atomic_write_json", lambda *a, **kw: 1)
     stage_rates.record_many([
         ("translating", "m", "cuda", "fluent", 2.0),
         ("separating", "uvr", "cuda", None, float("nan")),   # dropped

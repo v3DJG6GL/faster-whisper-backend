@@ -12,7 +12,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.core import atomic_json
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.settings import config as cfg
-from tests.conftest import write_bytes
+from tests.conftest import record_calls, write_bytes
 
 
 GB = 1024 ** 3
@@ -90,10 +90,7 @@ def test_any_device_fallback_then_none(ledger, monkeypatch):
 def test_one_percent_drift_does_not_rewrite_the_file(ledger, monkeypatch):
     model_sizes.record("large-v3", "cuda", "float16", 1000 * 1000 * 1000)
 
-    writes = []
-    real_write = model_sizes._write_locked
-    monkeypatch.setattr(model_sizes, "_write_locked",
-                        lambda *a, **k: (writes.append(1), real_write(*a, **k))[1])
+    writes = record_calls(monkeypatch, model_sizes, "_write_locked", lambda *a, **k: 1)
 
     model_sizes.record("large-v3", "cuda", "float16", 1010 * 1000 * 1000)  # +1%
     assert writes == []
@@ -474,13 +471,7 @@ def test_record_merges_a_peer_workers_row_instead_of_clobbering_it(ledger):
 
 
 def test_record_holds_the_cross_process_save_lock(ledger, monkeypatch):
-    entered = []
-    real = atomic_json.save_lock
-
-    def spy(path):
-        entered.append(path)
-        return real(path)
-    monkeypatch.setattr(atomic_json, "save_lock", spy)
+    entered = record_calls(monkeypatch, atomic_json, "save_lock", lambda path: path)
     model_sizes.record("a", "cuda", "float16", 1 * GB)
     # Once around the whole read-modify-write — never re-acquired inside
     # the write (the per-path lock is not reentrant).
@@ -615,13 +606,8 @@ def test_app_module_keeps_record_off_the_default_ledger(app_module, tmp_path,
     # VRAM delta is a measurement); its lock, read and write must all land
     # on app_module's tmp ledger, never on the import-time default path.
     from faster_whisper_backend.runtime import model_registry
-    written = []
-    real = atomic_json.atomic_write_json
-
-    def _spy(doc, path, **kw):
-        written.append(path)
-        return real(doc, path, **kw)
-    monkeypatch.setattr(atomic_json, "atomic_write_json", _spy)
+    written = record_calls(monkeypatch, atomic_json, "atomic_write_json",
+                           lambda doc, path, **kw: path)
     model_registry.register_loaded_model("iso", 1024, "cuda", "int8")
     assert written == [str(tmp_path / "model_sizes.json")]
     doc = json.loads((tmp_path / "model_sizes.json").read_text(encoding="utf-8"))

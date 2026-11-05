@@ -15,7 +15,7 @@ from faster_whisper_backend.runtime import preload_routes
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.translation import engine as translation
 
-from tests.conftest import bearer
+from tests.conftest import bearer, record_calls
 from tests.runtime.test_preload_registry import _fits, _no_room
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -70,13 +70,8 @@ def test_a_client_trigger_cannot_pass_for_the_job_binding(
     # "job" is the server's own job binding (it rewinds the plan cursor);
     # non-printables are stripped so a client cannot forge log rows.
     _enable(app_module, monkeypatch)
-    seen = []
-    real = preload.register_plan
-
-    def _spy(*a, **kw):
-        seen.append(kw.get("trigger"))
-        return real(*a, **kw)
-    monkeypatch.setattr(preload, "register_plan", _spy)
+    seen = record_calls(monkeypatch, preload, "register_plan",
+                        lambda *a, **kw: kw.get("trigger"))
     client.post(_URL, json=_body(trigger="job"))
     client.post(_URL, json=_body(trigger="dict\nation"))
     client.post(_URL, json=_body(trigger="\n"))
