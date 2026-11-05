@@ -509,15 +509,9 @@ def test_pipeline_deeply_nested_regex_is_invalid_not_a_crash(tmp_path):
         cs.load_factory_rules(str(p))
 
 
-def _ok_on_save(**fields):
-    """Validate as a SAVE would (guard_regex context) — runs the out-of-process
-    regex probe (backref + catastrophic-backtracking guard)."""
-    return settings_schema.AdminConfig.model_validate(fields, context={"guard_regex": True})
-
-
 def test_pipeline_bad_backref_reported():
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=regex_list_rules("b", "(a)", r"\3"))
+        validate_rules(regex_list_rules("b", "(a)", r"\3"), guard_regex=True)
     assert "regex test failed" in str(ei.value)
 
 
@@ -526,7 +520,7 @@ def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
     # before any timed probe runs; the shortened timeout only bounds a regression.
     monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 0.5)
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=regex_list_rules("boom", "(.*a)+$", ""))
+        validate_rules(regex_list_rules("boom", "(.*a)+$", ""), guard_regex=True)
     assert "catastrophic backtracking" in str(ei.value)
 
 
@@ -537,7 +531,7 @@ def test_pipeline_replacement_growth_rejected_when_fixture_never_matches():
     # then amplified a real transcript 512x per match on EVERY transcription
     # — two such entries allocate ~1 GB inside a single re.sub.
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=regex_list_rules("blow", "n", "n" * 512))
+        validate_rules(regex_list_rules("blow", "n", "n" * 512), guard_regex=True)
     assert "regex test failed" in str(ei.value)
 
 
@@ -546,7 +540,7 @@ def test_pipeline_backref_only_replacement_rejected():
     # pattern can match: ("(n+)", r"\1" * 256) amplifies exactly as hard as
     # ("n", "n" * 256), which the sibling test above rejects.
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=regex_list_rules("blow", "(n+)", "\\1" * 256))
+        validate_rules(regex_list_rules("blow", "(n+)", "\\1" * 256), guard_regex=True)
     assert "regex test failed" in str(ei.value)
 
 
@@ -555,23 +549,23 @@ def test_pipeline_prefix_ambiguous_alternation_rejected():
     # and backtracks exponentially. (The full _nested_repetition family is
     # unit-tested in tests/pipeline/test_regex_guard.py.)
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=regex_list_rules("boom", "(n|d|nd)+#", "X"))
+        validate_rules(regex_list_rules("boom", "(n|d|nd)+#", "X"), guard_regex=True)
     assert "catastrophic backtracking" in str(ei.value)
 
 
 def test_pipeline_backrefs_and_alternation_still_accepted():
     # Guard against over-correction: ordinary backreference replacements and
     # UNrepeated alternations are the bread and butter of these rules.
-    _ok_on_save(PIPELINE_RULES=[
+    validate_rules([
         _regex("decimal", pattern=r"(\d+),(\d+)", replacement=r"\1.\2"),
         _regex("anrede", pattern="(Herr|Frau) ", replacement=r"\1 "),
-        _terminal()])
+        _terminal()], guard_regex=True)
 
 
 def test_pipeline_ordinary_expansion_still_accepted():
     # Counterpart to the replacement-growth rejections: a rule whose
     # replacement is longer than its match is normal and must keep validating.
-    _ok_on_save(PIPELINE_RULES=regex_list_rules("expand", r"z\.B\.", "zum Beispiel"))
+    validate_rules(regex_list_rules("expand", r"z\.B\.", "zum Beispiel"), guard_regex=True)
 
 
 def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
@@ -608,7 +602,7 @@ def test_pipeline_guard_scoped_to_guard_slugs():
     assert "catastrophic backtracking" in str(ei.value)
     # No guard_slugs in the context -> unchanged full-list behaviour.
     with pytest.raises(ValidationError):
-        _ok_on_save(PIPELINE_RULES=[bad, good, _terminal()])
+        validate_rules([bad, good, _terminal()], guard_regex=True)
 
 
 def test_save_overrides_guard_slugs_reaches_the_validator(tmp_path):
@@ -902,7 +896,7 @@ def test_overflowing_repeat_count_is_a_validation_error(tmp_path, rule):
     # pydantic raw: a 500 instead of a 422 on save, and a hand-edited file
     # broke load_overrides' never-raises promise, so the server could not boot.
     with pytest.raises(ValidationError) as ei:
-        _ok_on_save(PIPELINE_RULES=[rule, _terminal()])
+        validate_rules([rule, _terminal()], guard_regex=True)
     assert "invalid regex" in str(ei.value)
     assert load_saved(tmp_path, {"PIPELINE_RULES": [rule, _terminal()]}) == {}
 
