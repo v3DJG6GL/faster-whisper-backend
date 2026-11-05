@@ -9,13 +9,13 @@ import pytest
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.core import jobs
-from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import bearer
 from tests._transcription_helpers import (
-    get_progress, post_cancel, post_verbose as _post, post_verbose_ok as _post_ok, record_runs)
+    fail_model_load, get_progress, post_cancel, post_verbose as _post,
+    post_verbose_ok as _post_ok, record_runs)
 from tests._translation_helpers import enable_translation, stub_translate
-from tests.main._stage_helpers import must_not_run
+from tests.main._stage_helpers import must_not_run, stage_raises
 
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 
@@ -58,20 +58,14 @@ def test_bgm_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
     # BgmCancelled must abort the request — never the "transcribing the
     # original audio" warning path that BgmSeparationError takes.
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
-
-    async def _cancelled(path, **kw):
-        raise bgm_separation.BgmCancelled()
-    monkeypatch.setattr(bgm_separation, "separate", _cancelled)
+    stage_raises(monkeypatch, bgm_separation, "separate", bgm_separation.BgmCancelled())
     r = _post(client, separate_bgm="1", progress_id=_PID)
     assert r.status_code == 499, r.text
 
 
 def test_diarize_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
-
-    async def _cancelled(path, **kw):
-        raise diarization.DiarizeCancelled()
-    monkeypatch.setattr(diarization, "diarize", _cancelled)
+    stage_raises(monkeypatch, diarization, "diarize", diarization.DiarizeCancelled())
     r = _post(client, diarize="1", progress_id=_PID)
     assert r.status_code == 499, r.text
 
@@ -296,10 +290,7 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
     # asyncio.CancelledError — a BaseException that skips every
     # `except Exception` arm. The finally still records the run, and it must
     # say "cancelled", not the seeded "ok" with zero words.
-
-    async def _cancelled_loader(name, *, lease=False):
-        raise asyncio.CancelledError()
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _cancelled_loader)
+    fail_model_load(monkeypatch, asyncio.CancelledError())
     recorded = record_runs(app_module, monkeypatch)
     # TestClient surfaces the handler's CancelledError as a RuntimeError.
     with pytest.raises(Exception):
@@ -322,10 +313,7 @@ def test_cancel_landing_on_the_job_write_still_records_the_run(client, app_modul
     # The outer finally's awaits sit AFTER the usage/metrics row: a second
     # cancellation delivered while the handler is parked on the job write
     # escapes the finally, and must not take the run's record with it.
-
-    async def _cancelled_finish(pid, **kw):
-        raise asyncio.CancelledError()
-    monkeypatch.setattr(tx_progress, "_jobs_finish", _cancelled_finish)
+    stage_raises(monkeypatch, tx_progress, "_jobs_finish", asyncio.CancelledError())
     recorded = record_runs(app_module, monkeypatch)
     with pytest.raises(Exception):
         _post(client, progress_id=_PID)
