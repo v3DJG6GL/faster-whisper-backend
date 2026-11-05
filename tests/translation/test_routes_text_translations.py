@@ -41,6 +41,13 @@ def _enable_stubbed(app_module, monkeypatch, **cfg_fields):
     return _stub_translate(monkeypatch)
 
 
+def _post_ok(client, headers=None, **body):
+    """POST a text-translation body that must answer 200; returns the response."""
+    r = client.post(URL, json=_body(**body), headers=headers)
+    assert r.status_code == 200, r.text
+    return r
+
+
 def _assert_parked_receipt_released(client, key, status, **body):
     """A request naming parked receipt ``key`` is refused with ``status``; the
     receipt is handed back, not left for the sweeper."""
@@ -66,9 +73,8 @@ def _stub_raising(monkeypatch, exc):
 def test_translates_and_echoes_ids_in_input_order(client, app_module,
                                                   monkeypatch):
     calls = _enable_stubbed(app_module, monkeypatch)
-    r = client.post(URL, json=_body(targets=["en", "fr"], source="de",
-                                    translation_mode="faithful"))
-    assert r.status_code == 200, r.text
+    r = _post_ok(client, targets=["en", "fr"], source="de",
+                 translation_mode="faithful")
     body = r.json()
     # id echo + per-index alignment (ids deliberately out of order).
     assert body["segments"] == [
@@ -100,11 +106,11 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
             "kept": {1: ["en"], 2: ["en"]}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    r = client.post(URL, json=_body(
+    r = _post_ok(
+        client,
         segments=[{"id": 7, "text": "eins"}, {"id": 3, "text": "zwei"},
                   {"id": 42, "text": "drei"}],
-        source="de"))
-    assert r.status_code == 200, r.text
+        source="de")
     body = r.json()
     segs = body["segments"]
     assert "kept_original" not in segs[0]                # clean → absent
@@ -125,8 +131,7 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
 
 def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
     _enable_stubbed(app_module, monkeypatch)
-    r = client.post(URL, json=_body(segments=[{"text": "a"}, {"text": "b"}]))
-    assert r.status_code == 200, r.text
+    r = _post_ok(client, segments=[{"text": "a"}, {"text": "b"}])
     assert [s["id"] for s in r.json()["segments"]] == [0, 1]
 
 
@@ -136,8 +141,7 @@ def test_401_when_locked_down(client, app_module, make_user_key, monkeypatch):
     assert client.post(URL, json=_body()).status_code == 401
     # ...and a plain (non-admin) bearer passes: no host gate, no page perm.
     _, raw_user = make_user_key("worker", is_admin=False)
-    r = client.post(URL, json=_body(), headers=bearer(raw_user))
-    assert r.status_code == 200, r.text
+    _post_ok(client, headers=bearer(raw_user))
 
 
 def test_403_when_translation_disabled(client, app_module, monkeypatch):
@@ -410,12 +414,10 @@ def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
     assert r.status_code == 422
     assert "capped at" in r.json()["detail"]
     assert "invalid" not in r.json()["detail"]
-    r = client.post(URL, json=_body(targets=["en", "fr", "en", "fr"]))
-    assert r.status_code == 200, r.text
+    _post_ok(client, targets=["en", "fr", "en", "fr"])
     assert calls[-1]["targets"] == ["en", "fr"]
     # Normalised like the batch csv (core.languages.language_codes).
-    r = client.post(URL, json=_body(targets=["DE", "fr-ca", "fr-CA"]))
-    assert r.status_code == 200, r.text
+    _post_ok(client, targets=["DE", "fr-ca", "fr-CA"])
     assert calls[-1]["targets"] == ["de", "fr-CA"]
 
 
@@ -439,9 +441,8 @@ def test_speaker_is_clipped_and_counted_against_the_char_cap(
     """The speaker prefixes every context line of every prompt: clipped at
     parse time, control characters neutralised, and counted in the cap."""
     calls = _enable_stubbed(app_module, monkeypatch)
-    r = client.post(URL, json=_body(segments=[
-        {"id": 0, "text": "eins", "speaker": "S\nPEAKER" + "x" * 500}]))
-    assert r.status_code == 200, r.text
+    _post_ok(client, segments=[
+        {"id": 0, "text": "eins", "speaker": "S\nPEAKER" + "x" * 500}])
     spk = calls[-1]["segments"][0]["speaker"]
     assert len(spk) == tr_routes._TEXT_TRANSLATE_MAX_SPEAKER
     assert spk.startswith("S?PEAKER")
@@ -469,8 +470,7 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
         seen.append((kw.get("state"), on_loop))
         return _orig(**kw)
     monkeypatch.setattr(jobs_store, "finish", _spy)
-    r = client.post(URL, json=_body(progress_id=_PID))
-    assert r.status_code == 200, r.text
+    _post_ok(client, progress_id=_PID)
     assert seen == [("done", False)]
 
 
@@ -523,14 +523,12 @@ def test_cold_load_excludes_the_gpu_queue_wait(client, app_module,
         return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _cold)
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.post(URL, json=_body())
-    assert r.status_code == 200, r.text
+        _post_ok(client)
     assert _logged_load_s(caplog) == pytest.approx(0.1)
     caplog.clear()
     preloaded["during_queue"] = True
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.post(URL, json=_body())
-    assert r.status_code == 200, r.text
+        _post_ok(client)
     assert _logged_load_s(caplog) == 0.0
 
 
@@ -553,8 +551,7 @@ def test_load_is_not_cut_short_by_an_early_callback(client, app_module,
                              "mode": "fluent"}
     monkeypatch.setattr(translation, "translate_segments", _verbatim_then_cold)
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.post(URL, json=_body(targets=["de", "en"], source="de"))
-    assert r.status_code == 200, r.text
+        _post_ok(client, targets=["de", "en"], source="de")
     assert _logged_load_s(caplog) == pytest.approx(0.3)
 
 
@@ -580,8 +577,7 @@ def test_held_receipt_survives_a_gpu_queue_with_a_resident_model(
         yield
     monkeypatch.setattr(tx_models, "get_inference_semaphore", _busy_gate)
     _park("cap-q", hold_s=0.2)
-    r = client.post(URL, json=_body(captured_id="cap-q"))
-    assert r.status_code == 200, r.text
+    _post_ok(client, captured_id="cap-q")
     assert swept == []
     assert receipt_hold.pending() == 0          # claimed by the request
 
@@ -599,8 +595,7 @@ def test_plan_is_clocked_without_a_progress_id(client, app_module,
         progress_cb(1.0, "de 1/1", target="de", target_progress=1.0)
         return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _slow)
-    r = client.post(URL, json=_body(targets=["de"]))
-    assert r.status_code == 200, r.text
+    r = _post_ok(client, targets=["de"])
     stage = r.json()["plan"][0]
     assert stage["state"] == "done"
     assert stage["took_s"] > 0
@@ -621,8 +616,7 @@ def test_kept_original_reaches_the_usage_stage(client, app_module,
             "kept": {0: ["en"], 1: []}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
     recorded = record_runs(app_module, monkeypatch)
-    r = client.post(URL, json=_body())
-    assert r.status_code == 200, r.text
+    _post_ok(client)
     assert [kw["stages"][0]["kept_original"] for kw in recorded] == [1]
 
 
@@ -645,8 +639,7 @@ def test_held_receipt_survives_a_queued_translation(client, app_module,
         return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _slow)
     _park("cap-q", hold_s=0.2)
-    r = client.post(URL, json=_body(captured_id="cap-q"))
-    assert r.status_code == 200, r.text
+    _post_ok(client, captured_id="cap-q")
     assert swept == []
     assert receipt_hold.pending() == 0          # claimed by the request
 
@@ -707,8 +700,7 @@ def test_progress_wrapper_forwards_last_text_and_logs_receipts(
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.post(URL, json=_body(progress_id=_PID))
-    assert r.status_code == 200, r.text
+        _post_ok(client, progress_id=_PID)
     assert seen["entry"].get("last_text") == "Hello there"
     assert seen["entry"].get("progress") == 0.5
     assert seen["entry"].get("step") == "en 1/2"
@@ -737,8 +729,7 @@ def test_download_progress_is_published(client, app_module, monkeypatch):
         return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    r = client.post(URL, json=_body(progress_id=_PID))
-    assert r.status_code == 200, r.text
+    _post_ok(client, progress_id=_PID)
     assert seen["unknown_total"].get("stage") == "downloading"
     assert seen["unknown_total"].get("progress") is None
     assert seen["download"].get("stage") == "downloading"
@@ -781,9 +772,8 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
         "TRANSLATION_MODEL": "org/small:Q4_K_M",
         "locks": ["TRANSLATION_MODEL"]})
 
-    r = client.post(URL, headers=bearer(raw_bob),
-                    json=_body(translation_model="org/huge:Q8_0"))
-    assert r.status_code == 200, r.text
+    r = _post_ok(client, headers=bearer(raw_bob),
+                 translation_model="org/huge:Q8_0")
     assert calls[0]["model_ref"] == "org/small:Q4_K_M"  # locked value wins
     assert any("locked" in w for w in r.json().get("warnings", []))
 
@@ -831,8 +821,7 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
 
     # No translation_model in the request: the pinned (admin-policy) model
     # resolves and passes even though it is not on the allowlist.
-    r = client.post(URL, headers=bearer(raw_bob), json=_body())
-    assert r.status_code == 200, r.text
+    _post_ok(client, headers=bearer(raw_bob))
     assert calls[0]["model_ref"] == "org/pinned-GGUF:Q4"
 
     # A CLIENT asking for a non-allowlisted model is still refused.
@@ -894,8 +883,7 @@ def test_text_run_has_a_one_stage_plan_with_units(client, app_module,
         return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
-    r = client.post(URL, json=_body(progress_id=_PID))
-    assert r.status_code == 200, r.text
+    r = _post_ok(client, progress_id=_PID)
     live = seen["progress"]
     assert [s["stage"] for s in live["plan"]] == ["translating"]
     assert live["plan"][0]["units"][0] == {
@@ -918,8 +906,7 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     _enable_stubbed(app_module, monkeypatch)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.post(URL, json=_body(client_job="a" * 32))
-    assert r.status_code == 200, r.text
+        _post_ok(client, client_job="a" * 32)
     blocks = [rec.getMessage() for rec in caplog.records
               if "/v1/text/translations" in rec.getMessage()
               and "═══" in rec.getMessage()]
@@ -952,8 +939,7 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
                       stages=[{"name": "transcribing", "secs": 0.9}])
     _park("cap-fold", hold_s=90, file_label="utt#0", model_name="w",
           request_id="utt-rid")
-    r = client.post(URL, json=_body(captured_id="cap-fold"))
-    assert r.status_code == 200, r.text
+    _post_ok(client, captured_id="cap-fold")
     assert receipt_hold.pending() == 0
     rows = rts.list_recent(limit=10)
     assert [x["kind"] for x in rows].count("translate") == 0
@@ -981,12 +967,10 @@ def test_dictation_translation_joins_its_session_usage_job(
     sess = "5e55" * 8
     usage_store.record_usage(key_id="k", user_id=uid, audio_s=5.0, words=20,
                              status="ok", kind="dictation", job_id=sess)
-    r = client.post(URL, json=_body(client_job=sess, progress_id="a1" * 16),
-                    headers=bearer(raw))
-    assert r.status_code == 200, r.text
-    r = client.post(URL, json=_body(client_job=sess, progress_id="b2" * 16),
-                    headers=bearer(raw_bob))
-    assert r.status_code == 200, r.text
+    _post_ok(client, client_job=sess, progress_id="a1" * 16,
+             headers=bearer(raw))
+    _post_ok(client, client_job=sess, progress_id="b2" * 16,
+             headers=bearer(raw_bob))
     utc = zoneinfo.ZoneInfo("UTC")
     doc = usage_store.document(uid, days=1, tz=utc, tz_name="UTC")
     assert doc["dictation"]["targets"] == [
