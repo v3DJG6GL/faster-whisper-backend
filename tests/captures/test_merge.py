@@ -169,7 +169,7 @@ def test_merge_output_is_owner_only(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
-def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch):
+def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch, wav_factory):
     """audio_vad_trim.trim_wav uses the same tmp+replace pattern as merge_wavs."""
     import sys
     import types
@@ -195,12 +195,7 @@ def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch):
     old = os.umask(0o022)
     try:
         # 200 ms of silence, 200 ms of signal, 200 ms of silence -> a real trim.
-        body = np.concatenate([
-            np.zeros(int(0.2 * RATE), dtype=np.int16),
-            np.full(int(0.2 * RATE), 4000, dtype=np.int16),
-            np.zeros(int(0.2 * RATE), dtype=np.int16),
-        ]).tobytes()
-        src = _write_wav(str(tmp_path / "src.wav"), body)
+        src = wav_factory([("sil", 200), ("speech", 200), ("sil", 200)])
         dst = str(tmp_path / "trimmed.wav")
         os.close(os.open(dst, os.O_CREAT | os.O_WRONLY, 0o600))
         audio_vad_trim.trim_wav(src, dst)

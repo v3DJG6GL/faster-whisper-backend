@@ -253,13 +253,11 @@ def test_build_merged_words_legacy(identity_align):
     assert out[1]["start"] == pytest.approx(2.4)
 
 
-def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path, fake_vad):
+def test_proposer_trimmed_duration_and_caching(monkeypatch, wav_factory, fake_vad):
     from faster_whisper_backend.captures import store as captures_store
 
-    pcm, _ = _pcm([("sil", 200), ("speech", 600), ("sil", 200)])
-    wav = tmp_path / "a.wav"
-    _write_wav(str(wav), pcm)
-    monkeypatch.setattr(captures_store, "abs_audio_path", lambda rel: str(wav))
+    wav = wav_factory([("sil", 200), ("speech", 600), ("sil", 200)])
+    monkeypatch.setattr(captures_store, "abs_audio_path", lambda rel: wav)
     monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", True,
                         raising=False)
     monkeypatch.setattr(P.cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 50, raising=False)
