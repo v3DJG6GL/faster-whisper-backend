@@ -787,12 +787,8 @@ def test_me_reports_video_off_when_url_download_is_off(client, app_module):
 
 
 def test_url_media_mime_by_kind(client, url_enabled, tmp_path):
-    a = tmp_path / "a.mkv"
-    a.write_bytes(b"a")
-    v = tmp_path / "v.mp4"
-    v.write_bytes(b"v")
-    aid = url_media_store.register(str(a), user_id=None, kind="audio")
-    vid = url_media_store.register(str(v), user_id=None, kind="video")
+    aid = _prefetched(tmp_path, name="a.mkv")
+    vid = _prefetched(tmp_path, kind="video", name="v.mp4")
     assert client.get(f"/v1/audio/url-media/{aid}").headers["content-type"] \
         .startswith("audio/x-matroska")
     assert client.get(f"/v1/audio/url-media/{vid}").headers["content-type"] \
