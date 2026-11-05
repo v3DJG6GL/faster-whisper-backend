@@ -1459,7 +1459,7 @@ def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
     assert record[0][1]["filename"] == "*Q4.gguf"
     assert record[0][1]["n_gpu_layers"] == -1          # cuda: full offload
     assert record[0][1]["n_ctx"] == translation._ctx_for("chatml")
-    assert any("falling back" in r.getMessage() for r in caplog.records)
+    assert any("falling back" in m for m in caplog.messages)
 
 
 def test_load_fails_instead_of_falling_back_when_the_hub_times_out(

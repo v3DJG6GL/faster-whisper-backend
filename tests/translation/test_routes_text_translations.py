@@ -480,8 +480,7 @@ def _register_load(secs):
 
 
 def _logged_load_s(caplog):
-    done = [m for m in (rec.getMessage() for rec in caplog.records)
-            if "✓ done in" in m]
+    done = [m for m in caplog.messages if "✓ done in" in m]
     return float(re.search(r"\(load ([\d.]+)s", done[0]).group(1))
 
 
@@ -693,7 +692,7 @@ def test_progress_wrapper_forwards_last_text_and_logs_receipts(
     assert seen["entry"].get("last_text") == "Hello there"
     assert seen["entry"].get("progress") == 0.5
     assert seen["entry"].get("step") == "en 1/2"
-    msgs = [rec.getMessage() for rec in caplog.records]
+    msgs = caplog.messages
     assert any("[translate] req=" in m and "start: 2 segments × 1 targets"
                in m for m in msgs)
     assert any("✓ done" in m and "2 segs → en" in m for m in msgs)
@@ -745,8 +744,7 @@ def test_failure_logs_terminal_line(client, app_module, monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.post(URL, json=_body())
     assert r.status_code == 400
-    msgs = [rec.getMessage() for rec in caplog.records]
-    assert any("✗ failed" in m for m in msgs)
+    assert any("✗ failed" in m for m in caplog.messages)
 
 
 def test_locked_translation_model_applies_to_the_text_endpoint(
