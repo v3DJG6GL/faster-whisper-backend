@@ -11,7 +11,7 @@ import numpy as np
 
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests.conftest import bearer, write_wav
+from tests.conftest import bearer, record_calls, write_wav
 
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -77,14 +77,7 @@ def bind_profile(client, make_user_key, name, fields, user="alice"):
 def record_runs(app_module, monkeypatch):
     """Spy on metrics.record_transcription (passing through to the real one);
     return the list the spy appends each call's kwargs to."""
-    recorded = []
-    real = app_module.metrics.record_transcription
-
-    def _spy(**kw):
-        recorded.append(kw)
-        return real(**kw)
-    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
-    return recorded
+    return record_calls(monkeypatch, app_module.metrics, "record_transcription", lambda **kw: kw)
 
 
 def watch_progress(monkeypatch, pid):
