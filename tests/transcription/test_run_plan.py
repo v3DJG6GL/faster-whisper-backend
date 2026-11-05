@@ -7,6 +7,7 @@ import pytest
 
 from faster_whisper_backend.transcription import run_plan
 from faster_whisper_backend.runtime import stage_rates
+from tests.conftest import record_calls
 
 
 class Clock:
@@ -396,13 +397,7 @@ def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
     """Downloading + diarizing steps + three targets: one locked
     read-modify-write for the whole run, with the same learned rates."""
     from faster_whisper_backend.core import atomic_json
-    writes = []
-    real = atomic_json.atomic_write_json
-
-    def counting(*a, **kw):
-        writes.append(1)
-        return real(*a, **kw)
-    monkeypatch.setattr(atomic_json, "atomic_write_json", counting)
+    writes = record_calls(monkeypatch, atomic_json, "atomic_write_json", lambda *a, **kw: 1)
     p = _plan(clock, kind="url", stages=["downloading", "transcribing",
                                          "diarizing", "translating"], audio_s=600.0)
     p.set_segments(80)

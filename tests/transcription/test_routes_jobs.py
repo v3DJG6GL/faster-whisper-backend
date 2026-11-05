@@ -7,7 +7,7 @@ import pytest
 from faster_whisper_backend.transcription import jobs_store as js
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import post_transcription as _post, post_translation, record_runs
-from tests.conftest import bearer
+from tests.conftest import bearer, record_calls
 from faster_whisper_backend.media import video as media_video
 
 _PID = "cafe" * 8
@@ -412,13 +412,7 @@ def test_foreign_progress_id_never_replaces_the_owners_row(client, make_user_key
 
 def test_jobs_start_leaves_pruning_to_the_retention_loop(client, app_module,
                                                          monkeypatch):
-    seen: list = []
-    real = js.start
-
-    def _start(**kw):
-        seen.append(kw)
-        return real(**kw)
-    monkeypatch.setattr(app_module._jobs_store, "start", _start)
+    seen = record_calls(monkeypatch, app_module._jobs_store, "start", lambda **kw: kw)
     assert _post(client, progress_id=_PID).status_code == 200
     assert [kw.get("prune_every") for kw in seen] == [0]
 

@@ -9,7 +9,7 @@ import json
 from faster_whisper_backend.settings import effective_config as ec
 from tests._transcription_helpers import bind_profile, post_verbose_ok
 from tests._translation_helpers import enable_translation, stub_translate
-from tests.conftest import bearer
+from tests.conftest import bearer, record_calls
 from faster_whisper_backend.transcription import models as tx_models
 
 
@@ -164,13 +164,8 @@ def _stream_decode_languages(client, app_module, fake_model, monkeypatch, **conf
     """Run one dictation utterance and return the language= of every decode."""
     from tests._streaming_helpers import dictate_session
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    seen = []
-    orig = fake_model.transcribe
-
-    def _transcribe(path, **kwargs):
-        seen.append(kwargs.get("language"))
-        return orig(path, **kwargs)
-    monkeypatch.setattr(fake_model, "transcribe", _transcribe)
+    seen = record_calls(monkeypatch, fake_model, "transcribe",
+                        lambda path, **kw: kw.get("language"))
     msgs = dictate_session(client, **conf)
     assert any(m["type"] == "final" for m in msgs), msgs
     assert seen, "no decode ran"

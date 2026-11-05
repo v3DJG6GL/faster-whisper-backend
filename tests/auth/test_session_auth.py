@@ -15,7 +15,7 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.auth import sessions_store
 from faster_whisper_backend.settings import version as settings_version
 from tests.auth._store_helpers import count_rebuilds, failing_conn, load_sessions_store_copy
-from tests.conftest import bearer, locked_alice
+from tests.conftest import bearer, locked_alice, record_calls
 
 
 def _set_cookie_lines(resp):
@@ -350,13 +350,7 @@ def test_cookie_mutation_resolves_the_session_once(client, make_user_key,
     # auth.user_from_session_cookie via request.state.session_record so the
     # dependency does not hit the sessions store a second time.
     tok = _login_root(client, make_user_key)
-    calls = []
-    real = sessions_store.lookup_session
-
-    def _counted(cookie):
-        calls.append(1)
-        return real(cookie)
-    monkeypatch.setattr(sessions_store, "lookup_session", _counted)
+    calls = record_calls(monkeypatch, sessions_store, "lookup_session", lambda cookie: 1)
     r = client.post("/quick-config/state", json={"rules_patch": {}},
                     headers={"X-CSRF-Token": tok})
     assert r.status_code == 200
