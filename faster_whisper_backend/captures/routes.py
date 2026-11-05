@@ -219,7 +219,8 @@ class PatchCaptureIn(_StrictIn):
     # replace.
     baseline_corrections: list[CorrectionIn] | None = Field(
         default=None, max_length=text_corrections.CAP_CORRECTIONS)
-    admin_notes: str | None = Field(default=None, max_length=8000)
+    admin_notes: str | None = Field(
+        default=None, max_length=captures_store._CAP_ADMIN_NOTES)
 
 
 class BulkStatusIn(_StrictIn):
@@ -1129,7 +1130,8 @@ class PatchSampleIn(_StrictIn):
     baseline_corrections: list[CorrectionIn] | None = Field(
         default=None, max_length=_CAP_GROUP_CORRECTIONS)
     status: _ReviewStatus | None = None
-    admin_notes: str | None = Field(default=None, max_length=8000)
+    admin_notes: str | None = Field(
+        default=None, max_length=capture_samples_store._CAP_ADMIN_NOTES)
 
 
 def _global_join_strategy() -> str:
