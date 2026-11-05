@@ -151,24 +151,23 @@ def test_last_used_by_user_batched_max(ak):
     assert m[c] == 300.0         # 500.0 belonged to a now-revoked key
 
 
-def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(ak):
+def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(ak, uid):
     conn = ak._require_conn()
     # User binding: 'old' appears in BOTH the ordered profiles list and the
     # allowlist; an unrelated profile and the '*' wildcard must survive untouched.
-    u = ak.create_user("u", is_admin=False)
-    _store_user_binding(ak, u, {"direct": {}, "profiles": ["old", "keep"],
-                                "allowed_override_profiles": ["old", "*"]})
+    _store_user_binding(ak, uid, {"direct": {}, "profiles": ["old", "keep"],
+                                  "allowed_override_profiles": ["old", "*"]})
     # Two key bindings — one active, one revoked (migrated all the same so no
     # dangling references survive anywhere).
-    _, k = ak.create_key(u)
+    _, k = ak.create_key(uid)
     _store_key_binding(ak, k["id"], {"direct": {}, "profiles": ["old"]})
-    _, kr = ak.create_key(u)
+    _, kr = ak.create_key(uid)
     _store_key_binding(ak, kr["id"], {"direct": {}, "profiles": ["old"]})
     ak.revoke_key(kr["id"])
 
     assert ak.rename_profile_refs("old", "new") == 3   # user row + 2 key rows
 
-    uc = ak.get_user_config(u)
+    uc = ak.get_user_config(uid)
     assert uc["profiles"] == ["new", "keep"]
     assert uc["allowed_override_profiles"] == ["new", "*"]   # wildcard preserved
     assert ak.get_key_config(k["id"])["profiles"] == ["new"]
@@ -182,15 +181,14 @@ def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(ak):
     assert ak.rename_profile_refs("ghost", "x") == 0
 
 
-def test_rename_profile_refs_is_all_or_nothing(ak, monkeypatch):
+def test_rename_profile_refs_is_all_or_nothing(ak, uid, monkeypatch):
     """The overrides route rolls the profile rename back when the cascade
     raises, so the cascade must be all-or-nothing: on the autocommit
     connection a mid-scan error would leave the rows already rewritten
     pointing at a profile name that no longer exists."""
     conn = ak._require_conn()
-    u = ak.create_user("u", is_admin=False)
-    _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
-    _, k = ak.create_key(u)
+    _store_user_binding(ak, uid, {"direct": {}, "profiles": ["clinic-de"]})
+    _, k = ak.create_key(uid)
     _store_key_binding(ak, k["id"], {"direct": {}, "profiles": ["clinic-de"]})
     real = ak._rewrite_profile_in_binding
     calls = []
@@ -204,7 +202,7 @@ def test_rename_profile_refs_is_all_or_nothing(ak, monkeypatch):
     with pytest.raises(RuntimeError):
         ak.rename_profile_refs("clinic-de", "clinic-deutsch")
     assert len(calls) == 2           # the user row WAS rewritten before the error
-    assert ak.get_user_config(u)["profiles"] == ["clinic-de"]    # ...and rolled back
+    assert ak.get_user_config(uid)["profiles"] == ["clinic-de"]    # ...and rolled back
     assert ak.get_key_config(k["id"])["profiles"] == ["clinic-de"]
     assert not conn.in_transaction
     monkeypatch.setattr(ak, "_rewrite_profile_in_binding", real)
@@ -212,13 +210,12 @@ def test_rename_profile_refs_is_all_or_nothing(ak, monkeypatch):
 
 
 def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
-        ak, monkeypatch):
+        ak, uid, monkeypatch):
     """SQLite rolls the transaction back by itself on SQLITE_FULL / IOERR; a
     bare ROLLBACK then raised "no transaction is active" and replaced the
     real error in the overrides route's 500 detail."""
     conn = ak._require_conn()
-    u = ak.create_user("u", is_admin=False)
-    _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
+    _store_user_binding(ak, uid, {"direct": {}, "profiles": ["clinic-de"]})
 
     def _full(binding, old, new):
         conn.execute("ROLLBACK")      # what SQLite does on its own
@@ -227,7 +224,7 @@ def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
     with pytest.raises(sqlite3.OperationalError, match="disk is full"):
         ak.rename_profile_refs("clinic-de", "clinic-deutsch")
     assert not conn.in_transaction
-    assert ak.get_user_config(u)["profiles"] == ["clinic-de"]
+    assert ak.get_user_config(uid)["profiles"] == ["clinic-de"]
 
 
 def test_revoke_user_failing_key_cascade_leaves_the_user_active(
@@ -252,13 +249,12 @@ def test_revoke_user_failing_key_cascade_leaves_the_user_active(
 
 
 def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
-        ak, monkeypatch):
+        ak, uid, monkeypatch):
     """A matrix Save (pages only) read the stored binding, released _lock,
     and wrote it back later — a rename_profile_refs landing in between was
     overwritten, so the binding pointed at the old, now-missing profile
     name. The rename is fired from inside the Save's read of the row."""
-    u = ak.create_user("u", is_admin=False)
-    _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
+    _store_user_binding(ak, uid, {"direct": {}, "profiles": ["clinic-de"]})
     real = ak._parse_permissions
     renamer: list[threading.Thread] = []
 
@@ -272,11 +268,11 @@ def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
             t.join(timeout=0.5)    # an unlocked rename would finish here; it must block on _lock
         return out
     monkeypatch.setattr(ak, "_parse_permissions", _parse_then_rename)
-    ak.set_user_permissions(u, {"pages": {"logs": "all"}})
+    ak.set_user_permissions(uid, {"pages": {"logs": "all"}})
     renamer[0].join()
     monkeypatch.setattr(ak, "_parse_permissions", real)
-    assert ak.get_user_config(u)["profiles"] == ["clinic-deutsch"]
-    assert ak.get_user_permissions(u)["pages"]["logs"] == "all"
+    assert ak.get_user_config(uid)["profiles"] == ["clinic-deutsch"]
+    assert ak.get_user_permissions(uid)["pages"]["logs"] == "all"
 
 
 def test_create_key_user_missing(ak):
@@ -468,8 +464,7 @@ def test_scoped_and_access_only_pages_are_disjoint():
         api_keys_store.PAGES)
 
 
-def test_default_nonadmin_perms_stats_own(ak):
-    uid = ak.create_user("fresh", is_admin=False)
+def test_default_nonadmin_perms_stats_own(ak, uid):
     pages = ak.get_user_permissions(uid)["pages"]
     assert pages["stats"] == "own"
     assert pages["logs"] == "none"
@@ -525,8 +520,7 @@ def test_open_mode_user_is_admin():
     assert api_keys_store.OPEN_MODE_USER["is_admin"] is True
 
 
-def test_update_key_label_renames(ak):
-    uid = ak.create_user("renamer", is_admin=False)
+def test_update_key_label_renames(ak, uid):
     raw, rec = ak.create_key(uid, label="old")
     out = ak.update_key_label(rec["id"], "  fresh  ")
     assert out is not None and out["label"] == "fresh"  # trimmed
@@ -537,8 +531,7 @@ def test_update_key_label_renames(ak):
     assert ak.lookup_by_raw_key(raw)["key_label"] == "fresh"
 
 
-def test_update_key_label_validates(ak):
-    uid = ak.create_user("badlabel", is_admin=False)
+def test_update_key_label_validates(ak, uid):
     _, rec = ak.create_key(uid, label="ok")
     for bad in ("", "   ", "x" * 129):
         with pytest.raises(ValueError):
