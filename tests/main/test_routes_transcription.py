@@ -9,9 +9,8 @@ from fastapi import HTTPException
 
 from tests.conftest import FakeModel, FakeSegment, bearer, record_calls, write_wav
 from tests._translation_helpers import enable_translation, stub_translate
-from tests.main._stage_helpers import capture_receipt
+from tests.main._stage_helpers import capture_receipt, transcode_raises
 from faster_whisper_backend.audio import bgm_separation
-from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.media import media_store
 from faster_whisper_backend.runtime import model_registry
@@ -724,10 +723,7 @@ def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
         calls.append(path)
         raise AssertionError("separator reached")
     monkeypatch.setattr(bgm_separation, "separate", _separate)
-
-    def _refuse(src, dst, *, rate=44100, layout="stereo"):
-        raise ValueError("unsupported container")
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _refuse)
+    transcode_raises(monkeypatch, ValueError("unsupported container"))
     body = post_verbose_ok(client, separate_bgm="true",
                            files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
     assert calls == []
@@ -749,11 +745,8 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
         calls.append(path)
         raise bgm_separation.BgmSeparationError("stub separator")
     monkeypatch.setattr(bgm_separation, "separate", _separate)
-
-    def _invalid(src, dst, *, rate=44100, layout="stereo"):
-        raise av.error.InvalidDataError(1094995529, "Invalid data",
-                                        "avcodec_send_packet()")
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _invalid)
+    transcode_raises(monkeypatch, av.error.InvalidDataError(
+        1094995529, "Invalid data", "avcodec_send_packet()"))
     body = post_verbose_ok(client, separate_bgm="true",
                            files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
     assert len(calls) == 1 and not calls[0].endswith(".wav")

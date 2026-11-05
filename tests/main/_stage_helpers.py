@@ -1,6 +1,7 @@
 """Spies shared by the tests/main/ files that drive a transcription through
 its stages. Import as ``from tests.main._stage_helpers import ...``."""
 
+from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.transcription import receipt as tx_receipt
 
 
@@ -30,3 +31,12 @@ def must_not_run(monkeypatch, module, name, msg):
     """Replace the async stage function `module.name` with one that raises
     AssertionError(msg) when awaited."""
     stage_raises(monkeypatch, module, name, AssertionError(msg))
+
+
+def transcode_raises(monkeypatch, exc):
+    """Replace the synchronous audio_transcode.transcode_to_wav with one that
+    raises `exc`. Keeps the real signature: the route's fallback arm would
+    swallow the TypeError of a stale one."""
+    def _raises(src, dst, *, rate=44100, layout="stereo"):
+        raise exc
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _raises)

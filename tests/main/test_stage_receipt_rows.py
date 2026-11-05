@@ -16,7 +16,7 @@ from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
 from tests._transcription_helpers import (
     post_verbose as _post, post_verbose_ok as _post_ok, serve_model, wav_bytes as _wav_bytes)
-from tests.main._stage_helpers import capture_receipt, must_not_run
+from tests.main._stage_helpers import capture_receipt, must_not_run, transcode_raises
 
 
 def _separating_row(client, monkeypatch, upload):
@@ -119,10 +119,7 @@ def test_separation_row_keeps_transcode_detail_when_transcode_ran(
 def test_separation_row_drops_transcode_detail_when_transcode_failed(
         client, app_module, monkeypatch):
     _stub_separate(app_module, monkeypatch)
-
-    def _boom(src, dst, *, rate=44100, layout="stereo"):
-        raise RuntimeError("no decoder")
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
+    transcode_raises(monkeypatch, RuntimeError("no decoder"))
     row = _separating_row(client, monkeypatch, ("a.mp3", b"ID3xxxx", "audio/mpeg"))
     assert not row.get("detail")
 
