@@ -97,14 +97,15 @@ def test_ordinary_chain_runs_with_one_probe(client, monkeypatch):
     assert calls == [" x foo "]
 
 
-def _units(sample_pats):
-    return [["mark", 0], *(["match", 0, p] for p in sample_pats)]
+def _probe(patterns, budget=None):
+    """Probe `patterns` over "aaaa": one mark, then a match unit for each."""
+    units = [["mark", 0], *(["match", 0, p] for p in patterns)]
+    return admin_routes._probe_chain("aaaa", units, None, budget)
 
 
 def test_probe_names_each_slow_unit_and_keeps_probing_the_rest(short_probe):
     slow2 = "(?:|){23}(?!)"
-    marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units(["a", _EMPTY_BACKTRACK, "b", slow2, "c"]))
+    marks, slow, stop = _probe(["a", _EMPTY_BACKTRACK, "b", slow2, "c"])
     assert slow == {2, 4}
     assert stop is None
     assert marks == {0: admin_routes._text_sha("aaaa")}
@@ -112,8 +113,7 @@ def test_probe_names_each_slow_unit_and_keeps_probing_the_rest(short_probe):
 
 def test_probe_reports_where_it_gave_up(monkeypatch, short_probe):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
-    _marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units([_EMPTY_BACKTRACK, "a"]))
+    _marks, slow, stop = _probe([_EMPTY_BACKTRACK, "a"])
     assert slow == {1}
     assert stop == 2
 
@@ -132,7 +132,7 @@ def test_probe_fails_open_when_the_child_cannot_start(monkeypatch):
     def _no_spawn(*a, **k):
         raise OSError("no fork")
     monkeypatch.setattr(subprocess, "run", _no_spawn)
-    assert admin_routes._probe_chain("aaaa", _units([_EMPTY_BACKTRACK])) is None
+    assert _probe([_EMPTY_BACKTRACK]) is None
 
 
 def _count_probe_timeouts(monkeypatch):
@@ -225,10 +225,9 @@ def test_healthy_walks_do_not_spend_the_probe_time(client, short_probe):
 
 def test_probe_budget_is_charged_only_by_killed_rounds(short_probe):
     budget = {"left": 0.6}
-    assert admin_routes._probe_chain("aaaa", _units(["a"]), None, budget)[1:] == (set(), None)
+    assert _probe(["a"], budget)[1:] == (set(), None)
     assert budget["left"] == 0.6
-    _marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units([_EMPTY_BACKTRACK, "a"]), None, budget)
+    _marks, slow, stop = _probe([_EMPTY_BACKTRACK, "a"], budget)
     assert (slow, stop) == ({1}, None)
     assert abs(budget["left"] - 0.4) < 1e-9
 
@@ -236,8 +235,7 @@ def test_probe_budget_is_charged_only_by_killed_rounds(short_probe):
 def test_a_round_cut_short_by_the_budget_blames_no_unit(monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
     budget = {"left": 0.2}
-    _marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units(["a", "(?:|){24}(?!)"]), None, budget)
+    _marks, slow, stop = _probe(["a", "(?:|){24}(?!)"], budget)
     assert slow == set()
     assert stop == 2
 
@@ -276,8 +274,7 @@ def test_fast_patterns_adding_up_past_the_timeout_blame_none_of_them(monkeypatch
     # round's timeout together, so the one running at the kill must get a
     # round of its own instead of being reported as too slow.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.3)
-    _marks, slow, _stop = admin_routes._probe_chain(
-        "aaaa", _units(["(?:|){18}(?!)"] * 12))
+    _marks, slow, _stop = _probe(["(?:|){18}(?!)"] * 12)
     assert slow == set()
 
 
@@ -312,8 +309,7 @@ def test_a_round_cut_by_the_wall_keeps_what_the_round_before_it_reached(monkeypa
     budget = {"left": 6.0, "wall": 3.0}
     timeouts = _scripted_rounds(
         monkeypatch, [(_mark(0), "1 0.0010\n"), ("", "")], budget)
-    marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units(["(?:|){40}(?!)", "a", "b"]), None, budget)
+    marks, slow, stop = _probe(["(?:|){40}(?!)", "a", "b"], budget)
     assert timeouts[0] == 2.0 and 0.9 < timeouts[1] <= 1.0
     assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, {1}, 2)
 
@@ -329,8 +325,7 @@ def test_a_late_kill_walks_again_without_spending_a_round_or_the_budget(monkeypa
         (_mark(0), "1 0.0010\n2 0.2000\n3 0.4000\n"),
         (_mark(0), "1 0.0010\n2 0.2000\n4 0.4000\n"),
         _mark(0)])
-    marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units(["f1", "f2", "s1", "s2", "a", "b"]), None, budget)
+    marks, slow, stop = _probe(["f1", "f2", "s1", "s2", "a", "b"], budget)
     assert (slow, stop) == ({3, 4}, None)
     assert timeouts == [2.0, 2.4, 2.4, 2.4]
     assert abs(budget["left"] - 2.0) < 1e-9
@@ -343,7 +338,7 @@ def test_a_slow_child_start_is_not_blamed_on_the_unit_running_at_the_kill(monkey
     # as too slow.
     timeouts = _scripted_rounds(monkeypatch, [
         (_mark(0), "s 0.1900\n1 0.0001\n"), _mark(0)])
-    marks, slow, stop = admin_routes._probe_chain("aaaa", _units(["a", "b"]))
+    marks, slow, stop = _probe(["a", "b"])
     assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), None)
     assert timeouts == [0.2, pytest.approx(0.2 + 0.0001 + 2 * 0.19)]
 
@@ -355,8 +350,7 @@ def test_a_round_the_child_spent_starting_walks_again_without_spending_the_budge
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
     budget = {"left": 6.0, "wall": 15.0}
     timeouts = _scripted_rounds(monkeypatch, [("", ""), _mark(0)], budget)
-    marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units(["a"]), None, budget)
+    marks, slow, stop = _probe(["a"], budget)
     assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), None)
     assert timeouts == [2.0, 6.0]
     assert budget["left"] == 6.0
@@ -366,8 +360,7 @@ def test_a_child_that_never_starts_gets_only_one_more_round(monkeypatch):
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
     budget = {"left": 6.0, "wall": 15.0}
     timeouts = _scripted_rounds(monkeypatch, [("", ""), ("", "")], budget)
-    assert admin_routes._probe_chain(
-        "aaaa", _units(["a"]), None, budget) == ({}, set(), 0)
+    assert _probe(["a"], budget) == ({}, set(), 0)
     assert timeouts == [2.0, 6.0]
     assert budget["left"] == 4.0
 
@@ -392,8 +385,7 @@ def test_fast_units_that_outlast_two_rounds_still_get_walked_to_the_end(monkeypa
         (_mark(0), "1 0.0010\n2 1.9500\n"),
         (_mark(0), "1 0.0010\n2 1.9500\n3 2.9000\n4 3.9000\n"),
         _mark(0)])
-    marks, slow, stop = admin_routes._probe_chain(
-        "aaaa", _units(["f"] * 5), None, budget)
+    marks, slow, stop = _probe(["f"] * 5, budget)
     assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), None)
     assert timeouts == [2.0, 3.95, 5.9]
 
