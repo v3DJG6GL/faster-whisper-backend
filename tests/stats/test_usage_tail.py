@@ -4,7 +4,7 @@ failures by stage / class, per-model table, compare window."""
 import datetime
 import zoneinfo
 
-from tests.stats._usage_helpers import _UTC, epoch_day as _D, rec as _rec
+from tests.stats._usage_helpers import _UTC, epoch_day as _D, outcome as _outcome, rec as _rec
 
 
 def _ts(iso, hh=12):
@@ -145,8 +145,7 @@ def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
     _rec(us, audio_s=10.0, words=5, kind="dictation", job_id="r" * 32, processing_s=8.0,
          model="large-v3")
     for i in range(3):
-        assert us.record_outcome(user_id="u", job_id=f"{i}" * 32, activation="handsfree",
-                                 delivery="none", translation="not_asked") == "accepted"
+        assert _outcome(us, f"{i}" * 32, activation="handsfree", delivery="none") == "accepted"
     now = time.time()
     win = dict(start_ts=now - 3600, end_ts=now + 3600)
     turn = us.turnaround_histogram(**win)

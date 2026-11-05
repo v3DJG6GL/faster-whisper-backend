@@ -23,6 +23,13 @@ def rec(us, *, key_id="k", user_id="u", status="ok", **kw):
     us.record_usage(key_id=key_id, user_id=user_id, status=status, **kw)
 
 
+def outcome(us, job_id, *, user_id="u", activation="hold", delivery="typed",
+            translation="not_asked", **kw):
+    """record_outcome for the suites' default caller; returns its status word."""
+    return us.record_outcome(user_id=user_id, job_id=job_id, activation=activation,
+                             delivery=delivery, translation=translation, **kw)
+
+
 def utc_doc(us, user_id="u", **kw):
     """document() for a UTC caller; user_id=None is the whole server."""
     return us.document(user_id, tz=_UTC, tz_name="UTC", **kw)

@@ -4,7 +4,7 @@ breakdowns, leaderboard, compare window, per-model table."""
 import datetime
 import zoneinfo
 
-from tests.stats._usage_helpers import _UTC, epoch_day as _D, rec as _rec
+from tests.stats._usage_helpers import _UTC, epoch_day as _D, outcome as _outcome, rec as _rec
 
 
 def _ts(iso, hh=12):
@@ -266,8 +266,7 @@ def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
     us = usage_store_db
     _rec(us, key_id="k1", user_id="alice", audio_s=10.0, words=5, kind="dictation",
          processing_s=1.0, job_id="d1", model="large-v3")
-    assert us.record_outcome(user_id="alice", job_id="s" * 32, activation="hold",
-                             delivery="typed", translation="none") == "accepted"
+    assert _outcome(us, "s" * 32, user_id="alice", translation="none") == "accepted"
     o = us.overview(user_id=None, tz=_UTC, tz_name="UTC", days=1, by="model",
                     metric="sessions")
     assert [r["id"] for r in o["leaderboard"]] == ["large-v3"]

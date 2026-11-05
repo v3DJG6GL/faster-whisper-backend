@@ -12,7 +12,8 @@ import zoneinfo
 import pytest
 
 from tests.conftest import _close_store
-from tests.stats._usage_helpers import _UTC, epoch_day as _D, rec as _rec, utc_doc as _doc
+from tests.stats._usage_helpers import (
+    _UTC, epoch_day as _D, outcome as _outcome, rec as _rec, utc_doc as _doc)
 
 _ZH = zoneinfo.ZoneInfo("Europe/Zurich")
 
@@ -201,10 +202,8 @@ def test_dictation_targets_per_language_with_kept_count(usage_store_db):
         _rec(us, audio_s=5.0, words=20, kind="dictation", job_id=jid * 32, stages=tr(*codes))
     _rec(us, audio_s=5.0, words=20, kind="file", job_id="f" * 32, stages=tr("de"))
     _rec(us, audio_s=5.0, words=20, kind="dictation", job_id="n" * 32)
-    us.record_outcome(user_id="u", job_id="a" * 32, activation="hold",
-                      delivery="typed", translation="translated")
-    us.record_outcome(user_id="u", job_id="b" * 32, activation="hold",
-                      delivery="typed", translation="kept_original")
+    _outcome(us, "a" * 32, translation="translated")
+    _outcome(us, "b" * 32, translation="kept_original")
     # An old translated dictation, outside a one-day window.
     us._require_conn().execute(
         "UPDATE usage_jobs SET created_ts = ? WHERE job_id = ?",
@@ -359,8 +358,7 @@ def test_translating_kept_original_is_the_segment_count_on_both_paths(usage_stor
     _rec(us, audio_s=5.0, words=20, kind="dictation", job_id=jid,
          stages=[{"name": "translating", "secs": 1.0,
                   "targets": ["de"], "kept_original": 3}])
-    us.record_outcome(user_id="u", job_id=jid, activation="hold",
-                      delivery="typed", translation="translated")
+    _outcome(us, jid, translation="translated")
     for with_stages in ((), ("translating",)):
         doc = _doc(us, days=1, with_stages=with_stages)
         meter = next(s for s in doc["stages"] if s["stage"] == "translating")
@@ -373,9 +371,7 @@ def test_outcome_before_a_file_run_does_not_make_it_a_dictation(usage_store_db):
     must take it over as kind='file', outside the dictation rollups."""
     us = usage_store_db
     jid = "f" * 32
-    assert us.record_outcome(user_id="u", job_id=jid, activation="hold",
-                             delivery="typed", translation="not_asked",
-                             app_id="vim") == "accepted"
+    assert _outcome(us, jid, delivery="typed", app_id="vim") == "accepted"
     _rec(us, audio_s=100.0, words=500, kind="file", job_id=jid)
     job = _row(us, "SELECT kind, utterances, reported_ts, activation FROM usage_jobs")
     assert tuple(job) == ("file", 1, None, None)
@@ -607,8 +603,7 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     for _ in range(2):
         _rec(us, audio_s=10.0, words=30, kind="dictation", job_id="d1" * 16, hour=h - 1,
              stages=[{"name": "translate", "secs": 1.0, "targets": ["fr"]}])
-    us.record_outcome(user_id="u", job_id="d1" * 16, activation="hold",
-                      delivery="typed", translation="kept_original", app_id="vim")
+    _outcome(us, "d1" * 16, delivery="typed", translation="kept_original", app_id="vim")
     _rec(us, audio_s=0.0, words=0, kind="text", job_id="t1" * 16, hour=h - 3,
          stages=[{"name": "translate", "secs": 0.5, "targets": ["de"]}])
 
@@ -676,12 +671,10 @@ def test_outcome_is_idempotent_and_rolls_once(usage_store_db):
     jid = "b" * 32
     for _ in range(2):
         _rec(us, audio_s=15.0, words=25, kind="dictation", job_id=jid)
-    assert us.record_outcome(user_id="u", job_id=jid, activation="hold",
-                             delivery="typed", translation="not_asked",
-                             app_id="thunderbird") == "accepted"
-    assert us.record_outcome(user_id="u", job_id=jid, activation="handsfree",
-                             delivery="clipboard", translation="translated",
-                             app_id="thunderbird") == "duplicate"
+    assert _outcome(us, jid, activation="hold", delivery="typed", translation="not_asked",
+                    app_id="thunderbird") == "accepted"
+    assert _outcome(us, jid, activation="handsfree", delivery="clipboard",
+                    translation="translated", app_id="thunderbird") == "duplicate"
     doc = _doc(us, days=1)
     d = doc["dictation"]
     assert d["activation"] == {"hold": 1, "handsfree": 0, "unreported": 0}
@@ -694,23 +687,20 @@ def test_outcome_is_idempotent_and_rolls_once(usage_store_db):
 
 def test_outcome_for_unknown_job_creates_a_stub(usage_store_db):
     us = usage_store_db
-    assert us.record_outcome(user_id="u", job_id="e" * 32, activation="hold",
-                             delivery="none", translation="aborted") == "accepted"
+    assert _outcome(us, "e" * 32, delivery="none", translation="aborted") == "accepted"
     job = _row(us, "SELECT kind, words, audio_s, utterances, reported_ts FROM usage_jobs")
     assert tuple(job)[:4] == ("dictation", 0, 0.0, 0)
     assert job["reported_ts"] is not None
     doc = _doc(us, days=1)
     assert doc["dictation"]["delivery"]["none"] == 1
     assert doc["apps"] == []
-    assert us.record_outcome(user_id="u", job_id="e" * 32, activation="hold",
-                             delivery="none", translation="aborted") == "duplicate"
+    assert _outcome(us, "e" * 32, delivery="none", translation="aborted") == "duplicate"
 
 
 def test_outcome_scoped_to_owner(usage_store_db):
     us = usage_store_db
     _rec(us, user_id="alice", audio_s=1.0, words=1, kind="dictation", job_id="a" * 32)
-    assert us.record_outcome(user_id="bob", job_id="a" * 32, activation="hold",
-                             delivery="typed", translation="not_asked") == "duplicate"
+    assert _outcome(us, "a" * 32, user_id="bob", delivery="typed") == "duplicate"
     assert _row(us, "SELECT reported_ts FROM usage_jobs")["reported_ts"] is None
     assert _doc(us, "bob", days=1)["dictation"]["delivery"]["typed"] == 0
 
@@ -732,9 +722,7 @@ def test_utterance_after_the_outcome_matches_the_usual_order(usage_store_db):
     rollups."""
     us = usage_store_db
     jid = "c" * 32
-    assert us.record_outcome(user_id="alice", job_id=jid, activation="hold",
-                             delivery="typed", translation="not_asked",
-                             app_id="thunderbird") == "accepted"
+    assert _outcome(us, jid, user_id="alice", app_id="thunderbird") == "accepted"
     _rec(us, key_id="k", user_id="alice", audio_s=15.0, words=25, kind="dictation", job_id=jid)
     conn = us._require_conn()
     hourly = conn.execute(
@@ -755,9 +743,7 @@ def test_outcome_naming_a_non_dictation_job_is_a_duplicate(usage_store_db):
     must not fold its words and audio into the dictation and app rollups."""
     us = usage_store_db
     _rec(us, audio_s=600.0, words=5000, kind="file", job_id="aaaaaaaa")
-    assert us.record_outcome(user_id="u", job_id="aaaaaaaa", activation="hold",
-                             delivery="typed", translation="not_asked",
-                             app_id="thunderbird") == "duplicate"
+    assert _outcome(us, "aaaaaaaa", app_id="thunderbird") == "duplicate"
     assert _row(us, "SELECT COUNT(*) FROM usage_dictation_hourly")[0] == 0
     assert _row(us, "SELECT COUNT(*) FROM usage_app_hourly")[0] == 0
     assert _row(us, "SELECT reported_ts FROM usage_jobs")[0] is None
@@ -773,8 +759,7 @@ def test_sweep_marks_unreported_and_prunes(usage_store_db):
          stages=[{"name": "vad", "secs": 1.0}])
     # Fresh dictation: inside the grace period.
     _rec(us, audio_s=10.0, words=30, kind="dictation", job_id="3" * 32)
-    us.record_outcome(user_id="u", job_id="3" * 32, activation="hold",
-                      delivery="typed", translation="not_asked", app_id="vim")
+    _outcome(us, "3" * 32, delivery="typed", app_id="vim")
     # An app row from long ago (past the 90-day clock).
     us._require_conn().execute(
         "INSERT INTO usage_app_hourly VALUES (?, 'u', 'old-app', 1, 1)",
@@ -813,8 +798,7 @@ def test_empty_document_shape_matches_populated(usage_store_db):
     us = usage_store_db
     empty = us.empty_document(from_day=_D("2025-01-01"), to_day=_D("2025-01-30"), tz="UTC")
     _rec(us, audio_s=1.0, words=1, kind="dictation", job_id="a" * 32)
-    us.record_outcome(user_id="u", job_id="a" * 32, activation="hold",
-                      delivery="typed", translation="not_asked")
+    _outcome(us, "a" * 32)
     full = _doc(us, days=30)
     assert set(empty) == set(full)
     assert set(empty["dictation"]) == set(full["dictation"])

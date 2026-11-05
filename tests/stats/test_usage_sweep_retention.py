@@ -2,7 +2,7 @@
 must keep an unreported dictation job until the grace ends, then close it
 out and delete it — counted once either way."""
 
-from tests.stats._usage_helpers import rec as _rec, utc_doc as _doc
+from tests.stats._usage_helpers import outcome as _outcome, rec as _rec, utc_doc as _doc
 
 
 def test_sweep_marks_unreported_jobs_once_the_grace_ends(usage_store_db):
@@ -27,8 +27,7 @@ def test_late_outcome_inside_the_grace_counts_the_session_once(usage_store_db):
                       app_retention_days=0, hourly_retention_days=0)
     assert counts == {"marked": 0, "jobs": 0, "apps": 0, "hourly": 0}
 
-    assert us.record_outcome(user_id="u", job_id="2" * 32, activation="hold",
-                             delivery="typed", translation="not_asked") == "accepted"
+    assert _outcome(us, "2" * 32, activation="hold", delivery="typed") == "accepted"
 
     doc = _doc(us, days=30)
     assert doc["dictation"]["delivery"]["typed"] == 1
@@ -41,8 +40,7 @@ def test_retention_still_prunes_reported_and_non_dictation_jobs(usage_store_db):
     old = us.now_hour() - 8 * 24
     _rec(us, audio_s=5.0, words=10, kind="file", job_id="3" * 32, hour=old)
     _rec(us, audio_s=5.0, words=10, kind="dictation", job_id="4" * 32, hour=old)
-    us.record_outcome(user_id="u", job_id="4" * 32, activation="hold",
-                      delivery="typed", translation="not_asked")
+    _outcome(us, "4" * 32)
 
     counts = us.sweep(unreported_after_h=720, jobs_retention_days=7,
                       app_retention_days=0, hourly_retention_days=0)
@@ -75,9 +73,8 @@ def test_app_retention_scrubs_the_program_name_off_old_job_rows(usage_store_db):
     for jid, age_h in (("5" * 32, 200 * 24), ("6" * 32, 10 * 24)):
         _rec(us, audio_s=5.0, words=20, kind="dictation", job_id=jid, hour=us.now_hour() - age_h,
              stages=tr)
-        us.record_outcome(user_id="u", job_id=jid, activation="hold",
-                          delivery="typed", translation="translated",
-                          app_id="secret.app" if jid[0] == "5" else "vim")
+        _outcome(us, jid, translation="translated",
+                 app_id="secret.app" if jid[0] == "5" else "vim")
 
     counts = us.sweep(unreported_after_h=24, jobs_retention_days=365,
                       app_retention_days=90, hourly_retention_days=0)
