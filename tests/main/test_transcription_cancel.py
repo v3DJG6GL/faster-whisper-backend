@@ -10,7 +10,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 from tests._transcription_helpers import (
     fail_model_load, get_progress, post_cancel, post_verbose as _post,
     post_verbose_ok as _post_ok, record_runs)
@@ -93,10 +93,9 @@ def test_validation_reject_leaves_no_progress_entry(client, app_module):
 
 
 def test_progress_and_cancel_are_owner_bound(client, app_module,
-                                             make_user_key):
+                                             make_user_key, root_key):
     uid_alice, raw_alice = make_user_key("alice")
     _, raw_bob = make_user_key("bob")
-    _, raw_admin = make_user_key("root", is_admin=True)
     tx_progress._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": uid_alice, "updated": 0}
     # Another user's id reads exactly like a miss — no existence oracle.
@@ -109,7 +108,7 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
     # Cleared, so the admin step below proves the admin path on its own.
     tx_progress._BATCH_CANCELLED.discard(_PID)
     # An admin may cancel anyone's run (the /stats activity popover).
-    _assert_cancel(client, True, bearer(raw_admin))
+    _assert_cancel(client, True, bearer(root_key))
 
 
 def test_stage_transition_clears_mirrored_progress(app_module):
@@ -223,9 +222,8 @@ def test_text_translations_in_flight_progress_id_is_treated_as_absent(
 
 def test_recreated_progress_entry_keeps_its_owner(client, app_module,
                                                   make_user_key):
-    uid_alice, _ = make_user_key("alice")
+    uid_alice, _ = locked_user(make_user_key)  # locks the app down: bob is bob
     _, raw_bob = make_user_key("bob")
-    make_user_key("root", is_admin=True)  # locks the app down: bob is bob
     tx_progress._progress_set(_PID, stage="waiting", owner=uid_alice)
     # An executor-thread stage tick after the cap eviction took the
     # entry (the pop below stands in for it) re-creates it — with the

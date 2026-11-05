@@ -5,7 +5,7 @@ feedback. Driven through the real app; no faster-whisper needed."""
 import json
 from types import SimpleNamespace
 
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 from tests._translation_helpers import enable_translation, stub_translate
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -95,8 +95,7 @@ def test_locked_language_still_ignores_an_unknown_client_code(
 def test_no_identity_config_is_unchanged(client, make_user_key, fake_model):
     # A user with no binding decodes with the global defaults + the client
     # override applied (no lock) and no overrides_ignored field.
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    uid, raw_alice = make_user_key("alice", is_admin=False)
+    _, raw_alice = locked_user(make_user_key)
     body = post_verbose_ok(client, bearer(raw_alice), decode_overrides=json.dumps({"beam_size": 7}))
     assert fake_model.last_kwargs["beam_size"] == 7        # client override applies
     assert "overrides_ignored" not in body
@@ -255,13 +254,12 @@ def test_request_block_identity_always_shows_user_even_without_layers():
     assert "inherits" in block                            # the "(none — inherits…)" note
 
 
-def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_key):
+def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_key, root_key):
     """Saving a profile or a per-user / per-key binding bumps settings.version's
     version counter — the signal a live streaming connection polls to know it
     must re-resolve its ident (so edits apply without a reconnect)."""
     from faster_whisper_backend.settings import version as settings_version
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
+    admin_h = bearer(root_key)
     v0 = settings_version.config_version()
     _setup_profile(client, admin_h, "pv", BEAM_SIZE=6)
     v1 = settings_version.config_version()
@@ -280,9 +278,8 @@ def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_k
     assert v3 > v2                                         # per-key binding bumps
 
 
-def test_per_key_override_beats_user(client, make_user_key, fake_model):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
+def test_per_key_override_beats_user(client, make_user_key, fake_model, root_key):
+    admin_h = bearer(root_key)
     uid, raw_alice = make_user_key("alice", is_admin=False)
     client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
                  json={"pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})

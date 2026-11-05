@@ -26,11 +26,10 @@ def test_temperature_ladder_helper(app_module):
     assert tx_models._temperature_ladder("abc") == ()
 
 
-def test_profile_refuses_an_unparseable_temperature(client, make_user_key):
+def test_profile_refuses_an_unparseable_temperature(client, root_key):
     # A profile gets AdminConfig's TEMPERATURE rule, so a ladderless "abc"
     # never reaches the lock path below.
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    r = client.post(f"{OV}/state", headers=bearer(raw_admin),
+    r = client.post(f"{OV}/state", headers=bearer(root_key),
                     json={"OVERRIDE_PROFILES": {"t0": {"TEMPERATURE": "abc"}}})
     assert r.status_code == 422 and "comma-separated floats" in r.text
 
