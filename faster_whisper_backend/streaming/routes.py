@@ -144,6 +144,15 @@ async def _send_error_frame(ws: WebSocket, send_lock: asyncio.Lock, code: str,
             pass
 
 
+async def _await_quietly(aw) -> None:
+    """Await ``aw``, dropping any Exception: best effort, the peer may be gone
+    or the session is ending. A cancel still propagates."""
+    try:
+        await aw
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _write_pcm16_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
     """Write a float32 mono [-1,1] buffer to a temp 16-bit PCM WAV and return its
     path. Used to hand a streamed utterance's audio to the captures pipeline
@@ -1528,11 +1537,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     # Tell the client which capture to claim. StreamSession
                     # emits the `final` frame before on_final runs, so this
                     # rides its own follow-up frame.
-                    try:
-                        await emit({"type": "captured", "id": captured_id,
-                                    "utterance": info["utterance"]})
-                    except Exception:  # noqa: BLE001 — best effort
-                        pass
+                    await _await_quietly(emit({"type": "captured", "id": captured_id,
+                                               "utterance": info["utterance"]}))
                 else:
                     logger.info(tx_receipt._format_request_block(**_block_kwargs))
             except Exception as _le:  # noqa: BLE001
@@ -1915,10 +1921,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # (incl. that tail) before we finalize/close the session.
             await transport.aclose()
             audio_q.put_nowait(("stop", None))
-            try:
-                await consumer_task
-            except Exception:  # noqa: BLE001
-                pass
+            await _await_quietly(consumer_task)
         if not _auth_revoked:
             try:
                 await session.close()
@@ -1992,19 +1995,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # the normal path (the inner finally already aclose'd it), the only
         # cleanup on an error mid-setup.
         if transport is not None:
-            try:
-                await transport.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+            await _await_quietly(transport.aclose())
         # Stop the consumer before closing the session so the two never touch the
         # session concurrently (normally it already finished, awaited above).
         if consumer_task is not None and not consumer_task.done():
             await loop_lock.cancel_and_wait(consumer_task)
         if session is not None:
-            try:
-                await session.close()
-            except Exception:  # noqa: BLE001 — peer already gone
-                pass
+            await _await_quietly(session.close())
 
 
 @router.get("/dictate", response_class=HTMLResponse,
