@@ -301,12 +301,7 @@ def _fixed_count_product(pat: str) -> int:
             mult, i = _count(i + 1)
             stack[-1] = max(stack[-1], inner * mult)
             continue
-        if c == "\\":
-            i += 2
-        elif c == "[":
-            i = _skip_class(pat, i)[1] + 1
-        else:
-            i += 1
+        i = max(_past_opaque(pat, i), i + 1)
         mult, i = _count(i)
         stack[-1] = max(stack[-1], mult)
     return max(stack)
@@ -348,6 +343,14 @@ def _skip_class(pat: str, i: int) -> "tuple[int, int, bool]":
     return start, j, negated
 
 
+def _past_opaque(pat: str, i: int) -> int:
+    """The index just past the escape or character class at ``pat[i]``, or
+    ``i`` when it is neither: `(`, `)`, `*`, `+` and `{` are literal inside."""
+    if pat[i] == "\\":
+        return i + 2
+    return _skip_class(pat, i)[1] + 1 if pat[i] == "[" else i
+
+
 def _strip_outer_group(branch: str) -> str:
     """Strip every layer of parentheses that wraps a whole branch body.
 
@@ -364,13 +367,11 @@ def _strip_outer_group(branch: str) -> str:
     while len(branch) >= 2 and branch[0] == "(":
         depth, i = 1, 1
         while i < len(branch) and depth:
+            past = _past_opaque(branch, i)
+            if past > i:
+                i = past
+                continue
             ch = branch[i]
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == "[":
-                i = _skip_class(branch, i)[1] + 1
-                continue
             depth += 1 if ch == "(" else (-1 if ch == ")" else 0)
             i += 1
         if not (depth == 0 and i == len(branch)):
@@ -411,17 +412,13 @@ def _strip_verbose(pat: str) -> str:
     modes = [verbose]
     i = 0
     while i < n:
+        past = _past_opaque(pat, i)
+        if past > i:
+            out.append(pat[i:past])
+            i = past
+            continue
         c = pat[i]
         v = modes[-1]
-        if c == "\\":
-            out.append(pat[i:i + 2])
-            i += 2
-            continue
-        if c == "[":
-            end = _skip_class(pat, i)[1]
-            out.append(pat[i:end + 1])
-            i = end + 1
-            continue
         if c == "(":
             if pat.startswith("(?#", i):
                 end = _comment_end(pat, i)
@@ -475,18 +472,14 @@ def _strip_comments(pat: str) -> str:
     out: list[str] = []
     i = 0
     while i < n:
-        c = pat[i]
-        if c == "\\":
-            out.append(pat[i:i + 2])
-            i += 2
-        elif c == "[":
-            end = _skip_class(pat, i)[1]
-            out.append(pat[i:end + 1])
-            i = end + 1
+        past = _past_opaque(pat, i)
+        if past > i:
+            out.append(pat[i:past])
+            i = past
         elif pat.startswith("(?#", i):
             i = _comment_end(pat, i)
         else:
-            out.append(c)
+            out.append(pat[i])
             i += 1
     return "".join(out)
 
@@ -553,13 +546,11 @@ def _nested_repetition(pat: str) -> bool:
             for spans, follow in frame["pending"])
     i = 0
     while i < n:
+        past = _past_opaque(pat, i)
+        if past > i:
+            i = past
+            continue
         c = pat[i]
-        if c == "\\":
-            i += 2
-            continue
-        if c == "[":
-            i = _skip_class(pat, i)[1] + 1
-            continue
         if c == "(":
             atomic = False
             lookaround = False
@@ -1270,13 +1261,11 @@ def _loose_quantifier(b: str) -> bool:
     n = len(b)
     i = 0
     while i < n:
+        past = _past_opaque(b, i)
+        if past > i:
+            i = past
+            continue
         c = b[i]
-        if c == "\\":
-            i += 2
-            continue
-        if c == "[":
-            i = _skip_class(b, i)[1] + 1
-            continue
         if c == "(" and i + 1 < n and b[i + 1] == "?":
             i += 2
             continue
@@ -1480,13 +1469,11 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
         # Find the matching `)`, skipping classes and escapes.
         depth, k = 1, j
         while k < n and depth:
+            past = _past_opaque(pat, k)
+            if past > k:
+                k = past
+                continue
             ch = pat[k]
-            if ch == "\\":
-                k += 2
-                continue
-            if ch == "[":
-                k = _skip_class(pat, k)[1] + 1
-                continue
             depth += 1 if ch == "(" else (-1 if ch == ")" else 0)
             k += 1
         if depth:
