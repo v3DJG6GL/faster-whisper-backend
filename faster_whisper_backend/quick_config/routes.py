@@ -44,7 +44,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import Field, ValidationError
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
@@ -141,7 +141,7 @@ def _reauth_on_version_change(request: Request, seen_version: int,
     return require_user_or_admin_sse(request), *due
 
 
-class QuickPatchPayload(BaseModel):
+class QuickPatchPayload(web_common.StrictIn):
     """POST body shape:
         {"rules_patch": {slug: {field: value, ...}, ...},
          "fingerprints": {slug: <hex>, ...}}      # optional, recommended
@@ -151,7 +151,6 @@ class QuickPatchPayload(BaseModel):
     fingerprint and reports a conflict for any mismatch. Without it,
     last-writer-wins (legacy behavior; clients are expected to send it
     now). See _rule_fingerprint()."""
-    model_config = {"extra": "forbid"}
     rules_patch: dict[str, dict[str, Any]]
     fingerprints: dict[str, str] | None = None
 
@@ -1040,8 +1039,7 @@ async def _recent_page(
     return {"recent": traces, "next_before_ts": next_before}
 
 
-class RecentSearchIn(BaseModel):
-    model_config = {"extra": "forbid"}
+class RecentSearchIn(web_common.StrictIn):
     q: str = Field(default="", max_length=512)
     before_ts: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     limit: int | None = Field(default=None, ge=1, le=1000)
