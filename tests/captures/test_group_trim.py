@@ -16,7 +16,6 @@ which treats any non-zero PCM as speech. The route-layer tests are skipped
 unless fastapi (the full app stack) is present.
 """
 
-import sys
 import tempfile
 
 import pytest
@@ -69,10 +68,7 @@ def test_trim_all_speech_is_noop(monkeypatch, fake_vad):
     assert res["new_duration_ms"] == 500
 
 
-def test_trim_unavailable_vad_is_identity(monkeypatch):
-    # Null faster_whisper so the VAD import fails -> identity. Only the
-    # package is nulled; see conftest's no_vad for why that is order-dependent.
-    monkeypatch.setitem(sys.modules, "faster_whisper", None)
+def test_trim_unavailable_vad_is_identity(no_vad):
     pcm, n = _pcm([("sil", 100), ("speech", 100)])
     res = audio_vad_trim.trim_pcm_for_merge(pcm, n)
     assert res["trimmed"] is False
