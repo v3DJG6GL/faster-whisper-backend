@@ -237,22 +237,22 @@ def _fmt_bytes(f: dict, duration: "float | None") -> "tuple[int | None, bool]":
     return None, True
 
 
+def _float_or(value, default: "float | None") -> "float | None":
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _fmt_rank(f: dict) -> tuple:
     """yt-dlp's own order within a site: quality, resolution, fps, HDR,
     source preference (YouTube's Premium boost lives here), codec, bitrate.
     Ranking the way the downloader ranks is what keeps the card and the
     fetched file in agreement."""
-    try:
-        q = float(f.get("quality") or 0)
-    except (TypeError, ValueError):
-        q = 0.0
+    q = _float_or(f.get("quality"), 0.0)
     h = f.get("height")
     w = f.get("width")
-    try:
-        src = float(f.get("source_preference")
-                    if f.get("source_preference") is not None else -1)
-    except (TypeError, ValueError):
-        src = -1.0
+    src = _float_or(f.get("source_preference"), -1.0)
     return (
         q,
         int(h) if isinstance(h, (int, float)) and h > 0 else 0,
@@ -366,11 +366,7 @@ def build_video_ladder(info: dict, *, max_bytes: int,
     formats = info.get("formats")
     if not isinstance(formats, list):
         formats = []
-    duration = info.get("duration")
-    try:
-        duration = float(duration) if duration is not None else None
-    except (TypeError, ValueError):
-        duration = None
+    duration = _float_or(info.get("duration"), None)
 
     vids, audio_f = _video_candidates(formats)
     groups: "dict[object, list[dict]]" = {}
