@@ -65,9 +65,9 @@ def test_init_rebuilds_legacy_hourly_with_kind_and_sessions(tmp_path):
             " FROM usage_hourly ORDER BY hour").fetchall()
         assert [tuple(r) for r in rows] == [
             (100, "dictation", 3, 3, 42, 9.5), (101, "dictation", 1, 1, 7, 1.0)]
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='usage_hourly_legacy'"
-        ).fetchone() is None
+        assert _row(
+            usage_store, "SELECT 1 FROM sqlite_master WHERE name='usage_hourly_legacy'"
+        ) is None
         idx = {r["name"] for r in conn.execute("PRAGMA index_list(usage_hourly)")}
         assert {"idx_usage_user_hour", "idx_usage_hour"} <= idx
         # The old rows still feed the folded admin views.
@@ -1012,13 +1012,12 @@ def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
         assert "errors" in cols("usage_stage_hourly")
         for t in ("usage_jobs", "usage_hourly"):
             assert "processing_s" in cols(t) and "proc_s" not in cols(t), t
-        assert conn.execute("SELECT processing_s FROM usage_jobs"
-                            " WHERE job_id = 'old'").fetchone()[0] == 1.0
-        assert conn.execute("SELECT processing_s FROM usage_hourly"
-                            ).fetchone()[0] == 1.5
-        row = conn.execute("SELECT wait_s, error_class FROM usage_jobs").fetchone()
+        assert _row(usage_store, "SELECT processing_s FROM usage_jobs"
+                                 " WHERE job_id = 'old'")[0] == 1.0
+        assert _row(usage_store, "SELECT processing_s FROM usage_hourly")[0] == 1.5
+        row = _row(usage_store, "SELECT wait_s, error_class FROM usage_jobs")
         assert (row["wait_s"], row["error_class"]) == (0.0, None)
-        assert conn.execute("SELECT errors FROM usage_stage_hourly").fetchone()["errors"] == 0
+        assert _row(usage_store, "SELECT errors FROM usage_stage_hourly")["errors"] == 0
         idx = {r["name"] for r in conn.execute("PRAGMA index_list(usage_jobs)")}
         assert "idx_usage_jobs_user_created" in idx
         conn.close()
@@ -1029,7 +1028,7 @@ def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
                   for t in ("usage_hourly", "usage_jobs", "usage_job_stages",
                             "usage_stage_hourly")]
         assert counts == [1, 1, 1, 1]
-        assert conn.execute("SELECT processing_s FROM usage_jobs").fetchone()[0] == 1.0
+        assert _row(usage_store, "SELECT processing_s FROM usage_jobs")[0] == 1.0
         conn.close()
     finally:
         usage_store._conn = None
