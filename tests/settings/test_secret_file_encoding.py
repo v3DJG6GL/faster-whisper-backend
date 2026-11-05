@@ -85,9 +85,10 @@ def _import_config_from(tmp_path, data, expr="[c.BEAM_SIZE, c.DEFAULT_PROMPT]",
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
 
 
-def _printed(out):
-    """The `expr` a successful _import_config_from run printed."""
+def _printed(*args, **kwargs):
+    """The `expr` a successful _import_config_from(*args, **kwargs) run printed."""
     import json
+    out = _import_config_from(*args, **kwargs)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -103,8 +104,7 @@ def test_a_bom_dotenv_is_decoded_and_applied(tmp_path, data):
     """dotenv reads .env as strict UTF-8: a UTF-32 file (whose FF FE prefix
     looks like UTF-16) crashed `import config` with 'embedded null byte', and
     a UTF-8 BOM was glued to the first key."""
-    out = _import_config_from(tmp_path, data)
-    assert _printed(out) == [3, "Grüße"]
+    assert _printed(tmp_path, data) == [3, "Grüße"]
 
 
 @pytest.mark.parametrize("data", [
@@ -136,13 +136,12 @@ def test_env_from_dotenv_holds_exactly_the_names_dotenv_set(tmp_path):
     process reads .env again; a real env var that .env also names stays out
     (it is the environment's), an alias copied from an old name .env set is
     in (it would otherwise outlive that line's removal)."""
-    out = _import_config_from(
+    assert _printed(
         tmp_path,
         b"WHISPER_BEAM_SIZE=3\nWHISPER_DEFAULT_PROMPT=from-dotenv\n"
         b"WHISPER_USE_AUTH_TOKEN=hf_old\n",
         expr="[c.DEFAULT_PROMPT, sorted(c._ENV_FROM_DOTENV)]",
-        WHISPER_DEFAULT_PROMPT="real")
-    assert _printed(out) == [
+        WHISPER_DEFAULT_PROMPT="real") == [
         "real", ["WHISPER_BEAM_SIZE", "WHISPER_HF_TOKEN", "WHISPER_USE_AUTH_TOKEN"]]
 
 
@@ -150,11 +149,10 @@ def test_env_from_dotenv_holds_an_alias_copied_onto_a_blank_new_name(tmp_path):
     """alias_env copies an old .env name onto a new name the environment holds
     blank (a templated compose line). Left out, the copy outlived the .env
     line's edit or removal on Restart."""
-    out = _import_config_from(
+    assert _printed(
         tmp_path, b"WHISPER_SESSION_TTL_SECONDS=1234\n",
         expr="[c.SESSION_TTL_S, sorted(c._ENV_FROM_DOTENV)]",
-        WHISPER_SESSION_TTL_S="")
-    assert _printed(out) == [
+        WHISPER_SESSION_TTL_S="") == [
         1234, ["WHISPER_SESSION_TTL_S", "WHISPER_SESSION_TTL_SECONDS"]]
 
 
@@ -162,7 +160,6 @@ def test_a_crlf_dotenv_multiline_value_keeps_no_carriage_return(tmp_path):
     """The decoded text went to dotenv without the newline translation of a
     text-mode open, so a quoted multi-line value from a Windows editor kept
     its "\\r"."""
-    out = _import_config_from(
+    assert _printed(
         tmp_path, b'WHISPER_DEFAULT_PROMPT="multi\r\nline"\r\n',
-        expr="c.DEFAULT_PROMPT")
-    assert _printed(out) == "multi\nline"
+        expr="c.DEFAULT_PROMPT") == "multi\nline"

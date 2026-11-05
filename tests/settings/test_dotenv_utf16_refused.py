@@ -28,5 +28,4 @@ def test_a_utf16_dotenv_stops_import_naming_the_file_and_utf8(tmp_path, data):
     b"\xef\xbb\xbf" + _DOTENV.encode(),
 ], ids=["utf8", "utf8-bom"])
 def test_a_utf8_dotenv_still_loads(tmp_path, data):
-    out = _import_config_from(tmp_path, data)
-    assert _printed(out) == [3, "Grüße"]
+    assert _printed(tmp_path, data) == [3, "Grüße"]
