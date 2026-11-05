@@ -13,15 +13,16 @@ from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store, effective_config
 from tests._page_helpers import js_body, js_fn, js_upto, needs_node, node_json
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 
 PERMS = "/settings/api-keys/api/users"
 OV = "/settings/overrides"
 
 
-def _admin(make_user_key):
-    uid, raw = make_user_key("admin", is_admin=True)
-    return uid, raw, bearer(raw)
+@pytest.fixture
+def h(root_key):
+    """Admin bearer headers (root_key flips the app to locked-down mode)."""
+    return bearer(root_key)
 
 
 def _make_profile(client, h, name="clinic-de", **fields):
@@ -54,7 +55,7 @@ def _rename_profile(client, h, old, new):
 
 def _alice_on_clinic_de(client, make_user_key, **fields):
     """Admin headers + non-admin alice bound to one "clinic-de" profile = fields; return (h, uid)."""
-    _, _, h = _admin(make_user_key)
+    h = bearer(make_user_key("admin", is_admin=True)[1])
     _make_profile(client, h, "clinic-de", **fields)
     uid, _ = make_user_key("alice", is_admin=False)
     _bind_user(client, h, uid, profiles=["clinic-de"])
@@ -82,8 +83,7 @@ def test_overrides_page_renders(client):
         assert marker in body, marker
 
 
-def test_state_shape_and_field_meta(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_state_shape_and_field_meta(client, h):
     j = client.get(f"{OV}/state", headers=h).json()
     assert set(j) >= {"profiles", "field_meta", "defaults", "groups", "rules", "usage"}
     assert j["field_meta"]["BEAM_SIZE"] == {"kind": "int", "min": 1, "max": 20}
@@ -93,12 +93,11 @@ def test_state_shape_and_field_meta(client, make_user_key):
     assert "MODEL_DEVICE" not in j["field_meta"]
 
 
-def test_state_field_meta_marks_multiline_text_as_textarea(client, make_user_key):
+def test_state_field_meta_marks_multiline_text_as_textarea(client, h):
     """The profile editor and the per-identity sub-editor rendered every 'str'
     field as a text <input>, which strips newlines: a multi-line glossary
     saved as one line and the other pairs were gone. The multi-line fields
     get the same 'textarea' kind as on the /settings per-model pane."""
-    _, _, h = _admin(make_user_key)
     fm = client.get(f"{OV}/state", headers=h).json()["field_meta"]
     for name in ("TRANSLATION_GLOSSARY", "DEFAULT_PROMPT", "DEFAULT_HOTWORDS"):
         assert fm[name]["kind"] == "textarea", name
@@ -135,11 +134,10 @@ def test_overrides_and_api_keys_routers_import_without_admin_routes(
         assert fm[name]["kind"] == "textarea", name
 
 
-def test_state_includes_inherited_defaults(client, make_user_key, app_module):
+def test_state_includes_inherited_defaults(client, h, app_module):
     """The /state payload ships the live global value for every overridable field
     so the editor can render `inherits <value>` (and seed `+ override` from it).
     The source must match the /settings per-model page byte-for-byte."""
-    _, _, h = _admin(make_user_key)
     j = client.get(f"{OV}/state", headers=h).json()
 
     defaults = j["defaults"]
@@ -156,15 +154,12 @@ def test_state_includes_inherited_defaults(client, make_user_key, app_module):
 
 
 def test_state_requires_admin(client, make_user_key):
-    # create the admin first (flips lockdown), then a non-admin caller
-    _admin(make_user_key)
-    _, raw = make_user_key("bob", is_admin=False)
+    _, raw = locked_user(make_user_key, "bob")
     r = client.get(f"{OV}/state", headers=bearer(raw))
     assert r.status_code == 403
 
 
-def test_create_profile_roundtrip_and_usage(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_create_profile_roundtrip_and_usage(client, h):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8,
                   locks=["DEFAULT_LANGUAGE"])
     j = client.get(f"{OV}/state", headers=h).json()
@@ -173,12 +168,11 @@ def test_create_profile_roundtrip_and_usage(client, make_user_key):
     assert "clinic-de" in j["usage"]
 
 
-def test_delete_guard_counts_allowlist_only_reference(client, make_user_key):
+def test_delete_guard_counts_allowlist_only_reference(client, make_user_key, h):
     # A profile referenced ONLY in a key's requestable allowlist (not forced in
     # `profiles`) must still appear in usage, so the WebUI delete guard refuses
     # it instead of allowing a silent delete that strands a dangling allowlist
     # name — which that binding's next save would then reject.
-    _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
@@ -216,21 +210,18 @@ def test_settings_state_refuses_override_profiles(client, make_user_key):
     assert "clinic-de" in j["profiles"]
 
 
-def test_bad_profile_value_422(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_bad_profile_value_422(client, h):
     r = client.post(f"{OV}/state", headers=h,
                     json={"OVERRIDE_PROFILES": {"x": {"BEAM_SIZE": 999}}})
     assert r.status_code == 422
 
 
-def test_post_rejects_foreign_field(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_post_rejects_foreign_field(client, h):
     r = client.post(f"{OV}/state", headers=h, json={"BEAM_SIZE": 5})
     assert r.status_code == 400
 
 
-def test_bind_user_and_resolve(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_bind_user_and_resolve(client, make_user_key, h):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8,
                   locks=["DEFAULT_LANGUAGE"], TEMPERATURE="0.0")
     uid, _ = make_user_key("alice", is_admin=False)
@@ -251,12 +242,11 @@ def test_bind_user_and_resolve(client, make_user_key):
     assert "clinic-de" in rj["profiles_applied"]
 
 
-def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key):
+def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key, h):
     # When an identity's decode-override master gate is OFF, the live path drops
     # EVERY client decode override (resolve sets locked_client_keys = all client
     # keys). The /resolve diagnostic must agree and report a sim'd override as
     # ignored — even though the field itself carries no field-level lock.
-    _, _, h = _admin(make_user_key)
     bob_uid, _ = make_user_key("bob", is_admin=False)
     kid = client.get(f"{PERMS}/{bob_uid}/keys", headers=h).json()["keys"][0]["id"]
     _bind_key(client, h, bob_uid, kid, allow_request_decode_overrides=False)
@@ -270,11 +260,10 @@ def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key):
     assert bs["client_sim"]["outcome"] == "ignored_locked"  # gate, not field-lock
 
 
-def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_key):
+def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_key, h):
     # The What-if row reports what the live decode path (_apply_decode_overrides)
     # would use, not the raw value: clamped to the client bounds (beam_size 500
     # runs as 20), unparsable values ignored ("abc").
-    _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("dora", is_admin=False)
     sim = {"beam_size": 500, "temperature": "abc", "best_of": "3",
            "vad_threshold": 7, "patience": 1.5, "vad_filter": "false",
@@ -296,12 +285,11 @@ def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_ke
 
 
 def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them(
-        client, make_user_key):
+        client, make_user_key, h):
     # Live-dictation keys report what the streaming handshake
     # (_client_stream_values) would set: clamped, unparsable dropped, the
     # silence-gate pair fitted, and an outer a LOCKED partner cannot fit dropped.
     # Outer 99999 runs as 10000 and moves the hard break 5000 -> 11000.
-    _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("erin", is_admin=False)
 
     def sim(user, **keys):
@@ -333,10 +321,9 @@ def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them
     assert f["STREAMING_HARD_BREAK_SILENCE_MS"]["client_sim"] is None
 
 
-def test_resolve_reports_a_binding_store_fault(client, make_user_key, monkeypatch):
+def test_resolve_reports_a_binding_store_fault(client, make_user_key, h, monkeypatch):
     # A binding-fetch fault locks every field fail-closed with no owning
     # layer; binding_fault gives the explorer the reason.
-    _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("carol", is_admin=False)
     params = {"user_id": uid, "model": "whisper-1"}
     rj = client.get(f"{OV}/resolve", headers=h, params=params).json()
@@ -360,8 +347,7 @@ def test_page_explorer_names_a_binding_fault(client):
     assert "Binding store unreadable" in dr
 
 
-def test_per_key_config_overrides_user(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_per_key_config_overrides_user(client, make_user_key, h):
     uid, _ = make_user_key("alice", is_admin=False)
     client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
@@ -376,8 +362,7 @@ def test_per_key_config_overrides_user(client, make_user_key):
     assert bs["winner_value"] == 4 and bs["winner_layer"] == "key.direct"
 
 
-def test_per_key_config_unknown_profile_400(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_per_key_config_unknown_profile_400(client, make_user_key, h):
     uid, _ = make_user_key("alice", is_admin=False)
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
     r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h,
@@ -385,8 +370,7 @@ def test_per_key_config_unknown_profile_400(client, make_user_key):
     assert r.status_code == 400
 
 
-def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_rename_profile_cascades_to_user_and_key(client, make_user_key, h):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8)
     uid, _ = make_user_key("alice", is_admin=False)
     # alice references the profile in BOTH her ordered list and her allowlist
@@ -518,11 +502,10 @@ def test_profile_save_waits_for_an_in_flight_rename(client, make_user_key, monke
     assert "DEFAULT_LANGUAGE" in effective_config.resolve(None, user_id=uid).locked
 
 
-def test_rename_profile_env_pinned_409(client, make_user_key, monkeypatch):
+def test_rename_profile_env_pinned_409(client, h, monkeypatch):
     """An env-pinned OVERRIDE_PROFILES comes back at the next restart with
     only `old`: a cascaded rename would strand every binding on a missing
     profile (its locks gone). Refused before any save, alias or cascade."""
-    _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", BEAM_SIZE=8)
     before = dict(cfg.OVERRIDE_PROFILES)
     monkeypatch.setenv("WHISPER_OVERRIDE_PROFILES",
@@ -548,11 +531,10 @@ def test_page_rename_409_shows_the_server_detail(client):
     assert "setStatus(_detailMsg(jc, " in branch
 
 
-def test_state_save_env_pinned_409(client, make_user_key, monkeypatch):
+def test_state_save_env_pinned_409(client, h, monkeypatch):
     """apply_hot_changes skips an env-pinned OVERRIDE_PROFILES, so an accepted
     save would report "saved" while the editor reloads the env value and
     config.local.json diverges. Refused like rename, nothing written."""
-    _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", BEAM_SIZE=8)
     before = config_store.load_overrides()
     monkeypatch.setattr(
@@ -565,14 +547,12 @@ def test_state_save_env_pinned_409(client, make_user_key, monkeypatch):
     assert config_store.load_overrides() == before
 
 
-def test_rename_profile_unknown_404(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_rename_profile_unknown_404(client, h):
     r = _rename_profile(client, h, "ghost", "phantom")
     assert r.status_code == 404
 
 
-def test_rename_profile_collision_409(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_rename_profile_collision_409(client, h):
     # Both profiles must coexist — the page always saves the full dict.
     client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": {
         "a-prof": {"BEAM_SIZE": 5}, "b-prof": {"BEAM_SIZE": 6}}})
@@ -580,18 +560,16 @@ def test_rename_profile_collision_409(client, make_user_key):
     assert r.status_code == 409
 
 
-def test_rename_profile_bad_name_and_noop_400(client, make_user_key):
-    _, _, h = _admin(make_user_key)
+def test_rename_profile_bad_name_and_noop_400(client, h):
     _make_profile(client, h, "good", BEAM_SIZE=5)
     assert _rename_profile(client, h, "good", "Bad Name!").status_code == 400
     assert _rename_profile(client, h, "good", "good").status_code == 400
 
 
-def test_rename_profile_old_name_case_insensitive(client, make_user_key):
+def test_rename_profile_old_name_case_insensitive(client, make_user_key, h):
     """Profile keys are stored lowercase, so a mixed-case `old` from a direct
     API caller must still match (200, not a spurious 404) and reach the binding
     cascade lowercased."""
-    _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
     _bind_user(client, h, uid, profiles=["clinic-de"], allowed_override_profiles=[])
