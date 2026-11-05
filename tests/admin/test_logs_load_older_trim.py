@@ -3,14 +3,9 @@ node: append() and the Load older click handler are cut out of the served
 page and driven against a list-backed fake #log. Skipped when node is not
 installed."""
 
-import shutil
+from tests._page_helpers import js_through as _block, needs_node, node_file_json
 
-import pytest
-
-from tests._page_helpers import js_through as _block, node_file_json
-
-_NODE = shutil.which("node")
-pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
+pytestmark = needs_node
 
 
 _HARNESS = r"""

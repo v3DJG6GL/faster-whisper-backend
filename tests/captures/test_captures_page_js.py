@@ -7,15 +7,11 @@ too DOM-bound to isolate, the test pins the served source instead."""
 
 import json
 import re
-import shutil
 
 import pytest
 
 from faster_whisper_backend.captures.samples import _build_default_transcript
-from tests._page_helpers import node_file_json
-
-_NODE = shutil.which("node")
-needs_node = pytest.mark.skipif(_NODE is None, reason="node unavailable")
+from tests._page_helpers import needs_node, node_file_json
 
 
 def _js_block(src, start):

@@ -5,14 +5,12 @@ served HTML and runs it against a tiny fake DOM (just the members that
 function touches). Skipped when node is not installed."""
 
 import json
-import shutil
 
 import pytest
 
-from tests._page_helpers import js_fn, js_through as _between, node_file_json
+from tests._page_helpers import js_fn, js_through as _between, needs_node, node_file_json
 
-_NODE = shutil.which("node")
-pytestmark = pytest.mark.skipif(_NODE is None, reason="node unavailable")
+pytestmark = needs_node
 
 
 def _fn(html, name):
