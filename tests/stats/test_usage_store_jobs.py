@@ -349,11 +349,8 @@ def test_attached_targets_past_the_cap_count_once(usage_store_db):
     for i in range(3):
         _rec(us, audio_s=0.0, words=0, kind="text", job_id=f"{i}" * 32, stages=tr(["xx"]),
              session_job_id=sess)
-    conn = us._require_conn()
-    assert conn.execute("SELECT COUNT(*) FROM usage_target_hourly"
-                        " WHERE target = 'xx'").fetchone()[0] == 0
-    assert conn.execute("SELECT SUM(runs) FROM usage_target_hourly"
-                        ).fetchone()[0] == cap
+    assert _row(us, "SELECT COUNT(*) FROM usage_target_hourly WHERE target = 'xx'")[0] == 0
+    assert _row(us, "SELECT SUM(runs) FROM usage_target_hourly")[0] == cap
 
 
 def test_translating_kept_original_is_the_segment_count_on_both_paths(usage_store_db):
@@ -382,12 +379,10 @@ def test_outcome_before_a_file_run_does_not_make_it_a_dictation(usage_store_db):
                              delivery="typed", translation="not_asked",
                              app_id="vim") == "accepted"
     _rec(us, audio_s=100.0, words=500, kind="file", job_id=jid)
-    conn = us._require_conn()
-    job = conn.execute("SELECT kind, utterances, reported_ts, activation"
-                       " FROM usage_jobs").fetchone()
+    job = _row(us, "SELECT kind, utterances, reported_ts, activation FROM usage_jobs")
     assert tuple(job) == ("file", 1, None, None)
-    assert conn.execute("SELECT COUNT(*) FROM usage_dictation_hourly").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM usage_app_hourly").fetchone()[0] == 0
+    assert _row(us, "SELECT COUNT(*) FROM usage_dictation_hourly")[0] == 0
+    assert _row(us, "SELECT COUNT(*) FROM usage_app_hourly")[0] == 0
     doc = _doc(us, days=1)
     assert doc["total"]["file"]["sessions"] == 1
     assert doc["dictation"]["sessions"] == 0
@@ -750,14 +745,14 @@ def test_utterance_after_the_outcome_matches_the_usual_order(usage_store_db):
     hourly = conn.execute(
         "SELECT key_id, requests, sessions, words FROM usage_hourly").fetchall()
     assert [tuple(r) for r in hourly] == [("k", 1, 1, 25)]
-    job = conn.execute("SELECT key_id, utterances FROM usage_jobs").fetchone()
+    job = _row(us, "SELECT key_id, utterances FROM usage_jobs")
     assert tuple(job) == ("k", 1)
     assert _outcome_rollups(us) == ((1, 25, 15.0), (1, 25))
     # A second utterance adds words, never a session (and keeps the key).
     us.record_usage(key_id="other", user_id="alice", audio_s=5.0, words=5,
                     status="ok", kind="dictation", job_id=jid)
-    assert conn.execute("SELECT SUM(sessions) FROM usage_hourly").fetchone()[0] == 1
-    assert conn.execute("SELECT key_id FROM usage_jobs").fetchone()[0] == "k"
+    assert _row(us, "SELECT SUM(sessions) FROM usage_hourly")[0] == 1
+    assert _row(us, "SELECT key_id FROM usage_jobs")[0] == "k"
     assert _outcome_rollups(us) == ((1, 30, 20.0), (1, 30))
 
 
@@ -769,10 +764,9 @@ def test_outcome_naming_a_non_dictation_job_is_a_duplicate(usage_store_db):
     assert us.record_outcome(user_id="u", job_id="aaaaaaaa", activation="hold",
                              delivery="typed", translation="not_asked",
                              app_id="thunderbird") == "duplicate"
-    conn = us._require_conn()
-    assert conn.execute("SELECT COUNT(*) FROM usage_dictation_hourly").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM usage_app_hourly").fetchone()[0] == 0
-    assert conn.execute("SELECT reported_ts FROM usage_jobs").fetchone()[0] is None
+    assert _row(us, "SELECT COUNT(*) FROM usage_dictation_hourly")[0] == 0
+    assert _row(us, "SELECT COUNT(*) FROM usage_app_hourly")[0] == 0
+    assert _row(us, "SELECT reported_ts FROM usage_jobs")[0] is None
 
 
 def test_sweep_marks_unreported_and_prunes(usage_store_db):
@@ -808,20 +802,17 @@ def test_sweep_marks_unreported_and_prunes(usage_store_db):
     counts = us.sweep(unreported_after_h=24, jobs_retention_days=1,
                       app_retention_days=90, hourly_retention_days=0)
     assert counts["jobs"] == 2
-    conn = us._require_conn()
-    assert conn.execute("SELECT COUNT(*) FROM usage_jobs").fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM usage_job_stages").fetchone()[0] == 0
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs")[0] == 1
+    assert _row(us, "SELECT COUNT(*) FROM usage_job_stages")[0] == 0
     assert us.totals_for_user("u")["words"] == 90
 
     # Hourly retention takes the old rollup rows in every hour-keyed table.
     counts = us.sweep(unreported_after_h=24, jobs_retention_days=0,
                       app_retention_days=0, hourly_retention_days=1)
     assert counts["hourly"] == 4
-    assert conn.execute(
-        "SELECT COUNT(*) FROM usage_stage_hourly").fetchone()[0] == 0
+    assert _row(us, "SELECT COUNT(*) FROM usage_stage_hourly")[0] == 0
     assert us.totals_for_user("u")["words"] == 30
-    assert conn.execute(
-        "SELECT COUNT(*) FROM usage_dictation_hourly").fetchone()[0] == 1
+    assert _row(us, "SELECT COUNT(*) FROM usage_dictation_hourly")[0] == 1
 
 
 def test_empty_document_shape_matches_populated(usage_store_db):
@@ -857,10 +848,8 @@ def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(
     conn.commit()
     conn.close()
     us.init_db(str(tmp_path / "usage.sqlite3"))
-    conn = us._require_conn()
     assert us.totals_for_user("u")["requests"] == 2
-    assert conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name='usage_hourly_legacy'").fetchone() is None
+    assert _row(us, "SELECT 1 FROM sqlite_master WHERE name='usage_hourly_legacy'") is None
 
 
 def test_hours_carry_proc_s_and_sessions(usage_store_db):
@@ -1021,8 +1010,7 @@ def test_stage_error_lands_on_the_stage_row_and_bumps_hourly_errors(usage_store_
         "SELECT stage, runs, errors FROM usage_stage_hourly WHERE user_id = 'u'")}
     assert (hourly["diarizing"]["runs"], hourly["diarizing"]["errors"]) == (2, 1)
     assert hourly["translating"]["errors"] == 0
-    assert conn.execute("SELECT status FROM usage_jobs WHERE job_id = 'f1'"
-                        ).fetchone()["status"] == "ok"
+    assert _row(us, "SELECT status FROM usage_jobs WHERE job_id = 'f1'")["status"] == "ok"
 
 
 _PRE_V2_JOBS_SCHEMA = """
