@@ -163,7 +163,7 @@ def test_serial_translations_are_not_rate_limited(client, app_module,
     counter is only a flood backstop (next test)."""
     _enable_stubbed(app_module, monkeypatch)
     for _ in range(25):
-        assert client.post(URL, json=_body()).status_code == 200
+        _post_ok(client)
 
 
 def test_per_minute_backstop_429s_and_releases_the_held_receipt(
@@ -178,7 +178,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     window._state.clear()
     # A body that fails validation still counts against the window.
     _post_status(client, 422, segments=[])
-    assert client.post(URL, json=_body()).status_code == 200
+    _post_ok(client)
     # Over the ceiling a malformed body is refused by the window, not
     # by the validation it never reaches.
     _post_status(client, 429, segments=[])
@@ -215,12 +215,12 @@ def test_inflight_cap_rejects_when_the_identity_is_full(client, app_module,
     assert gauge.count(_open_key()) == limit
 
     gauge.clear()
-    assert client.post(URL, json=_body()).status_code == 200
+    _post_ok(client)
 
 
 def test_inflight_slot_is_released_on_success(client, app_module, monkeypatch):
     _enable_stubbed(app_module, monkeypatch)
-    assert client.post(URL, json=_body()).status_code == 200
+    _post_ok(client)
     assert tr_routes._translate_inflight._counts == {}
 
 
@@ -300,7 +300,7 @@ def test_inflight_zero_is_unlimited(client, app_module, monkeypatch):
     _enable_stubbed(app_module, monkeypatch, TRANSLATE_MAX_INFLIGHT_PER_USER=0)
     # A stale count from before the field was zeroed must not gate anything.
     tr_routes._translate_inflight._counts[_open_key()] = 99
-    assert client.post(URL, json=_body()).status_code == 200
+    _post_ok(client)
 
 
 def test_inflight_cap_is_per_user(client, app_module, make_user_key,
@@ -315,8 +315,7 @@ def test_inflight_cap_is_per_user(client, app_module, make_user_key,
         gauge.acquire(uid_a)
 
     _post_status(client, 429, headers=bearer(key_a))
-    assert client.post(URL, json=_body(),
-                       headers=bearer(key_b)).status_code == 200
+    _post_ok(client, headers=bearer(key_b))
 
 
 def test_400_on_allowlist_miss(client, app_module, monkeypatch):
@@ -327,9 +326,8 @@ def test_400_on_allowlist_miss(client, app_module, monkeypatch):
     assert "TRANSLATION_ALLOWED_MODELS" in r.json()["detail"]
     assert calls == []
     # The configured default and an allowlisted model both pass.
-    assert client.post(URL, json=_body()).status_code == 200
-    r = client.post(URL, json=_body(translation_model="org/allowed-GGUF:Q4"))
-    assert r.status_code == 200
+    _post_ok(client)
+    _post_ok(client, translation_model="org/allowed-GGUF:Q4")
 
 
 def test_413_over_total_char_cap(client, app_module, monkeypatch):
