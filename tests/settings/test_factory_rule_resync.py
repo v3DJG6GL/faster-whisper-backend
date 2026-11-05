@@ -33,15 +33,15 @@ def _older_tidy(rules):
     return tidy
 
 
-def _load(tmp_path, rules):
-    return load_saved(tmp_path, {"PIPELINE_RULES": rules})["PIPELINE_RULES"]
+def _loaded_tidy(tmp_path, rules):
+    out = load_saved(tmp_path, {"PIPELINE_RULES": rules})["PIPELINE_RULES"]
+    return next(r for r in out if r["name"] == "digit-and-whitespace-tidy")
 
 
 def test_an_untouched_older_factory_copy_becomes_the_current_rule(tmp_path):
     rules = _factory_rules()
     _older_tidy(rules)
-    out = _load(tmp_path, rules)
-    tidy = next(r for r in out if r["name"] == "digit-and-whitespace-tidy")
+    tidy = _loaded_tidy(tmp_path, rules)
     want = next(r for r in cs.load_factory_rules() if r["name"] == "digit-and-whitespace-tidy")
     assert tidy == {**want, "config_rev": _rev(want)}
 
@@ -54,9 +54,7 @@ def test_an_old_entry_text_in_an_untouched_copy_is_replaced_with_the_rule(tmp_pa
     e["pattern"] = "(\\d)\\s*([/,\\-])\\s*(\\d)"
     e["replacement"] = "\\1\\2\\3"
     tidy["config_rev"] = _rev(tidy)
-    out = _load(tmp_path, rules)
-    labels = [e["label"] for e in next(
-        r for r in out if r["name"] == "digit-and-whitespace-tidy")["entries"]]
+    labels = [e["label"] for e in _loaded_tidy(tmp_path, rules)["entries"]]
     assert set(_QUOTE_LABELS) <= set(labels)
 
 
@@ -65,8 +63,7 @@ def test_an_edited_copy_is_left_as_it_is(tmp_path):
     tidy = _older_tidy(rules)
     tidy["entries"][-1]["note"] = "mine"
     edited = copy.deepcopy(tidy)
-    out = _load(tmp_path, rules)
-    got = next(r for r in out if r["name"] == "digit-and-whitespace-tidy")
+    got = _loaded_tidy(tmp_path, rules)
     assert got["entries"] == edited["entries"]
     assert got["config_rev"] == edited["config_rev"]
 
@@ -74,8 +71,7 @@ def test_an_edited_copy_is_left_as_it_is(tmp_path):
 def test_a_copy_without_a_sync_record_is_left_as_it_is(tmp_path):
     rules = _factory_rules()
     del _older_tidy(rules)["config_rev"]
-    out = _load(tmp_path, rules)
-    got = next(r for r in out if r["name"] == "digit-and-whitespace-tidy")
+    got = _loaded_tidy(tmp_path, rules)
     assert not set(_QUOTE_LABELS) & {e["label"] for e in got["entries"]}
     assert "config_rev" not in got
 
