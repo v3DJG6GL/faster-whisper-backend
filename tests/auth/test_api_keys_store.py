@@ -24,6 +24,12 @@ def uid(ak):
     return ak.create_user("u", is_admin=False)
 
 
+@pytest.fixture
+def root_uid(ak):
+    """A fresh admin user "root" (no key yet, so the store stays open)."""
+    return ak.create_user("root", is_admin=True)
+
+
 def _store_user_binding(ak, uid, binding):
     """Write a raw stored user binding, bypassing set_user_permissions."""
     ak._require_conn().execute("UPDATE users SET permissions=? WHERE id=?",
@@ -291,26 +297,23 @@ def test_create_key_returns_prefixed_raw(ak, uid):
     assert rec["label"] == "laptop" and rec["revoked_ts"] is None
 
 
-def test_revoke_last_admin_key_blocked(ak):
-    uid = ak.create_user("root", is_admin=True)
-    _, rec = ak.create_key(uid)
+def test_revoke_last_admin_key_blocked(ak, root_uid):
+    _, rec = ak.create_key(root_uid)
     with pytest.raises(ak.LastAdminError):
         ak.revoke_key(rec["id"])
 
 
-def test_revoke_admin_key_ok_when_second_exists(ak):
-    uid = ak.create_user("root", is_admin=True)
-    _, r1 = ak.create_key(uid)
-    _, r2 = ak.create_key(uid)
+def test_revoke_admin_key_ok_when_second_exists(ak, root_uid):
+    _, r1 = ak.create_key(root_uid)
+    _, r2 = ak.create_key(root_uid)
     ak.revoke_key(r1["id"])
     assert ak.get_key(r1["id"])["revoked_ts"] is not None
 
 
-def test_revoke_last_admin_user_blocked(ak):
-    uid = ak.create_user("root", is_admin=True)
-    ak.create_key(uid)
+def test_revoke_last_admin_user_blocked(ak, root_uid):
+    ak.create_key(root_uid)
     with pytest.raises(ak.LastAdminError):
-        ak.revoke_user(uid)
+        ak.revoke_user(root_uid)
 
 
 def test_revoke_keyless_admin_user_allowed_in_open_mode(ak):
@@ -324,29 +327,26 @@ def test_revoke_keyless_admin_user_allowed_in_open_mode(ak):
     assert ak.is_locked_down() is False
 
 
-def test_revoke_last_keyed_admin_user_blocked_despite_keyless_admin(ak):
-    root = ak.create_user("root", is_admin=True)
-    ak.create_key(root)
+def test_revoke_last_keyed_admin_user_blocked_despite_keyless_admin(ak, root_uid):
+    ak.create_key(root_uid)
     ak.create_user("spare", is_admin=True)   # keyless: can't keep lockdown
     with pytest.raises(ak.LastAdminError):
-        ak.revoke_user(root)
+        ak.revoke_user(root_uid)
 
 
-def test_revoke_nonadmin_unguarded(ak):
-    admin = ak.create_user("root", is_admin=True)
-    ak.create_key(admin)
+def test_revoke_nonadmin_unguarded(ak, root_uid):
+    ak.create_key(root_uid)
     u = ak.create_user("bob", is_admin=False)
     ak.create_key(u)
     ak.revoke_user(u)
     assert ak.get_user(u)["revoked_ts"] is not None
 
 
-def test_concurrent_reads_are_thread_safe(ak):
+def test_concurrent_reads_are_thread_safe(ak, root_uid):
     # get_user() & friends share one sqlite3 connection: without every read
     # under _lock, threadpool workers race on it → `sqlite3.InterfaceError:
     # bad parameter or other API misuse` and torn rows (created_ts read as None).
-    uid = ak.create_user("root", is_admin=True)
-    raw, _ = ak.create_key(uid)
+    raw, _ = ak.create_key(root_uid)
     other = ak.create_user("alice", is_admin=False)
 
     errors: list[BaseException] = []
@@ -356,16 +356,16 @@ def test_concurrent_reads_are_thread_safe(ak):
         barrier.wait()
         try:
             for _ in range(80):
-                rec = ak.get_user_record(uid)
-                assert rec is not None and rec["user_id"] == uid
-                u = ak.get_user(uid)
+                rec = ak.get_user_record(root_uid)
+                assert rec is not None and rec["user_id"] == root_uid
+                u = ak.get_user(root_uid)
                 assert isinstance(u["created_ts"], float)   # not None (torn read)
                 ak.lookup_by_raw_key(raw)                    # bearer hot path
                 ak.list_users()
-                ak.list_keys(uid)
+                ak.list_keys(root_uid)
                 ak.active_key_counts()
                 ak.get_user_permissions(other)
-                ak.get_usernames([uid, other, None])
+                ak.get_usernames([root_uid, other, None])
         except BaseException as e:  # noqa: BLE001 — capture for the assert
             errors.append(e)
 
@@ -387,10 +387,9 @@ def test_concurrent_reads_are_thread_safe(ak):
     assert not errors, f"concurrent access raised: {errors[:3]}"
 
 
-def test_concurrent_revoke_of_two_admin_keys_keeps_one(ak):
-    uid = ak.create_user("root", is_admin=True)
-    _, r1 = ak.create_key(uid)
-    _, r2 = ak.create_key(uid)
+def test_concurrent_revoke_of_two_admin_keys_keeps_one(ak, root_uid):
+    _, r1 = ak.create_key(root_uid)
+    _, r2 = ak.create_key(root_uid)
     barrier = threading.Barrier(2)
     errors: list[Exception] = []
 
@@ -405,7 +404,7 @@ def test_concurrent_revoke_of_two_admin_keys_keeps_one(ak):
     t2 = threading.Thread(target=worker, args=(r2["id"],))
     t1.start(); t2.start(); t1.join(); t2.join()
     assert len(errors) == 1
-    assert ak.active_key_counts().get(uid, 0) == 1
+    assert ak.active_key_counts().get(root_uid, 0) == 1
     assert ak.is_locked_down() is True
 
 
@@ -490,9 +489,8 @@ def test_set_permissions_normalises_tags(ak, uid):
     assert clean["quick_config_tags"] == ["a", "b"]
 
 
-def test_set_permissions_revoked_user_raises(ak):
-    admin = ak.create_user("root", is_admin=True)
-    ak.create_key(admin)
+def test_set_permissions_revoked_user_raises(ak, root_uid):
+    ak.create_key(root_uid)
     u = ak.create_user("bob", is_admin=False)
     ak.create_key(u)
     ak.revoke_user(u)
@@ -705,14 +703,13 @@ def test_list_users_migrates_the_user_binding_the_drawer_sends_back(ak, uid):
     assert ak.get_user_config(uid)["direct"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
 
 
-def test_first_admin_key_bumps_the_config_version(ak):
+def test_first_admin_key_bumps_the_config_version(ak, root_uid):
     """Creating the first admin key ends open mode; a keyless live stream
     resolved as the synthetic admin re-authenticates only on this counter."""
     from faster_whisper_backend.settings import version as settings_version
-    uid = ak.create_user("root", is_admin=True)
     v0 = settings_version._CONFIG_VERSION
     assert ak.is_locked_down() is False
-    ak.create_key(uid)
+    ak.create_key(root_uid)
     assert ak.is_locked_down() is True
     assert settings_version._CONFIG_VERSION > v0
 
@@ -760,13 +757,12 @@ def test_binding_saves_keep_a_stored_profile_name_that_vanished(
             ak.set_user_permissions(uid, {"config": added})
 
 
-def test_sibling_revoke_still_seen_after_a_failed_rebuild(ak, monkeypatch):
+def test_sibling_revoke_still_seen_after_a_failed_rebuild(ak, root_uid, monkeypatch):
     """A rebuild SELECT that fails must leave the sibling commit unseen, so
     the next lookup retries the rebuild instead of authenticating the revoked
     key from the stale index."""
-    uid = ak.create_user("root", is_admin=True)
-    raw, rec = ak.create_key(uid)
-    ak.create_key(uid)
+    raw, rec = ak.create_key(root_uid)
+    ak.create_key(root_uid)
     sibling_write(ak, ("UPDATE api_keys SET revoked_ts = 1 WHERE id = ?",
                        (rec["id"],)))
 
