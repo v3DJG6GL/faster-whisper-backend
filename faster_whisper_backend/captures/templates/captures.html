@@ -4263,24 +4263,21 @@
     fill.style.width = pct + '%';
     meterBar.appendChild(fill);
     meterWrap.appendChild(meterBar);
-    var durLabel = document.createElement('span');
+    var durLabel = _el('span', '', (p.total_duration_s || 0).toFixed(1) + ' s');
     durLabel.style.cssText = 'font-family:var(--font-mono);color:var(--help);font-size:var(--fs-xs);margin-left:0.4rem;';
-    durLabel.textContent = (p.total_duration_s || 0).toFixed(1) + ' s';
     meterWrap.appendChild(durLabel);
     row1.appendChild(meterWrap);
 
-    var countLabel = document.createElement('span');
+    var countLabel = _el('span', '', (p.member_count || 0) + ' clips');
     countLabel.style.cssText = 'color:var(--help);font-size:var(--fs-sm);';
-    countLabel.textContent = (p.member_count || 0) + ' clips';
     row1.appendChild(countLabel);
 
     var lang = _el('span', 'lang-pill', p.language || '?');
     row1.appendChild(lang);
 
     if (p.username || p.user_id) {
-      var spk = _el('span', 'speaker-pill');
+      var spk = _el('span', 'speaker-pill', p.username || String(p.user_id).slice(0, 8));
       spk.title = 'speaker';
-      spk.textContent = p.username || String(p.user_id).slice(0, 8);
       row1.appendChild(spk);
     }
 
@@ -4295,9 +4292,8 @@
     sp.style.flex = '1';
     row1.appendChild(sp);
 
-    var accept = _el('button', 'primary');
+    var accept = _el('button', 'primary', 'Accept');
     accept.type = 'button';
-    accept.textContent = 'Accept';
     accept.addEventListener('click', function() { _acceptProposal(p, accept); });
     row1.appendChild(accept);
     card.appendChild(row1);
@@ -4324,9 +4320,8 @@
         var spk = _el('span', 'm-spk', m.username || String(m.user_id).slice(0, 8));
         line.appendChild(spk);
       }
-      var txt = _el('span', 'm-text');
+      var txt = _el('span', 'm-text', m.preview || '(no transcript)');
       txt.title = m.preview || '';
-      txt.textContent = m.preview || '(no transcript)';
       line.appendChild(txt);
       members.appendChild(line);
     });
@@ -5433,10 +5428,9 @@
       // Auto-triggers when scrolled into view; the button covers browsers
       // without IntersectionObserver and lists too short to scroll.
       var more = _el('div', 'load-more-wrap');
-      var btn = document.createElement('button');
+      var btn = _el('button', '', _samplesLoading
+        ? 'Loading more groups...' : 'Load more groups');
       btn.id = 'btn-load-more-samples';
-      btn.textContent = _samplesLoading
-        ? 'Loading more groups...' : 'Load more groups';
       btn.disabled = !!_samplesLoading;
       btn.addEventListener('click', loadMoreSamples);
       more.appendChild(btn);
