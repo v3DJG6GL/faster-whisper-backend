@@ -286,15 +286,10 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
         _set_clamped(kwargs, key, overrides, key, _clamp_int, bounds)
     for key, bounds in _DECODE_FLOAT_BOUNDS.items():
         _set_clamped(kwargs, key, overrides, key, _clamp_float, bounds)
-    if "temperature" in overrides:
-        tv = _client_temperature(overrides["temperature"])
-        if tv is not None:
-            kwargs["temperature"] = tv
+    _set_clamped(kwargs, "temperature", overrides, "temperature", _client_temperature, ())
     # A JSON null on a bool override means "inherit", not False.
     for key in ("condition_on_previous_text", "multilingual"):
-        bv = _client_bool(overrides.get(key))
-        if bv is not None:
-            kwargs[key] = bv
+        _set_clamped(kwargs, key, overrides, key, _client_bool, ())
     for key, cap in _DECODE_STR_CAPS.items():
         if key in overrides and isinstance(overrides[key], str):
             kwargs[key] = overrides[key][:cap]
