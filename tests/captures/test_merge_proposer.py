@@ -327,6 +327,11 @@ def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
                    text_for_training=text, status=status, user_id=user_id, task=task)
 
 
+def _admin_sweep():
+    """propose_merges as an admin sweeping every user; returns (proposals, was_cached)."""
+    return P.propose_merges(user_id_filter=None, is_admin=True, caller_user_id="admin")
+
+
 @pytest.fixture
 def trim_disabled(monkeypatch):
     # Make _dur fall back to raw audio_s so we don't need real audio.
@@ -338,8 +343,7 @@ def test_propose_basic_pair(captures_store_db, monkeypatch, trim_disabled):
     cs = captures_store_db
     _insert_eligible(cs, "cap00000000000a", ts=1000.0, text="alpha text one")
     _insert_eligible(cs, "cap00000000000b", ts=1001.0, text="beta text two")
-    proposals, was_cached = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, was_cached = _admin_sweep()
     assert was_cached is False
     assert len(proposals) == 1
     assert set(proposals[0]["member_ids"]) == {"cap00000000000a", "cap00000000000b"}
@@ -350,16 +354,13 @@ def test_propose_caches_and_returns_copy(captures_store_db, monkeypatch, trim_di
     cs = captures_store_db
     _insert_eligible(cs, "cap0000000000c1", ts=1000.0, text="alpha")
     _insert_eligible(cs, "cap0000000000c2", ts=1001.0, text="bravo")
-    first, c1 = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
-    second, c2 = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    first, c1 = _admin_sweep()
+    second, c2 = _admin_sweep()
     assert c1 is False and c2 is True
     assert first == second
     # Returned list is a copy — mutating it must not poison the cache.
     second.append("junk")
-    third, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    third, _ = _admin_sweep()
     assert "junk" not in third
 
 
@@ -367,7 +368,7 @@ def test_propose_admin_all_users_cache_key(captures_store_db, monkeypatch, trim_
     cs = captures_store_db
     _insert_eligible(cs, "cap0000000000d1", ts=1000.0)
     _insert_eligible(cs, "cap0000000000d2", ts=1001.0)
-    P.propose_merges(user_id_filter=None, is_admin=True, caller_user_id="admin")
+    _admin_sweep()
     assert P._ALL_USERS in P._CACHE
 
 
@@ -513,8 +514,7 @@ def test_propose_partitions_by_user_and_language(captures_store_db, monkeypatch,
     _insert_eligible(cs, "capu1de00000002", ts=1001.0, user_id="u1", language="de")
     _insert_eligible(cs, "capu2en00000001", ts=1002.0, user_id="u2", language="en")
     _insert_eligible(cs, "capu2en00000002", ts=1003.0, user_id="u2", language="en")
-    proposals, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep()
     for p in proposals:
         ids = p["member_ids"]
         assert p["user_id"] in ("u1", "u2")
@@ -531,8 +531,7 @@ def test_propose_never_mixes_transcribe_and_translate(captures_store_db,
     _insert_eligible(cs, "captrde00000001", ts=1000.0, dur=5.0, text="hallo welt")
     _insert_eligible(cs, "captrde00000002", ts=1001.0, dur=5.0,
                      text="hello world", task="translate")
-    proposals, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep()
     # Both still proposed (as solos) — an empty result must not pass vacuously.
     assert sorted(i for p in proposals for i in p["member_ids"]) == [
         "captrde00000001", "captrde00000002"]
@@ -555,12 +554,10 @@ def test_propose_does_not_cache_a_sweep_invalidated_mid_flight(
         P.invalidate("u1")
         return rows
     monkeypatch.setattr(cs, "list_captures", racing)
-    first, c1 = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    first, c1 = _admin_sweep()
     assert c1 is False and first
     monkeypatch.setattr(cs, "list_captures", real)
-    _, c2 = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    _, c2 = _admin_sweep()
     assert c2 is False
 
 
@@ -579,8 +576,7 @@ def test_propose_cache_write_cannot_outrun_an_invalidate(
             super().__setitem__(key, value)
 
     monkeypatch.setattr(P, "_CACHE", _RacingCache())
-    proposals, cached = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, cached = _admin_sweep()
     assert cached is False and proposals
     assert P._ALL_USERS not in P._CACHE
 
@@ -593,14 +589,12 @@ def test_retention_sweep_drops_cached_proposals(
     cs = captures_store_db
     _insert_eligible(cs, "capretn00000001", ts=1000.0, text="alpha")
     _insert_eligible(cs, "capretn00000002", ts=1001.0, text="bravo")
-    first, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    first, _ = _admin_sweep()
     assert first
     monkeypatch.setattr(P.cfg, "CAPTURES_RETENTION_DAYS", 1, raising=False)
     assert cs.sweep_retention() == 2
     assert cs.get_capture("capretn00000001") is None
-    again, cached = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    again, cached = _admin_sweep()
     assert (again, cached) == ([], False)
 
 
@@ -609,8 +603,7 @@ def test_propose_greedy_non_overlap_claim(captures_store_db, monkeypatch, trim_d
     # Three clips in one session, so their candidates overlap.
     for i, cid in enumerate(["capclaim0000001", "capclaim0000002", "capclaim0000003"]):
         _insert_eligible(cs, cid, ts=1000.0 + i, text=f"text variant {i}")
-    proposals, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep()
     seen = set()
     for p in proposals:
         for mid in p["member_ids"]:
@@ -628,8 +621,7 @@ def test_propose_respects_max_proposals(captures_store_db, monkeypatch, trim_dis
     _insert_eligible(cs, "capsess1000001b", ts=1001.0, text="bbb two")
     _insert_eligible(cs, "capsess2000001a", ts=5000.0, text="ccc three")
     _insert_eligible(cs, "capsess2000001b", ts=5001.0, text="ddd four")
-    proposals, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep()
     assert len(proposals) == 1
 
 
@@ -638,8 +630,7 @@ def test_propose_no_eligible_returns_empty(captures_store_db, monkeypatch, trim_
     # A dismissed clip and a too-short clip → nothing eligible.
     _insert_eligible(cs, "capnone00000001", ts=1000.0, status="dismissed")
     _insert_eligible(cs, "capnone00000002", ts=1001.0, dur=0.2)
-    proposals, was_cached = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, was_cached = _admin_sweep()
     assert proposals == [] and was_cached is False
 
 
@@ -650,8 +641,7 @@ def test_propose_session_gap_splits(captures_store_db, monkeypatch, trim_disable
     # each is proposed as a one-member sample, never as a cross-session pair.
     _insert_eligible(cs, "capgap000000001", ts=1000.0, text="lonely one")
     _insert_eligible(cs, "capgap000000002", ts=9000.0, text="lonely two")
-    proposals, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep()
     assert len(proposals) == 2
     for p in proposals:
         assert p["member_count"] == 1
@@ -673,7 +663,6 @@ def test_propose_session_gap_is_per_user_in_all_users_view(
     for i, ts in enumerate((1080.0, 1160.0, 1240.0, 1320.0)):
         _insert_eligible(cs, f"capbridge00u2b{i}", ts=ts,
                          text=u2_texts[i], user_id="u2")
-    proposals, _ = P.propose_merges(
-        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep()
     u1 = sorted(sorted(p["member_ids"]) for p in proposals if p["user_id"] == "u1")
     assert u1 == [["capbridge00u1a1"], ["capbridge00u1a2"]]
