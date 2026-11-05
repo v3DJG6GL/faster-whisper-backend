@@ -37,6 +37,7 @@ def _seed(monkeypatch, pipe=None, key=None, leases=None, orphans=None):
     monkeypatch.setattr(diarization, "_pipeline_key", key)
     monkeypatch.setattr(diarization, "_leases", {} if leases is None else leases)
     monkeypatch.setattr(diarization, "_orphans", {} if orphans is None else orphans)
+    return pipe
 
 
 def _diar_model(monkeypatch, model="A", batch=4):
@@ -358,8 +359,7 @@ def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
     """_lock is held across a whole executor-long load; the release must not
     wait on it (a cancellation delivered at that wait would leak the lease
     and pin the pipeline against idle eviction forever)."""
-    pipe = object()
-    _seed(monkeypatch, pipe, ("m1", "cpu", 4), {"m1": 1})
+    pipe = _seed(monkeypatch, object(), ("m1", "cpu", 4), {"m1": 1})
 
     async def _main():
         lock = asyncio.Lock()
@@ -376,8 +376,7 @@ def test_cancel_during_diarize_still_drops_the_lease(monkeypatch):
     # The key must match _pipeline_key below: a miss would take _lock, which
     # _main holds — a hang instead of a failure.
     _diar_model(monkeypatch, "m1")
-    pipe = object()
-    _seed(monkeypatch, pipe, ("m1", "cpu", 4))
+    _seed(monkeypatch, object(), ("m1", "cpu", 4))
 
     async def _fake_diarize_with(pipe, path, **kw):
         assert diarization._leases == {"m1": 1}
@@ -619,8 +618,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
     that loaded and leased another pipeline meanwhile must not be orphaned
     by the speculative load (two pipelines in memory)."""
     _diar_model(monkeypatch)
-    held = object()
-    _seed(monkeypatch, held, ("p/a", "cpu", 4), {"p/a": 1})
+    held = _seed(monkeypatch, object(), ("p/a", "cpu", 4), {"p/a": 1})
     loads = _record_loads(monkeypatch, diarization)
 
     assert asyncio.run(diarization.load_unleased("p/b")) is False
@@ -639,8 +637,7 @@ def test_a_zombie_inference_makes_the_singleton_busy(monkeypatch):
     load_unleased force-drops (unregisters, empty_cache) the pipeline under
     the zombie and loads a second one beside it."""
     _diar_model(monkeypatch)
-    held = object()
-    _seed(monkeypatch, held, ("p/a", "cpu", 4))
+    held = _seed(monkeypatch, object(), ("p/a", "cpu", 4))
     loads = _record_loads(monkeypatch, diarization)
     assert diarization.busy("p/b") is False
     diarization._infer_mutex.acquire()

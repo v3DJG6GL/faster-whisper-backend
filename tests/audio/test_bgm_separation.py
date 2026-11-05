@@ -33,6 +33,7 @@ def _seed(monkeypatch, sep=None, key=None, leases=None, orphans=None):
     monkeypatch.setattr(bgm_separation, "_separator_key", key)
     monkeypatch.setattr(bgm_separation, "_leases", {} if leases is None else leases)
     monkeypatch.setattr(bgm_separation, "_orphans", {} if orphans is None else orphans)
+    return sep
 
 
 def _foo_model(monkeypatch, device="cpu"):
@@ -358,8 +359,7 @@ def test_release_returns_the_lease_immediately_while_a_load_holds_the_lock(
     downloading — the release is lock-free and lands before the lock is
     ever given up."""
     _foo_model(monkeypatch)
-    sep = object()
-    _seed(monkeypatch, sep, ("Foo.onnx", "cpu"))
+    _seed(monkeypatch, object(), ("Foo.onnx", "cpu"))
 
     async def _fake_separate_with(sep, path, *, progress_cb, cancel_check):
         return "out.wav"
@@ -429,8 +429,7 @@ def test_failed_reload_redoes_the_free_an_orphan_deferred_to_it(monkeypatch):
     (the reload would re-register). When that load then fails, the dead
     separator's row and session device must go anyway."""
     _foo_model(monkeypatch, device="cuda")
-    old = object()
-    _seed(monkeypatch, old, ("Foo.onnx", "cpu"), {"Foo.onnx": 1})
+    old = _seed(monkeypatch, object(), ("Foo.onnx", "cpu"), {"Foo.onnx": 1})
     monkeypatch.setattr(bgm_separation, "_session_device", "cpu")
     model_registry.register_loaded_model("uvr:Foo.onnx", None, "cpu", "onnx", 1.0)
     entered, gate = threading.Event(), threading.Event()
@@ -476,8 +475,7 @@ def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
             written.append(out)
             return [out]
 
-    sep = _Sep()
-    _seed(monkeypatch, sep, ("Foo.onnx", "cpu"))
+    sep = _seed(monkeypatch, _Sep(), ("Foo.onnx", "cpu"))
 
     async def _main():
         task = asyncio.create_task(bgm_separation.separate("in.wav"))
@@ -502,8 +500,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_separator(
     """Same re-check as diarization: a speculative load that waited on _lock
     must not orphan a separator a job leased meanwhile."""
     _foo_model(monkeypatch)
-    held = object()
-    _seed(monkeypatch, held, ("Bar.onnx", "cpu"), {"Bar.onnx": 1})
+    held = _seed(monkeypatch, object(), ("Bar.onnx", "cpu"), {"Bar.onnx": 1})
     loads = record_loads(monkeypatch, bgm_separation)
 
     assert asyncio.run(bgm_separation.load_unleased("Foo")) is False
@@ -518,8 +515,7 @@ def test_a_zombie_separation_makes_the_singleton_busy(monkeypatch):
     sep.separate holds _separate_mutex after its lease is gone, so busy()
     must refuse the speculative load that would force-drop it."""
     _foo_model(monkeypatch)
-    held = object()
-    _seed(monkeypatch, held, ("Bar.onnx", "cpu"))
+    held = _seed(monkeypatch, object(), ("Bar.onnx", "cpu"))
     loads = record_loads(monkeypatch, bgm_separation)
     assert bgm_separation.busy("Foo.onnx") is False
     bgm_separation._separate_mutex.acquire()
