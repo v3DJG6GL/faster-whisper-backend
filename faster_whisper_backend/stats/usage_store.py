@@ -1014,6 +1014,14 @@ def sweep(
             "hourly": pruned_hourly}
 
 
+# Static text. The aliases are the keys dict(r), _hourly_cell and leaderboard's
+# ORDER BY {metric} read.
+_HOURLY_SUMS = ("SUM(requests) AS requests, SUM(errors) AS errors,"
+                " SUM(words) AS words, SUM(audio_s) AS audio_s")
+_HOURLY_SUMS_ALL = (_HOURLY_SUMS + ", SUM(processing_s) AS processing_s,"
+                    " SUM(sessions) AS sessions")
+
+
 def _window_clause(start_hour: int | None, end_hour: int | None, *,
                    user_id: str | None = None, key_id: str | None = None,
                    ) -> tuple[str, list[Any]]:
@@ -1042,9 +1050,7 @@ def totals_by_key(
     conn = _require_conn()
     where, params = _window_clause(start_hour, end_hour, user_id=user_id)
     cur = conn.execute(
-        "SELECT key_id, user_id,"
-        " SUM(requests) AS requests, SUM(errors) AS errors,"
-        " SUM(words) AS words, SUM(audio_s) AS audio_s"
+        f"SELECT key_id, user_id, {_HOURLY_SUMS}"
         " FROM usage_hourly" + where +
         " GROUP BY key_id, user_id"
         " ORDER BY audio_s DESC",
@@ -1063,9 +1069,7 @@ def totals_by_user(
     conn = _require_conn()
     where, params = _window_clause(start_hour, end_hour)
     cur = conn.execute(
-        "SELECT user_id,"
-        " SUM(requests) AS requests, SUM(errors) AS errors,"
-        " SUM(words) AS words, SUM(audio_s) AS audio_s"
+        f"SELECT user_id, {_HOURLY_SUMS}"
         " FROM usage_hourly" + where +
         " GROUP BY user_id",
         params,
@@ -1092,8 +1096,7 @@ def totals_for_user(
     where = (where + " AND user_id = ?") if where else " WHERE user_id = ?"
     params.append(user_id)
     row = conn.execute(
-        "SELECT SUM(requests) AS requests, SUM(errors) AS errors,"
-        " SUM(words) AS words, SUM(audio_s) AS audio_s"
+        f"SELECT {_HOURLY_SUMS}"
         " FROM usage_hourly" + where,
         params,
     ).fetchone()
@@ -1165,10 +1168,7 @@ def leaderboard(
     else:
         group, cols = "user_id", "user_id"
     cur = conn.execute(
-        f"SELECT {cols},"
-        " SUM(requests) AS requests, SUM(errors) AS errors,"
-        " SUM(words) AS words, SUM(audio_s) AS audio_s,"
-        " SUM(processing_s) AS processing_s, SUM(sessions) AS sessions"
+        f"SELECT {cols}, {_HOURLY_SUMS_ALL}"
         " FROM usage_hourly" + where +
         f" GROUP BY {group}"
         f" ORDER BY {metric} DESC"
@@ -1722,9 +1722,7 @@ def overview(
         else:
             rows = [(_epoch_day(_date_of(int(r["hour"]) * 3600, tz)), r, _hourly_cell(r))
                     for r in conn.execute(
-                        "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
-                        " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
-                        " SUM(processing_s) AS processing_s, SUM(sessions) AS sessions"
+                        f"SELECT hour, user_id, key_id, {_HOURLY_SUMS_ALL}"
                         " FROM usage_hourly" + where
                         + " AND hour >= ? AND hour < ? GROUP BY hour, user_id, key_id",
                         (*params, start_hour, end_hour))]
