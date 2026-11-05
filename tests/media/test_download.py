@@ -953,6 +953,11 @@ def _yt_dlp_script(file, *lines, size=64):
             f'open(os.path.join(r"__DEST__", "{file}"), "wb").write(b"x" * {size})\n')
 
 
+def _failing_yt_dlp(stderr):
+    """A stand-in yt-dlp: write `stderr`, exit 1."""
+    return f"import sys\nsys.stderr.write({stderr!r})\nsys.exit(1)\n"
+
+
 def _patch_argv(monkeypatch, script: str):
     monkeypatch.setattr(
         udl, "build_download_argv",
@@ -982,11 +987,7 @@ def test_download_success(tmp_path, monkeypatch):
 
 
 def test_download_nonzero_exit_maps_to_taxonomy(tmp_path, monkeypatch):
-    _patch_argv(monkeypatch, """
-import sys
-sys.stderr.write("ERROR: Private video. Sign in\\n")
-sys.exit(1)
-""")
+    _patch_argv(monkeypatch, _failing_yt_dlp("ERROR: Private video. Sign in\n"))
     with pytest.raises(udl.UrlDownloadError, match="private"):
         _fetch(udl.download, tmp_path)
 
@@ -994,12 +995,8 @@ sys.exit(1)
 def test_download_failure_logs_the_end_of_a_long_stderr(tmp_path, monkeypatch, caplog):
     """The fatal "ERROR: ..." line is the LAST thing yt-dlp writes: a long
     stderr must be logged by its end, not its head."""
-    _patch_argv(monkeypatch, """
-import sys
-sys.stderr.write("WARNING: " + "w" * 400 + "\\n")
-sys.stderr.write("ERROR: fwb-tail-marker\\n")
-sys.exit(1)
-""")
+    _patch_argv(monkeypatch, _failing_yt_dlp(
+        "WARNING: " + "w" * 400 + "\nERROR: fwb-tail-marker\n"))
     with caplog.at_level("WARNING", logger="whisper-api"):
         with pytest.raises(udl.UrlDownloadError):
             _fetch(udl.download, tmp_path)
@@ -1010,11 +1007,8 @@ sys.exit(1)
 def test_download_failure_log_masks_the_links_password(tmp_path, monkeypatch, caplog):
     """yt-dlp quotes the URL in its error: a `user:pw@host` link must not
     write the password to the persisted log."""
-    _patch_argv(monkeypatch, """
-import sys
-sys.stderr.write("ERROR: Unsupported URL: https://alice:s3cret@nas.example.com/p\\n")
-sys.exit(1)
-""")
+    _patch_argv(monkeypatch, _failing_yt_dlp(
+        "ERROR: Unsupported URL: https://alice:s3cret@nas.example.com/p\n"))
     with caplog.at_level("WARNING", logger="whisper-api"):
         with pytest.raises(udl.UrlDownloadError):
             _fetch(udl.download, tmp_path, url="https://alice:s3cret@nas.example.com/p")
