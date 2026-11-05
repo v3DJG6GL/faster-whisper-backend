@@ -341,8 +341,7 @@ def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     then decrement a bucket that was never leased and the real lease would
     pin the pipeline forever."""
     cfg = _diar_model(monkeypatch, "m1")
-    monkeypatch.setattr(diarization, "_load_blocking",
-                        lambda model_id, device, batch: object())
+    _record_loads(monkeypatch, diarization)
 
     async def _fake_diarize_with(pipe, path, **kw):
         # The load has happened and the lease is held; the admin edits now.
@@ -435,8 +434,7 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
             diarization._pipeline_key = ("m2", "cpu", 4)
             return _Ann()
 
-    monkeypatch.setattr(diarization, "_load_blocking",
-                        lambda model_id, device, batch: _Pipe())
+    _record_loads(monkeypatch, diarization, _Pipe)
     touched = []
     monkeypatch.setattr(model_registry, "touch_loaded_model",
                         lambda name: touched.append(name))
@@ -521,7 +519,7 @@ def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch
     _drop_locked (early return on no pipeline) never unregistered."""
     _diar_model(monkeypatch)
     pipe = object()
-    monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: pipe)
+    _record_loads(monkeypatch, diarization, lambda: pipe)
     entered, gate = _blocked_register(monkeypatch)
     _cancel_while_register_held(
         lambda: diarization._get_pipeline(lease=True), entered, gate)
@@ -548,7 +546,7 @@ def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
     _diar_model(monkeypatch, batch=8)
     old, new = object(), object()
     _seed(monkeypatch, old, ("A", "cpu", 4), {"A": 1})
-    monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: new)
+    _record_loads(monkeypatch, diarization, lambda: new)
     entered, gate = _blocked_register(monkeypatch)
 
     async def _main():

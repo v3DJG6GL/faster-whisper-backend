@@ -282,8 +282,7 @@ def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     would then decrement a bucket that was never leased and the real lease
     would pin the model forever."""
     cfg = _foo_model(monkeypatch)
-    monkeypatch.setattr(bgm_separation, "_load_blocking",
-                        lambda model, device: object())
+    record_loads(monkeypatch, bgm_separation)
 
     async def _fake_separate_with(sep, path, *, progress_cb, cancel_check):
         # The load has happened and the lease is held; the admin edits now.
@@ -313,8 +312,7 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
             made.append(out)
             return [out]
 
-    monkeypatch.setattr(bgm_separation, "_load_blocking",
-                        lambda model, device: _Sep())
+    record_loads(monkeypatch, bgm_separation, _Sep)
     touched = []
     monkeypatch.setattr(model_registry, "touch_loaded_model",
                         lambda name: touched.append(name))
@@ -402,7 +400,7 @@ def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatc
     unregisters."""
     _foo_model(monkeypatch)
     sep = object()
-    monkeypatch.setattr(bgm_separation, "_load_blocking", lambda m, d: sep)
+    record_loads(monkeypatch, bgm_separation, lambda: sep)
     entered, gate = blocked_register(monkeypatch)
     cancel_while_register_held(
         lambda: bgm_separation._get_separator("Foo", lease=True), entered, gate)
