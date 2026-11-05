@@ -1442,19 +1442,16 @@ def _first_day(conn: sqlite3.Connection, user_id: Ids,
                kinds: Sequence[str] | None = None) -> int | None:
     where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
     if with_stages:
-        row = conn.execute(
-            "SELECT MIN(created_ts) AS ts FROM usage_jobs" + where
-            + _with_clause(with_stages), (*params, *with_stages),
-        ).fetchone()
-        if row is None or row["ts"] is None:
-            return None
-        return _epoch_day(_date_of(float(row["ts"]), tz))
-    row = conn.execute(
-        "SELECT MIN(hour) AS h FROM usage_hourly" + where, params,
-    ).fetchone()
-    if row is None or row["h"] is None:
-        return None
-    return _epoch_day(_date_of(int(row["h"]) * 3600, tz))
+        return _min_ts_day(conn, "SELECT MIN(created_ts) FROM usage_jobs" + where
+                           + _with_clause(with_stages), (*params, *with_stages), tz)
+    return _min_ts_day(conn, "SELECT MIN(hour) * 3600 FROM usage_hourly" + where, params, tz)
+
+
+def _min_ts_day(conn: sqlite3.Connection, sql: str, params: Sequence[Any],
+                tz: zoneinfo.ZoneInfo | None) -> int | None:
+    """Caller-local epoch-day of the one MIN(timestamp) `sql` selects; None on an empty set."""
+    ts = conn.execute(sql, params).fetchone()[0]
+    return None if ts is None else _epoch_day(_date_of(float(ts), tz))
 
 
 def _with_clause(with_stages: tuple[str, ...]) -> str:
@@ -1991,11 +1988,10 @@ def _first_tail_day(conn: sqlite3.Connection, user_id: Ids, key_id: Ids,
     kinds = [kind] if isinstance(kind, str) else kind
     hourly = _first_day(conn, user_id, tz, (), key_id, kinds)
     where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
-    row = conn.execute("SELECT MIN(created_ts) AS ts FROM usage_jobs" + where
-                       + _no_outcome_stub(), params).fetchone()
-    if row is None or row["ts"] is None:
+    jobs = _min_ts_day(conn, "SELECT MIN(created_ts) FROM usage_jobs" + where
+                       + _no_outcome_stub(), params, tz)
+    if jobs is None:
         return hourly
-    jobs = _epoch_day(_date_of(float(row["ts"]), tz))
     return jobs if hourly is None else min(hourly, jobs)
 
 
