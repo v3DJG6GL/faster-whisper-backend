@@ -886,6 +886,15 @@ def bind_key(client, h, uid, kid, **config):
     return r
 
 
+def bind_user(client, h, uid, **config):
+    """PATCH user {uid}'s config binding (pages and unnamed parts empty); asserts 200."""
+    body = {"overrides": {}, "profiles": [], "locks": [], **config}
+    r = client.patch(f"/settings/api-keys/api/users/{uid}/permissions", headers=h,
+                     json={"pages": {}, "config": body})
+    assert r.status_code == 200, r.text
+    return r
+
+
 def first_key_id(client, h, uid):
     """The id of user {uid}'s first API key, read through the admin route."""
     r = client.get(f"/settings/api-keys/api/users/{uid}/keys", headers=h)

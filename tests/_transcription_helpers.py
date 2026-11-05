@@ -11,7 +11,7 @@ import numpy as np
 
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests.conftest import bearer, record_calls, write_wav
+from tests.conftest import bearer, bind_user, record_calls, write_wav
 
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -66,11 +66,7 @@ def bind_profile(client, make_user_key, name, fields, user="alice"):
                     json={"OVERRIDE_PROFILES": {name: fields}})
     assert r.status_code == 200, r.text
     uid, raw = make_user_key(user, is_admin=False)
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-        json={"pages": {}, "config": {"overrides": {},
-                                      "profiles": [name], "locks": []}})
-    assert r.status_code == 200, r.text
+    bind_user(client, admin_h, uid, profiles=[name])
     return admin_h, raw
 
 

@@ -11,10 +11,9 @@ the request profile, the gate disables it, and the names endpoint behaves.
 
 from faster_whisper_backend.settings import config as cfg
 from tests._transcription_helpers import bind_profile, post_verbose_ok
-from tests.conftest import bearer
+from tests.conftest import bearer, bind_user
 
 OV = "/settings/overrides"
-PERMS = "/settings/api-keys/api/users"
 
 
 def _transcribe(client, profile, headers=None):
@@ -59,9 +58,7 @@ def test_binding_lock_beats_request_profile(client, make_user_key, fake_model):
     }})
     assert r.status_code == 200, r.text
     uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {}, "profiles": ["locked"], "locks": []}})
-    assert r.status_code == 200, r.text
+    bind_user(client, admin_h, uid, profiles=["locked"])
 
     body = _transcribe(client, "fast", bearer(raw_alice))
     assert fake_model.last_kwargs["beam_size"] == 8      # binding wins; request profile shadowed

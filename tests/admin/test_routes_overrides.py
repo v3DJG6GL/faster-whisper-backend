@@ -13,7 +13,7 @@ from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store, effective_config
 from tests._page_helpers import js_body, js_fn, js_upto, needs_node, node_json
-from tests.conftest import bearer, bind_key, first_key_id, locked_user
+from tests.conftest import bearer, bind_key, bind_user, first_key_id, locked_user
 
 PERMS = "/settings/api-keys/api/users"
 OV = "/settings/overrides"
@@ -32,15 +32,6 @@ def _make_profile(client, h, name="clinic-de", **fields):
     return r
 
 
-def _bind_user(client, h, uid, **config):
-    """PATCH {uid}'s config binding (unnamed parts empty); asserts 200."""
-    body = {"overrides": {}, "profiles": [], "locks": [], **config}
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h,
-                     json={"pages": {}, "config": body})
-    assert r.status_code == 200, r.text
-    return r
-
-
 def _rename_profile(client, h, old, new):
     return client.post(f"{OV}/profiles/rename", headers=h, json={"old": old, "new": new})
 
@@ -50,7 +41,7 @@ def _alice_on_clinic_de(client, make_user_key, **fields):
     h = bearer(make_user_key("admin", is_admin=True)[1])
     _make_profile(client, h, "clinic-de", **fields)
     uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, profiles=["clinic-de"])
+    bind_user(client, h, uid, profiles=["clinic-de"])
     return h, uid
 
 
@@ -217,8 +208,8 @@ def test_bind_user_and_resolve(client, make_user_key, h):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8,
                   locks=["DEFAULT_LANGUAGE"], TEMPERATURE="0.0")
     uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, overrides={"BEST_OF": 7, "TEMPERATURE": "0.0"},
-               profiles=["clinic-de"], locks=["TEMPERATURE"])
+    bind_user(client, h, uid, overrides={"BEST_OF": 7, "TEMPERATURE": "0.0"},
+              profiles=["clinic-de"], locks=["TEMPERATURE"])
 
     rj = client.get(f"{OV}/resolve", headers=h, params={
         "user_id": uid, "model": "whisper-1",
@@ -305,8 +296,8 @@ def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them
 
     # A LOCKED hard break is never moved: a client outer above it is dropped,
     # reported as the partner's lock (the outer field itself is not locked).
-    _bind_user(client, h, uid, overrides={"STREAMING_HARD_BREAK_SILENCE_MS": 5000},
-               locks=["STREAMING_HARD_BREAK_SILENCE_MS"])
+    bind_user(client, h, uid, overrides={"STREAMING_HARD_BREAK_SILENCE_MS": 5000},
+              locks=["STREAMING_HARD_BREAK_SILENCE_MS"])
     f = sim(uid, streaming_vad_outer_silence_ms=6000)
     assert f["STREAMING_VAD_OUTER_SILENCE_MS"]["client_sim"] == {
         "value": 6000, "sent": 6000, "outcome": "ignored_partner_locked"}
@@ -341,8 +332,7 @@ def test_page_explorer_names_a_binding_fault(client):
 
 def test_per_key_config_overrides_user(client, make_user_key, h):
     uid, _ = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
+    bind_user(client, h, uid, overrides={"BEAM_SIZE": 8})
     kid = first_key_id(client, h, uid)
     r = bind_key(client, h, uid, kid, overrides={"BEAM_SIZE": 4})
     assert r.json()["config"]["direct"]["BEAM_SIZE"] == 4
@@ -365,8 +355,8 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key, h):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8)
     uid, _ = make_user_key("alice", is_admin=False)
     # alice references the profile in BOTH her ordered list and her allowlist
-    _bind_user(client, h, uid, profiles=["clinic-de"],
-               allowed_override_profiles=["clinic-de"])
+    bind_user(client, h, uid, profiles=["clinic-de"],
+              allowed_override_profiles=["clinic-de"])
     kid = first_key_id(client, h, uid)
     bind_key(client, h, uid, kid, profiles=["clinic-de"])
 
@@ -563,7 +553,7 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key, h):
     cascade lowercased."""
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
-    _bind_user(client, h, uid, profiles=["clinic-de"], allowed_override_profiles=[])
+    bind_user(client, h, uid, profiles=["clinic-de"], allowed_override_profiles=[])
     r = _rename_profile(client, h, "CLINIC-DE", "clinic-deutsch")
     assert r.status_code == 200, r.text
     # The lowercased `old` also reached the cascade (the binding ref matched).

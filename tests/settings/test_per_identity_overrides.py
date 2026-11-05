@@ -10,7 +10,7 @@ round-trip (the request-gate keys survive validate_binding/_parse_binding).
 from faster_whisper_backend.core import languages
 from tests._transcription_helpers import bind_profile
 from tests._translation_helpers import enable_translation
-from tests.conftest import bearer, bind_key, first_key_id
+from tests.conftest import bearer, bind_key, bind_user, first_key_id
 
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
@@ -29,12 +29,6 @@ def _alice_with_key_binding(client, make_user_key, profiles, **binding):
     uid, raw_alice = make_user_key("alice")
     bind_key(client, h, uid, first_key_id(client, h, uid), **binding)
     return raw_alice
-
-
-def _bind_user_profiles(client, h, uid, profiles):
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": profiles, "locks": []}})
-    assert r.status_code == 200, r.text
 
 
 def test_me_open_mode_all_allowed(client):
@@ -304,7 +298,7 @@ def test_apply_no_profiles_roundtrip_and_suppresses_user_profile(client, make_us
     # PATCH → store → resolve path.
     h = _admin_with_profiles(client, make_user_key, {"clinic": {"BEAM_SIZE": 7}})
     uid, _ = make_user_key("alice")
-    _bind_user_profiles(client, h, uid, ["clinic"])
+    bind_user(client, h, uid, profiles=["clinic"])
     kid = first_key_id(client, h, uid)
 
     # baseline: the user-bound profile applies for this key
