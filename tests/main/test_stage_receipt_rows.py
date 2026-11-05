@@ -17,6 +17,7 @@ from tests._translation_helpers import enable_translation
 from tests._transcription_helpers import (
     post_verbose as _post, post_verbose_ok as _post_ok, serve_model, wav_bytes as _wav_bytes)
 from tests.main._stage_helpers import capture_receipt, must_not_run, transcode_raises
+from tests.main.test_transcription_overrides import _record_diarize
 
 
 def _separating_row(client, monkeypatch, upload):
@@ -126,16 +127,7 @@ def test_separation_row_drops_transcode_detail_when_transcode_failed(
 
 def test_min_speakers_above_max_is_clamped_down(client, app_module,
                                                 monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
-    calls = []
-
-    async def _fake(path, *, num_speakers=None, min_speakers=None,
-                    max_speakers=None, model_id=None, progress_cb=None,
-                    cancel_check=None):
-        calls.append({"num": num_speakers, "min": min_speakers,
-                      "max": max_speakers})
-        return [(0.0, 1.0, "SPEAKER_00")]
-    monkeypatch.setattr(diarization, "diarize", _fake)
+    calls = _record_diarize(monkeypatch, app_module)
     r = _post(client, diarize="true", min_speakers="10", max_speakers="2")
     assert r.status_code == 200, r.text
     assert calls == [{"num": None, "min": 2, "max": 2}]
@@ -144,16 +136,7 @@ def test_min_speakers_above_max_is_clamped_down(client, app_module,
 
 def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
                                                       monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
-    calls = []
-
-    async def _fake(path, *, num_speakers=None, min_speakers=None,
-                    max_speakers=None, model_id=None, progress_cb=None,
-                    cancel_check=None):
-        calls.append({"num": num_speakers, "min": min_speakers,
-                      "max": max_speakers})
-        return [(0.0, 1.0, "SPEAKER_00")]
-    monkeypatch.setattr(diarization, "diarize", _fake)
+    calls = _record_diarize(monkeypatch, app_module)
     _post_ok(client, diarize="true", num_speakers="0",
              min_speakers="0", max_speakers="0")
     assert calls == [{"num": None, "min": None, "max": None}]

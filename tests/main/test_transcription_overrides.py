@@ -332,19 +332,12 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
                                              fake_model, monkeypatch):
     # A profile locking DIARIZE (value-less lock pins the inherited global,
     # default false) forbids the client's `diarize` form field.
-    from faster_whisper_backend.audio import diarization
-    called = []
-
-    async def _fake_diarize(path, **kw):
-        called.append(path)
-        return [(0.0, 1.0, "SPEAKER_00")]
-    monkeypatch.setattr(diarization, "diarize", _fake_diarize)
-    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
+    calls = _record_diarize(monkeypatch, app_module)
     raw_alice = _bind_profile_user(client, make_user_key, "nodiar",
                                    locks=["DIARIZE"])
 
     body = post_verbose_ok(client, bearer(raw_alice), diarize="true")
-    assert called == []                          # pinned off
+    assert calls == []                           # pinned off
     assert "diarize" in body["overrides_ignored"]
 
 
@@ -354,7 +347,8 @@ def _record_diarize(monkeypatch, app_module) -> list:
     calls = []
 
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
-                            max_speakers=None, **kw):
+                            max_speakers=None, model_id=None, progress_cb=None,
+                            cancel_check=None):
         calls.append({"num": num_speakers, "min": min_speakers,
                       "max": max_speakers})
         return [(0.0, 1.0, "SPEAKER_00")]
