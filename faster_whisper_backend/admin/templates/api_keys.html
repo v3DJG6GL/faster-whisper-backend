@@ -511,8 +511,6 @@
     return r.json();
   }
 
-  {{NOT_ADMIN_LANDING_JS}}
-
   async function _check403(r) {
     if (!r || r.status !== 403) return false;
     try {

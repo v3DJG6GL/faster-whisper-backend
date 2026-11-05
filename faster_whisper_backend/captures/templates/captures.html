@@ -1108,8 +1108,6 @@
     try { return _detailMsg(await resp.json(), fallback); } catch (_) { return fallback; }
   }
 
-  {{NOT_ADMIN_LANDING_JS}}
-
   async function _renderAdminOnlyIfNonAdmin() {
     // A 403 does NOT prove the caller lacks the captures page: six endpoints
     // (export, clear, reprocess-all, reprocess-vad and the two status routes)

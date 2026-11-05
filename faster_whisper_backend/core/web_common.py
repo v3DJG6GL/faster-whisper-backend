@@ -387,15 +387,15 @@ TIME_HELPERS_JS = templates.load(__file__, "time_helpers.js")
 # No-access landing card for a valid bearer that lacks access to the current
 # page: reads `window.__whoami` (set by OPEN_MODE_BANNER_JS) and renders one
 # button per page the caller CAN reach plus Sign out, or a "no pages
-# available" message. Raw (no <script> wrapper) for pages that inject it into
-# their own IIFE via {{NOT_ADMIN_LANDING_JS}}. `_renderNotAdminLanding` is a
-# legacy alias with no remaining in-tree caller.
+# available" message. Raw (no <script> wrapper); the only page copy is
+# NOT_ADMIN_LANDING_GLOBAL_JS. `_renderNotAdminLanding` is a legacy alias with
+# no remaining in-tree caller.
 NOT_ADMIN_LANDING_JS = templates.load(__file__, "not_admin_landing.js")
 
 
-# Global copy, injected by render_page beside OPEN_MODE_BANNER_JS so its
-# auto-landing path can call `_renderNoAccessLanding` on pages that never
-# include the {{NOT_ADMIN_LANDING_JS}} placeholder.
+# Global copy, injected by render_page beside OPEN_MODE_BANNER_JS: its
+# auto-landing path and the page scripts' 403 handling call these helpers as
+# bare globals.
 NOT_ADMIN_LANDING_GLOBAL_JS = "<script>" + NOT_ADMIN_LANDING_JS + "</script>"
 
 
@@ -635,8 +635,8 @@ def _render_page_cached(
     very response), so an unauthenticated caller can drive both the CPU and the
     ~270 KB of egress at will.
 
-    The key is exhaustive by construction. All 24 placeholders were traced:
-    13 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
+    The key is exhaustive by construction. All 23 placeholders were traced:
+    12 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
     design (see sev_pills_html); {{HEADER_VTAG}} is computed once at import;
     {{NAV}} varies only on `current` plus cfg.ADMIN_UI_ENABLED; the rest vary
     on `current`, the two LOG_VIEWER_* values, LOG_SEGMENT_ROWS_SHOWN or
@@ -675,7 +675,6 @@ def _render_page_cached(
         .replace("{{SCALE_BOOTSTRAP_HEAD}}", SCALE_BOOTSTRAP_HEAD)
         .replace("{{RULE_EDITOR_JS}}", RULE_EDITOR_JS)
         .replace("{{TIME_HELPERS_JS}}", TIME_HELPERS_JS)
-        .replace("{{NOT_ADMIN_LANDING_JS}}", NOT_ADMIN_LANDING_JS)
         .replace("{{PAGE_META}}", _page_meta_tag(current))
         .replace("{{PAGE_CLASS}}", _col_class_for(current))
         .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
@@ -709,8 +708,6 @@ def render_page(template: str, current: str) -> str:
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
       - {{RULE_EDITOR_JS}}       → shared per-rule body editors
       - {{TIME_HELPERS_JS}}      → absTime / relTime / fmtWhen / stampTs / timeTick
-      - {{NOT_ADMIN_LANDING_JS}} → _renderNoAccessLanding() + _refreshWhoami()
-                                   helpers (+ _renderNotAdminLanding alias)
       - {{PAGE_META}}            → <meta name="page-key" ...> carrier so
                                    shared JS knows which page it's on
       - {{PAGE_CLASS}}           → body class naming the page canvas width

@@ -296,8 +296,6 @@
     return await resp.json();
   }
 
-  {{NOT_ADMIN_LANDING_JS}}
-
   async function _renderAdminOnlyIfNonAdmin() {
     // A 403 here does NOT prove the caller lacks the reports page: the
     // CSRF/Origin middleware and the host gate answer 403 too (e.g. a
