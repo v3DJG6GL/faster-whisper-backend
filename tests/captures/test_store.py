@@ -11,7 +11,13 @@ import pytest
 from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.settings import config
 from tests.captures._store_helpers import create_stub_capture, insert_sample
-from tests.conftest import install_fake_wav_transcode, wait_until, waits_on, write_bytes
+from tests.conftest import (
+    install_fake_wav_transcode,
+    record_calls,
+    wait_until,
+    waits_on,
+    write_bytes,
+)
 
 
 def _make(cs, monkeypatch, tmp_path, **over):
@@ -481,14 +487,8 @@ def test_clear_all_wipes_the_audio_tree_under_the_lock(captures_store_db,
     deleted the audio of a row inserted after the DELETE."""
     cs = captures_store_db
     _make(cs, monkeypatch, tmp_path)
-    real_rmtree = cs.shutil.rmtree
-    held = []
-
-    def spy(path, *a, **k):
-        held.append(cs._lock.locked())
-        return real_rmtree(path, *a, **k)
-
-    monkeypatch.setattr(cs.shutil, "rmtree", spy)
+    held = record_calls(monkeypatch, cs.shutil, "rmtree",
+                        lambda path, *a, **k: cs._lock.locked())
     cs.clear_all(reporter_host="127.0.0.1")
     assert held and all(held)
 
@@ -691,10 +691,8 @@ def test_a_store_full_of_ready_rows_records_nothing(
     _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(10)], "ready")
     assert cs.ready_fills_cap() is True
     install_fake_wav_transcode(monkeypatch)
-    calls = []
-    real = audio_transcode.transcode_to_wav_16k_mono
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono",
-                        lambda a, b: calls.append(a) or real(a, b))
+    calls = record_calls(monkeypatch, audio_transcode, "transcode_to_wav_16k_mono",
+                         lambda a, b: a)
     assert create_stub_capture(cs, tmp_path) is None
     assert calls == []
     assert cs.count() == 10

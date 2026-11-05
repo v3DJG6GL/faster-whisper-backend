@@ -11,7 +11,7 @@ from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.captures import samples_store as gs
 from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import _insert_sample
-from tests.conftest import bearer, locked_user
+from tests.conftest import bearer, locked_user, record_calls
 
 
 def _lock_while_waiting(monkeypatch, conn, sid):
@@ -147,7 +147,7 @@ def test_lock_toggle_waits_out_an_in_flight_rebuild(
     sid = "relock07sid"
     _, _, raw = _alice_sample(make_user_key, sid)
     held = []
-    real_lock, real_update = capture_samples._rebuild_lock, gs.update_sample
+    real_lock = capture_samples._rebuild_lock
 
     @contextlib.contextmanager
     def _tracking(s):
@@ -158,10 +158,8 @@ def test_lock_toggle_waits_out_an_in_flight_rebuild(
             finally:
                 held.remove(s)
 
-    seen = []
     monkeypatch.setattr(capture_samples, "_rebuild_lock", _tracking)
-    monkeypatch.setattr(gs, "update_sample",
-                        lambda s, patch: seen.append(list(held)) or real_update(s, patch))
+    seen = record_calls(monkeypatch, gs, "update_sample", lambda s, patch: list(held))
     r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw),
                      json={"is_locked": True})
     assert r.status_code == 200

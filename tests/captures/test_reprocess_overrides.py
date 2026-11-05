@@ -4,7 +4,7 @@ the event loop."""
 
 from faster_whisper_backend.settings import effective_config
 from tests.captures._store_helpers import create_stub_capture
-from tests.conftest import bearer, install_fake_wav_transcode
+from tests.conftest import bearer, install_fake_wav_transcode, record_calls
 
 
 
@@ -21,13 +21,8 @@ def test_reprocess_resolves_owner_not_caller(client, root_key, make_user_key, ap
     uid_alice, _ = make_user_key("alice")
     cid = _make_capture(tmp_path, user_id=uid_alice)
 
-    calls = []
-    orig = effective_config.build_ident
-
-    def spy(user, model_id, *a, **k):
-        calls.append((dict(user or {}), model_id))
-        return orig(user, model_id, *a, **k)
-    monkeypatch.setattr(effective_config, "build_ident", spy)
+    calls = record_calls(monkeypatch, effective_config, "build_ident",
+                         lambda user, model_id, *a, **k: (dict(user or {}), model_id))
 
     r = client.post(f"/captures/api/{cid}/reprocess", headers=bearer(root_key))
     assert r.status_code == 200, r.text
