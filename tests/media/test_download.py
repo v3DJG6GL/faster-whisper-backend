@@ -297,6 +297,26 @@ class _CtxResp:
         return False
 
 
+def _fake_resp(body: bytes, ctype: str = "text/vtt",
+               length: "int | None" = None):
+    """A guarded-opener response serving `body` in 1 KB chunks (`length`: a
+    Content-Length header, which may claim more)."""
+    class _Resp(_CtxResp):
+        headers = {"Content-Type": ctype,
+                   **({"Content-Length": str(length)} if length else {})}
+
+        def __init__(self):
+            self._chunks = [body[i:i + 1024] for i in range(0, len(body), 1024)]
+
+        def read(self, n):
+            return self._chunks.pop(0) if self._chunks else b""
+
+        def geturl(self):
+            return "https://edge.e.com/b"      # where the redirects ended
+
+    return _Resp()
+
+
 def _patch_opener(monkeypatch, open_):
     """Serve every guarded-opener fetch from `open_()` (host gate open)."""
     class _Opener:
@@ -1236,15 +1256,9 @@ def test_direct_media_probe_bounded_by_deadline(monkeypatch):
     passed, whatever its Content-Type says: it took too long, it is not
     "not media"."""
 
-    class _Resp(_CtxResp):
-        headers = {"Content-Type": "audio/mpeg"}
-
-        def read(self, n):
-            return b"x"
-
     def _slow():
         time.sleep(0.5)  # past the 0.2 s budget, under the 1 s op timeout
-        return _Resp()
+        return _fake_resp(b"x", "audio/mpeg")
 
     _patch_opener(monkeypatch, _slow)
     with pytest.raises(udl.UrlTimeoutError, match="too long"):
@@ -1342,16 +1356,9 @@ def test_probe_extract_runs_on_probe_pool(monkeypatch):
 def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
     seen: dict = {}
 
-    class _Resp(_CtxResp):
-        headers = {"Content-Type": "image/jpeg"}
-        _chunks = [b"x", b""]
-
-        def read(self, n):
-            return self._chunks.pop(0)
-
     def _open():
         seen["thread"] = threading.current_thread().name
-        return _Resp()
+        return _fake_resp(b"x", "image/jpeg")
 
     _patch_opener(monkeypatch, _open)
     out = _run(udl.fetch_thumbnail_data_uri("https://example.com/t.jpg", timeout=1.0))
@@ -1361,22 +1368,8 @@ def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
 
 def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt",
                  length: "int | None" = None):
-    """Swap the guarded opener for one that serves `body` in 1 KB chunks
-    (`length`: a Content-Length header, which may claim more)."""
-    class _Resp(_CtxResp):
-        headers = {"Content-Type": ctype,
-                   **({"Content-Length": str(length)} if length else {})}
-
-        def __init__(self):
-            self._chunks = [body[i:i + 1024] for i in range(0, len(body), 1024)]
-
-        def read(self, n):
-            return self._chunks.pop(0) if self._chunks else b""
-
-        def geturl(self):
-            return "https://edge.e.com/b"      # where the redirects ended
-
-    _patch_opener(monkeypatch, _Resp)
+    """Swap the guarded opener for one that serves `_fake_resp(...)`."""
+    _patch_opener(monkeypatch, lambda: _fake_resp(body, ctype, length))
 
 
 def test_capped_get_caps_filters_and_refuses_hosts(monkeypatch):
