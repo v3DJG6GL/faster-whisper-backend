@@ -327,9 +327,10 @@ def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
                    text_for_training=text, status=status, user_id=user_id, task=task)
 
 
-def _admin_sweep():
-    """propose_merges as an admin sweeping every user; returns (proposals, was_cached)."""
-    return P.propose_merges(user_id_filter=None, is_admin=True, caller_user_id="admin")
+def _admin_sweep(user_id_filter=None):
+    """propose_merges as an admin over every user (or the `user_id_filter` pick);
+    returns (proposals, was_cached)."""
+    return P.propose_merges(user_id_filter=user_id_filter, is_admin=True, caller_user_id="admin")
 
 
 @pytest.fixture
@@ -376,7 +377,7 @@ def test_propose_admin_specific_user_cache_key(captures_store_db, monkeypatch, t
     cs = captures_store_db
     _insert_eligible(cs, "cap0000000000e1", ts=1000.0, user_id="u1")
     _insert_eligible(cs, "cap0000000000e2", ts=1001.0, user_id="u1")
-    P.propose_merges(user_id_filter="u1", is_admin=True, caller_user_id="admin")
+    _admin_sweep("u1")
     assert P._user_cache_key("u1") in P._CACHE
     assert P._ALL_USERS not in P._CACHE
 
@@ -395,13 +396,11 @@ def test_propose_admin_unknown_user_returns_nothing_uncached(
     monkeypatch.setattr(api_keys_store, "get_user",
                         lambda uid: {"id": uid} if uid == "u1" else None)
 
-    proposals, was_cached = P.propose_merges(
-        user_id_filter="ghost", is_admin=True, caller_user_id="admin")
+    proposals, was_cached = _admin_sweep("ghost")
     assert proposals == [] and was_cached is False
     assert P._user_cache_key("ghost") not in P._CACHE
 
-    proposals, was_cached = P.propose_merges(
-        user_id_filter="u1", is_admin=True, caller_user_id="admin")
+    proposals, was_cached = _admin_sweep("u1")
     assert was_cached is False and len(proposals) == 1
     assert P._user_cache_key("u1") in P._CACHE
 
@@ -418,14 +417,12 @@ def test_propose_admin_open_mode_sentinel_is_a_known_user(
                      text="beta text two")
     monkeypatch.setattr(api_keys_store, "get_user", lambda uid: None)
 
-    proposals, _ = P.propose_merges(
-        user_id_filter=sentinel, is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep(sentinel)
     assert len(proposals) == 1
     assert set(proposals[0]["member_ids"]) == {"cap0000000000o1",
                                                "cap0000000000o2"}
 
-    proposals, _ = P.propose_merges(
-        user_id_filter="ghost", is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep("ghost")
     assert proposals == []
 
 
@@ -444,9 +441,7 @@ def test_propose_admin_several_users_sweep_only_those(
                         lambda uid: {"id": uid} if uid != "ghost" else None)
     monkeypatch.setattr(P.cfg, "CAPTURES_PROPOSER_MAX_PROPOSALS", 2)
 
-    proposals, _ = P.propose_merges(
-        user_id_filter=["u3", "ghost", "u1"], is_admin=True,
-        caller_user_id="admin")
+    proposals, _ = _admin_sweep(["u3", "ghost", "u1"])
     assert sorted(p["user_id"] for p in proposals) == ["u1", "u3"]
     key = P._multi_cache_key(["u1", "u3"])
     assert list(P._CACHE) == [key]
@@ -454,13 +449,11 @@ def test_propose_admin_several_users_sweep_only_those(
     P.invalidate("u3")
     assert key not in P._CACHE
 
-    proposals, _ = P.propose_merges(
-        user_id_filter=["ghost", "u2"], is_admin=True, caller_user_id="admin")
+    proposals, _ = _admin_sweep(["ghost", "u2"])
     assert [p["user_id"] for p in proposals] == ["u2"]
     assert P._user_cache_key("u2") in P._CACHE
 
-    proposals, was_cached = P.propose_merges(
-        user_id_filter=[], is_admin=True, caller_user_id="admin")
+    proposals, was_cached = _admin_sweep([])
     assert proposals == [] and was_cached is False
 
 
