@@ -31,7 +31,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core import languages
 from tests._transcription_helpers import (
-    cancel_while_register_held, cancel_with_register_queued)
+    blocked_register, cancel_while_register_held, cancel_with_register_queued)
 
 
 # ---------------------------------------------------------------------------
@@ -1996,14 +1996,7 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
     _drop_locked would unregister), and the lease the cancelled caller will
     never release is given back."""
     made, stats = lru_env
-    entered, go = threading.Event(), threading.Event()
-
-    def _slow_register(name, vram, device, kind, load_secs=None):
-        entered.set()
-        go.wait(5)
-        stats["registered"].append((name, device, kind))
-    monkeypatch.setattr(translation.model_registry, "register_loaded_model",
-                        _slow_register)
+    entered, go = blocked_register(monkeypatch)
     cancel_while_register_held(
         lambda: translation._get_model("o/a", lease=True), entered, go)
     assert translation._models.get("o/a") is made["o/a"]
@@ -2032,14 +2025,7 @@ def test_unleased_load_dropped_during_register_leaves_no_phantom(
     no-op; the late register must then be undone, not left as a "gguf:"
     entry with no cached model behind it."""
     made, stats = lru_env
-    entered, go = threading.Event(), threading.Event()
-
-    def _slow_register(name, vram, device, kind, load_secs=None):
-        entered.set()
-        go.wait(5)
-        stats["registered"].append((name, device, kind))
-    monkeypatch.setattr(translation.model_registry, "register_loaded_model",
-                        _slow_register)
+    entered, go = blocked_register(monkeypatch)
 
     async def run():
         task = asyncio.create_task(translation.load_unleased("o/a"))
