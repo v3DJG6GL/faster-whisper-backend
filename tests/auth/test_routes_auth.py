@@ -5,7 +5,9 @@ import asyncio
 
 from starlette.testclient import TestClient
 
-from tests.conftest import bearer, fake_request, locked_alice, locked_user
+from tests.conftest import (
+    assert_stream_ends, bearer, fake_request, locked_alice, locked_user,
+)
 from tests.conftest import status_of as _status_of
 from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.quick_config import routes as quick_config_routes
@@ -277,11 +279,7 @@ def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,
         api_keys_store.revoke_user(uid)
         with open(log, "a", encoding="utf-8") as f:
             f.write("leaked\n")
-        try:
-            got = await gen.__anext__()
-        except StopAsyncIteration:
-            return
-        raise AssertionError(f"stream kept going after revoke: {got!r}")
+        await assert_stream_ends(gen)
 
     asyncio.run(drive())
 
@@ -319,11 +317,7 @@ def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
         api_keys_store.set_user_permissions(
             uid, {"pages": {"quick_config": "none"}})
         asyncio.create_task(push(uid))
-        try:
-            got = await body.__anext__()
-        except StopAsyncIteration:
-            return
-        raise AssertionError(f"stream kept going after revoke: {got!r}")
+        await assert_stream_ends(body)
 
     asyncio.run(drive())
 

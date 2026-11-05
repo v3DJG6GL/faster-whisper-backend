@@ -260,7 +260,7 @@ def test_logs_stream_rechecks_the_caller_before_the_backlog(
     TestClient)."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.auth import dependencies as auth_dependencies
-    from tests.conftest import bearer, fake_request, locked_user
+    from tests.conftest import assert_stream_ends, bearer, fake_request, locked_user
 
     log = tmp_path / "live.log"
     log.write_text("first\n", encoding="utf-8")
@@ -274,13 +274,7 @@ def test_logs_stream_rechecks_the_caller_before_the_backlog(
 
     async def drive():
         gen = logs_routes._stream_log_lines(req)
-        try:
-            got = await asyncio.wait_for(gen.__anext__(), timeout=5)
-        except StopAsyncIteration:
-            return
-        finally:
-            await gen.aclose()
-        raise AssertionError(f"stream kept going after revoke: {got!r}")
+        await assert_stream_ends(gen, timeout=5)
 
     asyncio.run(drive())
 

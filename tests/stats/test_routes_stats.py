@@ -20,7 +20,9 @@ from faster_whisper_backend.stats import system_metrics_store
 from faster_whisper_backend.stats import usage_store as us
 from faster_whisper_backend.translation import engine as translation
 from tests._page_helpers import TOP_CLOSE, js_upto
-from tests.conftest import bearer, fake_request, locked_user, read_repo_text
+from tests.conftest import (
+    assert_stream_ends, bearer, fake_request, locked_user, read_repo_text,
+)
 
 
 def _stats_js() -> str:
@@ -546,14 +548,7 @@ def test_stream_rechecks_the_caller_before_its_first_frame(
         user = stats_routes._require_stats_page_sse(req)
         api_keys_store.revoke_user(uid)
         resp = await stats_routes.stats_stream(req, lite=1, user=user)
-        body = resp.body_iterator
-        try:
-            got = await asyncio.wait_for(body.__anext__(), timeout=10)
-        except StopAsyncIteration:
-            return
-        finally:
-            await body.aclose()
-        raise AssertionError(f"frame streamed after revoke: {got[:80]!r}")
+        await assert_stream_ends(resp.body_iterator)
 
     asyncio.run(after_revoke())
 

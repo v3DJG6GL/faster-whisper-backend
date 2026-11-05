@@ -476,6 +476,21 @@ def on_event_loop():
     return True
 
 
+async def assert_stream_ends(body, timeout=10):
+    """The next read of SSE iterator `body` must end the stream (a hang past
+    `timeout` s fails too); closes it either way. Driven directly: a streamed
+    SSE body through TestClient hangs the suite."""
+    import asyncio
+
+    try:
+        got = await asyncio.wait_for(body.__anext__(), timeout=timeout)
+    except StopAsyncIteration:
+        return
+    finally:
+        await body.aclose()
+    raise AssertionError(f"stream kept going after revoke: {got[:80]!r}")
+
+
 def fake_wav_transcode(src_path, dst_path):
     """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
     write_wav(dst_path, b"\x00\x00" * 100)
