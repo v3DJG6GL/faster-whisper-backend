@@ -21,9 +21,9 @@ from starlette.websockets import WebSocketDisconnect
 from tests._page_helpers import needs_node
 from tests._streaming_helpers import (
     const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake,
-    locked_down_user, ready_ws, speak_and_stop, stop_and_drain, stream_ws)
+    ready_ws, speak_and_stop, stop_and_drain, stream_ws)
 from tests._transcription_helpers import guard_line
-from tests.conftest import FakeInfo, FakeSegment, FakeWord
+from tests.conftest import FakeInfo, FakeSegment, FakeWord, locked_user
 from faster_whisper_backend.stats import metrics, usage_store
 from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.streaming.routes import _WS_UNAUTH
@@ -309,7 +309,7 @@ def test_dictate_page_sends_a_cleared_language_as_auto_detect(body):
 # request line.
 
 def test_ws_authorization_header_admits(client, make_user_key):
-    _uid, raw = locked_down_user(make_user_key)
+    _uid, raw = locked_user(make_user_key)
     with stream_ws(client, raw) as ws:
         assert _handshake(ws)["type"] == "ready"
 
@@ -319,7 +319,7 @@ def test_ws_basic_then_bearer_authorization_headers_admit(client, make_user_key)
     # client sends `Basic …` first and the API key's `Bearer` second.
     # httpx.Headers, not a list: websocket_connect setdefault()s on it.
     import httpx2 as httpx   # the declared dev dep; httpx is no longer transitive
-    _uid, raw = locked_down_user(make_user_key)
+    _uid, raw = locked_user(make_user_key)
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=httpx.Headers([
                 ("Authorization", "Basic dXNlcjpwYXNz"),
@@ -330,7 +330,7 @@ def test_ws_basic_then_bearer_authorization_headers_admit(client, make_user_key)
 
 def test_ws_bearer_subprotocol_admits(client, make_user_key):
     from faster_whisper_backend.streaming.routes import _WS_BEARER_SUBPROTOCOL
-    _uid, raw = locked_down_user(make_user_key)
+    _uid, raw = locked_user(make_user_key)
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream",
             subprotocols=[_WS_BEARER_SUBPROTOCOL + raw]) as ws:
@@ -338,7 +338,7 @@ def test_ws_bearer_subprotocol_admits(client, make_user_key):
 
 
 def test_ws_key_query_param_rejected(client, make_user_key):
-    _uid, raw = locked_down_user(make_user_key)
+    _uid, raw = locked_user(make_user_key)
     with pytest.raises(WebSocketDisconnect) as ei:
         with client.websocket_connect(
                 f"/v1/audio/transcriptions/stream?key={raw}") as ws:
@@ -627,7 +627,7 @@ def test_per_user_cap_is_per_user(client, make_user_key, app_module,
     are what prove the cap is keyed per identity."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
-    _uid_a, key_a = locked_down_user(make_user_key)
+    _uid_a, key_a = locked_user(make_user_key)
     _uid_b, key_b = make_user_key("bob")
 
     with ready_ws(client, key_a):

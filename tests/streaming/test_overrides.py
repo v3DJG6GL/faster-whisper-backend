@@ -14,10 +14,10 @@ from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 from tests._streaming_helpers import (
-    config_drain, config_frame, const_pcm, dictate_session, handshake, locked_down_user,
+    config_drain, config_frame, const_pcm, dictate_session, handshake,
     ready_ws, speak, speak_and_stop, stop_and_drain, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
-from tests.conftest import bearer
+from tests.conftest import bearer, locked_user
 from faster_whisper_backend.transcription import models as tx_models
 
 OV = "/settings/overrides"
@@ -114,7 +114,7 @@ def test_final_drops_low_confidence_hallucination_segment(
     the temperature ladder (a hallucination on near-silence) is dropped from the
     committed text; a normal segment in the same decode is kept."""
     from tests.conftest import FakeSegment
-    _, raw_alice = locked_down_user(make_user_key)
+    _, raw_alice = locked_user(make_user_key)
 
     bad = FakeSegment(" thank you for watching", 0.0, 1.0)
     bad.avg_logprob, bad.temperature = -2.32, 1.0        # failed decode → drop
@@ -136,7 +136,7 @@ def test_stream_prompt_sentinel_inherit_clear_value(
     DEFAULT_PROMPT; explicit "" → CLEAR (no initial_prompt); a value → used verbatim.
     The first utterance's final decode is seeded straight from base_prompt."""
     monkeypatch.setattr(app_module.cfg, "DEFAULT_PROMPT", "SERVER PROMPT", raising=False)
-    _, raw_alice = locked_down_user(make_user_key)
+    _, raw_alice = locked_user(make_user_key)
 
     def _run(conf_extra):
         dictate_session(client, raw_alice, **conf_extra)
@@ -455,7 +455,7 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     """Revoking the user mid-stream cuts the session: no further transcripts,
     an `unauthorized` notice, and a 4401 close. revoke_user bumps the config
     version, which is the signal _refresh_ident already consumes."""
-    uid, raw_alice = locked_down_user(make_user_key)
+    uid, raw_alice = locked_user(make_user_key)
 
     with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
@@ -485,7 +485,7 @@ def test_revoked_session_closes_without_a_further_client_frame(
     a client that then goes silent (sends no further frame) must not keep the
     revoked session open until the idle timeout; the producer's own
     _auth_revoked branch is only the backstop."""
-    uid, raw_alice = locked_down_user(make_user_key)
+    uid, raw_alice = locked_user(make_user_key)
 
     with ready_ws(client, raw_alice) as ws:
         ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
@@ -505,7 +505,7 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
     (the config message, a cold model load) still closes the connection: the
     version snapshot predates authentication, so _refresh_ident sees the
     revocation and the first decode re-auths and closes."""
-    uid, raw_alice = locked_down_user(make_user_key)
+    uid, raw_alice = locked_user(make_user_key)
 
     real = streaming_routes.authenticate_ws
     calls = []
@@ -558,7 +558,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
     """The re-auth hangs off the SAME version-bump branch as the ident refresh,
     so the steady state costs exactly nothing: one authenticate_ws call, at the
     handshake, no matter how many partial/final decodes run."""
-    _, raw_alice = locked_down_user(make_user_key)
+    _, raw_alice = locked_user(make_user_key)
 
     calls = []
     real = streaming_routes.authenticate_ws
@@ -578,7 +578,7 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
     config version, which is the only signal _refresh_ident consumes."""
     from faster_whisper_backend.auth import sessions_store
 
-    _uid, raw_alice = locked_down_user(make_user_key)
+    _uid, raw_alice = locked_user(make_user_key)
     assert client.post("/auth/login", json={"key": raw_alice}).status_code == 200
     cookie_name = app_module.cfg.SESSION_COOKIE_NAME
     raw_cookie = client.cookies.get(cookie_name)
@@ -610,7 +610,7 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     decode_final → _refresh_ident → _CredentialRevoked outside the pump. It
     must still close with 4401 like every other revocation path, with no
     "internal" error frame, no last final and no error ledger row."""
-    uid, raw_alice = locked_down_user(make_user_key)
+    uid, raw_alice = locked_user(make_user_key)
     rows = []
     monkeypatch.setattr(metrics, "record_transcription",
                         lambda **kw: rows.append(kw.get("status")))
@@ -818,7 +818,7 @@ def test_stream_client_output_wrappers_survive_a_refresh(
         client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     # _refresh_ident recomputes the wrappers; it must keep the client's.
     monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
-    uid, raw_alice = locked_down_user(make_user_key)
+    uid, raw_alice = locked_user(make_user_key)
     with ready_ws(client, raw_alice, decode_overrides={"output_prefix": ">> ",
                                                        "output_suffix": " <<"}) as ws:
         speak(ws)
