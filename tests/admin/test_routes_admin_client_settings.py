@@ -3,6 +3,7 @@ per-account synced client settings (metadata map, export, import, delete)."""
 
 import json
 
+from faster_whisper_backend.client_settings import store as client_settings_store
 from tests._page_helpers import js_body, js_fn, js_upto, needs_node, node_json
 from tests.conftest import bearer
 
@@ -97,8 +98,6 @@ def test_page_delete_handles_401_and_detail(client):
 
 
 def test_meta_map_empty(client):
-    from faster_whisper_backend.client_settings import store as client_settings_store
-
     r = client.get(f"{_API}/client-settings")
     assert r.status_code == 200
     # `unavailable` False keeps "healthy but empty" distinguishable from a
@@ -203,9 +202,8 @@ def test_import_creates_when_nothing_stored(client, make_user_key):
 
 
 def test_import_oversize_413(client, make_user_key):
-    from faster_whisper_backend.client_settings import store
     uid, key = make_user_key("big", is_admin=True)
-    big = {"x": "a" * (store._CAP_BLOB + 100)}
+    big = {"x": "a" * (client_settings_store._CAP_BLOB + 100)}
     r = _import(client, uid, key, big)
     assert r.status_code == 413
 
@@ -294,8 +292,6 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
     still render its users) but flags `unavailable: true` so the drawers say
     "store down" rather than the falsehood "nothing stored"; export/import/
     delete surface a 503 instead of a bare 500."""
-    from faster_whisper_backend.client_settings import store as client_settings_store
-
     uid, key = make_user_key("sadmin", is_admin=True)
     monkeypatch.setattr(client_settings_store, "_conn", None)
     h = bearer(key)
@@ -318,8 +314,6 @@ def test_import_preview_uses_served_blob_cap(client):
     cap rose to ~4 MiB, so a 1 MB file the server accepts (one this page's own
     Export produces) was refused in the browser. It must gate on the
     `max_bytes` the meta map serves."""
-    from faster_whisper_backend.client_settings import store as client_settings_store
-
     html = client.get("/settings/api-keys").text
     cap = client.get(f"{_API}/client-settings").json()["max_bytes"]
     assert cap == client_settings_store._CAP_BLOB

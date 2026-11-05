@@ -1,5 +1,6 @@
 """Integration tests for /v1/synced-client-settings (desktop settings sync)."""
 
+from faster_whisper_backend.client_settings import routes, store
 from tests.conftest import bearer, locked_user
 
 _URL = "/v1/synced-client-settings"
@@ -52,7 +53,6 @@ def test_stale_put_409_carries_current_then_force_put(client):
 
 
 def test_oversize_blob_413(client):
-    from faster_whisper_backend.client_settings import store
     big = {"x": "a" * (store._CAP_BLOB + 100)}
     r = _put(client, big, 0)
     assert r.status_code == 413
@@ -106,7 +106,6 @@ def test_legacy_non_finite_row_serves_null_not_500(client, make_user_key):
     wrote a file its own import rejects. It is served as null instead."""
     import json
 
-    from faster_whisper_backend.client_settings import store
     uid, key = make_user_key("legacy", is_admin=True)
     assert _put(client, {"x": 1, "y": "keep"}, 0,
                 headers=bearer(key)).status_code == 200
@@ -142,7 +141,6 @@ def test_over_deep_blob_422_and_nothing_stored(client, monkeypatch):
     """GET renders through pydantic's serializer, which 500s from ~255
     levels: a stored over-deep blob would make every later pull of the
     account a bare 500 until the row is replaced, so PUT refuses it."""
-    from faster_whisper_backend.client_settings import routes
     monkeypatch.setattr(routes, "_MAX_BLOB_DEPTH", 8)
     r = _put(client, {"a": _nested(8)}, 0)  # cap + 1
     assert r.status_code == 422
@@ -153,7 +151,6 @@ def test_over_deep_blob_422_and_nothing_stored(client, monkeypatch):
 
 
 def test_blob_at_depth_cap_round_trips(client, monkeypatch):
-    from faster_whisper_backend.client_settings import routes
     monkeypatch.setattr(routes, "_MAX_BLOB_DEPTH", 8)
     blob = {"theme": "dark", "nest": _nested(7)}  # cap
     assert _put(client, blob, 0).status_code == 200
@@ -228,9 +225,7 @@ def test_store_unavailable_maps_to_503_not_500(client, monkeypatch):
     """init_db failing at startup (e.g. an unwritable CLIENT_SETTINGS_DB in a
     containerized deployment) must surface as an actionable 503 pointing at
     the config knob, not a bare 500."""
-    from faster_whisper_backend.client_settings import store as client_settings_store
-
-    monkeypatch.setattr(client_settings_store, "_conn", None)
+    monkeypatch.setattr(store, "_conn", None)
     r = client.get(_URL)
     assert r.status_code == 503
     assert "CLIENT_SETTINGS_DB" in r.json()["detail"]
@@ -242,9 +237,7 @@ def test_partial_init_maps_to_503_not_500(client, monkeypatch):
     """init_db raising AFTER it assigned _conn (WAL pragma / schema script /
     secure_db_file on a corrupt or read-only DB) must also answer the
     advertised 503 — not a bare 500 from the half-open connection."""
-    from faster_whisper_backend.client_settings import store as client_settings_store
-
-    monkeypatch.setattr(client_settings_store, "_DB_READY", False)
+    monkeypatch.setattr(store, "_DB_READY", False)
     r = client.get(_URL)
     assert r.status_code == 503
     assert "CLIENT_SETTINGS_DB" in r.json()["detail"]
