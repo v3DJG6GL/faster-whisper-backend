@@ -124,18 +124,17 @@ def test_words_included_with_granularity_field(client, app_module):
     assert [w["word"] for w in body["words"]] == ["hallo", "welt"]
 
 
-def _serve_failing_decode(monkeypatch, msg):
-    """Every load returns a model whose transcribe() raises RuntimeError(msg)."""
+def _post_failing_decode(client, monkeypatch, msg):
+    """A json post whose decode raises RuntimeError(msg) must answer 500."""
     class _Failing(FakeModel):
         def transcribe(self, path, **kwargs):
             raise RuntimeError(msg)
     serve_model(monkeypatch, _Failing())
+    assert _post(client, response_format="json").status_code == 500
 
 
 def test_model_transcribe_raises_returns_500(client, app_module, monkeypatch):
-    _serve_failing_decode(monkeypatch, "decode blew up")
-    r = _post(client, response_format="json")
-    assert r.status_code == 500
+    _post_failing_decode(client, monkeypatch, "decode blew up")
 
 
 def test_output_prefix_suffix_wrap(client, app_module):
@@ -497,9 +496,7 @@ def _ledger_row():
 
 
 def test_cuda_oom_is_classified_on_the_ledger(client, app_module, monkeypatch):
-    _serve_failing_decode(monkeypatch, "CUDA failed with error out of memory")
-    r = _post(client, response_format="json")
-    assert r.status_code == 500
+    _post_failing_decode(client, monkeypatch, "CUDA failed with error out of memory")
     row = _ledger_row()
     assert row["status"] == "error"
     assert (row["error_class"], row["error_stage"]) == ("cuda_oom", "transcribing")
@@ -516,8 +513,7 @@ def test_unknown_failure_is_other_and_success_has_no_class(client, app_module,
     ok = _ledger_row()
     assert ok["error_class"] is None and ok["error_stage"] is None
 
-    _serve_failing_decode(monkeypatch, "decode blew up")
-    assert _post(client, response_format="json").status_code == 500
+    _post_failing_decode(client, monkeypatch, "decode blew up")
     row = _ledger_row()
     assert (row["error_class"], row["error_stage"]) == ("other", "transcribing")
 
