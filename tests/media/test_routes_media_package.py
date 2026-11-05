@@ -17,7 +17,7 @@ import pytest
 from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media import subtitle_mux as pk
-from tests.conftest import bearer, write_bytes
+from tests.conftest import bearer, wait_until, write_bytes
 from tests.media.test_routes_url import _assert_refused, _ok_body, _video_ids
 from tests.media.test_subtitle_mux import TESTSRC_1S, run_ffmpeg
 
@@ -521,10 +521,9 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
     try:
         # Wait until the first job demonstrably holds the slot (its package
         # step started), not a fixed sleep a loaded runner can outrun.
-        deadline = time.monotonic() + 10
-        while not os.path.exists(latch + ".started"):
-            assert time.monotonic() < deadline, "the first package never started"
-            time.sleep(0.02)
+        started = latch + ".started"
+        wait_until(lambda: os.path.exists(started), timeout=10, interval=0.02)
+        assert os.path.exists(started), "the first package never started"
         r = _package(client, mid, {"container": "mkv"})
         # The in-flight guard's wording — the rate limiter's 429 also says
         # "video export".

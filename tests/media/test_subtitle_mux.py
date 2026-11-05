@@ -14,6 +14,7 @@ import tempfile
 import pytest
 
 from faster_whisper_backend.media import subtitle_mux as pk
+from tests.conftest import wait_until
 
 
 @contextlib.contextmanager
@@ -310,10 +311,7 @@ def test_a_retried_ffmpeg_probe_is_single_flight_and_off_the_caller(monkeypatch)
         second = pk.ffmpeg_capabilities()
         assert not first.available and not second.available
         assert "did not answer in time" in second.reason
-        for _ in range(100):
-            if probes:
-                break
-            threading.Event().wait(0.01)
+        wait_until(lambda: probes, timeout=1)
         assert len(probes) == 1                       # single-flight
         assert probes[0] is not threading.current_thread()
     finally:

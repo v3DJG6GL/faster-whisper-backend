@@ -15,6 +15,7 @@ import pytest
 
 from faster_whisper_backend.media import captions as cc
 from faster_whisper_backend.media import subtitle_mux as pk
+from tests.conftest import wait_until
 from tests.media.test_subtitle_mux import argv_for, packaged
 
 PAD = (0xFC, 0x80, 0x80)          # CEA-608 field 1, valid, padding
@@ -139,8 +140,7 @@ def test_cancelled_export_kills_the_scan_child(tmp_path, monkeypatch):
     # asyncio.run joins the default executor on exit, i.e. the scan thread:
     # without the cancel hook that alone took the child's full 30 s sleep.
     asyncio.run(go())
-    while procs[0].poll() is None and time.monotonic() - cancelled_at[0] < 2:
-        time.sleep(0.02)
+    wait_until(lambda: procs[0].poll() is not None, timeout=2, interval=0.02)
     assert procs[0].poll() is not None
     assert time.monotonic() - cancelled_at[0] < 1.5
 
