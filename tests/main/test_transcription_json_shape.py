@@ -10,6 +10,15 @@ from tests._translation_helpers import enable_translation, stub_translate
 from tests._transcription_helpers import bind_profile, post_json_ok, post_verbose_ok
 
 
+def _stub_translated(monkeypatch, text_for, *warnings, source="en", **meta):
+    """translate_segments answers text_for(target, index, segment) per target."""
+    async def _fake(segments, targets, **kwargs):
+        return [{t: text_for(t, i, seg) for t in targets}
+                for i, seg in enumerate(segments)], list(warnings), {
+            "model": "org/d:Q4", "source": source, "mode": "fluent", **meta}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+
 def test_plain_json_reports_locked_override_as_ignored(client, make_user_key,
                                                        fake_model):
     # Mirrors test_transcription_overrides::test_locked_task_ignores_client_param
@@ -42,14 +51,9 @@ def test_plain_json_translation_meta_names_kept_originals(client, app_module,
     # in verbose_json; the shared meta carries target -> segment indices so
     # the joined-text shape can tell a kept German line from a translation.
     enable_translation(app_module, monkeypatch)
-
-    async def _fake(segments, targets, **kwargs):
-        per_seg = [{t: seg["text"] for t in targets} for seg in segments]
-        return per_seg, ["segment 1: kept original — translation failed "
-                         "(length ratio)"], {
-            "model": "org/d:Q4", "source": "de", "mode": "fluent",
-            "kept": {0: list(targets)}}
-    monkeypatch.setattr(translation, "translate_segments", _fake)
+    _stub_translated(monkeypatch, lambda t, i, seg: seg["text"],
+                     "segment 1: kept original — translation failed (length ratio)",
+                     source="de", kept={0: ["en"]})
 
     body = post_json_ok(client, translate_to="en")
     assert "segments" not in body
@@ -77,12 +81,7 @@ def test_joined_translations_glue_unspaced_pieces(client, app_module, fake_model
                             FakeSegment("to buy some bread today.", 1.0, 2.0)]
     enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True)
     pieces = {"zh": ["我今天去商", "店买一些面包。"], "en": ["Hi", "there."]}
-
-    async def _fake(segments, targets, **kwargs):
-        return [{t: pieces[t][i] for t in targets}
-                for i in range(len(segments))], [], {
-            "model": "org/d:Q4", "source": "en", "mode": "fluent"}
-    monkeypatch.setattr(translation, "translate_segments", _fake)
+    _stub_translated(monkeypatch, lambda t, i, seg: pieces[t][i])
 
     want = {"zh": "我今天去商店买一些面包。", "en": "Hi there."}
     for fmt in ("json", "verbose_json"):
@@ -99,12 +98,7 @@ def test_joined_translations_glue_a_digit_to_han_only_for_a_zh_target(
                             FakeSegment("apples.", 1.0, 2.0)]
     enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True)
     pieces = ["我买了3", "个苹果。"]
-
-    async def _fake(segments, targets, **kwargs):
-        return [{t: pieces[i] for t in targets}
-                for i in range(len(segments))], [], {
-            "model": "org/d:Q4", "source": "en", "mode": "fluent"}
-    monkeypatch.setattr(translation, "translate_segments", _fake)
+    _stub_translated(monkeypatch, lambda t, i, seg: pieces[i])
     body = post_json_ok(client, translate_to="zh,en")
     want = {"zh": "我买了3个苹果。", "en": "我买了3 个苹果。"}
     assert body["translations"] == want
