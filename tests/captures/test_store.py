@@ -10,7 +10,7 @@ import pytest
 
 from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.settings import config
-from tests.captures._store_helpers import create_stub_capture
+from tests.captures._store_helpers import create_stub_capture, insert_sample
 from tests.conftest import install_fake_wav_transcode, wait_until, waits_on, write_bytes
 
 
@@ -874,12 +874,7 @@ def test_sweep_retention_deletes_more_ids_than_one_in_list_chunk(
 
 
 def _seed_sample(conn, gs, sid, created_ts=1.0):
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " member_hashes) VALUES (?,?,?,?,?,?,?)",
-        (sid, "u1", created_ts, gs._relpath_for(sid), 1000, "t", "{}"),
-    )
+    insert_sample(conn, sid, created_ts=created_ts, merged_duration_ms=1000)
 
 
 def _group_one(cs, gs, sid, member, sample_ts=1.0, member_ts=None):

@@ -3,6 +3,7 @@
 Import as ``from tests.captures._store_helpers import ...``.
 """
 
+from faster_whisper_backend.captures import samples_store as capture_samples_store
 from faster_whisper_backend.captures import store as captures_store
 
 
@@ -15,6 +16,20 @@ def insert_capture(conn, cid, **cols):
            "words": "[]", "segments": "[]", "status": "new", **cols}
     conn.execute(
         f"INSERT INTO captures ({', '.join(row)})"
+        f" VALUES ({', '.join('?' * len(row))})",
+        tuple(row.values()),
+    )
+
+
+def insert_sample(conn, sid, verb="INSERT", **cols):
+    """Raw-insert one capture_samples row holding only the NOT NULL columns;
+    `cols` set or override column values."""
+    row = {"id": sid, "user_id": "u1", "created_ts": 1.0,
+           "merged_wav_relpath": capture_samples_store._relpath_for(sid),
+           "merged_duration_ms": 5000, "transcript": "t",
+           "member_hashes": "{}", **cols}
+    conn.execute(
+        f"{verb} INTO capture_samples ({', '.join(row)})"
         f" VALUES ({', '.join('?' * len(row))})",
         tuple(row.values()),
     )

@@ -6,26 +6,17 @@ import os
 import pytest
 
 from faster_whisper_backend.captures import samples as capture_samples
-from tests.captures._store_helpers import insert_capture
+from tests.captures._store_helpers import insert_capture, insert_sample
 from tests.conftest import wait_until, waits_on as _waits_on, write_bytes as _touch
 
 
 def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
                   language="de", transcript="hello", member_hashes="{}",
                   admin_notes="", member_trims="{}"):
-    relpath = gs._relpath_for(sid)
-    gs._require_conn().execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, user_id, created_ts, relpath, 5000, transcript, "space",
-         member_hashes, 300, 0, 0, status, admin_notes, language,
-         member_trims),
-    )
-    return relpath
+    insert_sample(gs._require_conn(), sid, user_id=user_id, created_ts=created_ts,
+                  transcript=transcript, member_hashes=member_hashes, status=status,
+                  admin_notes=admin_notes, language=language, member_trims=member_trims)
+    return gs._relpath_for(sid)
 
 
 def _insert_capture(cs, cid, *, sample_id=None, sample_order=None, language="de",

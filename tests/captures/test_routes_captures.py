@@ -22,7 +22,7 @@ from faster_whisper_backend.core import text_corrections
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 from tests._page_helpers import js_body, js_upto
-from tests.captures._store_helpers import insert_capture
+from tests.captures._store_helpers import insert_capture, insert_sample
 from tests.conftest import bearer, install_fake_wav_transcode, locked_user, write_bytes, write_wav
 
 
@@ -159,16 +159,8 @@ def test_merge_member_scope_guard_precedes_state_checks(
 
 def _insert_sample(conn, gs, sid, *, locked, user_id="alice", ts=1.0):
     """Insert a capture_samples row directly (no audio merge needed)."""
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, user_id, ts, gs._relpath_for(sid), 5000, "t", "space",
-         "{}", 300, 0, 1 if locked else 0, "new", "", "de", "{}"),
-    )
+    insert_sample(conn, sid, user_id=user_id, created_ts=ts, language="de",
+                  is_locked=1 if locked else 0)
 
 
 def _insert_member(conn, cid, sid, user_id="alice", request_id=None, **cols):

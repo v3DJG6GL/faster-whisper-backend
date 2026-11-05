@@ -20,7 +20,7 @@ from faster_whisper_backend.captures import reapply as captures_reapply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
-from tests.captures._store_helpers import insert_capture
+from tests.captures._store_helpers import insert_capture, insert_sample
 
 # The module's canonical idle state (mirrors reapply._reset_for_tests).
 _IDLE = {
@@ -157,14 +157,8 @@ def _insert(conn, cid, *, language, raw="hello", final="hello", user_id="alice",
 
 def _insert_sample(conn, gs, sid, *, locked=0):
     # OR IGNORE: the mid-pass callers run once per pass.
-    conn.execute(
-        "INSERT OR IGNORE INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,?,'new','',"
-        "'de','{}')", (sid, gs._relpath_for(sid), locked))
+    insert_sample(conn, sid, verb="INSERT OR IGNORE", user_id="alice",
+                  transcript="old", language="de", is_locked=locked)
 
 
 def _join_sample(conn, gs, sid, cid, *, locked=0):
