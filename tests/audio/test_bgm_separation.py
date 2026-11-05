@@ -18,7 +18,7 @@ from tests._transcription_helpers import (
     assert_cancelled_load_listed, bind_profile, blocked_register,
     cancel_while_register_held, cancel_with_register_queued, record_loads)
 from tests._transcription_helpers import post_verbose_ok as _post_ok
-from tests.conftest import bearer, wait_until
+from tests.conftest import bearer, record_calls, wait_until
 from tests.main._stage_helpers import stage_raises
 
 _M4A_UPLOAD = {"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")}
@@ -381,9 +381,8 @@ def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     stats row / wipe the session device while the S1 job still runs."""
     _seed(monkeypatch, object(), ("m.onnx", "cpu"), orphans={"m.onnx": 1})
     monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
-    unregistered = []
-    monkeypatch.setattr(model_registry, "unregister_loaded_model",
-                        lambda name: unregistered.append(name))
+    unregistered = record_calls(monkeypatch, model_registry,
+                                "unregister_loaded_model", lambda name: name)
 
     assert bgm_separation._drop_locked(force=False) is True
     assert bgm_separation._separator is None

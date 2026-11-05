@@ -25,6 +25,7 @@ from tests._transcription_helpers import (
     cancel_with_register_queued as _cancel_with_register_queued)
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import record_loads as _record_loads
+from tests.conftest import record_calls
 from tests.main._stage_helpers import stage_raises
 
 
@@ -403,9 +404,8 @@ def test_idle_drop_waits_for_a_same_id_orphan(monkeypatch):
     then idled: dropping the reload must leave the stats row and teardown
     to the orphan's last release (job 1 is still running on A)."""
     _seed(monkeypatch, object(), ("A", "cpu", 4), orphans={"A": 1})
-    unregistered: "list[str]" = []
-    monkeypatch.setattr(model_registry, "unregister_loaded_model",
-                        unregistered.append)
+    unregistered = record_calls(monkeypatch, model_registry,
+                                "unregister_loaded_model", lambda name: name)
 
     assert diarization._drop_locked(force=False) is True
     assert diarization._pipeline is None
@@ -586,9 +586,8 @@ def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):
     still inside pipe() holding _infer_mutex: a non-forced drop must decline
     (no unregister, no "unloaded") until the thread lets go."""
     _seed(monkeypatch, object(), ("m1", "cpu", 4))
-    unregistered: "list[str]" = []
-    monkeypatch.setattr(model_registry, "unregister_loaded_model",
-                        unregistered.append)
+    unregistered = record_calls(monkeypatch, model_registry,
+                                "unregister_loaded_model", lambda name: name)
     held, release = threading.Event(), threading.Event()
 
     def _zombie():

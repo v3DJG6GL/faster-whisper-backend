@@ -15,6 +15,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_registry
 from tests._transcription_helpers import record_loads
+from tests.conftest import record_calls
 
 
 class _RaisingLock:
@@ -335,9 +336,8 @@ def test_bgm_same_model_orphan_release_mid_load_keeps_the_stats_row(
         loop_box["loop"].call_soon_threadsafe(
             bgm_separation._release_locked, "Foo.onnx", old)
     monkeypatch.setattr(model_registry, "register_loaded_model", _register)
-    unregistered: "list[str]" = []
-    monkeypatch.setattr(model_registry, "unregister_loaded_model",
-                        unregistered.append)
+    unregistered = record_calls(monkeypatch, model_registry,
+                                "unregister_loaded_model", lambda name: name)
 
     async def _go():
         loop_box["loop"] = asyncio.get_running_loop()
@@ -412,9 +412,8 @@ def test_diarize_live_release_is_not_charged_to_a_same_id_orphan(
 
     # Freeing the orphan must not unregister the LIVE pipeline's stats entry
     # (same id, same "pyannote:m1" key) out from under /stats and the evictor.
-    unregistered: "list[str]" = []
-    monkeypatch.setattr(model_registry, "unregister_loaded_model",
-                        unregistered.append)
+    unregistered = record_calls(monkeypatch, model_registry,
+                                "unregister_loaded_model", lambda name: name)
     assert "pyannote:m1" in model_registry._loaded_models
     asyncio.run(diarization._release_pipeline("m1", old))
     assert diarization._orphans == {}
@@ -446,9 +445,8 @@ def test_bgm_live_release_is_not_charged_to_a_same_model_orphan(
     # Freeing the orphan must not unregister the LIVE separator's stats entry
     # (same "uvr:Foo.onnx" key) nor wipe the live session's placement —
     # actual_device() keeps reporting where the live model runs.
-    unregistered: "list[str]" = []
-    monkeypatch.setattr(model_registry, "unregister_loaded_model",
-                        unregistered.append)
+    unregistered = record_calls(monkeypatch, model_registry,
+                                "unregister_loaded_model", lambda name: name)
     monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
     assert "uvr:Foo.onnx" in model_registry._loaded_models
     asyncio.run(bgm_separation._release_separator("Foo.onnx", old))
