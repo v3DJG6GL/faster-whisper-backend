@@ -41,19 +41,23 @@ def _enable_stubbed(app_module, monkeypatch, **cfg_fields):
     return _stub_translate(monkeypatch)
 
 
+def _post_status(client, status, headers=None, **body):
+    """POST a text-translation body that must answer ``status``; returns the response."""
+    r = client.post(URL, json=_body(**body), headers=headers)
+    assert r.status_code == status, r.text
+    return r
+
+
 def _post_ok(client, headers=None, **body):
     """POST a text-translation body that must answer 200; returns the response."""
-    r = client.post(URL, json=_body(**body), headers=headers)
-    assert r.status_code == 200, r.text
-    return r
+    return _post_status(client, 200, headers, **body)
 
 
 def _assert_parked_receipt_released(client, key, status, **body):
     """A request naming parked receipt ``key`` is refused with ``status``; the
     receipt is handed back, not left for the sweeper."""
     _park(key, hold_s=90)
-    r = client.post(URL, json=_body(captured_id=key, **body))
-    assert r.status_code == status, r.text
+    _post_status(client, status, captured_id=key, **body)
     assert receipt_hold.pending() == 0
 
 
@@ -138,7 +142,7 @@ def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
 def test_401_when_locked_down(client, app_module, make_user_key, monkeypatch):
     _enable_stubbed(app_module, monkeypatch)
     _, raw_admin = make_user_key("admin", is_admin=True)   # flips to lockdown
-    assert client.post(URL, json=_body()).status_code == 401
+    _post_status(client, 401)
     # ...and a plain (non-admin) bearer passes: no host gate, no page perm.
     _, raw_user = make_user_key("worker", is_admin=False)
     _post_ok(client, headers=bearer(raw_user))
@@ -147,8 +151,7 @@ def test_401_when_locked_down(client, app_module, make_user_key, monkeypatch):
 def test_403_when_translation_disabled(client, app_module, monkeypatch):
     # TRANSLATION_ENABLED defaults off.
     _stub_translate(monkeypatch)
-    r = client.post(URL, json=_body())
-    assert r.status_code == 403
+    r = _post_status(client, 403)
     assert "disabled" in r.json()["detail"]
 
 
@@ -174,13 +177,12 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     window = tr_routes._text_translate_rate
     window._state.clear()
     # A body that fails validation still counts against the window.
-    assert client.post(URL, json=_body(segments=[])).status_code == 422
+    _post_status(client, 422, segments=[])
     assert client.post(URL, json=_body()).status_code == 200
     # Over the ceiling a malformed body is refused by the window, not
     # by the validation it never reaches.
-    assert client.post(URL, json=_body(segments=[])).status_code == 429
-    r = client.post(URL, json=_body())
-    assert r.status_code == 429, r.text
+    _post_status(client, 429, segments=[])
+    r = _post_status(client, 429)
     body = r.json()
     assert body["error"]["param"] == "TRANSLATE_RATE_PER_MIN"
     assert r.headers["Retry-After"] == str(body["error"]["retry_after"])
@@ -203,8 +205,7 @@ def test_inflight_cap_rejects_when_the_identity_is_full(client, app_module,
     for _ in range(limit):
         gauge.acquire(_open_key())
 
-    r = client.post(URL, json=_body())
-    assert r.status_code == 429
+    r = _post_status(client, 429)
     body = r.json()
     assert body["error"]["param"] == "TRANSLATE_MAX_INFLIGHT_PER_USER"
     assert body["error"]["type"] == "rate_limit_exceeded"
@@ -232,7 +233,7 @@ def test_inflight_slot_is_released_on_every_error_path(
         client, app_module, monkeypatch, make_exc, status):
     _enable(app_module, monkeypatch)
     _stub_raising(monkeypatch, make_exc())
-    assert client.post(URL, json=_body()).status_code == status
+    _post_status(client, status)
     assert tr_routes._translate_inflight._counts == {}
 
 
@@ -313,8 +314,7 @@ def test_inflight_cap_is_per_user(client, app_module, make_user_key,
     for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
         gauge.acquire(uid_a)
 
-    assert client.post(URL, json=_body(),
-                       headers=bearer(key_a)).status_code == 429
+    _post_status(client, 429, headers=bearer(key_a))
     assert client.post(URL, json=_body(),
                        headers=bearer(key_b)).status_code == 200
 
@@ -323,8 +323,7 @@ def test_400_on_allowlist_miss(client, app_module, monkeypatch):
     calls = _enable_stubbed(app_module, monkeypatch,
                             TRANSLATION_DEFAULT_MODEL="org/default-GGUF:Q4",
                             TRANSLATION_ALLOWED_MODELS={"org/allowed-GGUF:Q4"})
-    r = client.post(URL, json=_body(translation_model="org/other-GGUF:Q4"))
-    assert r.status_code == 400
+    r = _post_status(client, 400, translation_model="org/other-GGUF:Q4")
     assert "TRANSLATION_ALLOWED_MODELS" in r.json()["detail"]
     assert calls == []
     # The configured default and an allowlisted model both pass.
@@ -335,9 +334,7 @@ def test_400_on_allowlist_miss(client, app_module, monkeypatch):
 
 def test_413_over_total_char_cap(client, app_module, monkeypatch):
     _enable_stubbed(app_module, monkeypatch)
-    r = client.post(URL, json=_body(
-        segments=[{"id": 0, "text": "x" * 200_001}]))
-    assert r.status_code == 413
+    _post_status(client, 413, segments=[{"id": 0, "text": "x" * 200_001}])
 
 
 def test_422_malformed_shapes(client, app_module, monkeypatch):
@@ -410,8 +407,7 @@ def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
     # The invalid entry sits AFTER the code that trips the cap: only an
     # in-loop cap answers "capped at" — a cap checked after the walk would
     # reach the int first and answer "invalid language code".
-    r = client.post(URL, json=_body(targets=["en", "fr", "de", 5]))
-    assert r.status_code == 422
+    r = _post_status(client, 422, targets=["en", "fr", "de", 5])
     assert "capped at" in r.json()["detail"]
     assert "invalid" not in r.json()["detail"]
     _post_ok(client, targets=["en", "fr", "en", "fr"])
@@ -425,8 +421,7 @@ def test_source_must_be_a_language_code(client, app_module, monkeypatch):
     """`source` reaches every prompt and the receipt: a code, "auto" or
     nothing — never a forged log line."""
     calls = _enable_stubbed(app_module, monkeypatch)
-    r = client.post(URL, json=_body(source="de\n[translate] req=deadbeef forged"))
-    assert r.status_code == 422, r.text
+    _post_status(client, 422, source="de\n[translate] req=deadbeef forged")
     assert calls == []
     r = client.post(URL, json=_body(source="de"))
     assert r.status_code == 200 and calls[-1]["source_lang"] == "de"
@@ -447,9 +442,8 @@ def test_speaker_is_clipped_and_counted_against_the_char_cap(
     assert len(spk) == tr_routes._TEXT_TRANSLATE_MAX_SPEAKER
     assert spk.startswith("S?PEAKER")
     n = tr_routes._TEXT_TRANSLATE_MAX_CHARS // 100
-    r = client.post(URL, json=_body(segments=[
-        {"id": i, "text": "x" * 90, "speaker": "y" * 64} for i in range(n)]))
-    assert r.status_code == 413, r.text
+    _post_status(client, 413, segments=[
+        {"id": i, "text": "x" * 90, "speaker": "y" * 64} for i in range(n)])
 
 
 def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
@@ -648,16 +642,14 @@ def test_translation_error_maps_to_400(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     _stub_raising(monkeypatch, translation.TranslationError(
         "no translation model configured (TRANSLATION_DEFAULT_MODEL)"))
-    r = client.post(URL, json=_body())
-    assert r.status_code == 400
+    r = _post_status(client, 400)
     assert "TRANSLATION_DEFAULT_MODEL" in r.json()["detail"]
 
 
 def test_unexpected_error_maps_to_generic_500(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     _stub_raising(monkeypatch, RuntimeError("/secret/path/model.gguf exploded"))
-    r = client.post(URL, json=_body())
-    assert r.status_code == 500
+    r = _post_status(client, 500)
     assert r.json()["detail"] == "translation failed"     # never the raw text
 
 
@@ -678,8 +670,7 @@ def test_progress_visible_and_cancel_honored(client, app_module, monkeypatch):
         raise AssertionError("cancel_check ignored the flagged id")
     monkeypatch.setattr(translation, "translate_segments", _slow)
 
-    r = client.post(URL, json=_body(progress_id=_PID))
-    assert r.status_code == 499, r.text
+    _post_status(client, 499, progress_id=_PID)
     assert seen["entry"].get("stage") == "translating"
     assert seen["entry"].get("progress") == 0.0
     assert _PID not in tx_progress._BATCH_PROGRESS
@@ -825,9 +816,8 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
     assert calls[0]["model_ref"] == "org/pinned-GGUF:Q4"
 
     # A CLIENT asking for a non-allowlisted model is still refused.
-    r = client.post(URL, headers=admin_h,
-                    json=_body(translation_model="org/evil-GGUF:Q8"))
-    assert r.status_code == 400, r.text
+    _post_status(client, 400, headers=admin_h,
+                 translation_model="org/evil-GGUF:Q8")
 
 
 def test_translation_error_records_status_error(client, app_module,
@@ -842,8 +832,7 @@ def test_translation_error_records_status_error(client, app_module,
     make_user_key("root", is_admin=True)            # lock the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
     raw, _ = api_keys_store.create_key(uid, label="alice-laptop")
-    r = client.post(URL, json=_body(), headers=bearer(raw))
-    assert r.status_code == 400, r.text
+    _post_status(client, 400, headers=bearer(raw))
     assert recorded and recorded[-1]["status"] == "error"
     assert recorded[-1]["kind"] == "translate"
     assert recorded[-1]["key_label"] == "alice-laptop"
