@@ -1,11 +1,15 @@
 """Integration tests for /quick-config routes."""
 
+import asyncio
 import copy
 import re
+import time
 
 import pytest
 
+from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.quick_config import routes as qc
+from faster_whisper_backend.reports import store as reports_store
 from tests._page_helpers import js_upto
 from tests.conftest import bearer, fake_request, locked_alice, schema_map_cap
 from tests.quick_config._rules_helpers import assert_saved
@@ -161,8 +165,6 @@ def test_stream_reauth_rechecks_an_expired_session_without_a_bump(
     kept streaming every new trace to a cookie session past SESSION_TTL_S.
     An unchanged version still re-resolves once the interval passed (the
     helper is called directly — the stream itself is never driven)."""
-    import time
-
     from fastapi import HTTPException
 
     from faster_whisper_backend.auth import sessions_store
@@ -197,8 +199,6 @@ def _seed_recent(*rows):
     one second apart. Current timestamps: the store is per-test, but its
     lazy-prune counter is process-wide, so an insert can run the prune — and
     an epoch-era row is older than RECENT_TRANSCRIPTIONS_RETENTION_DAYS."""
-    import time
-
     from faster_whisper_backend.stats import recent_transcriptions_store
     base = time.time() + 1000.0
     for i, (rid, raw, final, *uid) in enumerate(rows, 1):
@@ -518,7 +518,6 @@ def test_quick_config_page_refetches_only_on_a_refused_slug(client):
     # Bounded at the store's comment cap, not the route's 64 KB ceiling:
     # the store keeps only the first _CAP_COMMENT chars, so a longer
     # comment would be cut silently after "Report sent".
-    from faster_whisper_backend.reports import store as reports_store
     assert (f'<textarea class="rep-comment" rows="3" '
             f'maxlength="{reports_store._CAP_COMMENT}"') in html
 
@@ -728,8 +727,6 @@ def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
     BEFORE its up-to-15 s q.get(): a revoke landing during that wait let the
     trace it woke up for through in the old scope. Driven directly, never
     via TestClient streaming."""
-    import asyncio
-    from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
 
     uid, raw = locked_alice(make_user_key, "all")
@@ -771,10 +768,6 @@ def test_stream_recent_rechecks_the_caller_before_the_replay(
     absorbed: the replay (and every live trace for up to
     _REAUTH_INTERVAL_S) went out in the old "all" scope. Driven directly,
     never via TestClient streaming."""
-    import asyncio
-
-    from faster_whisper_backend.auth import api_keys_store
-
     uid, raw = locked_alice(make_user_key, "all")
     _seed_recent(("foreign", "b", "b", "someone-else"), ("own", "a", "a", uid))
     req = fake_request(headers=bearer(raw))
@@ -800,7 +793,6 @@ def test_concurrent_patches_do_not_lose_an_update(client, app_module,
     pre-update PIPELINE_RULES and both write the whole key across the
     offloaded save — the second save silently reverted the first caller's
     edit. apply_rules_patch is serialized now, so both edits must survive."""
-    import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
     from faster_whisper_backend.settings import config_store
@@ -812,7 +804,7 @@ def test_concurrent_patches_do_not_lose_an_update(client, app_module,
     orig_save = config_store.save_overrides
 
     def _slow_save(*a, **kw):
-        _time.sleep(0.2)  # hold the offloaded-save window open
+        time.sleep(0.2)  # hold the offloaded-save window open
         return orig_save(*a, **kw)
 
     monkeypatch.setattr(config_store, "save_overrides", _slow_save)
@@ -850,8 +842,6 @@ def test_state_lists_the_callers_closed_reports(client, make_user_key):
     """The page drops these from its localStorage "reported" hint; without
     them a resolved report kept its badge, and Remove deleted the triaged
     row."""
-    from faster_whisper_backend.reports import store as reports_store
-
     uid, raw = locked_alice(make_user_key)
     _uid_b, raw_b = make_user_key("bob", pages={"quick_config": "own"})
     h = bearer(raw)
