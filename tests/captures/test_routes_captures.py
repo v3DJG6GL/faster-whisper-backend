@@ -1024,7 +1024,6 @@ def test_reprocess_vad_failure_fallback_writes_under_the_rebuild_lock(
     sid = "e" * 32
     _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
     held = []
-    writes = []
 
     @contextlib.contextmanager
     def _recording_lock(s):
@@ -1034,17 +1033,12 @@ def test_reprocess_vad_failure_fallback_writes_under_the_rebuild_lock(
         finally:
             held.remove(s)
 
-    real_update = gs.update_sample
-
-    def _update(s, patch):
-        writes.append((s, dict(patch), list(held)))
-        return real_update(s, patch)
-
     def _fail(s):
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr(capture_samples, "_rebuild_lock", _recording_lock)
-    monkeypatch.setattr(gs, "update_sample", _update)
+    writes = record_calls(monkeypatch, gs, "update_sample",
+                          lambda s, patch: (s, dict(patch), list(held)))
     monkeypatch.setattr(gs, "get_members", _fail)
     vr._run()
     assert vr.status()["stale"] == 1
@@ -1534,14 +1528,8 @@ def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
     uid, raw_key = make_user_key("root", is_admin=True)
     _insert_member(captures_store._require_conn(), "patchthr0001", None,
                    user_id=uid)
-    seen: list = []
-    real = captures_store.update_capture
-
-    def _spy(cid, patch):
-        seen.append((_on_loop(), captures_routes._corrections_write_lock.locked()))
-        return real(cid, patch)
-
-    monkeypatch.setattr(captures_store, "update_capture", _spy)
+    seen = record_calls(monkeypatch, captures_store, "update_capture", lambda cid, patch: (
+        _on_loop(), captures_routes._corrections_write_lock.locked()))
     r = _patch(client, raw_key, "patchthr0001", admin_notes="n")
     assert r.status_code == 200, r.text
     r = _patch(client, raw_key, "patchthr0001", corrections=[],
@@ -1564,14 +1552,7 @@ def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
     uid, raw_key = make_user_key("root", is_admin=True)
     _insert_member(captures_store._require_conn(), "offloop00001", None,
                    user_id=uid)
-    seen: list = []
-    real = captures_store.get_capture
-
-    def _spy(cid):
-        seen.append(_on_loop())
-        return real(cid)
-
-    monkeypatch.setattr(captures_store, "get_capture", _spy)
+    seen = record_calls(monkeypatch, captures_store, "get_capture", lambda cid: _on_loop())
     # No WAV on disk: the row is found, then the file probe answers 410.
     assert _get(client, raw_key, "offloop00001/audio").status_code == 410
     assert _get(client, raw_key, "offloop00001").status_code == 200
@@ -1638,14 +1619,8 @@ def test_sample_chip_save_holds_the_corrections_lock(client, make_user_key,
     conn = captures_store._require_conn()
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
     _insert_member(conn, "patchlckmem1", sid, user_id=uid)
-    held: list = []
-    real = gs.get_members
-
-    def _spy(s):
-        held.append(captures_routes._corrections_write_lock.locked())
-        return real(s)
-
-    monkeypatch.setattr(gs, "get_members", _spy)
+    held = record_calls(monkeypatch, gs, "get_members",
+                        lambda s: captures_routes._corrections_write_lock.locked())
     r = _patch(client, raw_key, f"samples/{sid}", corrections=[],
                baseline_corrections=[])
     assert r.status_code == 200, r.text
@@ -1701,15 +1676,9 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
         out[ids[1]] = dict(out[ids[1]], sample_id="grabbedsid01")
         return out
 
-    seen: list = []
-    real_update = captures_store.update_capture
-
-    def _spy(cid, patch):
-        seen.append((cid, _on_loop(), captures_routes._corrections_write_lock.locked()))
-        return real_update(cid, patch)
-
     monkeypatch.setattr(captures_store, "get_captures_light", _light)
-    monkeypatch.setattr(captures_store, "update_capture", _spy)
+    seen = record_calls(monkeypatch, captures_store, "update_capture", lambda cid, patch: (
+        cid, _on_loop(), captures_routes._corrections_write_lock.locked()))
     r = _post_members(client, root_key, "samples/preview-save-chips", ids, corrections=[])
     assert r.status_code == 200, r.text
     assert seen == [(ids[0], False, True)]
