@@ -298,6 +298,13 @@ def _run_save_js(client, tmp_path, body):
     return _run_js(client, tmp_path, _SAVE_STUBS + body, funcs=("_doSave", "_redrawRules"))
 
 
+def _run_state_js(client, tmp_path, body):
+    """_run_js on applyState and the report functions, with the page state it touches stubbed."""
+    return _run_js(client, tmp_path, _APPLY_STATE_STUBS + body, funcs=_REPORT_FUNCS + (
+        "markReported", "syncReportedBadges", "applyState", "_redrawRules",
+    ))
+
+
 @pytest.mark.parametrize("server_chips", [
     # The server set holds only the 100 newest open reports (and a /state
     # built before a submit committed lacks that id) ...
@@ -308,7 +315,7 @@ def _run_save_js(client, tmp_path, body):
 def test_state_load_keeps_hint_ids_the_server_set_misses(client, tmp_path, server_chips):
     # Every /state load pruned the hint to the server set, so a report beyond
     # it lost "✓ reported" and its Remove button for good.
-    res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
+    res = _run_state_js(client, tmp_path, r"""
       markReported('rid1');
       const { form, badge } = _traceItem('Alpha Beta');
       applyState({ rules: [], user_id: 'u1', reported_chips: %s });
@@ -316,9 +323,7 @@ def test_state_load_keeps_hint_ids_the_server_set_misses(client, tmp_path, serve
         rid1: isReported('rid1'),
         ..._reportUi(form, badge),
       });
-    """ % server_chips, funcs=_REPORT_FUNCS + (
-        "markReported", "syncReportedBadges", "applyState", "_redrawRules",
-    ))
+    """ % server_chips)
     assert res == {"rid1": True, "badge": "inline-flex", "removeBtn": "inline-flex"}
 
 
@@ -326,7 +331,7 @@ def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path)
     # On a shared browser the next account saw "✓ reported" and a Remove
     # button on the previous account's trace, and Remove 404'd into "Report
     # removed.". The old browser-wide key cannot be attributed: it is dropped.
-    res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
+    res = _run_state_js(client, tmp_path, r"""
       _reportedOwner = 'uA';
       markReported('rid1');
       _ls[_REPORTED_KEY] = JSON.stringify(['rid9']);
@@ -343,9 +348,7 @@ def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path)
         asB, legacyKey: _REPORTED_KEY in _ls,
         asA: { rid1: isReported('rid1'), rid3: isReported('rid3') },
       });
-    """, funcs=_REPORT_FUNCS + (
-        "markReported", "syncReportedBadges", "applyState", "_redrawRules",
-    ))
+    """)
     assert res == {
         "asB": {"rid1": False, "rid9": False, "badge": "none", "removeBtn": "none"},
         "legacyKey": False,
@@ -356,7 +359,7 @@ def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path)
 def test_state_load_drops_hint_ids_of_reports_an_admin_closed(client, tmp_path):
     # The hint outlived a report resolved or dismissed on /reports: its trace
     # kept "✓ reported", and Remove deleted the triaged row.
-    res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
+    res = _run_state_js(client, tmp_path, r"""
       markReported('rid1'); markReported('rid2'); markReported('rid3');
       const { form, badge } = _traceItem('Alpha Beta');
       badge.style.display = 'inline-flex';
@@ -368,9 +371,7 @@ def test_state_load_drops_hint_ids_of_reports_an_admin_closed(client, tmp_path):
         rid1: isReported('rid1'), rid2: isReported('rid2'), rid3: isReported('rid3'),
         ..._reportUi(form, badge),
       });
-    """, funcs=_REPORT_FUNCS + (
-        "markReported", "syncReportedBadges", "applyState", "_redrawRules",
-    ))
+    """)
     assert res == {
         "rid1": False, "rid2": True, "rid3": True,
         "badge": "none", "removeBtn": "none",
