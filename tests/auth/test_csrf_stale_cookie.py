@@ -12,10 +12,9 @@ the Origin check."""
 from tests.conftest import bearer
 
 
-def test_bearer_with_stale_cookie_passes_the_csrf_guard(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_bearer_with_stale_cookie_passes_the_csrf_guard(client, root_key):
     client.cookies.set("whisper_session", "stale-token-with-no-row")
-    r = client.post("/auth/logout", headers=bearer(raw))
+    r = client.post("/auth/logout", headers=bearer(root_key))
     assert r.status_code == 200
 
 
@@ -41,10 +40,9 @@ def test_stale_cookie_can_still_sign_out(client, make_user_key):
         assert any(l.startswith(name + "=") for l in lines), (name, lines)
 
 
-def test_live_cookie_with_bearer_still_requires_the_token(client, make_user_key):
+def test_live_cookie_with_bearer_still_requires_the_token(client, root_key):
     # A LIVE cookie plus a bearer header still runs the token check: the
     # skip applies only when the session is gone.
-    _uid, raw = make_user_key("root", is_admin=True)
-    client.post("/auth/login", json={"key": raw})
-    r = client.post("/auth/logout", headers=bearer(raw))
+    client.post("/auth/login", json={"key": root_key})
+    r = client.post("/auth/logout", headers=bearer(root_key))
     assert r.status_code == 403

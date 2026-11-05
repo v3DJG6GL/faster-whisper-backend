@@ -24,9 +24,8 @@ def test_locked_down_no_bearer_is_401(client, make_user_key):
     assert r.status_code == 401
 
 
-def test_locked_down_admin_bearer_ok(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    r = client.get("/settings/state", headers=bearer(raw))
+def test_locked_down_admin_bearer_ok(client, root_key):
+    r = client.get("/settings/state", headers=bearer(root_key))
     assert r.status_code == 200
 
 
@@ -170,12 +169,11 @@ def test_openapi_loopback_open_mode_ok(client):
     assert client.get("/openapi.json").status_code == 200
 
 
-def test_openapi_loopback_locked_needs_admin(client, make_user_key):
-    _ruid, araw = make_user_key("root", is_admin=True)  # lock down + admin key
+def test_openapi_loopback_locked_needs_admin(client, make_user_key, root_key):
     assert client.get("/openapi.json").status_code == 401  # no credential
     _uid, nraw = make_user_key("alice", is_admin=False)
     assert client.get("/openapi.json", headers=bearer(nraw)).status_code == 403
-    assert client.get("/openapi.json", headers=bearer(araw)).status_code == 200
+    assert client.get("/openapi.json", headers=bearer(root_key)).status_code == 200
 
 
 def test_openapi_remote_403(client, make_user_key):

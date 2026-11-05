@@ -74,9 +74,8 @@ def test_whoami_open_mode_for_the_allowlisted_synthetic_admin(client):
     assert body["open_mode"] is True and body["is_admin"] is True
 
 
-def test_login_good_key_sets_cookies(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    r = client.post("/auth/login", json={"key": raw})
+def test_login_good_key_sets_cookies(client, root_key):
+    r = client.post("/auth/login", json={"key": root_key})
     assert r.status_code == 200
     body = r.json()
     assert body["open_mode"] is False
@@ -113,10 +112,9 @@ def test_login_non_string_key_is_401_not_500(client, make_user_key):
         assert not _set_cookie_lines(r)
 
 
-def test_cookie_auth_reaches_admin_route(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_cookie_auth_reaches_admin_route(client, root_key):
     assert client.get("/settings/state").status_code == 401
-    client.post("/auth/login", json={"key": raw})
+    client.post("/auth/login", json={"key": root_key})
     assert client.get("/settings/state").status_code == 200
 
 
@@ -309,18 +307,16 @@ def test_session_use_touches_key_last_used(client, make_user_key):
     assert api_keys_store.get_key(kid)["last_used_ts"] is not None
 
 
-def test_secure_flag_marks_cookies(client, make_user_key, monkeypatch):
+def test_secure_flag_marks_cookies(client, root_key, monkeypatch):
     from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", True)
-    _uid, raw = make_user_key("root", is_admin=True)
-    r = client.post("/auth/login", json={"key": raw})
+    r = client.post("/auth/login", json={"key": root_key})
     lines = " ; ".join(_set_cookie_lines(r)).lower()
     assert "secure" in lines
 
 
-def test_secure_flag_off_by_default(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    r = client.post("/auth/login", json={"key": raw})
+def test_secure_flag_off_by_default(client, root_key):
+    r = client.post("/auth/login", json={"key": root_key})
     lines = " ; ".join(_set_cookie_lines(r)).lower()
     assert "secure" not in lines
 
@@ -344,10 +340,9 @@ def test_csrf_wrong_token_blocks_cookie_mutation(client, make_user_key):
     assert r.status_code == 403
 
 
-def test_csrf_exempt_for_bearer_clients(client, make_user_key):
+def test_csrf_exempt_for_bearer_clients(client, root_key):
     # No login yet, so the jar holds no session cookie: CSRF never applies.
-    _uid, raw = make_user_key("root", is_admin=True)
-    r = client.post("/auth/logout", headers=bearer(raw))
+    r = client.post("/auth/logout", headers=bearer(root_key))
     assert r.status_code == 200
 
 
@@ -395,34 +390,30 @@ def test_cross_site_origin_blocked_in_open_mode(client):
     assert r.status_code == 403
 
 
-def test_cross_site_origin_blocked_for_bearer_client(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_cross_site_origin_blocked_for_bearer_client(client, root_key):
     r = client.post("/auth/logout",
-                    headers={**bearer(raw), "Origin": "http://evil.example"})
+                    headers={**bearer(root_key), "Origin": "http://evil.example"})
     assert r.status_code == 403
 
 
-def test_cross_site_origin_blocked_on_login(client, make_user_key):
+def test_cross_site_origin_blocked_on_login(client, root_key):
     # /auth/login is exempt from the TOKEN check (no session exists yet) but
     # NOT from the origin check: it hands out a session cookie.
-    _uid, raw = make_user_key("root", is_admin=True)
-    r = client.post("/auth/login", json={"key": raw},
+    r = client.post("/auth/login", json={"key": root_key},
                     headers={"Origin": "http://evil.example"})
     assert r.status_code == 403
 
 
-def test_same_origin_mutation_allowed(client, make_user_key):
+def test_same_origin_mutation_allowed(client, root_key):
     # TestClient's base_url is http://testserver, so Origin matches Host.
-    _uid, raw = make_user_key("root", is_admin=True)
     r = client.post("/auth/logout",
-                    headers={**bearer(raw), "Origin": "http://testserver"})
+                    headers={**bearer(root_key), "Origin": "http://testserver"})
     assert r.status_code == 200
 
 
-def test_bearer_still_works_when_cookie_login_available(client, make_user_key):
+def test_bearer_still_works_when_cookie_login_available(client, root_key):
     # Vowen / curl path: header bearer on the transcription/admin surface.
-    _uid, raw = make_user_key("root", is_admin=True)
-    assert client.get("/settings/state", headers=bearer(raw)).status_code == 200
+    assert client.get("/settings/state", headers=bearer(root_key)).status_code == 200
 
 
 def _worker(name, db_path):
@@ -628,11 +619,10 @@ def test_login_with_lone_surrogate_key_is_401_and_counted(
                        headers=hdrs).status_code == 429
 
 
-def test_login_success_resets_the_window(client, app_module, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_login_success_resets_the_window(client, app_module, root_key):
     limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
     _fail_logins(client, limit - 1)
-    assert client.post("/auth/login", json={"key": raw}).status_code == 200
+    assert client.post("/auth/login", json={"key": root_key}).status_code == 200
     _fail_logins(client, limit)
 
 

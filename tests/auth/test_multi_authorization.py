@@ -62,17 +62,15 @@ def test_auth_param_commas_do_not_split():
     assert _key('Digest realm="a", nonce="b"') is None
 
 
-def test_http_route_basic_then_bearer_admits(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_http_route_basic_then_bearer_admits(client, root_key):
     r = client.get("/settings/state", headers=[
-        ("Authorization", _BASIC), ("Authorization", f"Bearer {raw}"),
+        ("Authorization", _BASIC), ("Authorization", f"Bearer {root_key}"),
     ])
     assert r.status_code == 200
 
 
-def test_http_route_single_bearer_admits(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
-    assert client.get("/settings/state", headers=bearer(raw)).status_code == 200
+def test_http_route_single_bearer_admits(client, root_key):
+    assert client.get("/settings/state", headers=bearer(root_key)).status_code == 200
 
 
 def test_http_route_only_basic_is_401(client, make_user_key):
@@ -88,11 +86,10 @@ def test_sse_basic_then_bearer_admits(client, make_user_key):
     assert rec["username"] == "alice"
 
 
-def test_csrf_stale_cookie_with_basic_then_bearer_passes(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_csrf_stale_cookie_with_basic_then_bearer_passes(client, root_key):
     client.cookies.set("whisper_session", "stale-token-with-no-row")
     r = client.post("/auth/logout", headers=[
-        ("Authorization", _BASIC), ("Authorization", f"Bearer {raw}"),
+        ("Authorization", _BASIC), ("Authorization", f"Bearer {root_key}"),
     ])
     assert r.status_code == 200
 
