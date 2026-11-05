@@ -11,7 +11,7 @@ siblings so a per-model / per-identity override reaches the decode.
 import logging
 
 from faster_whisper_backend.transcription import decode_trace as dt
-from tests.conftest import FakeInfo, FakeSegment
+from tests.conftest import FakeInfo, FakeSegment, record_calls
 from tests._transcription_helpers import (
     guard_line, post_json_ok, post_transcription as _post, post_verbose_ok)
 
@@ -39,31 +39,21 @@ def test_batch_off_switch_reaches_the_receipt(client, app_module, fake_model, ca
 
 def test_batch_capture_is_armed_from_config(client, app_module, fake_model, monkeypatch):
     """The executor thread's capture carries the resolved bool."""
-    seen = {}
-    real = dt.capture
-
-    def spy(kwargs=None, *, skip_residual=False, **kw):
-        seen["skip"] = skip_residual
-        return real(kwargs, skip_residual=skip_residual, **kw)
-    monkeypatch.setattr(app_module._decode_trace, "capture", spy)
+    skips = record_calls(monkeypatch, app_module._decode_trace, "capture",
+                         lambda kwargs=None, *, skip_residual=False, **kw: skip_residual)
     assert _post(client).status_code == 200
-    assert seen == {"skip": True}
+    assert skips == [True]
     app_module.cfg.DECODE_SKIP_RESIDUAL_WINDOWS = False
     assert _post(client).status_code == 200
-    assert seen == {"skip": False}
+    assert skips == [True, False]
 
 
 def test_batch_gets_the_token_cap_and_keeps_best_of(client, app_module, fake_model,
                                                     monkeypatch, caplog):
     """DECODE_TOKEN_CAP_PER_SECOND reaches the batch capture and the receipt;
     STREAMING_FINAL_BEST_OF is a streaming knob and must not leak here."""
-    seen = []
-    real = dt.capture
-
-    def spy(kwargs=None, **kw):
-        seen.append(kw.get("token_cap_per_s"))
-        return real(kwargs, **kw)
-    monkeypatch.setattr(app_module._decode_trace, "capture", spy)
+    seen = record_calls(monkeypatch, app_module._decode_trace, "capture",
+                        lambda kwargs=None, **kw: kw.get("token_cap_per_s"))
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         assert _post(client).status_code == 200
     assert seen == [10.0]

@@ -7,7 +7,7 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 import pytest
 from fastapi import HTTPException
 
-from tests.conftest import FakeModel, FakeSegment, bearer, write_wav
+from tests.conftest import FakeModel, FakeSegment, bearer, record_calls, write_wav
 from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import capture_receipt
 from faster_whisper_backend.audio import bgm_separation
@@ -360,19 +360,11 @@ def test_job_finish_is_scoped_to_the_runs_request_id(
     # same-id re-post can own the row by then: the finish carries the run's
     # own request_id (the one the start stored) to leave that row alone.
     pid = "a1" * 16
-    starts, finishes = [], []
-    real_start = tx_progress._jobs_start_async
-    real_finish = tx_progress._jobs_finish
 
-    async def _start(p, **kw):
-        starts.append(kw.get("request_id"))
-        return await real_start(p, **kw)
-
-    async def _finish(p, **kw):
-        finishes.append(kw.get("request_id"))
-        return await real_finish(p, **kw)
-    monkeypatch.setattr(tx_progress, "_jobs_start_async", _start)
-    monkeypatch.setattr(tx_progress, "_jobs_finish", _finish)
+    def _rid(p, **kw):
+        return kw.get("request_id")
+    starts = record_calls(monkeypatch, tx_progress, "_jobs_start_async", _rid)
+    finishes = record_calls(monkeypatch, tx_progress, "_jobs_finish", _rid)
     post_json_ok(client, progress_id=pid)
     assert len(finishes) == 1
     assert starts[0] and finishes == starts
@@ -493,13 +485,8 @@ def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
     # (restart_service.reclaim_hard_restart_orphans) can tell it from every
     # other process's "tmp*" tempfile; tempfile's default prefix was
     # structurally unreclaimable.
-    seen = []
-    _orig = app_module.tempfile.NamedTemporaryFile
-
-    def _spy(*a, **kw):
-        seen.append(kw.get("prefix"))
-        return _orig(*a, **kw)
-    monkeypatch.setattr(app_module.tempfile, "NamedTemporaryFile", _spy)
+    seen = record_calls(monkeypatch, app_module.tempfile, "NamedTemporaryFile",
+                        lambda *a, **kw: kw.get("prefix"))
     post_json_ok(client)
     assert seen == ["whisperup-"]
 

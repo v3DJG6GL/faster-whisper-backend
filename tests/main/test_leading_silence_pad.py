@@ -11,7 +11,7 @@ prepends the pad, and shifts every reported time back so the response,
 import numpy as np
 import pytest
 
-from tests.conftest import FakeInfo, FakeModel, FakeSegment, FakeWord
+from tests.conftest import FakeInfo, FakeModel, FakeSegment, FakeWord, record_calls
 from tests._transcription_helpers import post_json_ok, serve_model, wav_bytes as _wav_bytes
 
 
@@ -64,25 +64,14 @@ def test_live_progress_and_plan_use_the_original_timeline(
     model = FakeModel(segments=[seg], info=info)
 
     serve_model(monkeypatch, model)
-    secs = []
-    real_set = run_plan.RunPlan.set_audio_seconds
-
-    def _spy_set(self, s, *, src):
-        if src == "decoder":
-            secs.append(s)
-        return real_set(self, s, src=src)
-    monkeypatch.setattr(run_plan.RunPlan, "set_audio_seconds", _spy_set)
-    ticks = []
-    real_ps = tx_progress._progress_set
-
-    def _spy_ps(pid, **fields):
-        ticks.append(fields)
-        return real_ps(pid, **fields)
-    monkeypatch.setattr(tx_progress, "_progress_set", _spy_ps)
+    secs = record_calls(monkeypatch, run_plan.RunPlan, "set_audio_seconds",
+                        lambda self, s, *, src: (s, src))
+    ticks = record_calls(monkeypatch, tx_progress, "_progress_set",
+                         lambda pid, **fields: fields)
 
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
     _post_ok(client, _wav_bytes(seconds=1.0), progress_id="0adf1e0e0001")
-    assert secs == [pytest.approx(1.0)]
+    assert [s for s, src in secs if src == "decoder"] == [pytest.approx(1.0)]
     assert [t["duration"] for t in ticks if "duration" in t] == [
         pytest.approx(1.0)]
     assert [t["position"] for t in ticks
