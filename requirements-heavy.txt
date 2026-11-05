@@ -35,4 +35,4 @@ av>=11,<19
 # this is the fallback. Raw-PCM streaming needs neither. (faster-whisper's
 # batch route decodes via PyAV's bundled libs, which is separate from the
 # ffmpeg *executable*.)
-imageio-ffmpeg>=0.7.0
+imageio-ffmpeg>=0.8.0
