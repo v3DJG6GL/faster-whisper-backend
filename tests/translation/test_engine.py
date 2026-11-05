@@ -788,9 +788,13 @@ def _numbered_reply(payload, transform=_xlate):
                      for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
 
 
-def _de_en(segs, mode="faithful", **kwargs):
+def _translate(segs, targets, source, mode="faithful", **kwargs):
     return _run(translation.translate_segments(
-        segs, ["en"], source_lang="de", mode=mode, **kwargs))
+        segs, targets, source_lang=source, mode=mode, **kwargs))
+
+
+def _de_en(segs, mode="faithful", **kwargs):
+    return _translate(segs, ["en"], "de", mode, **kwargs)
 
 
 @pytest.fixture()
@@ -817,9 +821,8 @@ def test_same_language_short_circuit_no_model_calls(base_cfg, monkeypatch):
         raise AssertionError("model must not load for a same-language target")
     monkeypatch.setattr(translation, "_get_model", boom)
 
-    res, warns, meta = _run(translation.translate_segments(
-        _segs("Hallo Welt.", "Noch was."), ["de", "de-CH"],
-        source_lang="de", mode="faithful"))
+    res, warns, meta = _translate(
+        _segs("Hallo Welt.", "Noch was."), ["de", "de-CH"], "de")
     assert calls == []
     assert res == [{"de": "Hallo Welt.", "de-CH": "Hallo Welt."},
                    {"de": "Noch was.", "de-CH": "Noch was."}]
@@ -834,9 +837,7 @@ def test_script_target_is_not_a_same_language_short_circuit(base_cfg,
     """Whisper names Chinese "zh"; "zh-Hant" is a different written
     language, so it must reach the model, not come back as a copy."""
     calls = _install_fake(monkeypatch, lambda t: "我們昨天重複了測量。")
-    res, _, _ = _run(translation.translate_segments(
-        _segs("我们昨天重复了测量。"), ["zh-Hant"], source_lang="zh",
-        mode="faithful"))
+    res, _, _ = _translate(_segs("我们昨天重复了测量。"), ["zh-Hant"], "zh")
     assert len(calls) == 1
     assert res[0]["zh-Hant"] == "我們昨天重複了測量。"
 
@@ -855,9 +856,7 @@ def test_traditional_region_target_is_translated_as_traditional(base_cfg,
         prompts.append(str(prompt_or_msgs))
         return fake(llm, family, prompt_or_msgs, max_tokens)
     monkeypatch.setattr(translation, "_complete", recording)
-    res, _, _ = _run(translation.translate_segments(
-        _segs("我们昨天重复了测量。"), ["zh-TW"], source_lang="zh",
-        mode="faithful"))
+    res, _, _ = _translate(_segs("我们昨天重复了测量。"), ["zh-TW"], "zh")
     assert len(prompts) == 1
     assert "Traditional Chinese" in prompts[0]
     assert res[0]["zh-TW"] == "我們昨天重複了測量。"
@@ -1037,9 +1036,8 @@ def test_unknown_source_echo_is_no_kept_original(base_cfg, monkeypatch):
     echoes every call: with no source to compare against, an unchanged
     reply is accepted under the other target ("en") as well."""
     calls = _install_fake(monkeypatch, lambda t: t)
-    res, warns, meta = _run(translation.translate_segments(
-        _segs("Wir sehen uns morgen im Büro."), ["de", "en"],
-        mode="faithful"))
+    res, warns, meta = _translate(
+        _segs("Wir sehen uns morgen im Büro."), ["de", "en"], None)
     assert res[0]["de"] == "Wir sehen uns morgen im Büro."
     assert res[0]["en"] == "Wir sehen uns morgen im Büro."
     assert meta["kept"] == {} and warns == []
@@ -1138,9 +1136,8 @@ def test_segment_past_the_context_window_is_kept_original(base_cfg,
     huge = "Wort " * 400 + "Ende."
     fake, _ = _overflow_past(1000)
     _install_complete(monkeypatch, fake)
-    res, warns, meta = _run(translation.translate_segments(
-        _segs("Guten Morgen.", huge), ["en", "fr"], source_lang="de",
-        mode=mode))
+    res, warns, meta = _translate(
+        _segs("Guten Morgen.", huge), ["en", "fr"], "de", mode)
     for t in ("en", "fr"):
         assert res[0][t] == _xlate("Guten Morgen.")
         assert res[1][t] == huge
@@ -1274,8 +1271,7 @@ def test_fluent_zh_source_group_reaches_model_without_inner_space(
     calls = _install_fake(
         monkeypatch, lambda t: "I went to the shop to buy bread.")
     segs = _segs("我今天去商", "店买一些面包。")
-    res, warns, _ = _run(translation.translate_segments(
-        segs, ["en"], source_lang="zh", mode="fluent"))
+    res, warns, _ = _translate(segs, ["en"], "zh", "fluent")
     assert calls == ["我今天去商店买一些面包。"]
     assert warns == []
     assert res[0]["en"] and res[1]["en"]
@@ -1301,8 +1297,7 @@ def test_fluent_reply_with_fewer_clusters_than_cues_reverts_group(
     the group reverts instead of splitting into a lone prevowel 'ไ' + 'ด้'."""
     _install_fake(monkeypatch, lambda t: "ได้")
     segs = _segs("Ja,", "klar.")
-    res, warns, meta = _run(translation.translate_segments(
-        segs, ["th"], source_lang="de", mode="fluent"))
+    res, warns, meta = _translate(segs, ["th"], "de", "fluent")
     assert [r["th"] for r in res] == ["Ja,", "klar."]
     assert len(warns) == 1 and "redistribution left empty cues" in warns[0]
     assert meta["kept"] == {0: ["th"], 1: ["th"]}
@@ -1323,11 +1318,10 @@ def test_progress_and_cancel(base_cfg, monkeypatch):
     _install_fake(monkeypatch, _xlate)
     fractions = []
     steps = []
-    res, _, _ = _run(translation.translate_segments(
-        _segs("Eins.", "Zwei."), ["en", "fr"], source_lang="de",
-        mode="fluent",
+    res, _, _ = _translate(
+        _segs("Eins.", "Zwei."), ["en", "fr"], "de", "fluent",
         progress_cb=lambda f, s, t=None, **kw: (fractions.append(f),
-                                          steps.append(s))))
+                                          steps.append(s)))
     assert fractions[-1] == 1.0
     assert fractions == sorted(fractions)
     assert steps[0].startswith("en ") and steps[-1].startswith("fr ")
@@ -1377,8 +1371,7 @@ def test_unknown_source_is_not_asserted_as_english(base_cfg, monkeypatch):
     the source clause is dropped instead."""
     prompts = _record_complete(monkeypatch, "Bonjour le monde ici")
 
-    res, warns, _ = _run(translation.translate_segments(
-        _segs("Hallo Welt hier"), ["fr"], source_lang=None, mode="faithful"))
+    res, warns, _ = _translate(_segs("Hallo Welt hier"), ["fr"], None)
     assert warns == []
     assert res[0]["fr"] == "Bonjour le monde ici"
     content = prompts[0][1][0]["content"]
@@ -2686,8 +2679,7 @@ class TestComplete:
              "finish_reason": "length"}]})
         _stub_get_model(monkeypatch, llm)
         src = "Wir haben die Messung gestern wiederholt und dokumentiert."
-        res, warns, meta = _run(translation.translate_segments(
-            [{"text": src}], ["fr"], source_lang="de", mode="fluent"))
+        res, warns, meta = _translate([{"text": src}], ["fr"], "de", "fluent")
         assert res[0]["fr"] == src
         assert meta["kept"] == {0: ["fr"]}
         assert any("kept original" in w for w in warns)
@@ -2756,8 +2748,7 @@ def test_fluent_blank_segment_is_skipped_not_fed_from_neighbour(base_cfg,
                                                                 monkeypatch):
     calls = _install_fake(monkeypatch, _xlate)
     segs = _segs("Hi.", "", "Hello world.")
-    res, warns, meta = _run(translation.translate_segments(
-        segs, ["de"], source_lang="en", mode="fluent"))
+    res, warns, meta = _translate(segs, ["de"], "en", "fluent")
     assert [r["de"] for r in res] == ["hI.", "", "hELLO WORLD."]
     assert warns == []
     assert meta["kept"] == {}
@@ -2768,8 +2759,7 @@ def test_faithful_blank_segment_no_model_call_no_warning(base_cfg,
                                                          monkeypatch):
     calls = _install_fake(monkeypatch, _xlate)
     segs = _segs("Hi.", "", "Hello world.")
-    res, warns, meta = _run(translation.translate_segments(
-        segs, ["de"], source_lang="en", mode="faithful"))
+    res, warns, meta = _translate(segs, ["de"], "en")
     assert [r["de"] for r in res] == ["hI.", "", "hELLO WORLD."]
     assert warns == []
     assert meta["kept"] == {}
@@ -2777,8 +2767,7 @@ def test_faithful_blank_segment_no_model_call_no_warning(base_cfg,
     assert "2. Hello world." in calls[0]   # blank dropped from the list
 
     n_calls = len(calls)
-    res, warns, meta = _run(translation.translate_segments(
-        _segs("", ""), ["de"], source_lang="en", mode="faithful"))
+    res, warns, meta = _translate(_segs("", ""), ["de"], "en")
     assert len(calls) == n_calls            # no model call at all
     assert [r["de"] for r in res] == ["", ""]
     assert warns == []
@@ -3133,9 +3122,7 @@ def test_translation_logs_buckets_per_target(base_cfg, monkeypatch, caplog):
     # One segment per batch so the target crosses several buckets.
     monkeypatch.setattr(translation.cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
     with caplog.at_level(logging.INFO, logger="whisper-server"):
-        _run(translation.translate_segments(
-            _segs("Eins.", "Zwei.", "Drei."), ["de", "en"], source_lang="de",
-            mode="faithful"))
+        _translate(_segs("Eins.", "Zwei.", "Drei."), ["de", "en"], "de")
     lines = [r.getMessage() for r in caplog.records
              if r.getMessage().startswith("[translate] ")]
     assert "[translate] de copied verbatim (same language)" in lines
@@ -3236,11 +3223,10 @@ def test_progress_carries_target_and_target_progress(base_cfg, monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
     _install_fake(monkeypatch, _xlate)
     ticks = []
-    _run(translation.translate_segments(
-        _segs("Eins.", "Zwei.", "Drei."), ["de", "en", "fr"], source_lang="de",
-        mode="faithful",
+    _translate(
+        _segs("Eins.", "Zwei.", "Drei."), ["de", "en", "fr"], "de",
         progress_cb=lambda f, s, t=None, target=None, target_progress=None:
-            ticks.append((target, target_progress))))
+            ticks.append((target, target_progress)))
     by_target = {}
     for tgt, tp in ticks:
         by_target.setdefault(tgt, []).append(tp)
