@@ -431,13 +431,7 @@ def _close_worker_modules():
     to GC as 'unclosed database' ResourceWarnings)."""
     yield
     while _WORKER_MODULES:
-        mod = _WORKER_MODULES.pop()
-        try:
-            if mod._conn is not None:
-                mod._conn.close()
-        except Exception:  # noqa: BLE001
-            pass
-        mod._conn = None
+        _close_store(_WORKER_MODULES.pop())
 
 
 def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):

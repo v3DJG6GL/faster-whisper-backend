@@ -6,6 +6,7 @@ import pytest
 from tests.auth._store_helpers import (
     count_rebuilds, failing_conn, failing_rebuild_conn, load_sessions_store_copy,
     sibling_write)
+from tests.conftest import _close_store
 
 
 @pytest.fixture
@@ -14,8 +15,7 @@ def worker(tmp_path):
     uvicorn worker with its own connection and in-memory index."""
     mod = load_sessions_store_copy("sessions_store_revocation_retry", str(tmp_path / "sessions.db"))
     yield mod
-    mod._conn.close()
-    mod._conn = None
+    _close_store(mod)
 
 
 def _sibling_logout(w):
