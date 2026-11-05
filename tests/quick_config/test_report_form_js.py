@@ -7,13 +7,11 @@ querySelector on `.class` / `[data-idx="N"]` / descendant selectors) for the
 chip helpers; anything else a test needs it stubs on globalThis. Anything the
 page's code touches beyond that is a bug in this harness, not in the page."""
 
-import json
 import re
-import subprocess
 
 import pytest
 
-from tests._page_helpers import needs_node
+from tests._page_helpers import needs_node, node_file_json
 
 pytestmark = needs_node
 
@@ -184,11 +182,7 @@ def _run_js(client, tmp_path, body, funcs=_REPORT_FUNCS):
         + ["const out = (v) => console.log(JSON.stringify(v));",
            "(async () => {", body, "})().catch((e) => { console.error(e); process.exit(1); });"]
     )
-    f = tmp_path / "report_form.js"
-    f.write_text(src, encoding="utf-8")
-    p = subprocess.run(["node", str(f)], capture_output=True, text=True, encoding="utf-8")
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout.strip().splitlines()[-1])
+    return node_file_json(tmp_path, src)
 
 
 def test_seeded_single_word_chip_is_normalised_and_struck_through(client, tmp_path):
