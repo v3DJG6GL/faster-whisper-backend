@@ -100,9 +100,9 @@ def _inproc_guard():
     return sys.modules["fwb_ssrf_guard_inproc"]
 
 
-@pytest.fixture
+@pytest.fixture(name="public")
 def servers():
-    """(public_url_base, internal_url) with a clean INTERNAL hit log."""
+    """The public URL base, with a clean INTERNAL hit log."""
     try:
         with socket.socket() as probe:
             probe.bind(("127.0.0.2", 0))
@@ -113,8 +113,7 @@ def servers():
     _Public.redirect_to = f"http://127.0.0.1:{internal.server_port}/secret.mp3"
     public = _serve(_Public, "127.0.0.2")
     with _stopping(internal), _stopping(public):
-        yield (f"http://127.0.0.2:{public.server_port}",
-               f"http://127.0.0.1:{internal.server_port}/secret.mp3")
+        yield f"http://127.0.0.2:{public.server_port}"
 
 
 @pytest.fixture
@@ -338,9 +337,8 @@ def test_pinned_download_flags_parse_on_the_pinned_yt_dlp():
         yt_dlp.YoutubeDL(bad)
 
 
-def test_probe_refuses_redirect_into_loopback(servers, public_is_public,
+def test_probe_refuses_redirect_into_loopback(public, public_is_public,
                                               monkeypatch):
-    public, _ = servers
     udl.guard_self_check(force=True)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
@@ -352,9 +350,8 @@ def test_probe_refuses_redirect_into_loopback(servers, public_is_public,
     assert _Internal.hits == []
 
 
-def test_download_refuses_redirect_into_loopback(tmp_path, servers,
+def test_download_refuses_redirect_into_loopback(tmp_path, public,
                                                  public_is_public, guard_tree):
-    public, _ = servers
     dest = tmp_path / "dest"
     dest.mkdir()
     with pytest.raises(udl.UrlDownloadError) as ei:
@@ -365,9 +362,8 @@ def test_download_refuses_redirect_into_loopback(tmp_path, servers,
     assert os.listdir(dest) == []
 
 
-def test_download_allows_a_public_looking_target(tmp_path, servers,
+def test_download_allows_a_public_looking_target(tmp_path, public,
                                                  public_is_public, guard_tree):
-    public, _ = servers
     dest = tmp_path / "dest"
     dest.mkdir()
     out = _fetch(udl.download, dest, url=f"{public}/direct.mp3", max_bytes=10_000_000, timeout=60)
@@ -434,9 +430,8 @@ def test_probe_extraction_is_cut_at_its_wall_clock_deadline(
     "ftp://127.0.0.1:1/secret.mp3",
     "file:///etc/passwd",
 ])
-def test_probe_refuses_non_http_redirect(target, servers, public_is_public,
+def test_probe_refuses_non_http_redirect(target, public, public_is_public,
                                          monkeypatch, caplog):
-    public, _ = servers
     _Public.redirect_to = target
     udl.guard_self_check(force=True)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
