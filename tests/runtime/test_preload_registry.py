@@ -19,6 +19,7 @@ from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.transcription import models as tx_models
+from tests.conftest import record_calls
 
 _GB = 1024 * 1024 * 1024
 _ADMITTED = (("loading", None), ("queued", None))
@@ -677,10 +678,8 @@ def test_a_dropped_enqueue_forgets_its_inflight_mark(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (True, None))
     monkeypatch.setattr(preload, "_queue", _FakeQueue())  # no _loop behind it
-    forgot = []
-    real_forget = preload._forget_inflight
-    monkeypatch.setattr(preload, "_forget_inflight",
-                        lambda item: (forgot.append(item), real_forget(item)))
+    forgot = record_calls(monkeypatch, preload, "_forget_inflight",
+                          lambda item: item)
     body = preload.register_plan("u7", [("diarization", "p/x")],
                                  plan_id="7" * 8)
     plan = preload._plans["7" * 8]
