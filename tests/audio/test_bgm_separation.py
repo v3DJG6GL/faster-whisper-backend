@@ -19,6 +19,7 @@ from tests._transcription_helpers import (
     cancel_while_register_held, cancel_with_register_queued, record_loads)
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests.conftest import bearer, wait_until
+from tests.main._stage_helpers import stage_raises
 
 _M4A_UPLOAD = {"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")}
 
@@ -146,11 +147,9 @@ def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
 
 
 def test_separate_error_becomes_warning(client, monkeypatch, fake_model, bgm_on):
-    async def _boom(path, **kw):
-        raise bgm_separation.BgmSeparationError(
-            "music-separation dependencies are not installed on this "
-            "server (pip install -r requirements-bgm.txt)")
-    monkeypatch.setattr(bgm_separation, "separate", _boom)
+    stage_raises(monkeypatch, bgm_separation, "separate", bgm_separation.BgmSeparationError(
+        "music-separation dependencies are not installed on this "
+        "server (pip install -r requirements-bgm.txt)"))
     body = _post_ok(client, separate_bgm="1")
     assert body["text"]                    # original audio transcribed
     assert any("requirements-bgm" in w for w in body["warnings"])

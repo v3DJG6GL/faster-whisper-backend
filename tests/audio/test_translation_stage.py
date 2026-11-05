@@ -14,6 +14,7 @@ from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import watch_progress
 from tests._translation_helpers import enable_translation
 from tests.conftest import bearer
+from tests.main._stage_helpers import stage_raises
 
 _PID = "beef" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 
@@ -153,22 +154,16 @@ def test_locked_translate_to_ignores_client_param(client, app_module,
 
 def test_translation_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch)
-
-    async def _cancelled(*args, **kwargs):
-        raise translation.TranslationCancelled()
-    monkeypatch.setattr(translation, "translate_segments", _cancelled)
+    stage_raises(monkeypatch, translation, "translate_segments", translation.TranslationCancelled())
     r = _post(client, translate_to="en", progress_id=_PID)
     assert r.status_code == 499, r.text
 
 
 def test_translation_error_becomes_warning(client, app_module, monkeypatch):
     enable_translation(app_module, monkeypatch)
-
-    async def _boom(*args, **kwargs):
-        raise translation.TranslationError(
-            "translation dependencies are not installed on this server — "
-            "pip install -r requirements-translate.txt")
-    monkeypatch.setattr(translation, "translate_segments", _boom)
+    stage_raises(monkeypatch, translation, "translate_segments", translation.TranslationError(
+        "translation dependencies are not installed on this server — "
+        "pip install -r requirements-translate.txt"))
     body = _post_ok(client, translate_to="en")
     assert body["text"]                           # transcript survives
     assert "translations" not in body

@@ -25,6 +25,7 @@ from tests._transcription_helpers import (
     cancel_with_register_queued as _cancel_with_register_queued)
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import record_loads as _record_loads
+from tests.main._stage_helpers import stage_raises
 
 
 @pytest.fixture
@@ -117,11 +118,9 @@ def test_diarize_config_default_on_applies(client, app_module, monkeypatch,
 
 
 def test_diarization_error_becomes_warning(client, monkeypatch, diar_on):
-    async def _boom(path, **kw):
-        raise diarization.DiarizationError(
-            "diarization dependencies are not installed on this server "
-            "(pip install -r requirements-diarize.txt)")
-    monkeypatch.setattr(diarization, "diarize", _boom)
+    stage_raises(monkeypatch, diarization, "diarize", diarization.DiarizationError(
+        "diarization dependencies are not installed on this server "
+        "(pip install -r requirements-diarize.txt)"))
     body = _post_ok(client, diarize="1")
     assert body["text"]                       # transcript survives
     assert "speakers" not in body
