@@ -23,6 +23,7 @@ from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media.routes import _has_speech as _REAL_HAS_SPEECH
 from tests.conftest import bearer, record_calls
+from tests.media._server_helpers import _stand_in_result
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -109,10 +110,7 @@ def url_enabled(app_module, monkeypatch):
                         progress_cb=None, cancel_check=None):
         if progress_cb is not None:
             progress_cb(0.5, 4096)
-        path = os.path.join(dest_dir, "media.m4a")
-        with open(path, "wb") as f:
-            f.write(b"m4a-bytes" * 8)
-        return path
+        return _stand_in_result(dest_dir, "media.m4a", b"m4a-bytes" * 8)
 
     async def _no_thumb(url, **kw):
         return None
@@ -409,10 +407,7 @@ def video_enabled(url_enabled, monkeypatch):
                 if cancel_check is not None and cancel_check():
                     raise url_download.UrlCancelled()
                 await asyncio.sleep(0.01)
-        path = os.path.join(dest_dir, f"media.{container}")
-        with open(path, "wb") as f:
-            f.write(b"video-bytes" * 8)
-        return path
+        return _stand_in_result(dest_dir, f"media.{container}", b"video-bytes" * 8)
 
     _stub_probe(monkeypatch, video_ladder=_LADDER)
     monkeypatch.setattr(url_download, "download_video", _download_video)
@@ -686,10 +681,7 @@ def test_video_reports_the_container_that_landed(client, video_enabled, monkeypa
     # No merge happened: the site's own pre-muxed webm sits behind a rung
     # that predicted "mp4". The client names its export after this field.
     async def _single(url, *, dest_dir, container="mkv", **kw):
-        path = os.path.join(dest_dir, "media.webm")
-        with open(path, "wb") as f:
-            f.write(b"webm-bytes")
-        return path
+        return _stand_in_result(dest_dir, "media.webm", b"webm-bytes")
     monkeypatch.setattr(url_download, "download_video", _single)
     body = client.post("/v1/audio/url-media/video",
                        json={"url": _URL, "max_height": 720}).json()

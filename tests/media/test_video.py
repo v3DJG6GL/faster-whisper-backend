@@ -10,6 +10,7 @@ from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests.media._server_helpers import _stand_in_result
 
 _RUNG = {"height": 720, "container": "mkv", "approx_bytes": 10}
 
@@ -22,10 +23,7 @@ def _stub_download(monkeypatch, seen: "list[str] | None" = None):
     async def _download_video(url, *, dest_dir, **kw):
         if seen is not None:
             seen.append(dest_dir)
-        path = os.path.join(dest_dir, "media.mkv")
-        with open(path, "wb") as f:
-            f.write(b"v" * 10)
-        return path
+        return _stand_in_result(dest_dir, "media.mkv", b"v" * 10)
     monkeypatch.setattr(udl, "download_video", _download_video)
 
 

@@ -3,13 +3,12 @@ Pipeline table (and the response's `stages`) account for the fetch."""
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from faster_whisper_backend.media import download as url_download
 from faster_whisper_backend.media import media_store as url_media_store
 from faster_whisper_backend.media.download import UrlMediaInfo
+from tests.media._server_helpers import _stand_in_result
 
 _URL = "https://www.youtube.com/watch?v=abc123xyz"
 
@@ -28,10 +27,7 @@ def url_enabled(app_module, monkeypatch):
 
     async def _download(url, *, dest_dir, max_bytes=None, timeout=None,
                         progress_cb=None, cancel_check=None):
-        path = os.path.join(dest_dir, "media.m4a")
-        with open(path, "wb") as f:
-            f.write(b"m4a-bytes" * 8)
-        return path
+        return _stand_in_result(dest_dir, "media.m4a", b"m4a-bytes" * 8)
 
     monkeypatch.setattr(url_download, "probe", _probe)
     monkeypatch.setattr(url_download, "download", _download)
