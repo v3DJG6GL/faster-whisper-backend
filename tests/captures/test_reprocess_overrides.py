@@ -4,7 +4,7 @@ the event loop."""
 
 from faster_whisper_backend.settings import effective_config
 from tests.captures._store_helpers import create_stub_capture
-from tests.conftest import bearer, install_fake_wav_transcode, record_calls
+from tests.conftest import bearer, install_fake_wav_transcode, on_event_loop, record_calls
 
 
 
@@ -42,23 +42,12 @@ def test_reprocess_runs_the_pipeline_off_the_event_loop(client, root_key,
                                                         monkeypatch, tmp_path):
     """The pipeline pass over raw (up to 50k chars, owner regex rules) must not
     run on the loop: inside asyncio.to_thread there is no running loop."""
-    import asyncio
-
     from faster_whisper_backend.pipeline import engine as pl_engine
 
     install_fake_wav_transcode(monkeypatch)
     cid = _make_capture(tmp_path, user_id=None)
-    on_loop = []
-    orig = pl_engine._postprocess_text
-
-    def spy(*a, **k):
-        try:
-            asyncio.get_running_loop()
-            on_loop.append(True)
-        except RuntimeError:
-            on_loop.append(False)
-        return orig(*a, **k)
-    monkeypatch.setattr(pl_engine, "_postprocess_text", spy)
+    on_loop = record_calls(monkeypatch, pl_engine, "_postprocess_text",
+                           lambda *a, **k: on_event_loop())
     r = client.post(f"/captures/api/{cid}/reprocess", headers=bearer(root_key))
     assert r.status_code == 200, r.text
     assert on_loop and not any(on_loop)
