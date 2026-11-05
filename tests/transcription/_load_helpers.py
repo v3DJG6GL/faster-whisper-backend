@@ -9,6 +9,7 @@ a contended one needs its own lock.
 """
 
 import sys
+import threading
 import time
 import types
 
@@ -39,6 +40,22 @@ def stub_whisper_load(monkeypatch, *, whisper_model=None, max_loaded=None):
         monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", max_loaded,
                             raising=False)
     return built
+
+
+def stub_gated_load(monkeypatch, *, max_loaded, only=None):
+    """stub_whisper_load with a WhisperModel that holds on a gate (5 s at most)
+    while building `only` (None: any name); returns (entered, gate, built)."""
+    entered, gate = threading.Event(), threading.Event()
+    built = []
+
+    def _build(path, **kw):
+        built.append(path)
+        if only is None or path == only:
+            entered.set()
+            gate.wait(5)
+        return FakeModel()
+    stub_whisper_load(monkeypatch, whisper_model=_build, max_loaded=max_loaded)
+    return entered, gate, built
 
 
 def register_fake_model(name, leases=0):

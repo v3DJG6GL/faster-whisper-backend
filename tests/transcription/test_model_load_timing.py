@@ -22,6 +22,7 @@ from tests._transcription_helpers import (
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_stale_model as _register_stale
+from tests.transcription._load_helpers import stub_gated_load as _stub_gated
 from tests.transcription._load_helpers import stub_hub_snapshot as _stub_hub
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
@@ -152,15 +153,7 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
     is still running on the executor thread: the next waiter would start a
     second build of the same model. The build is finished, cached unleased,
     and the retry gets that model without a second constructor call."""
-    entered, go = threading.Event(), threading.Event()
-    built = []
-
-    def _slow_model(path, **kw):
-        built.append(path)
-        entered.set()
-        go.wait(5)
-        return FakeModel()
-    _stub_load(monkeypatch, whisper_model=_slow_model, max_loaded=4)
+    entered, go, built = _stub_gated(monkeypatch, max_loaded=4)
 
     async def run():
         a = asyncio.create_task(tx_models._get_or_load_model("x", lease=True))

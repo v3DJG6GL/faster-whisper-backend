@@ -18,6 +18,7 @@ from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from tests.transcription._load_helpers import register_fake_model as _register
 from tests.transcription._load_helpers import register_stale_model as _register_stale
+from tests.transcription._load_helpers import stub_gated_load as _stub_gated
 from tests.transcription._load_helpers import stub_hub_snapshot as _stub_hub
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 from tests._transcription_helpers import post_transcription as _post
@@ -540,14 +541,7 @@ def test_a_leased_load_keeps_a_release_scheduled_trim_from_evicting(
     # "a" is pinned and "b" overflows the cap; "b"'s release schedules a trim
     # that spares it while a request for "c" is still building. Caching the
     # leased "c" must not take that protection away from "b".
-    entered, gate = threading.Event(), threading.Event()
-
-    def _model(path, **kw):
-        if path == "c":
-            entered.set()
-            gate.wait(5)
-        return FakeModel()
-    _stub_load(monkeypatch, whisper_model=_model, max_loaded=1)
+    entered, gate, _ = _stub_gated(monkeypatch, max_loaded=1, only="c")
     _register("a", leases=1)
 
     async def scenario():
@@ -568,13 +562,7 @@ def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
     # "a" is leased, so the preload of "b" overflows the cap; "a"'s lease goes
     # while "b" is still being built (nothing over the cap yet to trim), and
     # the unleased "b" never releases a lease. The load itself must reclaim.
-    entered, gate = threading.Event(), threading.Event()
-
-    def _slow_model(path, **kw):
-        entered.set()
-        gate.wait(5)
-        return FakeModel()
-    _stub_load(monkeypatch, whisper_model=_slow_model, max_loaded=1)
+    entered, gate, _ = _stub_gated(monkeypatch, max_loaded=1)
     _register("a", leases=1)
 
     async def scenario():
