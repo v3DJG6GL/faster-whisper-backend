@@ -16,7 +16,6 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config_store
 from tests.conftest import bearer, fake_request, first_key_id
 
-PERMS = "/settings/api-keys/api/users"
 OV = "/settings/overrides"
 _OTHER = {"BEAM_SIZE": 8}
 
