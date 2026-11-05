@@ -806,12 +806,10 @@
 
       var tdSave = document.createElement('td');
       if (!u.is_admin) {
-        var btn = _el('button', 'save-perms', 'Save');
-        btn.title = 'Save this row';
-        btn.addEventListener('click', function() {
+        var btn = _btn(tdSave, 'save-perms', 'Save', function() {
           savePerms(u.id, tr, btn);
         });
-        tdSave.appendChild(btn);
+        btn.title = 'Save this row';
       }
       tr.appendChild(tdSave);
 
@@ -1004,7 +1002,7 @@
     tb.appendChild(addBtn);
 
     // Per-user config overrides (profiles + direct overrides + locks).
-    var ovrBtn = _el('button', 'ghost', '⚙ Overrides');
+    var ovrBtn = _btn(tb, 'ghost', '⚙ Overrides');
     var ovrWrap = document.createElement('div');
     toggleDrawer(ovrBtn, ovrWrap, function () {
       return buildBindingDrawer({
@@ -1022,13 +1020,11 @@
         },
       });
     });
-    tb.appendChild(ovrBtn);
 
     // Synced settings (desktop sync) — same drawer idiom as ⚙ Overrides.
-    var csBtn = _el('button', 'ghost', '⇅ Synced settings');
+    var csBtn = _btn(tb, 'ghost', '⇅ Synced settings');
     var csWrap = document.createElement('div');
     toggleDrawer(csBtn, csWrap, function () { return buildCsDrawer(u); });
-    tb.appendChild(csBtn);
 
     var revBtn = _btn(tb, 'danger', 'Revoke user', function () {
       if (!confirm('Revoke user "' + u.username +
@@ -1140,7 +1136,7 @@
         inp.focus();
       });
 
-      var kcfgBtn = _el('button', 'ghost', '⚙ Overrides');
+      var kcfgBtn = _btn(acts, 'ghost', '⚙ Overrides');
       toggleDrawer(kcfgBtn, kdraw, function () {
         return buildBindingDrawer({
           scope: 'key', binding: bindingFromConfig(k.config),
@@ -1152,7 +1148,6 @@
           },
         });
       });
-      acts.appendChild(kcfgBtn);
 
       _btn(acts, 'danger', 'Revoke', function () {
         if (!confirm('Revoke key "' + (hasLabel ? k.label : k.key_prefix + '…' + k.key_last4) +
