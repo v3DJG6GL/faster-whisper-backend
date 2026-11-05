@@ -43,6 +43,7 @@ def _seed(us):
 
 
 NOW = _ts("2025-06-11", 15)
+_WIN = dict(from_day=_D("2025-06-02"), to_day=_D("2025-06-11"))   # the window _seed fills
 
 
 def _ov(us, **kw):
@@ -56,7 +57,7 @@ def _ov(us, **kw):
 def test_overview_dense_axis_and_buckets(usage_store_db):
     us = usage_store_db
     _seed(us)
-    ten = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"))
+    ten = _ov(us, **_WIN)
     assert ten["v"] == 2 and ten["bucket"] == "day"
     assert ten["days"] == list(range(_D("2025-06-02"), _D("2025-06-11") + 1))
     assert all(len(ln["values"]) == 10 for ln in ten["lines"])
@@ -73,7 +74,7 @@ def test_overview_dense_axis_and_buckets(usage_store_db):
 def test_overview_by_kind_lines_sum_to_totals(usage_store_db):
     us = usage_store_db
     _seed(us)
-    o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="kind")
+    o = _ov(us, **_WIN, by="kind")
     ids = [ln["id"] for ln in o["lines"]]
     assert ids[:3] == ["url", "file", "dictation"]        # ranked by audio_s
     assert "text" in ids and "__others__" not in ids
@@ -90,20 +91,17 @@ def test_overview_by_kind_lines_sum_to_totals(usage_store_db):
 def test_overview_by_user_top_k_and_others(usage_store_db):
     us = usage_store_db
     _seed(us)
-    o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="user",
-            top_k=2, limit=2)
+    o = _ov(us, **_WIN, by="user", top_k=2, limit=2)
     assert [ln["id"] for ln in o["lines"]] == ["carol", "alice", "__others__"]
     assert o["lines"][-1]["label"] == "others (1)"
     assert sum(o["lines"][-1]["values"]) == 20.0            # bob's two dictations
     assert [r["id"] for r in o["leaderboard"]] == ["carol", "alice"]
     assert o["leaderboard"][1]["user_id"] == "alice"
-    own = _ov(us, user_id="alice", from_day=_D("2025-06-02"),
-              to_day=_D("2025-06-11"), by="key")
+    own = _ov(us, user_id="alice", **_WIN, by="key")
     assert sorted(ln["id"] for ln in own["lines"]) == ["k1", "k2"]
     assert all(ln["user_id"] == "alice" for ln in own["lines"])
     assert own["totals"]["all"]["audio_s"] == 90.0
-    one = _ov(us, user_id="alice", key_id="k1", from_day=_D("2025-06-02"),
-              to_day=_D("2025-06-11"), by="key")
+    one = _ov(us, user_id="alice", key_id="k1", **_WIN, by="key")
     assert [ln["id"] for ln in one["lines"]] == ["k1"]
     assert one["filter"] == {"user_id": "alice", "key_id": "k1", "key_scoped": True,
                              "kinds": [], "kind_scoped": True}
@@ -112,8 +110,7 @@ def test_overview_by_user_top_k_and_others(usage_store_db):
 def test_overview_by_model_from_jobs(usage_store_db):
     us = usage_store_db
     _seed(us)
-    o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="model",
-            metric="sessions")
+    o = _ov(us, **_WIN, by="model", metric="sessions")
     assert o["breakdown"]["source"] == "jobs"
     board = {r["id"]: r for r in o["leaderboard"]}
     assert board["large-v3"]["totals"]["sessions"] == 4
@@ -123,8 +120,7 @@ def test_overview_by_model_from_jobs(usage_store_db):
     models = {m["model"]: m for m in o["models"]}
     assert models["large-v3"]["audio_s"] == 200.0 and models["large-v3"]["errors"] == 1
     assert models["medium"]["rtf"] == 0.3
-    narrowed = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"),
-                   by="model", with_stages=("diarizing",))
+    narrowed = _ov(us, **_WIN, by="model", with_stages=("diarizing",))
     assert [ln["id"] for ln in narrowed["lines"]] == ["large-v3"]
     assert narrowed["models"] == [{"model": "large-v3", "sessions": 1, "requests": 1,
                                    "errors": 0, "words": 300, "audio_s": 120.0,
@@ -151,15 +147,13 @@ def test_overview_by_model_half_hour_zone_lines_match_the_board(usage_store_db):
 def test_overview_by_stage_from_stage_hourly(usage_store_db):
     us = usage_store_db
     _seed(us)
-    o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="stage",
-            metric="processing_s")
+    o = _ov(us, **_WIN, by="stage", metric="processing_s")
     assert [ln["id"] for ln in o["lines"]] == ["diarizing"]
     assert sum(o["lines"][0]["values"]) == 12.0
     assert o["leaderboard"][0]["totals"]["audio_s"] == 120.0
     assert o["leaderboard"][0]["totals"]["sessions"] == 1
     assert o["breakdown"]["key_scoped"] is False
-    keyed = _ov(us, user_id="carol", key_id="k4", from_day=_D("2025-06-02"),
-                to_day=_D("2025-06-11"), by="stage")
+    keyed = _ov(us, user_id="carol", key_id="k4", **_WIN, by="stage")
     assert keyed["filter"]["key_scoped"] is False
 
 
@@ -174,8 +168,7 @@ def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
     us.record_usage(key_id="k3", user_id="bob", audio_s=7.0, words=1,
                     status="ok", kind="dictation", hour=_hour("2024-06-03"),
                     processing_s=1.0, job_id="y1")
-    o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="kind",
-            compare="prev")
+    o = _ov(us, **_WIN, by="kind", compare="prev")
     c = o["compare"]
     assert c["mode"] == "prev"
     assert c["range"] == {"from": _D("2025-05-23"), "to": _D("2025-06-01"), "days": 10}
@@ -183,8 +176,7 @@ def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
     lines = {ln["id"]: ln["values"] for ln in c["lines"]}
     assert set(lines) == {ln["id"] for ln in o["lines"]}
     assert lines["file"][1] == 15.0 and len(lines["file"]) == 10
-    y = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="kind",
-            compare="yoy")
+    y = _ov(us, **_WIN, by="kind", compare="yoy")
     assert y["compare"]["range"] == {"from": _D("2024-06-02"), "to": _D("2024-06-11"),
                                      "days": 10}
     assert y["compare"]["totals"]["all"]["audio_s"] == 7.0
@@ -204,8 +196,7 @@ def test_overview_compare_others_line_sums_prev_tail(usage_store_db):
         us.record_usage(key_id=key, user_id=uid, audio_s=secs, words=1,
                         status="ok", kind="file", hour=_hour("2025-05-25"),
                         processing_s=1.0, job_id=jid)
-    o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="user",
-            top_k=2, compare="prev")
+    o = _ov(us, **_WIN, by="user", top_k=2, compare="prev")
     assert [ln["id"] for ln in o["lines"]] == ["carol", "alice", "__others__"]
     c = o["compare"]
     cmp = {ln["id"]: ln["values"] for ln in c["lines"]}
@@ -236,7 +227,7 @@ def test_overview_with_stages_narrows_every_breakdown(usage_store_db):
                             {"name": "diarizing", "secs": 2.0, "speakers": 2}])
     us.record_usage(key_id="k2", user_id="bob", audio_s=30.0, words=5, status="ok",
                     kind="file", hour=_hour("2025-06-05"), processing_s=3.0, job_id="j3")
-    win = dict(from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), with_stages=("diarizing",))
+    win = dict(**_WIN, with_stages=("diarizing",))
     by_user = _ov(us, by="user", **win)
     assert by_user["totals"]["all"]["sessions"] == 1
     assert [(r["id"], r["totals"]["sessions"]) for r in by_user["leaderboard"]] == [("bob", 1)]
@@ -251,7 +242,7 @@ def test_overview_with_stages_narrows_every_breakdown(usage_store_db):
     # The jobs path narrows the stage rows by kind too: no "unscoped" flag.
     assert _ov(us, by="stage", kinds=["file"], **win)["filter"]["kind_scoped"] is True
     # Without the stage filter the rollups still feed the board (all three jobs).
-    plain = _ov(us, by="user", from_day=_D("2025-06-02"), to_day=_D("2025-06-11"))
+    plain = _ov(us, by="user", **_WIN)
     assert [(r["id"], r["totals"]["sessions"]) for r in plain["leaderboard"]] == [("bob", 2), ("alice", 1)]
     assert plain["breakdown"]["source"] == "rollups"
 
