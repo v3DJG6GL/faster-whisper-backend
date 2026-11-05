@@ -11,6 +11,7 @@ import zoneinfo
 
 import pytest
 
+from tests.conftest import _close_store
 from tests.stats._usage_helpers import epoch_day as _D, rec as _rec, utc_doc as _doc
 
 _ZH = zoneinfo.ZoneInfo("Europe/Zurich")
@@ -71,8 +72,7 @@ def test_init_rebuilds_legacy_hourly_with_kind_and_sessions(tmp_path):
         usage_store.init_db(path)
         assert usage_store.totals_for_user("u")["requests"] == 4
     finally:
-        usage_store._require_conn().close()
-        usage_store._conn = None
+        _close_store(usage_store)
 
 
 def test_failed_init_leaves_the_store_closed(tmp_path, monkeypatch):
@@ -179,11 +179,7 @@ def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
                 (102, "file", 1, 0, 1, 5, 3.0, 1.0)]
             conn.close()
     finally:
-        try:
-            usage_store._require_conn().close()
-        except Exception:
-            pass
-        usage_store._conn = None
+        _close_store(usage_store)
 
 
 def test_kind_totals_and_unknown_folds_into_all_only(usage_store_db):
