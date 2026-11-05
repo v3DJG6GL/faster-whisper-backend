@@ -1,5 +1,5 @@
-"""Spies shared by the tests/main/ files that drive a transcription through
-its stages. Import as ``from tests.main._stage_helpers import ...``."""
+"""Spies and stubs shared by the tests that drive a transcription through its
+stages. Import as ``from tests.main._stage_helpers import ...``."""
 
 from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.transcription import receipt as tx_receipt
