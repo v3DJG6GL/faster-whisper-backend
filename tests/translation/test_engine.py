@@ -1961,6 +1961,12 @@ def lru_env(monkeypatch):
     yield made, stats
 
 
+async def _load_a_and_b():
+    """Load o/a, then o/b, both unleased."""
+    await translation._get_model("o/a")
+    await translation._get_model("o/b")
+
+
 def test_lru_eviction_bookkeeping(lru_env):
     made, stats = lru_env
 
@@ -2056,8 +2062,7 @@ def test_drop_models_clears_everything(lru_env):
     made, stats = lru_env
 
     async def run():
-        await translation._get_model("o/a")
-        await translation._get_model("o/b")
+        await _load_a_and_b()
         await translation.drop_models()
     asyncio.run(run())
 
@@ -2113,8 +2118,7 @@ def test_idle_evictor_honours_warm_lease_then_evicts(lru_env, monkeypatch):
                         lambda name: name in warm)
 
     async def run():
-        await translation._get_model("o/a")
-        await translation._get_model("o/b")
+        await _load_a_and_b()
         translation._last_used["o/a"] -= 100
         await _run_evictor_once(monkeypatch)
         # A warm (preload) lease suspends the idle clock.
@@ -2919,10 +2923,7 @@ def test_drop_survives_a_broken_torch_install(monkeypatch, caplog):
 def test_trim_skips_a_draining_decode(lru_env, monkeypatch):
     made, _stats = lru_env
 
-    async def load_both():
-        await translation._get_model("o/a")
-        await translation._get_model("o/b")
-    _run(load_both())
+    _run(_load_a_and_b())
     assert set(translation._models) == {"o/a", "o/b"}
 
     # _trim_locked(cap) frees room for ONE incoming load (evicts while
@@ -2942,10 +2943,7 @@ def test_idle_peer_skips_a_draining_decode(lru_env, monkeypatch):
     and the load's trim would then drop the warm peer instead."""
     made, _stats = lru_env
 
-    async def load_both():
-        await translation._get_model("o/a")
-        await translation._get_model("o/b")
-    _run(load_both())
+    _run(_load_a_and_b())
     warm = {"o/b"}.__contains__
     with _decode_in_flight(monkeypatch, made["o/a"]):
         assert translation.idle_peer("o/c", warm) is None
