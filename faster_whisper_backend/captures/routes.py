@@ -890,11 +890,8 @@ async def patch_capture_api(
             # gone; nothing to review, and a ready row would leave eviction
             # tier 2 for the protected last tier. A restored file lifts it.
             raise HTTPException(status.HTTP_409_CONFLICT, "audio missing")
-        patch: dict[str, Any] = {}
-        if payload.status is not None:
-            patch["status"] = payload.status
-        if payload.corrected_text is not None:
-            patch["corrected_text"] = payload.corrected_text
+        patch: dict[str, Any] = payload.model_dump(
+            include={"status", "corrected_text", "admin_notes"}, exclude_none=True)
         if payload.corrections is not None:
             edited = [c.model_dump() for c in payload.corrections]
             if payload.baseline_corrections is not None:
@@ -908,8 +905,6 @@ async def patch_capture_api(
                 )
             _refuse_over_cap([edited], "a capture")
             patch["corrections"] = edited
-        if payload.admin_notes is not None:
-            patch["admin_notes"] = payload.admin_notes
         try:
             return captures_store.update_capture(cid, patch)
         except ValueError as e:
@@ -2311,10 +2306,8 @@ async def patch_sample_api(
         # an existing sample by regenerate or the bulk VAD reprocess.
         if payload.is_locked is not None:
             patch["is_locked"] = 1 if payload.is_locked else 0
-        if payload.status is not None:
-            patch["status"] = payload.status
-        if payload.admin_notes is not None:
-            patch["admin_notes"] = payload.admin_notes
+        patch.update(payload.model_dump(
+            include={"status", "admin_notes"}, exclude_none=True))
         if payload.corrections is not None:
             # Group chips live on the members (`_enrich_sample` derives the
             # group's set on every read), so the edit fans down to them.
