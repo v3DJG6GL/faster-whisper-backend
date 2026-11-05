@@ -116,10 +116,8 @@ def test_sessions_counted_once_per_job_across_utterances(usage_store_db):
 
 def test_colliding_job_id_of_another_user_is_not_merged(usage_store_db):
     us = usage_store_db
-    us.record_usage(key_id="ka", user_id="alice", audio_s=1.0, words=10,
-                    status="ok", kind="dictation", job_id="c" * 32)
-    us.record_usage(key_id="kb", user_id="bob", audio_s=1.0, words=20,
-                    status="ok", kind="dictation", job_id="c" * 32)
+    _rec(us, key_id="ka", user_id="alice", audio_s=1.0, words=10, kind="dictation", job_id="c" * 32)
+    _rec(us, key_id="kb", user_id="bob", audio_s=1.0, words=20, kind="dictation", job_id="c" * 32)
     job = _row(us, "SELECT user_id, words, utterances FROM usage_jobs")
     assert tuple(job) == ("alice", 10, 1)
     # Bob's work is still counted — as a session of its own.
@@ -244,8 +242,8 @@ def test_translation_attaches_to_its_dictation_session(usage_store_db):
     assert conn.execute("SELECT 1 FROM usage_jobs WHERE job_id = ?",
                         ("p" * 32,)).fetchone() is None
     # Someone else's session, an unknown id, a failed run: own text job.
-    us.record_usage(key_id="k2", user_id="v", audio_s=0.0, words=0, status="ok",
-                    kind="text", job_id="q" * 32, stages=tr, session_job_id=sess)
+    _rec(us, key_id="k2", user_id="v", audio_s=0.0, words=0, kind="text", job_id="q" * 32,
+         stages=tr, session_job_id=sess)
     _rec(us, audio_s=0.0, words=0, kind="text", job_id="r" * 32, stages=tr, session_job_id="x" * 32)
     _rec(us, audio_s=0.0, words=0, status="error", kind="text", job_id="e" * 32,
          stages=tr, session_job_id=sess)
@@ -669,8 +667,7 @@ def test_time_saved_and_wpm_over_dictation_only(usage_store_db):
     assert doc["time_saved_s"] == 400 / 40 * 60 - 300
     assert doc["dictation"]["wpm"] == 80.0
     assert doc["dictation"]["words"] == 400
-    us.record_usage(key_id="k", user_id="slow", audio_s=600.0, words=10,
-                    status="ok", kind="dictation")
+    _rec(us, user_id="slow", audio_s=600.0, words=10, kind="dictation")
     assert _doc(us, "slow", days=1)["time_saved_s"] == 0.0
 
 
@@ -711,8 +708,7 @@ def test_outcome_for_unknown_job_creates_a_stub(usage_store_db):
 
 def test_outcome_scoped_to_owner(usage_store_db):
     us = usage_store_db
-    us.record_usage(key_id="k", user_id="alice", audio_s=1.0, words=1,
-                    status="ok", kind="dictation", job_id="a" * 32)
+    _rec(us, user_id="alice", audio_s=1.0, words=1, kind="dictation", job_id="a" * 32)
     assert us.record_outcome(user_id="bob", job_id="a" * 32, activation="hold",
                              delivery="typed", translation="not_asked") == "duplicate"
     assert _row(us, "SELECT reported_ts FROM usage_jobs")["reported_ts"] is None
@@ -739,8 +735,7 @@ def test_utterance_after_the_outcome_matches_the_usual_order(usage_store_db):
     assert us.record_outcome(user_id="alice", job_id=jid, activation="hold",
                              delivery="typed", translation="not_asked",
                              app_id="thunderbird") == "accepted"
-    us.record_usage(key_id="k", user_id="alice", audio_s=15.0, words=25,
-                    status="ok", kind="dictation", job_id=jid)
+    _rec(us, key_id="k", user_id="alice", audio_s=15.0, words=25, kind="dictation", job_id=jid)
     conn = us._require_conn()
     hourly = conn.execute(
         "SELECT key_id, requests, sessions, words FROM usage_hourly").fetchall()
@@ -749,8 +744,7 @@ def test_utterance_after_the_outcome_matches_the_usual_order(usage_store_db):
     assert tuple(job) == ("k", 1)
     assert _outcome_rollups(us) == ((1, 25, 15.0), (1, 25))
     # A second utterance adds words, never a session (and keeps the key).
-    us.record_usage(key_id="other", user_id="alice", audio_s=5.0, words=5,
-                    status="ok", kind="dictation", job_id=jid)
+    _rec(us, key_id="other", user_id="alice", audio_s=5.0, words=5, kind="dictation", job_id=jid)
     assert _row(us, "SELECT SUM(sessions) FROM usage_hourly")[0] == 1
     assert _row(us, "SELECT key_id FROM usage_jobs")[0] == "k"
     assert _outcome_rollups(us) == ((1, 30, 20.0), (1, 30))
@@ -882,13 +876,12 @@ def test_document_user_id_none_aggregates_all_users(usage_store_db):
     says so in range.key_scoped."""
     us = usage_store_db
     h = _hour(2025, 6, 10, 9, 0, _UTC)
-    us.record_usage(key_id="ka", user_id="alice", audio_s=10.0, words=10,
-                    status="ok", kind="file", hour=h, processing_s=1.0, job_id="a1",
-                    stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}])
-    us.record_usage(key_id="ka2", user_id="alice", audio_s=5.0, words=5,
-                    status="ok", kind="file", hour=h, processing_s=1.0, job_id="a2")
-    us.record_usage(key_id="kb", user_id="bob", audio_s=20.0, words=20,
-                    status="ok", kind="dictation", hour=h, processing_s=2.0, job_id="b1")
+    _rec(us, key_id="ka", user_id="alice", audio_s=10.0, words=10, kind="file", hour=h,
+         processing_s=1.0, job_id="a1", stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}])
+    _rec(us, key_id="ka2", user_id="alice", audio_s=5.0, words=5, kind="file", hour=h,
+         processing_s=1.0, job_id="a2")
+    _rec(us, key_id="kb", user_id="bob", audio_s=20.0, words=20, kind="dictation", hour=h,
+         processing_s=2.0, job_id="b1")
     now = _ts(2025, 6, 10, 12, 0, _UTC)
     everyone = _doc(us, None, days=7, now=now)
     alice = _doc(us, "alice", days=7, now=now)

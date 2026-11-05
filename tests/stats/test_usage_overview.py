@@ -19,25 +19,19 @@ def _hour(iso, hh=12):
 def _seed(us):
     # 2025-06-02 (Mon) .. 2025-06-11: alice files on k1/k2, bob dictation on k3,
     # one diarized URL job from carol on 06-05, one text job from alice.
-    us.record_usage(key_id="k1", user_id="alice", audio_s=60.0, words=100,
-                    status="ok", kind="file", hour=_hour("2025-06-02"),
-                    processing_s=6.0, job_id="a1", model="large-v3")
-    us.record_usage(key_id="k2", user_id="alice", audio_s=30.0, words=50,
-                    status="ok", kind="file", hour=_hour("2025-06-04"),
-                    processing_s=9.0, job_id="a2", model="medium")
-    us.record_usage(key_id="k3", user_id="bob", audio_s=10.0, words=40,
-                    status="ok", kind="dictation", hour=_hour("2025-06-04"),
-                    processing_s=1.0, job_id="b1", model="large-v3")
-    us.record_usage(key_id="k3", user_id="bob", audio_s=10.0, words=40,
-                    status="error", kind="dictation", hour=_hour("2025-06-10"),
-                    processing_s=1.0, job_id="b2", model="large-v3")
-    us.record_usage(key_id="k4", user_id="carol", audio_s=120.0, words=300,
-                    status="ok", kind="url", hour=_hour("2025-06-05"),
-                    processing_s=30.0, job_id="c1", model="large-v3",
-                    stages=[{"name": "diarizing", "secs": 12.0, "speakers": 3}])
-    us.record_usage(key_id="k1", user_id="alice", audio_s=0.0, words=0,
-                    status="ok", kind="text", hour=_hour("2025-06-06"),
-                    processing_s=0.5, job_id="a3", model=None)
+    _rec(us, key_id="k1", user_id="alice", audio_s=60.0, words=100, kind="file",
+         hour=_hour("2025-06-02"), processing_s=6.0, job_id="a1", model="large-v3")
+    _rec(us, key_id="k2", user_id="alice", audio_s=30.0, words=50, kind="file",
+         hour=_hour("2025-06-04"), processing_s=9.0, job_id="a2", model="medium")
+    _rec(us, key_id="k3", user_id="bob", audio_s=10.0, words=40, kind="dictation",
+         hour=_hour("2025-06-04"), processing_s=1.0, job_id="b1", model="large-v3")
+    _rec(us, key_id="k3", user_id="bob", audio_s=10.0, words=40, status="error", kind="dictation",
+         hour=_hour("2025-06-10"), processing_s=1.0, job_id="b2", model="large-v3")
+    _rec(us, key_id="k4", user_id="carol", audio_s=120.0, words=300, kind="url",
+         hour=_hour("2025-06-05"), processing_s=30.0, job_id="c1", model="large-v3",
+         stages=[{"name": "diarizing", "secs": 12.0, "speakers": 3}])
+    _rec(us, key_id="k1", user_id="alice", audio_s=0.0, words=0, kind="text",
+         hour=_hour("2025-06-06"), processing_s=0.5, job_id="a3", model=None)
 
 
 NOW = _ts("2025-06-11", 15)
@@ -159,12 +153,10 @@ def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
     _seed(us)
     # An earlier window with one file job for alice, and the same dates a
     # year before with a dictation for bob.
-    us.record_usage(key_id="k1", user_id="alice", audio_s=15.0, words=1,
-                    status="ok", kind="file", hour=_hour("2025-05-24"),
-                    processing_s=1.0, job_id="p1")
-    us.record_usage(key_id="k3", user_id="bob", audio_s=7.0, words=1,
-                    status="ok", kind="dictation", hour=_hour("2024-06-03"),
-                    processing_s=1.0, job_id="y1")
+    _rec(us, key_id="k1", user_id="alice", audio_s=15.0, words=1, kind="file",
+         hour=_hour("2025-05-24"), processing_s=1.0, job_id="p1")
+    _rec(us, key_id="k3", user_id="bob", audio_s=7.0, words=1, kind="dictation",
+         hour=_hour("2024-06-03"), processing_s=1.0, job_id="y1")
     o = _ov(us, **_WIN, by="kind", compare="prev")
     c = o["compare"]
     assert c["mode"] == "prev"
@@ -190,9 +182,8 @@ def test_overview_compare_others_line_sums_prev_tail(usage_store_db):
     _seed(us)
     for uid, key, secs, jid in (("alice", "k1", 5.0, "pa"), ("bob", "k3", 5.0, "pb"),
                                 ("carol", "k4", 40.0, "pc")):
-        us.record_usage(key_id=key, user_id=uid, audio_s=secs, words=1,
-                        status="ok", kind="file", hour=_hour("2025-05-25"),
-                        processing_s=1.0, job_id=jid)
+        _rec(us, key_id=key, user_id=uid, audio_s=secs, words=1, kind="file",
+             hour=_hour("2025-05-25"), processing_s=1.0, job_id=jid)
     o = _ov(us, **_WIN, by="user", top_k=2, compare="prev")
     assert [ln["id"] for ln in o["lines"]] == ["carol", "alice", "__others__"]
     c = o["compare"]
@@ -215,15 +206,15 @@ def test_overview_with_stages_narrows_every_breakdown(usage_store_db):
     come from the same rows (breakdown.source "jobs"), or the board sums
     to more sessions than the headline above it."""
     us = usage_store_db
-    us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5, status="ok",
-                    kind="dictation", hour=_hour("2025-06-03"), processing_s=1.0,
-                    job_id="j1", stages=[{"name": "translating", "secs": 1.0}])
-    us.record_usage(key_id="k2", user_id="bob", audio_s=20.0, words=5, status="ok",
-                    kind="file", hour=_hour("2025-06-04"), processing_s=2.0, job_id="j2",
-                    stages=[{"name": "translating", "secs": 1.0},
-                            {"name": "diarizing", "secs": 2.0, "speakers": 2}])
-    us.record_usage(key_id="k2", user_id="bob", audio_s=30.0, words=5, status="ok",
-                    kind="file", hour=_hour("2025-06-05"), processing_s=3.0, job_id="j3")
+    _rec(us, key_id="k1", user_id="alice", audio_s=10.0, words=5, kind="dictation",
+         hour=_hour("2025-06-03"), processing_s=1.0, job_id="j1",
+         stages=[{"name": "translating", "secs": 1.0}])
+    _rec(us, key_id="k2", user_id="bob", audio_s=20.0, words=5, kind="file",
+         hour=_hour("2025-06-04"), processing_s=2.0, job_id="j2",
+         stages=[{"name": "translating", "secs": 1.0},
+                 {"name": "diarizing", "secs": 2.0, "speakers": 2}])
+    _rec(us, key_id="k2", user_id="bob", audio_s=30.0, words=5, kind="file",
+         hour=_hour("2025-06-05"), processing_s=3.0, job_id="j3")
     win = dict(**_WIN, with_stages=("diarizing",))
     by_user = _ov(us, by="user", **win)
     assert by_user["totals"]["all"]["sessions"] == 1
@@ -253,10 +244,10 @@ def test_overview_compare_rebuckets_prev_onto_the_current_week_axis(usage_store_
     us = usage_store_db
     t = _D("2025-06-07")
     f, pt = t - 179, t - 180
-    us.record_usage(key_id="k1", user_id="alice", audio_s=99.0, words=1, status="ok",
-                    kind="file", hour=pt * 24 + 12, processing_s=1.0, job_id="p1")
-    us.record_usage(key_id="k1", user_id="alice", audio_s=1.0, words=1, status="ok",
-                    kind="file", hour=t * 24 + 12, processing_s=1.0, job_id="c1")
+    _rec(us, key_id="k1", user_id="alice", audio_s=99.0, words=1, kind="file",
+         hour=pt * 24 + 12, processing_s=1.0, job_id="p1")
+    _rec(us, key_id="k1", user_id="alice", audio_s=1.0, words=1, kind="file",
+         hour=t * 24 + 12, processing_s=1.0, job_id="c1")
     o = _ov(us, from_day=f, to_day=t, now=t * 86400 + 50000, compare="prev",
             bucket="week", by="kind")
     assert len(o["days"]) == 26 and len(us._axis(pt - 179, pt, "week")) == 27
@@ -273,9 +264,8 @@ def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
     decode: like the tail, the by=model breakdown and the models table leave
     it out rather than count an "(unknown)" session."""
     us = usage_store_db
-    us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
-                    status="ok", kind="dictation", processing_s=1.0,
-                    job_id="d1", model="large-v3")
+    _rec(us, key_id="k1", user_id="alice", audio_s=10.0, words=5, kind="dictation",
+         processing_s=1.0, job_id="d1", model="large-v3")
     assert us.record_outcome(user_id="alice", job_id="s" * 32, activation="hold",
                              delivery="typed", translation="none") == "accepted"
     o = us.overview(user_id=None, tz=_UTC, tz_name="UTC", days=1, by="model",
