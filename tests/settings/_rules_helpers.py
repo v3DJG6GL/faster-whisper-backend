@@ -63,13 +63,18 @@ def validate_rules(rules, **context):
         {"PIPELINE_RULES": rules}, context=context or None)
 
 
+def seed_local(tmp_path, raw):
+    """`raw` written as tmp_path/config.local.json; returns the path."""
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    return p
+
+
 def load_saved(tmp_path, raw):
     """`raw` written as tmp_path/config.local.json, read back through
     config_store.load_overrides."""
     from faster_whisper_backend.settings import config_store as cs
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps(raw), encoding="utf-8")
-    return cs.load_overrides(str(p))
+    return cs.load_overrides(str(seed_local(tmp_path, raw)))
 
 
 def fast_postprocess(text, language="de"):

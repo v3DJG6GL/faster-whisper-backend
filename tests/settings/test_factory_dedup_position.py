@@ -6,14 +6,13 @@ own marks by then) it only ever collapsed DICTATED runs: "Fragezeichen
 Ausrufezeichen" came out "!", "Punkt Punkt Punkt" ".".
 """
 
-import json
-
 import pytest
 
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
 from faster_whisper_backend.settings import config_store as cs
 from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import seed_local as _seed_local
 
 
 def _names(rules):
@@ -62,9 +61,7 @@ def test_a_saved_list_in_the_old_factory_order_is_moved_once(es_after_hyphen):
 
 
 def test_load_overrides_moves_it_in_a_stored_file(tmp_path):
-    path = tmp_path / "config.local.json"
-    path.write_text(json.dumps({"PIPELINE_RULES": _old_order(_factory_rules())}),
-                    encoding="utf-8")
+    path = _seed_local(tmp_path, {"PIPELINE_RULES": _old_order(_factory_rules())})
     names = _names(cs.load_overrides(str(path))["PIPELINE_RULES"])
     assert names.index("dedup-punct") + 1 == names.index("de-dictation-map")
 

@@ -24,6 +24,7 @@ from tests.settings._rules_helpers import (
     old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
     regex_list_rules,
     regex_rule as _regex,
+    seed_local as _seed_local,
     terminal_rule as _terminal,
     validate_rules,
 )
@@ -44,12 +45,6 @@ def _write_json(p, doc):
 
 def _read_json(p):
     return json.loads(Path(p).read_text(encoding="utf-8"))
-
-
-def _seed_local(tmp_path, doc):
-    p = tmp_path / "config.local.json"
-    _write_json(p, doc)
-    return p
 
 
 @pytest.fixture

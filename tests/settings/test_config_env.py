@@ -23,6 +23,7 @@ from tests.conftest import _repoint_path_default
 from tests.settings._rules_helpers import factory_rules as _factory_rules
 from tests.settings._rules_helpers import load_saved as _load_saved
 from tests.settings._rules_helpers import pre_june_rules as _pre_june_rules
+from tests.settings._rules_helpers import seed_local as _seed_local
 
 
 def test_truthy():
@@ -545,9 +546,7 @@ def test_save_overrides_migrates_use_auth_token(tmp_path):
     surviving pre-rename USE_AUTH_TOKEN key would make AdminConfig
     (extra=forbid) reject EVERY save forever. The first successful write must
     migrate the key and self-heal the file."""
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
-                 encoding="utf-8")
+    p = _seed_local(tmp_path, {"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7})
     changed = config_store.save_overrides({"BEAM_SIZE": 5}, path=str(p))
     assert changed.get("BEAM_SIZE") == 5
     on_disk = json.loads(p.read_text(encoding="utf-8"))
@@ -912,8 +911,7 @@ def _store_local(monkeypatch, tmp_path, raw):
     """Write `raw` as tmp_path/config.local.json and repoint
     config_store.load_overrides at it the way tests/conftest.py does: the
     module constant AND the def-time-bound default argument."""
-    path = tmp_path / "config.local.json"
-    path.write_text(json.dumps(raw), encoding="utf-8")
+    path = _seed_local(tmp_path, raw)
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
     _repoint_path_default(monkeypatch, (config_store.load_overrides,), str(path))
 
