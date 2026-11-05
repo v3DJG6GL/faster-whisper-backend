@@ -140,9 +140,8 @@ def test_job_model_is_capped(usage_store_db):
     # socket's max frame size) through; stored at most 128 chars, like
     # jobs_store.
     us = usage_store_db
-    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1,
-                    status="error", kind="dictation", job_id="m" * 32,
-                    model="m" * 10000)
+    _rec(us, audio_s=1.0, words=1, status="error", kind="dictation", job_id="m" * 32,
+         model="m" * 10000)
     row = us._require_conn().execute(
         "SELECT model FROM usage_jobs").fetchone()
     assert len(row["model"]) == 128
@@ -249,8 +248,8 @@ def test_translation_attaches_to_its_dictation_session(usage_store_db):
     us.record_usage(key_id="k2", user_id="v", audio_s=0.0, words=0, status="ok",
                     kind="text", job_id="q" * 32, stages=tr, session_job_id=sess)
     _rec(us, audio_s=0.0, words=0, kind="text", job_id="r" * 32, stages=tr, session_job_id="x" * 32)
-    us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0, status="error",
-                    kind="text", job_id="e" * 32, stages=tr, session_job_id=sess)
+    _rec(us, audio_s=0.0, words=0, status="error", kind="text", job_id="e" * 32,
+         stages=tr, session_job_id=sess)
     for jid in ("q", "r", "e"):
         assert conn.execute("SELECT kind FROM usage_jobs WHERE job_id = ?",
                             (jid * 32,)).fetchone()["kind"] == "text", jid
@@ -611,9 +610,8 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     _rec(us, audio_s=100.0, words=400, kind="file", job_id="f1" * 16, hour=h - 2, stages=[
              {"name": "translating", "secs": 3.0, "targets": ["de"]},
              {"name": "diarizing", "secs": 5.0, "speakers": 2}])
-    us.record_usage(key_id="k", user_id="u", audio_s=50.0, words=200, status="error",
-                    kind="file", job_id="f2" * 16, hour=h - 30, stages=[
-                        {"name": "diarizing", "secs": 2.0, "speakers": 4}])
+    _rec(us, audio_s=50.0, words=200, status="error", kind="file", job_id="f2" * 16, hour=h - 30,
+         stages=[{"name": "diarizing", "secs": 2.0, "speakers": 4}])
     for _ in range(2):
         _rec(us, audio_s=10.0, words=30, kind="dictation", job_id="d1" * 16, hour=h - 1,
              stages=[{"name": "translate", "secs": 1.0, "targets": ["fr"]}])
@@ -973,9 +971,8 @@ def test_parse_window_params_matches_v1_route(usage_store_db):
 def test_wait_s_accumulates_and_error_class_is_kept(usage_store_db):
     us = usage_store_db
     h = _hour(2025, 6, 10, 9, 0, _UTC)
-    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="error",
-                    kind="dictation", job_id="d1", hour=h, wait_s=1.5,
-                    error_class="timeout", error_stage="transcribing")
+    _rec(us, audio_s=1.0, words=1, status="error", kind="dictation", job_id="d1", hour=h,
+         wait_s=1.5, error_class="timeout", error_stage="transcribing")
     _rec(us, audio_s=1.0, words=1, kind="dictation", job_id="d1", hour=h, wait_s=0.5)
     row = us._require_conn().execute(
         "SELECT wait_s, error_class, error_stage, utterances FROM usage_jobs"
@@ -997,10 +994,8 @@ def test_a_failed_utterance_keeps_the_dictation_session_failed(usage_store_db):
     us = usage_store_db
     h = _hour(2025, 6, 10, 9, 0, _UTC)
     for status, ecls in (("ok", None), ("error", "cuda_oom"), ("ok", None)):
-        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1,
-                        status=status, kind="dictation", job_id="s1", hour=h,
-                        error_class=ecls,
-                        error_stage="transcribing" if ecls else None)
+        _rec(us, audio_s=1.0, words=1, status=status, kind="dictation", job_id="s1", hour=h,
+             error_class=ecls, error_stage="transcribing" if ecls else None)
     row = us._require_conn().execute(
         "SELECT status, error_class, utterances FROM usage_jobs"
         " WHERE job_id = 's1'").fetchone()
@@ -1009,8 +1004,8 @@ def test_a_failed_utterance_keeps_the_dictation_session_failed(usage_store_db):
     out = us.failures(start_ts=h * 3600 - 1, end_ts=h * 3600 + 3600)
     assert (out["jobs"], out["failed"]) == (1, 1)
     # A batch id re-posted after a failure: the run that finished last wins.
-    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="error",
-                    kind="file", job_id="f1", hour=h, error_class="timeout")
+    _rec(us, audio_s=1.0, words=1, status="error", kind="file", job_id="f1", hour=h,
+         error_class="timeout")
     _rec(us, audio_s=1.0, words=1, kind="file", job_id="f1", hour=h)
     assert us._require_conn().execute(
         "SELECT status FROM usage_jobs WHERE job_id = 'f1'").fetchone()[0] == "ok"

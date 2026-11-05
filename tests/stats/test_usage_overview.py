@@ -4,7 +4,7 @@ breakdowns, leaderboard, compare window, per-model table."""
 import datetime
 import zoneinfo
 
-from tests.stats._usage_helpers import _UTC, epoch_day as _D
+from tests.stats._usage_helpers import _UTC, epoch_day as _D, rec as _rec
 
 
 def _ts(iso, hh=12):
@@ -133,9 +133,8 @@ def test_overview_by_model_half_hour_zone_lines_match_the_board(usage_store_db):
     us = usage_store_db
     ist = zoneinfo.ZoneInfo("Asia/Kolkata")
     for iso, words in (("2025-06-01", 10), ("2025-06-03", 5)):
-        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=words,
-                        status="ok", kind="file", job_id=f"j{iso}", model="m",
-                        hour=_hour(iso, 18))   # 18:00 UTC = 23:30 IST
+        _rec(us, audio_s=1.0, words=words, kind="file", job_id=f"j{iso}", model="m",
+             hour=_hour(iso, 18))   # 18:00 UTC = 23:30 IST
     o = _ov(us, by="model", metric="words", tz=ist, tz_name="Asia/Kolkata",
             from_day=_D("2025-06-02"), to_day=_D("2025-06-03"))
     assert [(ln["id"], sum(ln["values"])) for ln in o["lines"]] == [("m", 5.0)]
@@ -293,9 +292,8 @@ def test_overview_all_time_models_reach_jobs_older_than_the_hourly_retention(usa
     us = usage_store_db
     old = us.now_hour() - 200 * 24
     for jid, hour in (("o" * 32, old), ("n" * 32, None)):
-        us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
-                        kind="file", job_id=jid, hour=hour, processing_s=1.0,
-                        model="large-v3")
+        _rec(us, audio_s=10.0, words=5, kind="file", job_id=jid, hour=hour, processing_s=1.0,
+             model="large-v3")
     us.sweep(unreported_after_h=24, jobs_retention_days=365,
              app_retention_days=0, hourly_retention_days=90)
     o = us.overview(user_id=None, tz=_UTC, tz_name="UTC", all_time=True, by="model")

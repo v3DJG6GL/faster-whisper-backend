@@ -4,7 +4,7 @@ failures by stage / class, per-model table, compare window."""
 import datetime
 import zoneinfo
 
-from tests.stats._usage_helpers import _UTC, epoch_day as _D
+from tests.stats._usage_helpers import _UTC, epoch_day as _D, rec as _rec
 
 
 def _ts(iso, hh=12):
@@ -130,9 +130,8 @@ def test_tail_half_hour_zone_keeps_wait_days_inside_the_range(usage_store_db):
     us = usage_store_db
     ist = zoneinfo.ZoneInfo("Asia/Kolkata")
     for iso, w in (("2025-06-01", 1.0), ("2025-06-03", 2.0)):
-        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok",
-                        kind="file", job_id=f"j{iso}", hour=_hour(iso, 18),  # 23:30 IST
-                        wait_s=w)
+        _rec(us, audio_s=1.0, words=1, kind="file", job_id=f"j{iso}",
+             hour=_hour(iso, 18), wait_s=w)  # 23:30 IST
     doc = us.tail(user_id=None, tz=ist, tz_name="Asia/Kolkata",
                   from_day=_D("2025-06-02"), to_day=_D("2025-06-03"), now=NOW)
     assert [(p["day"], p["n"]) for p in doc["wait"]["by_day"]] == [(_D("2025-06-03"), 1)]
@@ -144,9 +143,8 @@ def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
     model "(unknown)" in the turnaround, wait, by-model or failure figures."""
     import time
     us = usage_store_db
-    us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
-                    kind="dictation", job_id="r" * 32, processing_s=8.0,
-                    model="large-v3")
+    _rec(us, audio_s=10.0, words=5, kind="dictation", job_id="r" * 32, processing_s=8.0,
+         model="large-v3")
     for i in range(3):
         assert us.record_outcome(user_id="u", job_id=f"{i}" * 32, activation="handsfree",
                                  delivery="none", translation="not_asked") == "accepted"
@@ -166,8 +164,7 @@ def test_tail_all_time_reaches_jobs_older_than_the_hourly_retention(usage_store_
     us = usage_store_db
     old = us.now_hour() - 200 * 24
     for jid, hour in (("o" * 32, old), ("n" * 32, None)):
-        us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
-                        kind="file", job_id=jid, hour=hour, processing_s=1.0)
+        _rec(us, audio_s=10.0, words=5, kind="file", job_id=jid, hour=hour, processing_s=1.0)
     counts = us.sweep(unreported_after_h=24, jobs_retention_days=365,
                       app_retention_days=0, hourly_retention_days=90)
     assert counts["hourly"] >= 1 and counts["jobs"] == 0
