@@ -19,7 +19,7 @@ from tests._translation_helpers import (
     stub_translate as _stub_translate,
     text_translation_body as _body,
 )
-from tests.conftest import bearer, record_calls
+from tests.conftest import bearer, on_event_loop, record_calls
 from faster_whisper_backend.translation import routes as tr_routes
 
 URL = "/v1/text/translations"
@@ -450,15 +450,8 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
     written on a worker thread, never on the loop."""
     from faster_whisper_backend.transcription import jobs_store
     _enable_stubbed(app_module, monkeypatch)
-
-    def _state_and_loop(**kw):
-        try:
-            asyncio.get_running_loop()
-            on_loop = True
-        except RuntimeError:
-            on_loop = False
-        return kw.get("state"), on_loop
-    seen = record_calls(monkeypatch, jobs_store, "finish", _state_and_loop)
+    seen = record_calls(monkeypatch, jobs_store, "finish",
+                        lambda **kw: (kw.get("state"), on_event_loop()))
     _post_ok(client, progress_id=_PID)
     assert seen == [("done", False)]
 

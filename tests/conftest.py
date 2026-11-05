@@ -459,6 +459,17 @@ def record_calls(monkeypatch, owner, name, pick):
     return log
 
 
+def on_event_loop():
+    """Whether the calling thread is running an asyncio event loop."""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def fake_wav_transcode(src_path, dst_path):
     """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
     write_wav(dst_path, b"\x00\x00" * 100)

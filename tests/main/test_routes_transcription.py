@@ -7,7 +7,7 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 import pytest
 from fastapi import HTTPException
 
-from tests.conftest import FakeModel, FakeSegment, bearer, record_calls, write_wav
+from tests.conftest import FakeModel, FakeSegment, bearer, on_event_loop, record_calls, write_wav
 from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import capture_receipt, transcode_raises
 from faster_whisper_backend.audio import bgm_separation
@@ -796,17 +796,11 @@ def test_batch_capture_gate_reads_the_store_off_the_event_loop(
     """ready_fills_cap queries the shared captures connection, which clear_all
     holds across a full VACUUM: called on the loop, that VACUUM would freeze
     every request and stream. It must run in a worker thread."""
-    import asyncio
-
     _record_captures_on(app_module, monkeypatch)
     on_loop = []
 
     def _probe():
-        try:
-            asyncio.get_running_loop()
-            on_loop.append(True)
-        except RuntimeError:
-            on_loop.append(False)
+        on_loop.append(on_event_loop())
         return True
     monkeypatch.setattr(captures_store, "ready_fills_cap", _probe)
 

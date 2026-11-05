@@ -24,7 +24,8 @@ from faster_whisper_backend.settings import config as cfg
 from tests._page_helpers import js_body, js_upto
 from tests.captures._store_helpers import insert_capture, insert_sample
 from tests.conftest import (
-    bearer, install_fake_wav_transcode, locked_user, record_calls, write_bytes, write_wav,
+    bearer, install_fake_wav_transcode, locked_user, on_event_loop, record_calls, write_bytes,
+    write_wav,
 )
 
 
@@ -237,16 +238,6 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
         captures_store.get_capture("open000cid"), _user(False))
     captures_routes._assert_member_sample_not_locked(
         captures_store.get_capture("free0000cid"), _user(False))
-
-
-def _on_loop():
-    import asyncio
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
 
 
 def _write_silent_wav(path, frames):
@@ -1529,7 +1520,7 @@ def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
     _insert_member(captures_store._require_conn(), "patchthr0001", None,
                    user_id=uid)
     seen = record_calls(monkeypatch, captures_store, "update_capture", lambda cid, patch: (
-        _on_loop(), captures_routes._corrections_write_lock.locked()))
+        on_event_loop(), captures_routes._corrections_write_lock.locked()))
     r = _patch(client, raw_key, "patchthr0001", admin_notes="n")
     assert r.status_code == 200, r.text
     r = _patch(client, raw_key, "patchthr0001", corrections=[],
@@ -1552,7 +1543,8 @@ def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
     uid, raw_key = make_user_key("root", is_admin=True)
     _insert_member(captures_store._require_conn(), "offloop00001", None,
                    user_id=uid)
-    seen = record_calls(monkeypatch, captures_store, "get_capture", lambda cid: _on_loop())
+    seen = record_calls(monkeypatch, captures_store, "get_capture",
+                        lambda cid: on_event_loop())
     # No WAV on disk: the row is found, then the file probe answers 410.
     assert _get(client, raw_key, "offloop00001/audio").status_code == 410
     assert _get(client, raw_key, "offloop00001").status_code == 200
@@ -1678,7 +1670,7 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
 
     monkeypatch.setattr(captures_store, "get_captures_light", _light)
     seen = record_calls(monkeypatch, captures_store, "update_capture", lambda cid, patch: (
-        cid, _on_loop(), captures_routes._corrections_write_lock.locked()))
+        cid, on_event_loop(), captures_routes._corrections_write_lock.locked()))
     r = _post_members(client, root_key, "samples/preview-save-chips", ids, corrections=[])
     assert r.status_code == 200, r.text
     assert seen == [(ids[0], False, True)]
