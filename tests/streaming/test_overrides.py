@@ -17,7 +17,7 @@ from tests._streaming_helpers import (
     config_drain, config_frame, const_pcm, dictate_session, handshake,
     ready_ws, speak, speak_and_stop, stop_and_drain, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
-from tests.conftest import bearer, locked_user
+from tests.conftest import bearer, locked_user, wait_until
 from faster_whisper_backend.transcription import models as tx_models
 
 OV = "/settings/overrides"
@@ -237,10 +237,7 @@ def _refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, gon
         # so wait for the handler to reach its teardown — it drops the session
         # id AFTER the error branch would have logged / recorded the row —
         # instead of draining. Leaving the block earlier would cancel the app.
-        for _ in range(400):
-            if not streaming_routes._active_sessions:
-                break
-            time.sleep(0.025)
+        wait_until(lambda: not streaming_routes._active_sessions, timeout=10, interval=0.025)
         assert not streaming_routes._active_sessions, "handler did not finish"
 
     errors = [r for r in caplog.records
