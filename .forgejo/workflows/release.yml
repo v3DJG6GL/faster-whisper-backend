@@ -236,9 +236,12 @@ jobs:
           else
             range="$PREV..$TAG"
           fi
-          body=$(git log --no-merges --format='- %s (%h)' "$range")
-          jq -n --arg tag "$TAG" --arg body "$body" \
-            '{tag_name: $tag, name: $tag, body: $body, draft: false, prerelease: false}' \
+          # Through a file, not --arg: a long range (v0.1.236 carried ~1,290
+          # commits) overflows the kernel's 128 KiB per-argument limit.
+          notes=$(mktemp)
+          git log --no-merges --format='- %s (%h)' "$range" > "$notes"
+          jq -n --arg tag "$TAG" --rawfile body "$notes" \
+            '{tag_name: $tag, name: $tag, body: ($body | rtrimstr("\n")), draft: false, prerelease: false}' \
           | curl -fsS -X POST \
               -H "Authorization: token $TOKEN" \
               -H 'Content-Type: application/json' \

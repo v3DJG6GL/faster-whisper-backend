@@ -266,6 +266,15 @@ def test_release_creation_probes_before_posting():
     assert "already exists" in step
 
 
+def test_release_notes_do_not_travel_through_argv():
+    # v0.1.236's ~1,290-commit log hit "jq: Argument list too long" and the
+    # release POST got an empty body (422); the notes must go via a file.
+    rel = _read(".forgejo", "workflows", "release.yml")
+    step = rel[rel.index("Create the Forgejo release"):]
+    assert "--arg body" not in step
+    assert '--rawfile body "$notes"' in step
+
+
 def test_manual_minor_bump_is_not_swallowed_by_idempotence():
     # The continuous flow patch-tags every green main commit, so a manual
     # minor/major on HEAD always meets the idempotence precondition; it must
