@@ -5,7 +5,7 @@ feedback. Driven through the real app; no faster-whisper needed."""
 import json
 from types import SimpleNamespace
 
-from tests.conftest import bearer, bind_user, first_key_id, locked_user
+from tests.conftest import bearer, bind_key, bind_user, first_key_id, locked_user
 from tests._translation_helpers import enable_translation, stub_translate
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -13,7 +13,6 @@ from faster_whisper_backend.translation import gating as tr_gating
 from tests._transcription_helpers import (
     bind_profile, post_json_ok, post_transcription, post_verbose_ok)
 OV = "/settings/overrides"
-PERMS = "/settings/api-keys/api/users"
 
 
 def _setup_profile(client, admin_h, name, **fields):
@@ -269,9 +268,7 @@ def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_k
     v2 = settings_version.config_version()
     assert v2 > v1                                         # per-user binding bumps
     kid = first_key_id(client, admin_h, uid)
-    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
-                     json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
-    assert r.status_code == 200, r.text
+    bind_key(client, admin_h, uid, kid, overrides={"BEAM_SIZE": 4})
     v3 = settings_version.config_version()
     assert v3 > v2                                         # per-key binding bumps
 
@@ -281,8 +278,7 @@ def test_per_key_override_beats_user(client, make_user_key, fake_model, root_key
     uid, raw_alice = make_user_key("alice", is_admin=False)
     bind_user(client, admin_h, uid, overrides={"BEAM_SIZE": 8})
     kid = first_key_id(client, admin_h, uid)
-    client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
-                 json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
+    bind_key(client, admin_h, uid, kid, overrides={"BEAM_SIZE": 4})
 
     post_json_ok(client, bearer(raw_alice))
     assert fake_model.last_kwargs["beam_size"] == 4       # key.direct wins over user.direct

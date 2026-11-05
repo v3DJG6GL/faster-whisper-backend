@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from faster_whisper_backend.admin import api_keys_routes, overrides_routes
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config_store
-from tests.conftest import bearer, fake_request
+from tests.conftest import bearer, fake_request, first_key_id
 
 PERMS = "/settings/api-keys/api/users"
 OV = "/settings/overrides"
@@ -29,8 +29,7 @@ def _setup(client, make_user_key):
         "other": _OTHER}})
     assert r.status_code == 200, r.text
     uid, _ = make_user_key("alice", is_admin=False)
-    kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
-    return uid, kid
+    return uid, first_key_id(client, h, uid)
 
 
 async def _bind_during(writer, entered, release, bind):
