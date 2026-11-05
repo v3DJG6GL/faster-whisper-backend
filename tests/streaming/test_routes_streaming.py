@@ -23,11 +23,10 @@ from tests._streaming_helpers import (
     const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake,
     ready_ws, speak_and_stop, stop_and_drain, stream_ws)
 from tests._transcription_helpers import guard_line
-from tests.conftest import FakeInfo, FakeSegment, FakeWord, locked_user
+from tests.conftest import FakeInfo, FakeSegment, FakeWord, locked_user, record_calls
 from faster_whisper_backend.stats import metrics, usage_store
 from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.streaming.routes import _WS_UNAUTH
-from faster_whisper_backend.transcription import decode_trace as dt
 from faster_whisper_backend.transcription import models as tx_models
 
 _pcm = const_pcm
@@ -748,13 +747,8 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(
     """The FINAL decode resolves DECODE_SKIP_RESIDUAL_WINDOWS through cfg_for,
     hands it to the trace capture, and the receipt's guards block shows the
     value (with the non-default marker once it is switched off)."""
-    seen = []
-    real = dt.capture
-
-    def spy(kwargs=None, *, skip_residual=False, **kw):
-        seen.append(skip_residual)
-        return real(kwargs, skip_residual=skip_residual, **kw)
-    monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
+    seen = record_calls(monkeypatch, streaming_routes.decode_trace, "capture",
+                        lambda *a, skip_residual=False, **kw: skip_residual)
 
     with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
         dictate_session(client)
@@ -769,17 +763,10 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(
     assert guard_line(caplog, "skip_residual_windows").endswith("false *")
 
 
-def _final_and_partial_kwargs(fake_model):
+def _final_and_partial_kwargs(monkeypatch, fake_model):
     """Record every transcribe call; the FINAL is the one carrying the
     temperature ladder (partials decode at a single temperature)."""
-    calls = []
-    real = fake_model.transcribe
-
-    def rec(path, **kw):
-        calls.append(kw)
-        return real(path, **kw)
-    fake_model.transcribe = rec
-    return calls
+    return record_calls(monkeypatch, fake_model, "transcribe", lambda path, **kw: kw)
 
 
 def _is_final(kw):
@@ -792,14 +779,9 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     17-token answer waited 13.9 s for a looping sibling. The FINAL
     decode gets the token cap (through the trace capture) and
     STREAMING_FINAL_BEST_OF; partials keep their own knobs."""
-    caps = []
-    real = dt.capture
-
-    def spy(kwargs=None, **kw):
-        caps.append(kw.get("token_cap_per_s"))
-        return real(kwargs, **kw)
-    monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
-    calls = _final_and_partial_kwargs(fake_model)
+    caps = record_calls(monkeypatch, streaming_routes.decode_trace, "capture",
+                        lambda *a, **kw: kw.get("token_cap_per_s"))
+    calls = _final_and_partial_kwargs(monkeypatch, fake_model)
 
     with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
         dictate_session(client)
@@ -818,8 +800,9 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [3]
 
 
-def test_stream_final_best_of_yields_to_a_client_override(client, fake_model, energy_vad):
-    calls = _final_and_partial_kwargs(fake_model)
+def test_stream_final_best_of_yields_to_a_client_override(client, fake_model, monkeypatch,
+                                                          energy_vad):
+    calls = _final_and_partial_kwargs(monkeypatch, fake_model)
     dictate_session(client, decode_overrides={"best_of": 4})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [4]
 
@@ -832,7 +815,7 @@ def test_stream_final_best_of_pins_when_the_client_value_does_not_apply(
     STREAMING_FINAL_BEST_OF pin."""
     monkeypatch.setattr(app_module.cfg, "BEST_OF", 5, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 1, raising=False)
-    calls = _final_and_partial_kwargs(fake_model)
+    calls = _final_and_partial_kwargs(monkeypatch, fake_model)
     dictate_session(client, decode_overrides={"best_of": value})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [1]
 
@@ -876,15 +859,8 @@ def test_stream_preview_drops_a_segment_cut_to_nothing(client, fake_model, monke
     from faster_whisper_backend.streaming import localagreement
     ws = [FakeWord(f" x{i}", 2.4, 2.4) for i in range(12)]
     fake_model._segments = [FakeSegment("".join(w.word for w in ws), 0.3, 2.4, words=ws)]
-    seen = []
-    orig = localagreement.LocalAgreementProcessor.insert_hypothesis
-
-    def spy(self, words, offset):
-        words = list(words)
-        seen.append(words)
-        return orig(self, words, offset)
-
-    monkeypatch.setattr(localagreement.LocalAgreementProcessor, "insert_hypothesis", spy)
+    seen = record_calls(monkeypatch, localagreement.LocalAgreementProcessor, "insert_hypothesis",
+                        lambda self, words, offset: list(words))
     msgs = dictate_session(client)
     assert seen, "no preview was decoded"
     assert all(h == [] for h in seen)

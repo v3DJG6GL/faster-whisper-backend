@@ -17,7 +17,7 @@ from tests._streaming_helpers import (
     config_drain, config_frame, const_pcm, dictate_session, handshake,
     ready_ws, speak, speak_and_stop, stop_and_drain, stream_ws, ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
-from tests.conftest import bearer, locked_user, wait_until
+from tests.conftest import bearer, locked_user, record_calls, wait_until
 from faster_whisper_backend.transcription import models as tx_models
 
 OV = "/settings/overrides"
@@ -353,14 +353,8 @@ def test_handshake_drops_unknown_decode_override_keys(
     keys never reach the transcribe kwargs."""
     _, raw_alice = make_user_key("alice")
 
-    seen_keys: list = []
-    real_values = streaming_routes._client_stream_values
-
-    def _spy(overrides, ident):
-        seen_keys.append(sorted(overrides))
-        return real_values(overrides, ident)
-
-    monkeypatch.setattr(streaming_routes, "_client_stream_values", _spy)
+    seen_keys = record_calls(monkeypatch, streaming_routes, "_client_stream_values",
+                             lambda overrides, ident: sorted(overrides))
 
     with stream_ws(client, raw_alice) as ws:
         ready = handshake(ws, decode_overrides={"beam_size": 5,
@@ -557,10 +551,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
     handshake, no matter how many partial/final decodes run."""
     _, raw_alice = locked_user(make_user_key)
 
-    calls = []
-    real = streaming_routes.authenticate_ws
-    monkeypatch.setattr(streaming_routes, "authenticate_ws",
-                        lambda ws: (calls.append(1), real(ws))[1])
+    calls = record_calls(monkeypatch, streaming_routes, "authenticate_ws", lambda ws: 1)
 
     msgs = dictate_session(client, raw_alice)
 
