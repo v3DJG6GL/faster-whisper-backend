@@ -10,7 +10,7 @@
 # can't slip in unnoticed). Digest = the multi-arch index of python:3.14-slim
 # (Debian 13). To bump:
 #   docker buildx imagetools inspect python:3.14-slim
-FROM python:3.14-slim@sha256:f1b121a95d6295f7291a0fda8280f747efd657bd055e7c1f156936ed2dc5a112
+FROM python:3.14-slim@sha256:af8a5aa14780025dbfbcfbc81bd8a91ebd87711dd5b0f48ed71090949dd7cb1d
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
