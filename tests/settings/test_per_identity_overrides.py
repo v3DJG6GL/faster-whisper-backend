@@ -10,7 +10,7 @@ round-trip (the request-gate keys survive validate_binding/_parse_binding).
 from faster_whisper_backend.core import languages
 from tests._transcription_helpers import bind_profile
 from tests._translation_helpers import enable_translation
-from tests.conftest import bearer, bind_key
+from tests.conftest import bearer, bind_key, first_key_id
 
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
@@ -24,16 +24,10 @@ def _admin_with_profiles(client, make_user_key, profiles):
     return h
 
 
-def _key_id(client, h, uid):
-    r = client.get(f"{PERMS}/{uid}/keys", headers=h)
-    assert r.status_code == 200, r.text
-    return r.json()["keys"][0]["id"]
-
-
 def _alice_with_key_binding(client, make_user_key, profiles, **binding):
     h = _admin_with_profiles(client, make_user_key, profiles)
     uid, raw_alice = make_user_key("alice")
-    bind_key(client, h, uid, _key_id(client, h, uid), **binding)
+    bind_key(client, h, uid, first_key_id(client, h, uid), **binding)
     return raw_alice
 
 
@@ -290,7 +284,7 @@ def test_override_profile_detail_404_when_not_allowed(client, make_user_key):
 def test_binding_roundtrip_preserves_request_gates(client, make_user_key):
     h = _admin_with_profiles(client, make_user_key, {"fast": {"BEAM_SIZE": 3}})
     uid, _ = make_user_key("alice")
-    kid = _key_id(client, h, uid)
+    kid = first_key_id(client, h, uid)
     stored = bind_key(client, h, uid, kid,
                       allow_request_override_profile=False,
                       allow_request_decode_overrides=True,
@@ -311,7 +305,7 @@ def test_apply_no_profiles_roundtrip_and_suppresses_user_profile(client, make_us
     h = _admin_with_profiles(client, make_user_key, {"clinic": {"BEAM_SIZE": 7}})
     uid, _ = make_user_key("alice")
     _bind_user_profiles(client, h, uid, ["clinic"])
-    kid = _key_id(client, h, uid)
+    kid = first_key_id(client, h, uid)
 
     # baseline: the user-bound profile applies for this key
     rj = client.get(f"{OV}/resolve", headers=h, params={

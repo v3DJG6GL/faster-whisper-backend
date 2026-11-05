@@ -5,7 +5,7 @@ feedback. Driven through the real app; no faster-whisper needed."""
 import json
 from types import SimpleNamespace
 
-from tests.conftest import bearer, locked_user
+from tests.conftest import bearer, first_key_id, locked_user
 from tests._translation_helpers import enable_translation, stub_translate
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -270,7 +270,7 @@ def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_k
     assert r.status_code == 200, r.text
     v2 = settings_version.config_version()
     assert v2 > v1                                         # per-user binding bumps
-    kid = client.get(f"{PERMS}/{uid}/keys", headers=admin_h).json()["keys"][0]["id"]
+    kid = first_key_id(client, admin_h, uid)
     r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
                      json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
     assert r.status_code == 200, r.text
@@ -283,7 +283,7 @@ def test_per_key_override_beats_user(client, make_user_key, fake_model, root_key
     uid, raw_alice = make_user_key("alice", is_admin=False)
     client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
                  json={"pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
-    kid = client.get(f"{PERMS}/{uid}/keys", headers=admin_h).json()["keys"][0]["id"]
+    kid = first_key_id(client, admin_h, uid)
     client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
                  json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
 

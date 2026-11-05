@@ -13,7 +13,7 @@ from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store, effective_config
 from tests._page_helpers import js_body, js_fn, js_upto, needs_node, node_json
-from tests.conftest import bearer, bind_key, locked_user
+from tests.conftest import bearer, bind_key, first_key_id, locked_user
 
 PERMS = "/settings/api-keys/api/users"
 OV = "/settings/overrides"
@@ -167,7 +167,7 @@ def test_delete_guard_counts_allowlist_only_reference(client, make_user_key, h):
     # name — which that binding's next save would then reject.
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
-    kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
+    kid = first_key_id(client, h, uid)
     bind_key(client, h, uid, kid, allowed_override_profiles=["clinic-de"])
 
     usage = client.get(f"{OV}/state", headers=h).json()["usage"]["clinic-de"]
@@ -240,7 +240,7 @@ def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key, h
     # keys). The /resolve diagnostic must agree and report a sim'd override as
     # ignored — even though the field itself carries no field-level lock.
     bob_uid, _ = make_user_key("bob", is_admin=False)
-    kid = client.get(f"{PERMS}/{bob_uid}/keys", headers=h).json()["keys"][0]["id"]
+    kid = first_key_id(client, h, bob_uid)
     bind_key(client, h, bob_uid, kid, allow_request_decode_overrides=False)
 
     rj = client.get(f"{OV}/resolve", headers=h, params={
@@ -343,8 +343,7 @@ def test_per_key_config_overrides_user(client, make_user_key, h):
     uid, _ = make_user_key("alice", is_admin=False)
     client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
-    keys = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"]
-    kid = keys[0]["id"]
+    kid = first_key_id(client, h, uid)
     r = bind_key(client, h, uid, kid, overrides={"BEAM_SIZE": 4})
     assert r.json()["config"]["direct"]["BEAM_SIZE"] == 4
 
@@ -356,7 +355,7 @@ def test_per_key_config_overrides_user(client, make_user_key, h):
 
 def test_per_key_config_unknown_profile_400(client, make_user_key, h):
     uid, _ = make_user_key("alice", is_admin=False)
-    kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
+    kid = first_key_id(client, h, uid)
     r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h,
                      json={"overrides": {}, "profiles": ["ghost"], "locks": []})
     assert r.status_code == 400
@@ -368,7 +367,7 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key, h):
     # alice references the profile in BOTH her ordered list and her allowlist
     _bind_user(client, h, uid, profiles=["clinic-de"],
                allowed_override_profiles=["clinic-de"])
-    kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
+    kid = first_key_id(client, h, uid)
     bind_key(client, h, uid, kid, profiles=["clinic-de"])
 
     r = _rename_profile(client, h, "clinic-de", "clinic-deutsch")

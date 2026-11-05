@@ -886,6 +886,13 @@ def bind_key(client, h, uid, kid, **config):
     return r
 
 
+def first_key_id(client, h, uid):
+    """The id of user {uid}'s first API key, read through the admin route."""
+    r = client.get(f"/settings/api-keys/api/users/{uid}/keys", headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()["keys"][0]["id"]
+
+
 def locked_alice(make_user_key, scope="own"):
     """Lock the server down with an admin key (open mode off), then create
     non-admin alice with quick_config=`scope`. Returns her (uid, raw_key)."""
