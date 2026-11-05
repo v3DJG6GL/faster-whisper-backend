@@ -513,11 +513,9 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     assert g._GUARD_TIMEOUT_MAX - (started[1] - t1) <= seen[1] <= g._GUARD_TIMEOUT_MAX
 
 
-def test_an_entry_with_a_synthetic_run_gets_its_own_allowance(monkeypatch):
-    """`(\\d+)\\s*(\\d*)\\s*Euro` spends ~0.1 s on its 240-digit synthetic
-    run, so 20 such amount rules overran 2 s + 20 x 5 ms and were refused as
-    catastrophic backtracking. Each entry the child gives a synthetic run now
-    adds _SYNTH_BUDGET (capped); a literal entry, which gets none, does not."""
+@pytest.fixture
+def child_timeouts(monkeypatch):
+    """Fake the guard's child as a clean pass; the list collects each timeout it was given."""
     import subprocess
     seen = []
 
@@ -526,16 +524,24 @@ def test_an_entry_with_a_synthetic_run_gets_its_own_allowance(monkeypatch):
         return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}', stderr="")
 
     monkeypatch.setattr(subprocess, "run", _ok_run)
+    return seen
+
+
+def test_an_entry_with_a_synthetic_run_gets_its_own_allowance(child_timeouts):
+    """`(\\d+)\\s*(\\d*)\\s*Euro` spends ~0.1 s on its 240-digit synthetic
+    run, so 20 such amount rules overran 2 s + 20 x 5 ms and were refused as
+    catastrophic backtracking. Each entry the child gives a synthetic run now
+    adds _SYNTH_BUDGET (capped); a literal entry, which gets none, does not."""
     units = ["Euro", "Dollar", "Franken", "Prozent", "Grad"] * 4
     g.validate([(u, r"(\d+)\s*(\d*)\s*" + u, r"\1,\2 " + u) for u in units])
     g.validate([(u, r"\b" + u + r"\b", u) for u in units])
     g.validate([(f"r{i}", r"(\d+)\s*Euro%d" % i, "") for i in range(100)])
     budget = g._GUARD_TIMEOUT + (g._PER_CHECK_BUDGET + g._SYNTH_BUDGET) * 20
     assert budget < g._GUARD_TIMEOUT_MAX
-    assert budget - 1 < seen[0] <= budget
+    assert budget - 1 < child_timeouts[0] <= budget
     budget = g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 20
-    assert budget - 1 < seen[1] <= budget
-    assert g._GUARD_TIMEOUT_MAX - 1 < seen[2] <= g._GUARD_TIMEOUT_MAX
+    assert budget - 1 < child_timeouts[1] <= budget
+    assert g._GUARD_TIMEOUT_MAX - 1 < child_timeouts[2] <= g._GUARD_TIMEOUT_MAX
 
 
 def test_a_slow_entry_cannot_borrow_the_allowance_of_cheap_ones(monkeypatch):
@@ -553,36 +559,28 @@ def test_a_slow_entry_cannot_borrow_the_allowance_of_cheap_ones(monkeypatch):
     assert "test inputs" in msg and "catastrophic backtracking" in msg
 
 
-def test_helper_is_not_charged_the_callers_compiles_twice(monkeypatch):
+def test_helper_is_not_charged_the_callers_compiles_twice(child_timeouts):
     """The child compiles every pattern again, so the seconds the caller
     already spent compiling are NOT taken off its timeout as well: that
     refused every save whose compiles cost over about half the budget. It gets
     the budget minus the in-process screen; nothing left of the budget still
     refuses the save before the helper starts."""
-    import subprocess
-    seen = []
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: seen.append(k["timeout"])
-                        or subprocess.CompletedProcess(a, 0, '{"ok": true}', ""))
     g.validate([("r", "x", "")], timeout=1.0, spent=0.75)
-    assert len(seen) == 1 and 0.9 < seen[0] <= 1.0
+    assert len(child_timeouts) == 1 and 0.9 < child_timeouts[0] <= 1.0
     with pytest.raises(ValueError, match="r: checking the submitted patterns took"):
         g.validate([("r", "x", "")], timeout=1.0, spent=1.0)
-    assert len(seen) == 1
+    assert len(child_timeouts) == 1
 
 
-def test_whole_guard_hold_stays_under_the_save_lock_timeout(monkeypatch):
+def test_whole_guard_hold_stays_under_the_save_lock_timeout(monkeypatch, child_timeouts):
     """Caller's compiles + screen + child run under atomic_json.save_lock,
     whose waiters give up after SAVE_LOCK_TIMEOUT_S; two full budgets at the
     cap would pass it, so the child is trimmed to what _HOLD_MAX leaves."""
-    import subprocess
     from faster_whisper_backend.core import atomic_json
     assert g._GUARD_TIMEOUT_MAX <= g._HOLD_MAX < atomic_json.SAVE_LOCK_TIMEOUT_S
-    seen = []
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: seen.append(k["timeout"])
-                        or subprocess.CompletedProcess(a, 0, '{"ok": true}', ""))
     monkeypatch.setattr(g, "_HOLD_MAX", 1.5)
     g.validate([("r", "x", "")], timeout=1.0, spent=0.75)
-    assert len(seen) == 1 and 0.5 < seen[0] <= 0.75
+    assert len(child_timeouts) == 1 and 0.5 < child_timeouts[0] <= 0.75
 
 
 def test_helper_timeout_after_slow_compiles_does_not_blame_backtracking(monkeypatch):
