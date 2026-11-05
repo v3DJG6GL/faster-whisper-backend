@@ -15,7 +15,7 @@ from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import wait_until
 from tests.media.test_routes_url import (  # noqa: F401 — fixtures
-    _PID, _post_url, url_enabled, video_enabled)
+    _PID, _ok_body, _post_url, url_enabled, video_enabled)
 
 
 def test_handler_side_attach_runs_while_the_progress_entry_is_open(
@@ -38,8 +38,7 @@ def test_handler_side_attach_runs_while_the_progress_entry_is_open(
     monkeypatch.setattr(fake_model, "transcribe", _slow)
 
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200, r.text
-    assert r.json().get("source_video_media_id")
+    assert _ok_body(r).get("source_video_media_id")
     assert open_at_attach == [True]
     assert _PID not in tx_progress._BATCH_PROGRESS   # closed after it
 
@@ -79,13 +78,11 @@ def test_handler_closes_the_entry_when_the_video_attach_gave_up(
     monkeypatch.setattr(tx_progress, "_jobs_finish", _slow_finish)
 
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200, r.text
-    assert r.json().get("source_video_pending") is True
+    assert _ok_body(r).get("source_video_pending") is True
     assert len(attach_calls) == 2
     assert _PID not in tx_progress._BATCH_PROGRESS
     res = client.get(f"/v1/jobs/{_PID}/result")
-    assert res.status_code == 200, res.text
-    assert res.json().get("source_video_media_id")
+    assert _ok_body(res).get("source_video_media_id")
 
 
 def test_task_closes_the_entry_when_the_handler_passed_its_check_first(
@@ -127,11 +124,9 @@ def test_task_closes_the_entry_when_the_handler_passed_its_check_first(
     monkeypatch.setattr(tx_progress, "_jobs_finish", _finish_then_return_first)
 
     r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200, r.text
-    assert r.json().get("source_video_pending") is True
+    assert _ok_body(r).get("source_video_pending") is True
     wait_until(lambda: _PID not in tx_progress._BATCH_PROGRESS, timeout=10, interval=0.02)
     assert len(attach_calls) == 2           # the task retried the attach
     assert _PID not in tx_progress._BATCH_PROGRESS
     res = client.get(f"/v1/jobs/{_PID}/result")
-    assert res.status_code == 200, res.text
-    assert res.json().get("source_video_media_id")   # pending flag swapped
+    assert _ok_body(res).get("source_video_media_id")   # pending flag swapped
