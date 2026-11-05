@@ -15,7 +15,7 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.auth import sessions_store
 from faster_whisper_backend.settings import version as settings_version
 from tests.auth._store_helpers import count_rebuilds, failing_conn, load_sessions_store_copy
-from tests.conftest import bearer, locked_alice, record_calls
+from tests.conftest import _close_store, bearer, locked_alice, record_calls
 
 
 def _set_cookie_lines(resp):
@@ -198,8 +198,7 @@ def _fake_clock_store(tmp_path, monkeypatch, clock):
 
 
 def _close_fake_clock_store(sessions_store):
-    sessions_store._require_conn().close()
-    sessions_store._conn = None
+    _close_store(sessions_store)
     sessions_store._reset_for_tests()
 
 

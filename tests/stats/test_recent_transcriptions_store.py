@@ -7,6 +7,7 @@ import time
 import pytest
 
 from faster_whisper_backend.stats import recent_transcriptions_store as rts
+from tests.conftest import _close_store
 
 
 @pytest.fixture
@@ -102,8 +103,7 @@ def test_migration_adds_columns_to_old_db(tmp_path):
         assert [r["request_id"] for r in rts.list_recent(limit=10, slow_rtf=0.4)] == ["old1"]
         assert rts.list_recent(limit=10, slow_rtf=0.6) == []
     finally:
-        rts._require_conn().close()
-        rts._conn = None
+        _close_store(rts)
 
 
 # ---------------------------------------------------------------------------

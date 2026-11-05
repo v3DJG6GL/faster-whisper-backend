@@ -7,6 +7,7 @@ import pytest
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.auth import api_keys_store as ak
+from tests.conftest import _close_store
 
 
 @pytest.fixture
@@ -115,9 +116,5 @@ def test_config_column_migration_on_legacy_db(tmp_path):
         # idempotent: a second init must not error
         ak.init_db(db)
     finally:
-        try:
-            ak._require_conn().close()
-        except Exception:
-            pass
-        ak._conn = None
+        _close_store(ak)
         ak._reset_for_tests()

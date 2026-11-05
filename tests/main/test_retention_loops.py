@@ -10,6 +10,8 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import _close_store
+
 
 def _drive(monkeypatch, loop_fn, store_mod):
     """Run `loop_fn` for one tick; the sweep must run once, off the loop thread."""
@@ -69,8 +71,7 @@ def test_startup_ages_out_recent_rows_past_retention(app_module, monkeypatch):
     rts.record_trace(request_id="stale", model="m", raw="x", final="y",
                      created_ts=time.time() - 40 * 86400)
     rts.record_trace(request_id="fresh", model="m", raw="x", final="y")
-    rts._require_conn().close()
-    rts._conn = None
+    _close_store(rts)
 
     with TestClient(app_module.app, client=("127.0.0.1", 12345)):
         ids = {r["request_id"] for r in rts.list_recent(limit=10)}
@@ -89,8 +90,7 @@ def test_startup_sweeps_usage_rows_past_retention(app_module, monkeypatch):
     us._require_conn().executemany(
         "INSERT INTO usage_app_hourly VALUES (?, 'u', ?, 1, 1)",
         [(now_h - 10 * 24, "old-app"), (now_h, "new-app")])
-    us._require_conn().close()
-    us._conn = None
+    _close_store(us)
 
     with TestClient(app_module.app, client=("127.0.0.1", 12345)):
         apps = {r[0] for r in us._require_conn().execute(
