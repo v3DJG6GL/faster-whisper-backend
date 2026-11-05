@@ -130,7 +130,7 @@ def test_list_requires_page_when_locked(client, make_user_key):
 def test_clear_requires_admin_when_locked(client, make_user_key):
     # POST /captures/api/clear additionally Depends(require_admin).
     _uid, raw = locked_user(make_user_key, pages={"captures": "own"})
-    r = client.post("/captures/api/clear", headers=bearer(raw))
+    r = _post(client, raw, "clear")
     assert r.status_code == 403
 
 
@@ -190,9 +190,14 @@ def _patch(client, raw, path, **body):
     return client.patch(f"/captures/api/{path}", headers=bearer(raw), json=body)
 
 
+def _post(client, raw, path, **body):
+    """POST /captures/api/{path} as `raw`'s key; no fields = no body."""
+    return client.post(f"/captures/api/{path}", headers=bearer(raw), json=body or None)
+
+
 def _post_members(client, raw, path, ids, **body):
     """POST `ids` as member_ids (plus `body`) to a sample route as `raw`'s key."""
-    return client.post(path, json={"member_ids": ids, **body}, headers=bearer(raw))
+    return _post(client, raw, path, member_ids=ids, **body)
 
 
 def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
@@ -316,9 +321,7 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
     assert client.delete(
         "/captures/api/locked01cid", headers=h,
     ).status_code == 409
-    assert client.post(
-        "/captures/api/locked01cid/reprocess", headers=h,
-    ).status_code == 409
+    assert _post(client, raw, "locked01cid/reprocess").status_code == 409
     row = captures_store.get_capture("locked01cid")
     assert row is not None and row["status"] == "new"
 
@@ -532,8 +535,7 @@ def test_preview_merge_audio_is_not_cacheable(client, root_key,
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
 
-    r = _post_members(client, root_key, "/captures/api/samples/preview-audio",
-                      ["prevcap00001"])
+    r = _post_members(client, root_key, "samples/preview-audio", ["prevcap00001"])
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store"
 
@@ -554,8 +556,7 @@ def test_preview_merge_audio_removes_its_temp_file(
         return {"duration_ms": 1}
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
-    r = _post_members(client, root_key, "/captures/api/samples/preview-audio",
-                      ["prevcap00001"])
+    r = _post_members(client, root_key, "samples/preview-audio", ["prevcap00001"])
     assert r.status_code == 200
     assert len(written) == 1
     assert not os.path.exists(written[0])
@@ -1424,7 +1425,7 @@ def test_merge_rejects_mixed_task_or_language(client, root_key,
     label, so a de+en (or transcribe+translate) merge would export
     wrong-language training data."""
     ids = _mixed_pair(task_b, lang_b)
-    for path in ("/captures/api/samples/merge-estimate", "/captures/api/samples"):
+    for path in ("samples/merge-estimate", "samples"):
         r = _post_members(client, root_key, path, ids)
         assert r.status_code == 400, (path, r.text)
         assert r.json()["detail"] == detail
@@ -1432,7 +1433,7 @@ def test_merge_rejects_mixed_task_or_language(client, root_key,
 
 def test_merge_accepts_region_variants_of_one_language(client, root_key):
     ids = _mixed_pair(None, "de-CH")
-    r = _post_members(client, root_key, "/captures/api/samples/merge-estimate", ids)
+    r = _post_members(client, root_key, "samples/merge-estimate", ids)
     assert r.status_code == 200, r.text
 
 
@@ -1457,7 +1458,7 @@ def test_regenerate_of_a_sample_dissolved_mid_wait_is_404(client, root_key,
     built = []
     monkeypatch.setattr(capture_samples, "_build_merged_wav",
                         lambda **kw: built.append(kw) or (0, {}, {}))
-    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(root_key))
+    r = _post(client, root_key, f"samples/{sid}/regenerate")
     assert r.status_code == 404, r.text
     assert built == []
 
@@ -1515,19 +1516,18 @@ def test_reprocess_and_self_heal_scope_a_translate_capture_by_english(
     text = _translate_capture(conn, "transl000001", uid, task="translate")
     _translate_capture(conn, "transc000001", uid, task="transcribe")
     langs = _de_scoped_pipeline(monkeypatch)
-    h = bearer(raw_key)
 
     # Page view (self-heal) — no rewrite of the stored English text.
     assert _get(client, raw_key, "transl000001").status_code == 200
     row = captures_store.get_capture("transl000001")
     assert row["final"] == text and row["text_for_training"] == text
-    r = client.post("/captures/api/transl000001/reprocess", headers=h)
+    r = _post(client, raw_key, "transl000001/reprocess")
     assert r.status_code == 200, r.text
     assert r.json()["changed"] == []
     assert captures_store.get_capture("transl000001")["final"] == text
     assert set(langs) == {"en"}
     # Contrast: the transcribe twin is scoped "de".
-    r = client.post("/captures/api/transc000001/reprocess", headers=h)
+    r = _post(client, raw_key, "transc000001/reprocess")
     assert r.json()["capture"]["final"] == text.lower()
 
 
@@ -1715,8 +1715,7 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
 
     monkeypatch.setattr(captures_store, "get_captures_light", _light)
     monkeypatch.setattr(captures_store, "update_capture", _spy)
-    r = _post_members(client, root_key, "/captures/api/samples/preview-save-chips",
-                      ids, corrections=[])
+    r = _post_members(client, root_key, "samples/preview-save-chips", ids, corrections=[])
     assert r.status_code == 200, r.text
     assert seen == [(ids[0], False, True)]
     assert list(r.json()["saved"]) == [ids[0]]
@@ -1784,8 +1783,7 @@ def test_preview_save_chips_keeps_a_members_anchorless_chip(
     ids = _mixed_pair(None, "de")
     captures_store.update_capture(ids[0], {"corrections": [
         {"wrong": "foo", "correct": "bar"}]})
-    r = _post_members(client, root_key, "/captures/api/samples/preview-save-chips",
-                      ids, corrections=[])
+    r = _post_members(client, root_key, "samples/preview-save-chips", ids, corrections=[])
     assert r.status_code == 200, r.text
     kept = captures_store.get_capture(ids[0])["corrections"]
     assert [(c["wrong"], c["correct"]) for c in kept] == [("foo", "bar")]
@@ -1857,7 +1855,7 @@ def test_regenerate_adopts_the_global_join_strategy(client, root_key,
                         raising=False)
     monkeypatch.setattr(capture_samples, "_build_merged_wav",
                         lambda **kw: (1000, {}, {}))
-    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(root_key))
+    r = _post(client, root_key, f"samples/{sid}/regenerate")
     assert r.status_code == 200, r.text
     assert r.json()["sample"]["transcript"] == "r. r"  # read path: refreshed
     row = gs.get_sample(sid)

@@ -7,7 +7,7 @@ from faster_whisper_backend.captures import routes as captures_routes
 from faster_whisper_backend.captures import samples_store as gs
 from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import (
-    _get, _insert_member, _insert_sample, _patch, _root_and_alice,
+    _get, _insert_member, _insert_sample, _patch, _post, _root_and_alice,
 )
 from tests.conftest import bearer, locked_user, record_calls, write_bytes
 
@@ -306,10 +306,8 @@ def test_bulk_status_validation(client):
 
 def test_bulk_routes_require_captures_page_when_locked(client, make_user_key):
     _uid, raw = locked_user(make_user_key, "nobody", pages={"captures": "none"})
-    h = bearer(raw)
     assert _bulk(client, raw, ["x" * 12], "ready").status_code == 403
-    assert client.post("/captures/api/bulk-delete", headers=h,
-                       json={"ids": ["x" * 12]}).status_code == 403
+    assert _post(client, raw, "bulk-delete", ids=["x" * 12]).status_code == 403
     assert _get(client, raw, "stats").status_code == 403
 
 
@@ -320,9 +318,8 @@ def test_bulk_delete_removes_rows_and_skips_locked(client, make_user_key):
     _row(conn, "free0001cid0", user_id=uid)
     _row(conn, "free0002cid0", user_id=uid)
 
-    body = client.post("/captures/api/bulk-delete", headers=bearer(raw),
-                       json={"ids": ["free0001cid0", "locked01cid",
-                                     "free0002cid0", "nope00000000"]}).json()
+    body = _post(client, raw, "bulk-delete", ids=[
+        "free0001cid0", "locked01cid", "free0002cid0", "nope00000000"]).json()
     assert body["deleted"] == ["free0001cid0", "free0002cid0"]
     assert body["skipped"] == [{"id": "locked01cid", "reason": "locked"},
                                {"id": "nope00000000", "reason": "not_found"}]

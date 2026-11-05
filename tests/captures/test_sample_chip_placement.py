@@ -84,7 +84,7 @@ def test_merge_preview_places_a_chip_on_its_aligned_word(
                         lambda *a, **kw: [])
     monkeypatch.setattr(captures_routes, "_preview_member_trims",
                         lambda ids, paths: {})
-    r = _post_members(client, root_key, "/captures/api/samples/preview-words", [_CID])
+    r = _post_members(client, root_key, "samples/preview-words", [_CID])
     assert r.status_code == 200, r.text
     assert r.json()["transcript"] == _EXPECTED
 
@@ -101,6 +101,6 @@ def test_merge_stores_the_transcript_with_the_chip_on_its_aligned_word(
     inserted = []
     monkeypatch.setattr(captures_routes, "_insert_sample_with_sid",
                         lambda **kw: inserted.append(kw))
-    r = _post_members(client, root_key, "/captures/api/samples", [_CID])
+    r = _post_members(client, root_key, "samples", [_CID])
     assert r.status_code == 200, r.text
     assert [kw["transcript"] for kw in inserted] == [_EXPECTED]
