@@ -16,8 +16,8 @@ import asyncio
 import numpy as np
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm, fast_config,
-    inert_session, ready_ws, stop_and_drain, timed_final)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_partial, const_pcm,
+    discard as _discard, fast_config, inert_session, ready_ws, stop_and_drain, timed_final)
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
@@ -44,10 +44,6 @@ def _grid_partial(box):
         dur = audio.shape[0] / SR
         return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
     return decode_partial
-
-
-async def _discard(m):
-    pass
 
 
 def _grid_session(box, cfg, decode_final, *, endpointer=None, emit=_discard, **kw):

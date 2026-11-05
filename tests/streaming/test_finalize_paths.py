@@ -22,9 +22,9 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm, fast_config,
-    dictate_session, handshake as _config, ready_ws, speak, speak_and_stop, stop_and_drain,
-    stop_if_open_and_drain, timed_final)
+    AlwaysSpeech as _AlwaysSpeech, collector, const_final, const_pcm as _pcm,
+    discard as _discard, fast_config, dictate_session, handshake as _config, ready_ws, speak,
+    speak_and_stop, stop_and_drain, stop_if_open_and_drain, timed_final)
 from tests.conftest import wait_until
 from tests.streaming._feed_helpers import feed_levels
 from faster_whisper_backend.captures import store as captures_store
@@ -57,10 +57,6 @@ def _grid_partial(box):
         dur = audio.shape[0] / SR
         return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
     return decode_partial
-
-
-async def _discard(m):
-    pass
 
 
 def _grid_session(box, cfg, decode_final, *, endpointer=None, emit=_discard, **kw):

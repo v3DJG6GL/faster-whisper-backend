@@ -17,7 +17,8 @@ from faster_whisper_backend.streaming.transport import (
     RawPcmTransport,
     make_transport,
 )
-from tests._streaming_helpers import drain_frames, handshake, ready_ws, stop_and_drain, stream_ws
+from tests._streaming_helpers import (
+    discard as _nosink, drain_frames, handshake, ready_ws, stop_and_drain, stream_ws)
 
 
 def test_ffmpeg_exe_resolves_to_runnable_binary():
@@ -104,10 +105,6 @@ class _StuckProc:
 
     def kill(self):
         self.killed = True
-
-
-async def _nosink(b):
-    pass
 
 
 def test_ffmpeg_transport_dead_reader_warns_once(caplog):

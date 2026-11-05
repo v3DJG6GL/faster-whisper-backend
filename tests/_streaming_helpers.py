@@ -132,6 +132,10 @@ def collector():
     return items, sink
 
 
+async def discard(_item) -> None:
+    """Async one-argument callback (emit / sink) that ignores its argument."""
+
+
 def const_final(text: str = "", dropped_all: bool = False):
     """Fake decode_final that always returns ``(text, [], dropped_all)``."""
     async def decode_final(audio, prompt):
