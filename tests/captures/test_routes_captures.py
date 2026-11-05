@@ -23,7 +23,9 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 from tests._page_helpers import js_body, js_upto
 from tests.captures._store_helpers import insert_capture, insert_sample
-from tests.conftest import bearer, install_fake_wav_transcode, locked_user, write_bytes, write_wav
+from tests.conftest import (
+    bearer, install_fake_wav_transcode, locked_user, record_calls, write_bytes, write_wav,
+)
 
 
 @pytest.fixture
@@ -766,15 +768,8 @@ def test_export_rereads_a_sample_rebuilt_after_its_list_snapshot(
         gs.update_sample(staled, {"is_stale": 1})
         return snapshot
 
-    entered = []
-    real_lock = capture_samples._rebuild_lock
-
-    def _counting(s):
-        entered.append(s)
-        return real_lock(s)
-
     monkeypatch.setattr(gs, "list_samples", _list_then_reprocess)
-    monkeypatch.setattr(capture_samples, "_rebuild_lock", _counting)
+    entered = record_calls(monkeypatch, capture_samples, "_rebuild_lock", lambda s: s)
     with _export_tar(None, True) as tar:
         rows = _manifest_rows(tar)
         assert [n for n in tar.getnames() if n.startswith("audio/")] == [
@@ -997,14 +992,7 @@ def test_reprocess_vad_worker_uses_pinned_rebuild_lock(
 
     sid = "a" * 32
     _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
-    entered = []
-    real = capture_samples._rebuild_lock
-
-    def _counting(s):
-        entered.append(s)
-        return real(s)
-
-    monkeypatch.setattr(capture_samples, "_rebuild_lock", _counting)
+    entered = record_calls(monkeypatch, capture_samples, "_rebuild_lock", lambda s: s)
     monkeypatch.setattr(capture_samples, "_build_merged_wav",
                         lambda **kw: (1000, {}, {}))
     vr._run()

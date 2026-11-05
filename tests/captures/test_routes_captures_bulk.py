@@ -9,7 +9,7 @@ from faster_whisper_backend.captures import store as captures_store
 from tests.captures.test_routes_captures import (
     _get, _insert_member, _insert_sample, _patch, _root_and_alice,
 )
-from tests.conftest import bearer, locked_user, write_bytes
+from tests.conftest import bearer, locked_user, record_calls, write_bytes
 
 
 def _row(conn, cid, *, user_id, status="new", audio_s=2.0, created_ts=1.0,
@@ -363,10 +363,7 @@ def test_bulk_guard_looks_a_shared_sample_lock_up_once(client, make_user_key,
         _insert_member(conn, f"locked0{i}cid", "locked01sid", user_id=uid)
     _row(conn, "free0001cid0", user_id=uid)
 
-    calls: list[str] = []
-    real = gs.get_sample
-    monkeypatch.setattr(gs, "get_sample",
-                        lambda sid: (calls.append(sid), real(sid))[1])
+    calls = record_calls(monkeypatch, gs, "get_sample", lambda sid: sid)
     body = _bulk(client, raw, ["locked00cid", "locked01cid", "free0001cid0",
                                "locked02cid"], "ready").json()
     assert [u["id"] for u in body["updated"]] == ["free0001cid0"]
