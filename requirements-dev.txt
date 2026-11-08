@@ -14,4 +14,4 @@ pytest-xdist>=3.8.0
 # without it, TestClient falls back to httpx with a deprecation warning.
 httpx2>=2.16.0
 # Linter; config in ruff.toml, run by the Linux CI leg (`ruff check .`).
-ruff>=0.17.3
+ruff>=0.17.4
