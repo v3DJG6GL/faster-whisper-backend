@@ -1052,6 +1052,34 @@ def test_probe_failure_log_masks_the_links_password(monkeypatch, caplog):
     assert "p@ss" not in caplog.text
 
 
+def test_download_failure_log_masks_the_links_query(tmp_path, monkeypatch, caplog):
+    """Signed links carry their secret in the query: yt-dlp's quoted URL must
+    not write it to the persisted log."""
+    _patch_argv(monkeypatch, _failing_yt_dlp(
+        "ERROR: Unsupported URL: https://nas.example.com/p?X-Amz-Signature=s3cret\n"))
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        with pytest.raises(udl.UrlDownloadError):
+            _fetch(udl.download, tmp_path, url="https://nas.example.com/p?X-Amz-Signature=s3cret")
+    rec = [r.getMessage() for r in caplog.records if "yt-dlp exited" in r.getMessage()]
+    assert rec and "https://nas.example.com/p?***" in rec[0]
+    assert "s3cret" not in caplog.text
+
+
+def test_probe_failure_log_masks_the_links_query(monkeypatch, caplog):
+    url = "https://nas.example.com/page?token=s3cret#frag"
+
+    def _raise(u):
+        raise RuntimeError(f"ERROR: Unsupported URL: {u}")
+    _stand_in_yt_dlp(monkeypatch, "Generic", _raise)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        with pytest.raises(udl.UrlDownloadError):
+            _run(udl.probe(url, timeout=5.0))
+    rec = [r.getMessage() for r in caplog.records if "probe failed" in r.getMessage()]
+    assert rec and "https://nas.example.com/page?***" in rec[0]
+    assert "s3cret" not in caplog.text and "frag" not in caplog.text
+
+
 def test_download_partial_only_is_size_limit(tmp_path, monkeypatch):
     # --max-filesize skip: clean exit, only a .part file left behind.
     _patch_argv(monkeypatch, _yt_dlp_script("media.m4a.part", size=1))

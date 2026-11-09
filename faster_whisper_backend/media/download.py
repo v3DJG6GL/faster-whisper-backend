@@ -1327,12 +1327,14 @@ def host_for_log(url: "str | None") -> str:
 
 
 # yt-dlp quotes the URL verbatim in its errors ("Unsupported URL: https://
-# user:pw@host/..."): the userinfo goes before the text reaches the log.
+# user:pw@host/...?token=..."): the userinfo AND the query / fragment (signed
+# URLs, X-Amz-Signature, pot tokens) go before the text reaches the log.
 _URL_USERINFO_RE = re.compile(r"(?i)(https?://)[^/\s?#]+@")
+_URL_QUERY_RE = re.compile(r"(?i)(https?://[^\s?#]*)[?#]\S*")
 
 
 def _mask_userinfo(text: str) -> str:
-    return _URL_USERINFO_RE.sub(r"\1***@", text)
+    return _URL_QUERY_RE.sub(r"\1?***", _URL_USERINFO_RE.sub(r"\1***@", text))
 
 
 def _log_probe_failure(url: str, e: Exception) -> None:
