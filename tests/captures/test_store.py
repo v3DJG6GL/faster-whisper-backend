@@ -187,6 +187,19 @@ def test_create_capture_inserts_row_and_writes_audio(captures_store_db, monkeypa
     assert os.path.isfile(cs.abs_audio_path(row["audio_relpath"]))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_raw_capture_wav_is_owner_only(captures_store_db, monkeypatch, tmp_path):
+    # os.replace carries the tmp's umask mode onto the final WAV; raw
+    # dictation audio must land 0600 like the merged / trimmed siblings.
+    old = os.umask(0o022)
+    try:
+        cid = _make(captures_store_db, monkeypatch, tmp_path)
+    finally:
+        os.umask(old)
+    row = captures_store_db.get_capture(cid)
+    assert os.stat(captures_store_db.abs_audio_path(row["audio_relpath"])).st_mode & 0o777 == 0o600
+
+
 def test_create_capture_truncates_text(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     cid = _make(cs, monkeypatch, tmp_path, raw="r" * (cs._CAP_RAW + 100),

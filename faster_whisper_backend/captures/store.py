@@ -417,6 +417,10 @@ def create_capture(
     # re-open to fsync is a no-op on Windows (fsync needs write access).
     # .tmp + os.replace keeps a partial file invisible; a crash before the
     # row insert leaves an orphan WAV that reconcile_on_startup unlinks.
+    # os.replace carries the tmp inode's mode onto abs_path, and the encoder
+    # wrote it at the process umask: raw dictation audio is owner-only, like
+    # the merged / trimmed siblings.
+    store_common.secure_file(tmp_path)
     try:
         audio_merge.replace_with_retry(tmp_path, abs_path)
     except OSError:

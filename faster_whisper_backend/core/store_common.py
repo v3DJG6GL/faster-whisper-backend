@@ -321,7 +321,8 @@ def secure_file(path: str) -> None:
 
     For non-SQLite surfaces that hold the same plaintext dictation or secrets
     as the stores: the rotating server log, config.local.json, the runtime
-    caches, downloaded media and the merged / VAD-trimmed WAVs. In a
+    caches, downloaded media, the raw capture WAVs and the merged / VAD-trimmed
+    WAVs. In a
     tmp+os.replace swap call it on the tmp: os.replace carries the tmp inode's
     mode onto the destination.
     """
