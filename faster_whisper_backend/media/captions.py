@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -186,8 +187,11 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
     if scan.content_pairs:
         return False
     if state["timed_out"] or rc != 0:
-        logger.info("[captions] scan inconclusive (rc=%s, timed out=%s) for %s",
-                    rc, state["timed_out"], log_safe(src[-80:]))
+        # The extension only: the path tail is the retained media id plus the
+        # store directory, and media ids are never logged.
+        logger.info("[captions] scan inconclusive (rc=%s, timed out=%s) for a .%s source",
+                    rc, state["timed_out"],
+                    log_safe(os.path.splitext(src)[1].lstrip(".") or "?"))
         return False
     if scan.present:
         logger.info("[captions] %d empty caption block(s) in %.1fs",

@@ -352,6 +352,36 @@ def test_fetch_byte_ranged_hls_through_a_master(served, tmp_path):
     _assert_pieces_hit(pieces, [9.0], 6.0)
 
 
+def test_fetch_parses_playlists_off_the_event_loop(served, tmp_path, monkeypatch):
+    # Up to 2 MB of remote playlist text per hop: the parse must not stall
+    # the event loop.
+    table, _calls = served
+    init, frags = fmp4_init_and_fragments(6)
+    blob = init + b"".join(frags)
+    table["https://cdn.test/master.m3u8"] = (
+        "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",DEFAULT=YES,URI=\"a/au.m3u8\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nv.m3u8\n").encode()
+    lines, o = [f"#EXTM3U\n#EXT-X-MAP:URI=\"one.mp4\",BYTERANGE=\"{len(init)}@0\"\n"], len(init)
+    for f in frags[:6]:
+        lines.append(f"#EXTINF:{SEG_S},\n#EXT-X-BYTERANGE:{len(f)}@{o}\none.mp4\n")
+        o += len(f)
+    table["https://cdn.test/a/au.m3u8"] = ("".join(lines) + "#EXT-X-ENDLIST\n").encode()
+    table["https://cdn.test/a/one.mp4"] = blob
+    on_loop = []
+    real = seg.parse_hls
+
+    def _spy(*a, **k):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real(*a, **k)
+    monkeypatch.setattr(seg, "parse_hls", _spy)
+    _fetch({"protocol": "hls", "url": "https://cdn.test/master.m3u8"}, [9.0], 6.0, tmp_path)
+    assert on_loop == [False, False]
+
+
 def test_fetch_refuses_a_server_that_ignores_the_range(served, tmp_path, monkeypatch):
     table, _calls = served
     table["https://cdn.test/a.m3u8"] = (

@@ -7,6 +7,7 @@ shares live in media/video.py.
 import asyncio
 import contextlib
 import errno
+import json
 import logging
 import os
 import re
@@ -555,6 +556,12 @@ _media_package_inflight = _rl.InFlight(
     message="you already have {limit} video export running — "
             "wait for it to finish",
 )
+# The package route's body ceiling is lifted to 48 MiB for its SRT text, far
+# above the 4 MiB JSON cap whose reason is json.loads amplification (each
+# '['/'{' becomes a ~64-byte Python object, ~22x RSS). A real export holds a
+# dozen containers plus whatever brackets the subtitle text carries; 4 M bounds
+# one parse near ~270 MB / ~0.4 s. Counted on the raw bytes before parsing.
+_PACKAGE_MAX_CONTAINERS = 4_000_000
 _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
 # Free space an upload must leave on the staging volume (the package route's
 # margin): a near-full disk is refused before the transfer, not after it.
@@ -772,7 +779,10 @@ async def package_media(media_id: str, request: Request,
     _key = _rl.identity_key(user, request)
     _media_package_rate.hit(_key)
     try:
-        body = await request.json()
+        raw = await request.body()
+        if raw.count(b"[") + raw.count(b"{") > _PACKAGE_MAX_CONTAINERS:
+            raise ValueError("container bomb")
+        body = json.loads(raw)
     except Exception:  # noqa: BLE001 — malformed body is a caller error
         raise HTTPException(status_code=422, detail="expected a JSON body")
     if not isinstance(body, dict):

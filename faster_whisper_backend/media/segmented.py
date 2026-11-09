@@ -274,7 +274,10 @@ async def fetch_pieces(source: dict, starts: "list[float] | None", seconds: floa
         for _hop in range(2):  # a master playlist, then its media playlist
             if not isinstance(url, str) or not url:
                 raise Unsupported("the stream has no playlist address")
-            parsed = parse_hls(*await playlist(url))
+            text, final = await playlist(url)
+            # Up to PLAYLIST_MAX_BYTES of remote text (~1 s for 150k
+            # segments): parsed off the event loop.
+            parsed = await asyncio.to_thread(parse_hls, text, final)
             if isinstance(parsed, Media):
                 media = parsed
                 break

@@ -532,6 +532,24 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
     assert _package(client, mid, {"container": "mkv"}).status_code == 200
 
 
+def test_package_refuses_a_container_bomb_before_parsing(client, package_enabled, monkeypatch):
+    # The route's body ceiling is lifted to 48 MiB for its SRT text; millions
+    # of tiny containers inside it would cost ~22x that in RSS once parsed.
+    from faster_whisper_backend.media import routes as media_routes
+    mid = _upload(client).json()["media_id"]
+    monkeypatch.setattr(media_routes, "_PACKAGE_MAX_CONTAINERS", 1000)
+    parsed = []
+    real = media_routes.json.loads
+    monkeypatch.setattr(media_routes.json, "loads", lambda *a, **k: parsed.append(1) or real(*a, **k))
+    body = '{"container":"mkv","x":[' + "[]," * 1001 + '[]]}'
+    r = client.post(f"/v1/audio/media/{mid}/package", content=body,
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 422 and "expected a JSON body" in r.text
+    assert parsed == []
+    # A real export (a dozen containers) still packages.
+    assert _package(client, mid, {"container": "mkv", "subtitles": _tracks()}).status_code == 200
+
+
 def test_package_timeout_504(client, package_enabled, monkeypatch, tmp_path):
     monkeypatch.setattr(package_enabled.cfg, "MEDIA_PACKAGE_TIMEOUT_S", 1, raising=False)
     mid = _upload(client).json()["media_id"]

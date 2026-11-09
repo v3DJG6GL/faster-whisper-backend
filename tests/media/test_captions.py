@@ -225,3 +225,15 @@ def test_package_keeps_real_captions_end_to_end(tmp_path):
     with packaged(src, tracks, container="mkv", default_track=0,
                   timeout=120, video_codec="h264") as out:
         assert _ga94_count(out) >= 5
+
+
+def test_inconclusive_scan_log_never_names_the_path(tmp_path, monkeypatch, caplog):
+    # The path tail is the retained media id plus the store directory; media
+    # ids are never logged.
+    _fake_ffmpeg(tmp_path, monkeypatch, "exit 1")
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        assert cc.embedded_captions_empty(
+            "/store/0123456789abcdef0123456789abcdef.mp4", timeout=10) is False
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("scan inconclusive" in m and ".mp4 source" in m for m in msgs)
+    assert not any("0123456789abcdef" in m or "/store" in m for m in msgs)
