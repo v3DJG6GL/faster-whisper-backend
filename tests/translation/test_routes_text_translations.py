@@ -956,3 +956,20 @@ def test_dictation_translation_joins_its_session_usage_job(
     assert usage_store._require_conn().execute(
         "SELECT kind FROM usage_jobs WHERE job_id = ?",
         ("b2" * 16,)).fetchone()["kind"] == "text"
+
+
+def test_a_foreign_captured_id_neither_claims_nor_releases_the_hold(
+        client, app_module, monkeypatch, make_user_key):
+    """The capture id is client-named: another identity naming it must not
+    steal the receipt into its own translation, release it early as
+    "request rejected", or keep it alive. The hold stays for its owner."""
+    _enable_stubbed(app_module, monkeypatch)
+    alice, raw_alice = make_user_key("alice", is_admin=True)
+    _bob, raw_bob = make_user_key("bob")
+    _park("cap-x", hold_s=90, user_id=alice, request_id="alice-rid")
+    _post_status(client, 422, bearer(raw_bob), captured_id="cap-x", segments=[])
+    assert receipt_hold.pending() == 1
+    _post_ok(client, bearer(raw_bob), captured_id="cap-x")
+    assert receipt_hold.pending() == 1
+    _post_ok(client, bearer(raw_alice), captured_id="cap-x")
+    assert receipt_hold.pending() == 0

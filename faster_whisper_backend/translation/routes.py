@@ -128,6 +128,9 @@ async def translate_text(request: Request,
     _cap = body.get("captured_id")
     _held_key = (_cap.strip()[:64]
                  if isinstance(_cap, str) and _cap.strip() else None)
+    # The capture id is client-named: every touch / claim / release below acts
+    # only on a hold this identity parked (receipt_hold._owner_ok).
+    _held_owner = user.get("user_id") or user.get("key_id")
     # The dictation session this translation belongs to (the same client-
     # minted id the stream handshake carried as `client_job`). A stop-timing
     # one-shot claims no receipt, so this is the only handle that ties its
@@ -286,7 +289,7 @@ async def translate_text(request: Request,
         # mid-validation — must hand the parked receipt back NOW, or the
         # sweeper logs it LOG_RECEIPT_HOLD_S later as "no result and no
         # progress", out of order and with the wrong reason.
-        tx_receipt._release_held_receipt(_held_key, "request rejected")
+        tx_receipt._release_held_receipt(_held_key, "request rejected", owner=_held_owner)
         raise
 
     # Start line now, throttled heartbeats from the progress wrapper, and a
@@ -301,7 +304,8 @@ async def translate_text(request: Request,
 
     def _release_after(what: str, tail: str = "") -> None:
         tx_receipt._release_held_receipt(
-            _held_key, f"{what} after {time.perf_counter() - _t0:.1f}s{tail}")
+            _held_key, f"{what} after {time.perf_counter() - _t0:.1f}s{tail}",
+            owner=_held_owner)
 
     # Heartbeat bookkeeping shared with the progress wrapper, plus t_ready:
     # stamped once the GPU slot is held (_mark_ready), the origin the model
@@ -320,7 +324,8 @@ async def translate_text(request: Request,
         # Outside the try below, so its `except HTTPException` release
         # never sees this refusal — release the parked receipt here, for the
         # same sweeper reason as the validation bracket above.
-        tx_receipt._release_held_receipt(_held_key, "request rejected — too many in flight")
+        tx_receipt._release_held_receipt(_held_key, "request rejected — too many in flight",
+                                          owner=_held_owner)
         raise
     # Set only AFTER a successful acquire — the acquire itself sits
     # outside the try, so a refused request never releases a slot it does
@@ -360,7 +365,7 @@ async def translate_text(request: Request,
             # keeps its receipt alive because it keeps reporting, while a
             # wedged one stops reporting and is released on schedule.
             if _held_key:
-                receipt_hold.touch(_held_key)
+                receipt_hold.touch(_held_key, owner=_held_owner)
             pct = int(max(0.0, min(1.0, f or 0.0)) * 100)
             if (now - _hb["last_log"] >= 30.0
                     or pct // 10 > _hb["last_pct"] // 10):
@@ -538,7 +543,7 @@ async def translate_text(request: Request,
                 # absence: a wedged run) decides, as receipt_hold promises.
                 async def _keep_hold():
                     while _queued["waiting"] or not _tr.is_resident(_tr_model):
-                        receipt_hold.touch(_held_key)
+                        receipt_hold.touch(_held_key, owner=_held_owner)
                         await asyncio.sleep(_HOLD_HEARTBEAT_S)
                 _hold_beat = asyncio.create_task(_keep_hold())
             if _on_gpu:
@@ -568,7 +573,7 @@ async def translate_text(request: Request,
         await _record_run("error", e)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
-        tx_receipt._release_held_receipt(_held_key, "request rejected")
+        tx_receipt._release_held_receipt(_held_key, "request rejected", owner=_held_owner)
         if _job_row and not _job_finished:
             _job_finished = True
             await tx_progress._jobs_finish(_pid, status="error",
@@ -680,7 +685,7 @@ async def translate_text(request: Request,
                      "detail": f"{len(seg_in)} segs → {','.join(targets)}",
                      "targets": list(targets),
                      "kept_original": _n_kept}
-        _held = receipt_hold.claim(_held_key)
+        _held = receipt_hold.claim(_held_key, owner=_held_owner)
         if _held is not None and _held.get("request_id"):
             try:
                 from faster_whisper_backend.stats import recent_transcriptions_store as _rts

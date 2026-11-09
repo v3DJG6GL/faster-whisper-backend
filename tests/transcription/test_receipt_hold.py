@@ -202,3 +202,19 @@ def test_validation_reject_releases_the_parked_receipt(client, app_module,
     assert receipt_hold.pending() == 0
     assert [e["file_label"] for e in logged] == ["utt#1", "utt#2"]
     assert any("request rejected" in n for n in logged[1]["skipped"])
+
+
+def test_claim_touch_release_by_a_foreign_owner_leave_the_hold_parked():
+    receipt_hold.park("cap1", dict(_kwargs(), user_id="alice"), hold_s=90)
+    assert receipt_hold.claim("cap1", owner="bob") is None
+    assert receipt_hold.touch("cap1", owner="bob") is False
+    assert receipt_hold.release("cap1", "x", owner="bob") is None
+    assert receipt_hold.pending() == 1
+    assert receipt_hold.touch("cap1", owner="alice") is True
+    assert receipt_hold.claim("cap1", owner="alice") is not None
+    assert receipt_hold.pending() == 0
+
+
+def test_a_hold_parked_without_an_identity_is_not_owner_checked():
+    receipt_hold.park("cap2", _kwargs(), hold_s=90)
+    assert receipt_hold.claim("cap2", owner="bob") is not None

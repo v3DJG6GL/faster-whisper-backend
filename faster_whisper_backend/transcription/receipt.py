@@ -529,11 +529,13 @@ def _log_held_receipts(entries: "list[dict]") -> None:
             logger.warning("[receipt] release render failed: %s", e)
 
 
-def _release_held_receipt(key: "str | None", note: str) -> None:
-    """Release one held receipt on a translate failure/cancel path."""
+def _release_held_receipt(key: "str | None", note: str, *,
+                          owner: "str | None" = None) -> None:
+    """Release one held receipt on a translate failure/cancel path (only
+    `owner`'s: see receipt_hold._owner_ok)."""
     if not key:
         return
-    entry = receipt_hold.release(key, note)
+    entry = receipt_hold.release(key, note, owner=owner)
     if entry is not None:
         _log_held_receipts([entry])
 

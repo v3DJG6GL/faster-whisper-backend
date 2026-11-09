@@ -88,28 +88,46 @@ def park(key: str, kwargs: "dict[str, Any]", *, hold_s: float) -> None:
 _overflow: "list[dict[str, Any]]" = []
 
 
-def touch(key: str) -> bool:
+def _owner_ok(entry: "dict[str, Any]", owner: "str | None") -> bool:
+    """Whether `owner` may act on this hold. The key is a capture id a client
+    names, so a caller other than the parking identity must not claim (steal
+    the receipt into its own translation), release (log it early as failed)
+    or touch (keep it alive) someone else's hold. `owner=None` (the sweeper,
+    flush_all) and a hold parked without an identity are not checked."""
+    if owner is None:
+        return True
+    kw = entry["kwargs"]
+    stored = kw.get("user_id") or kw.get("key_id")
+    return stored is None or stored == owner
+
+
+def touch(key: str, *, owner: "str | None" = None) -> bool:
     """Restamp the idle timer. Returns whether the key was actually held, so
     a caller can tell a real heartbeat from a stale one."""
     if not key:
         return False
     with _lock:
         entry = _held.get(key)
-        if entry is None:
+        if entry is None or not _owner_ok(entry, owner):
             return False
         entry["touched"] = time.monotonic()
         return True
 
 
-def claim(key: str, **extra: Any) -> "dict[str, Any] | None":
+def claim(key: str, *, owner: "str | None" = None, **extra: Any) -> "dict[str, Any] | None":
     """Take the held receipt and merge `extra` into its render kwargs.
 
     Returns None when nothing was held — which is the normal case for every
-    caller that is not a declared dictation, so it is not an error."""
+    caller that is not a declared dictation, so it is not an error — or when
+    the hold belongs to another identity (left parked for its owner)."""
     if not key:
         return None
     with _lock:
-        entry = _held.pop(key, None)
+        entry = _held.get(key)
+        if entry is not None and _owner_ok(entry, owner):
+            del _held[key]
+        else:
+            entry = None
     if entry is None:
         return None
     merged = entry["kwargs"]
@@ -119,13 +137,17 @@ def claim(key: str, **extra: Any) -> "dict[str, Any] | None":
     return merged
 
 
-def release(key: str, note: str) -> "dict[str, Any] | None":
+def release(key: str, note: str, *, owner: "str | None" = None) -> "dict[str, Any] | None":
     """Give up on a held receipt and return it for logging, with `note`
     appended to its Notes section so the log says why it is incomplete."""
     if not key:
         return None
     with _lock:
-        entry = _held.pop(key, None)
+        entry = _held.get(key)
+        if entry is not None and _owner_ok(entry, owner):
+            del _held[key]
+        else:
+            entry = None
     if entry is None:
         return None
     return _with_note(entry, note)
