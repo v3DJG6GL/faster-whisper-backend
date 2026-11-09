@@ -762,8 +762,10 @@ async def stats_history(
     cadence = max(1, int(getattr(cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 10) or 10))
     auto = max(cadence, int(-(-(t1 - t0) // 2000)))
     # A step longer than the window is one bucket anyway; capping it keeps
-    # an absurd value inside SQLite's integer range.
-    step_s = (min(max(cadence, int(step)), max(cadence, int(t1 - t0)))
+    # an absurd value inside SQLite's integer range. An explicit step is
+    # never finer than `auto`, so every answer stays within the ~2 000-point
+    # budget (step=1 over 30 days was 259 200 rows serialised on the loop).
+    step_s = (min(max(auto, int(step)), max(auto, int(t1 - t0)))
               if step else auto)
     # A store whose init_db failed at startup (logged, non-fatal) would raise
     # from _require_conn(): a bare 500 with a traceback on every spark fetch.

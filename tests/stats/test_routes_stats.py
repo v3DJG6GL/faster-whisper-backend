@@ -903,6 +903,19 @@ def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
                       headers=bearer(raw_all)).status_code == 200
 
 
+def test_stats_history_explicit_step_keeps_the_point_budget(client):
+    # A caller-chosen step is floored at the ~2 000-point step, not at the
+    # sample cadence: step=1 over a week would be one bucket per stored row.
+    now = int(time.time()) // 10 * 10
+    system_metrics_store.record([{"ts": now - 600 + i * 10, "gpu_util": 1.0} for i in range(60)])
+    week = client.get(f"/stats/history?metric=gpu_util&from={now - 7 * 86400}&to={now}&step=1").json()
+    assert week["step"] >= 7 * 86400 // 2000
+    assert len(week["t"]) <= 2001
+    # A coarser explicit step is still honoured.
+    assert client.get(f"/stats/history?metric=gpu_util&from={now - 7 * 86400}"
+                      f"&to={now}&step=3600").json()["step"] == 3600
+
+
 def test_stats_history_503_when_store_failed_to_open(client, monkeypatch):
     """init_db failing at startup is logged and non-fatal, so the history
     route must answer 503, not a bare 500 from _require_conn()."""
