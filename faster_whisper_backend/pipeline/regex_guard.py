@@ -484,6 +484,64 @@ def _strip_comments(pat: str) -> str:
     return "".join(out)
 
 
+def _lookahead_group_refs(pattern: str, repl: str) -> bool:
+    """True if ``repl`` references a group captured inside a positive lookahead.
+
+    The analytic growth bound charges each group reference the shortest string
+    the PATTERN can match, which assumes a group copies at most what the match
+    consumed. A group inside a lookahead breaks that: `(?=(n.*))` matches the
+    empty string at every "n" yet captures the whole rest of the transcript, so
+    `\1` re-inserts it at every position (quadratic output from one short
+    rule). Lookbehinds are fixed-width and bounded, and a group inside a
+    negative lookahead is never set on a match, so only positive lookaheads
+    count. Parse-only (no matching), so it cannot hang."""
+    if not pattern or not repl or "\\" not in repl:
+        return False
+    try:
+        parser = _sre_modules()[0]
+        parsed = parser.parse(pattern)
+    except Exception:  # noqa: BLE001 - the compile step reports a bad pattern
+        return False
+    sub_t = parser.SubPattern
+    inside: "set[int]" = set()
+
+    def _any(x, la: bool) -> None:
+        if isinstance(x, sub_t):
+            _walk(x, la)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                _any(y, la)
+
+    def _walk(sp, la: bool) -> None:
+        for op, av in sp:
+            name = str(op)
+            if name == "ASSERT" and av[0] == 1:
+                _any(av[1], True)
+                continue
+            if name == "SUBPATTERN" and la and av[0] is not None:
+                inside.add(av[0])
+            _any(av, la)
+
+    _walk(parsed, False)
+    if not inside:
+        return False
+    import re
+
+    names = getattr(parsed.state, "groupdict", {}) or {}
+    # Escape pairs are consumed whole, so `\\1` (a literal backslash, then 1)
+    # is not a reference.
+    for m in re.finditer(r"\\(?:(\d{1,2})|g<([^>]*)>|.)", repl, re.S):
+        num, ref = m.group(1), m.group(2)
+        if num is not None and not num.startswith("0") and int(num) in inside:
+            return True
+        if ref is not None:
+            ref = ref.strip()
+            gid = int(ref) if ref.isdigit() else names.get(ref)
+            if gid and gid in inside:
+                return True
+    return False
+
+
 def _nested_repetition(pat: str) -> bool:
     """True if ``pat`` contains a repeated group that itself repeats.
 
@@ -1948,6 +2006,13 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
                 "ordinary input — rewrite without a repeat inside a repeat, "
                 "and make the alternatives of a repeated group mutually "
                 "exclusive."
+            )
+        if _repl and _lookahead_group_refs(pattern, _repl):
+            raise ValueError(
+                f"{where}: regex test failed: the replacement references a "
+                "group captured inside a lookahead `(?=(...))`, which copies "
+                "text beyond the match — it can repeat the rest of the "
+                "transcript at every position. Capture outside the lookahead."
             )
         if spent + time.perf_counter() - t0 > budget:
             raise _slow_compile(where, budget)

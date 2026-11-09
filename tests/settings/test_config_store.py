@@ -544,6 +544,25 @@ def test_pipeline_backref_only_replacement_rejected():
     assert "regex test failed" in str(ei.value)
 
 
+@pytest.mark.parametrize("pattern,repl", [
+    (r"(?=(n.*))", "\\1"),
+    (r"(?=(n.*))", "\\1" * 10),
+    (r"(?=(?P<x>n.*))", "\\g<x>"),
+])
+def test_pipeline_lookahead_capture_reference_rejected(pattern, repl):
+    # A group inside a lookahead captures past the (empty) match: every "n"
+    # would re-insert the rest of the transcript, which the per-reference
+    # growth charge (shortest match = 0) cannot see.
+    with pytest.raises(ValidationError) as ei:
+        validate_rules(regex_list_rules("blow", pattern, repl), guard_regex=True)
+    assert "regex test failed" in str(ei.value)
+
+
+def test_pipeline_lookaround_without_capture_reference_still_accepted():
+    validate_rules(regex_list_rules("ok1", r"(?<=\d)\s(?=\d)", ""), guard_regex=True)
+    validate_rules(regex_list_rules("ok2", r"(\w+)(?=,)", "\\1"), guard_regex=True)
+
+
 def test_pipeline_prefix_ambiguous_alternation_rejected():
     # A prefix-ambiguous repeated alternation splits one run of input many ways
     # and backtracks exponentially. (The full _nested_repetition family is

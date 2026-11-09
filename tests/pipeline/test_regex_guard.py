@@ -1653,3 +1653,25 @@ def test_wide_ordinary_rule_is_probed_once_and_accepted():
     pat = r"(\d+)\s*(\d*)\s*Euro und Cent Betrag"
     assert len(g._synthetic_fixtures(pat)) == 1
     g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pattern,repl,hit", [
+    (r"(?=(n.*))", "\\1", True),
+    (r"(?=(n.*))", "\\g<1>", True),
+    (r"(?=(?P<x>n.*))", "\\g<x>", True),
+    (r"(a)(?=(b))", "\\2", True),
+    (r"(?=x(y|(z.*)))", "\\2", True),
+    (r"(a)(?=(b))", "\\1", False),        # the group outside the lookahead
+    (r"(?!(n.*))x", "\\1", False),         # a negative lookahead never captures
+    (r"(?<=(\d))\s", "\\1", False),       # lookbehinds are fixed-width
+    (r"(?=(n.*))", "\\\\1", False),        # an escaped backslash, not a reference
+    (r"(?=(n.*))", "\\g<0>", False),       # the whole match
+    ("(", "\\1", False),                   # unparsable: the compile step reports it
+])
+def test_lookahead_group_refs(pattern, repl, hit):
+    assert g._lookahead_group_refs(pattern, repl) is hit
+
+
+def test_validate_refuses_a_lookahead_capture_reference_in_process():
+    with pytest.raises(ValueError, match="lookahead"):
+        g.validate([("t", r"(?=(n.*))", "\\1")])
