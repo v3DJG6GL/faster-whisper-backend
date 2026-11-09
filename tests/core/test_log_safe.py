@@ -52,3 +52,13 @@ def test_keep_end_keeps_the_last_chars():
     assert out.endswith("?ERROR: Unsupported URL")
     assert store_common.log_safe(tail) == "x" * store_common.LOG_FIELD_MAX
     assert store_common.log_safe(None, keep_end=True) == ""
+
+
+def test_lone_surrogates_are_collapsed():
+    # json.loads keeps a lone surrogate; the utf-8 log file handler cannot
+    # encode one, so the whole record would be dropped from the file.
+    assert store_common.log_safe("a\ud800b") == "a?b"
+    assert store_common.log_safe("a\udfffb") == "a?b"
+    store_common.log_safe("x\ud800").encode("utf-8")
+    assert store_common.log_safe("a\U0001F600b") == "a\U0001F600b"
+    assert store_common.log_safe("a‌b‍b") == "a‌b‍b"

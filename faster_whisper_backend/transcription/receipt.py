@@ -451,7 +451,9 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
     text_max = _SEG_TEXT_MAX - 5 if has_spk else _SEG_TEXT_MAX
     for i in range(rows):
         s = seg_diag[i]
-        text = s["text"]
+        # Segment text is decoder output the caller steers (audio + prompt /
+        # hotwords): a CR/LF here would start a forged record in /logs.
+        text = _log_safe(str(s["text"] or ""))
         if len(text) > text_max:
             text = text[:text_max - 3] + "..."
         mark = "✗" if s.get("dropped") else (

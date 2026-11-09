@@ -457,3 +457,14 @@ def test_decoded_empty_output_keeps_its_diagnosis(app_module):
                    kwargs={})
     assert "[!] empty output" in block.splitlines()[2]
     assert "thresholds suppressed all segments" in block
+
+
+def test_segment_row_text_cannot_start_a_forged_log_record():
+    # Segment text is decoder output the caller steers; a CR/LF in it must not
+    # put a line starting with a timestamp into the log (the /logs viewer starts
+    # a new record on one).
+    row = dict(_SEG[0], text="a\r\n2026-01-01T00:00:00Z ERROR forged")
+    lines = [ln for entry in tx_receipt._format_segments_section([row], FakeInfo(duration=1.0), {})
+             for ln in entry.split("\n")]
+    assert not any(ln.startswith("2026-") for ln in lines)
+    assert any("a??2026-01-01T00:00:00Z ERROR forged" in ln for ln in lines)

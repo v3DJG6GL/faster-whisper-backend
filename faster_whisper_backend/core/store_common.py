@@ -48,8 +48,11 @@ LOG_FIELD_MAX = 120
 # U+2066-U+2069, which reorder text within a line in a terminal and a browser;
 # and C1/DEL (\x7f-\x9f), inert in every legitimate value. Deliberately NOT all
 # of \p{Cf}: that would eat ZWNJ/ZWJ (U+200C/D) in real Persian and Indic
-# filenames. Transcripts never pass through log_safe.
-_LOG_UNSAFE_RE = re.compile("[\r\n\x00-\x1f\x7f-\x9f  ‪-‮⁦-⁩]")
+# filenames. Also lone UTF-16 surrogates (json.loads keeps "\ud800"): the
+# utf-8 log file handler cannot encode one, so the WHOLE record would be
+# dropped from the file /logs reads. Transcripts never pass through log_safe.
+_LOG_UNSAFE_RE = re.compile("[\r\n\x00-\x1f\x7f-\x9f  ‪-‮⁦-⁩"
+                            r"\ud800-\udfff]")
 
 
 def log_safe(s, *, keep_end: bool = False) -> str:
