@@ -129,3 +129,16 @@ def test_fatal_api_keys_init_leaves_no_tasks_behind(app_module, monkeypatch):
         asyncio.run(run())
     assert leaked["tasks"] == set()
     assert model_registry._warm_predicate is None
+
+
+def test_bootstrap_log_line_carries_no_hash_prefix(api_keys_db, caplog):
+    # The key is human-chosen and the server log is readable by non-admins
+    # with the logs page: an unsalted SHA-256 prefix would be an offline
+    # verifier for it. The random row id identifies the key instead.
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        api_keys_store.bootstrap_admin_from_env(_KEY)
+    rec = [r.getMessage() for r in caplog.records
+           if "bootstrap admin key registered" in r.getMessage()]
+    assert rec and "kid=" in rec[0]
+    assert "sha256=" not in rec[0]
+    assert api_keys_db.hash_key(_KEY)[:8] not in caplog.text

@@ -1158,11 +1158,13 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
         # is human-chosen and only has to clear _BOOTSTRAP_KEY_MIN_LEN, so the
         # 8-char display prefix is a real fraction of the secret — and the
         # server log is readable by any non-admin granted the /logs page.
-        # The hash prefix identifies the key without revealing it.
+        # The hash prefix is withheld too: an unsalted SHA-256 prefix is an
+        # offline verifier for a human-chosen key. The random row id
+        # identifies it instead (the same kid= the other auth lines carry).
         logger.info(
             "[auth] bootstrap admin key registered from "
-            "WHISPER_BOOTSTRAP_ADMIN_KEY (user=bootstrap-admin, sha256=%s)",
-            h[:8],
+            "WHISPER_BOOTSTRAP_ADMIN_KEY (user=bootstrap-admin, kid=%s)",
+            new_key_id[:8],
         )
         other_env_keys = sum(
             1 for k in list_keys(uid)
