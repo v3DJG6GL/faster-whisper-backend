@@ -1077,3 +1077,16 @@ def test_dom_hours_is_the_same_slots_by_day_of_month(us):
     assert dom[(27, 9)]["dictation"] == 5 and dom[(27, 9)]["sessions"]["all"] == 1
     assert set(dom[(25, 9)]) == set(doc["hours"][0]) - {"dow"} | {"dom"}
     assert sum(h["all"] for h in doc["hours"]) == sum(h["all"] for h in doc["dom_hours"]) == 15
+
+
+def test_outcome_stubs_are_capped_per_user_per_hour(us, monkeypatch):
+    # Reports for jobs the server never saw make stub rows; one identity must
+    # not fabricate them at the post limit (6 000 a minute) forever.
+    monkeypatch.setattr(us, "_MAX_STUBS_PER_HOUR", 3)
+    assert [_outcome(us, f"{i:08x}", user_id="alice") for i in range(4)] == [
+        "accepted", "accepted", "accepted", "duplicate"]
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 3
+    assert _outcome(us, "b0b0b0b0", user_id="bob") == "accepted"
+    # A server-minted job still takes its outcome past the cap.
+    _rec(us, user_id="alice", audio_s=1.0, words=3, kind="dictation", job_id="feedf00d")
+    assert _outcome(us, "feedf00d", user_id="alice") == "accepted"

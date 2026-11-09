@@ -96,6 +96,13 @@ _reader = threading.local()
 # id string so the NOT NULL columns stay satisfied and aggregation treats it
 # as its own bucket. The UI renders it as a plain label.
 OPEN_MODE_ID = "(open-mode)"
+# Outcome stubs (a reported job the server never saw) one user may create per
+# hour. A real client only makes one for a session with no finished utterance
+# or a report that raced its first utterance — human rate. Without a cap the
+# per-minute post limit alone allows 6 000 fabricated sessions a minute per
+# identity (~550 B each, kept until the usage retention prunes them). Past the
+# cap the answer is "duplicate", indistinguishable from a re-send.
+_MAX_STUBS_PER_HOUR = 500
 
 # Metric column names are interpolated into SQL, so they MUST come from this set.
 _METRICS: frozenset[str] = frozenset(
@@ -899,7 +906,8 @@ def record_outcome(
     A job the server never saw (a session with no finished utterance, or
     one whose utterances raced the report) gets a stub row so the outcome
     still counts as a session; the stub carries no words or audio because
-    the server only trusts its own utterance rows for those. Raises on
+    the server only trusts its own utterance rows for those; at most
+    _MAX_STUBS_PER_HOUR of them per user per hour. Raises on
     store failure — the route maps that to a 5xx, unlike record_usage."""
     conn = _require_conn()
     now = time.time()
@@ -919,6 +927,14 @@ def record_outcome(
                 "SELECT 1 FROM usage_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
             if exists is not None:
+                return "duplicate"
+            stubs = conn.execute(
+                "SELECT COUNT(*) FROM usage_jobs WHERE user_id = ?"
+                " AND created_ts >= ? AND kind = 'dictation'"
+                " AND utterances = 0 AND key_id = ?",
+                (user_id, now - 3600, OPEN_MODE_ID),
+            ).fetchone()[0]
+            if stubs >= _MAX_STUBS_PER_HOUR:
                 return "duplicate"
             conn.execute(
                 "INSERT INTO usage_jobs"

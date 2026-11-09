@@ -29,7 +29,9 @@ Security model:
     must be harmless; one older than the job retention is taken as new.
   - Flood guard: 60 posts per minute per identity (rate_limit.FixedWindow),
     which is far above what a human dictating can produce and keeps a
-    retry loop gone wrong from hammering the store.
+    retry loop gone wrong from hammering the store. Outcomes for jobs the
+    server never saw (stub rows) are additionally capped per user per hour
+    (usage_store._MAX_STUBS_PER_HOUR); past it they answer "duplicate".
   - CSRF: bearer clients are exempt from the double-submit middleware; a
     cookie-authenticated browser POST needs X-CSRF-Token (main.py).
 
