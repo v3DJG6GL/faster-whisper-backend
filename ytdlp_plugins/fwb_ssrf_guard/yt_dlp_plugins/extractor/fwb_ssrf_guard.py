@@ -85,8 +85,9 @@ GUARD_RH_KEY = "FwbSsrfGuard"
 RH_NAME = "fwb-guarded-urllib"
 
 # Built-in handlers that can speak http(s) (or data/ftp/file), and ws(s).
-# They are unregistered by install() so ours is the only way out of the
-# process.
+# Documentation of what install() retires today: it unregisters EVERY handler
+# other than ours (an allowlist), so a handler a future yt-dlp adds under a new
+# key cannot become an unguarded way out of the process.
 _SUPERSEDED_RH_KEYS = ("Urllib", "Requests", "CurlCFFI", "Websockets")
 
 
@@ -379,7 +380,7 @@ def install() -> None:
     if GUARD_RH_KEY not in _REQUEST_HANDLERS:
         register_rh(GuardedUrllibRH)
         register_preference(GuardedUrllibRH)(_prefer_guard)
-    for key in _SUPERSEDED_RH_KEYS:
+    for key in [k for k in _REQUEST_HANDLERS if k != GUARD_RH_KEY]:
         _REQUEST_HANDLERS.pop(key, None)
     _refuse_external_downloaders()
 
@@ -390,11 +391,12 @@ def _prefer_guard(rh, request):
 
 
 def is_installed() -> bool:
-    """True when the guard is the only http(s)-capable handler registered
-    and no downloader can hand a fetch to an external program."""
+    """True when the guard is the only request handler registered (an
+    allowlist: an unknown handler key fails closed) and no downloader can hand
+    a fetch to an external program."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
-            and not any(k in _REQUEST_HANDLERS for k in _SUPERSEDED_RH_KEYS)
+            and set(_REQUEST_HANDLERS) == {GUARD_RH_KEY}
             and all(getattr(cls.real_download, _FD_SENTINEL, False)
                     for cls in _refusing_fd_classes()))
 

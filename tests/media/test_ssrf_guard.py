@@ -163,6 +163,23 @@ def test_guard_registers_in_process():
     # fall back to when ours declines a request (data:/ftp:, impersonation).
     for superseded in ("Urllib", "Requests", "CurlCFFI", "Websockets"):
         assert superseded not in _REQUEST_HANDLERS
+    assert set(_REQUEST_HANDLERS) == {"FwbSsrfGuard"}
+
+
+def test_unknown_handler_is_retired_and_fails_closed(monkeypatch):
+    # A handler a future yt-dlp registers under a NEW key must not survive as
+    # an unguarded way out: is_installed() fails closed until install() runs.
+    udl.guard_self_check(force=True)
+    from yt_dlp.networking.common import _REQUEST_HANDLERS
+    guard = udl._guard_module
+
+    class Dummy:
+        RH_KEY = "FwbTestRH"
+    monkeypatch.setitem(_REQUEST_HANDLERS, "FwbTestRH", Dummy)
+    assert guard.is_installed() is False
+    guard.install()
+    assert "FwbTestRH" not in _REQUEST_HANDLERS
+    assert guard.is_installed() is True
 
 
 def test_guard_prefers_over_every_builtin():
