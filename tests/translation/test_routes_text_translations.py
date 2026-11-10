@@ -557,6 +557,40 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
     assert seen == [("done", False)]
 
 
+def test_body_screen_runs_off_the_event_loop(client, app_module, monkeypatch):
+    """The lone-surrogate / NaN screen re-serialises the whole parsed body (up
+    to 4 MiB of floats is ~0.2 s): it runs on a worker thread."""
+    import json
+    import types
+
+    _enable_stubbed(app_module, monkeypatch)
+    seen = []
+
+    def _dumps(obj, *a, **kw):
+        if isinstance(obj, dict) and "segments" in obj and "targets" in obj:
+            seen.append(on_event_loop())
+        return json.dumps(obj, *a, **kw)
+    proxy = types.SimpleNamespace(**{k: getattr(json, k) for k in dir(json)
+                                     if not k.startswith("__")})
+    proxy.dumps = _dumps
+    monkeypatch.setattr(tr_routes, "json", proxy)
+    _post_ok(client)
+    assert seen and not any(seen)
+
+
+def test_invalid_container_target_is_named_by_type(client, app_module,
+                                                   monkeypatch):
+    """A list or object in targets is named by its type in the 422 instead of
+    str()-ing a possibly 4 MiB nested value; scalars read as before."""
+    _enable_stubbed(app_module, monkeypatch)
+    r = _post_status(client, 422, targets=[[1.0] * 1000])
+    assert "invalid language code: '<list>'" in r.json()["detail"]
+    r = _post_status(client, 422, targets=[{"a": 1}])
+    assert "'<dict>'" in r.json()["detail"]
+    r = _post_status(client, 422, targets=[5])
+    assert "invalid language code: '5'" in r.json()["detail"]
+
+
 def test_result_is_rendered_off_the_event_loop(client, app_module, monkeypatch):
     """The answer echoes every client id (up to a 4 MiB body of them): its
     jsonable_encoder walk and JSON render run on a worker thread, and the

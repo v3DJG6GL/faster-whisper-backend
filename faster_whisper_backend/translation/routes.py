@@ -176,10 +176,12 @@ async def translate_text(request: Request,
         # echoed id or a text copied through unchanged would then fail the
         # response (and the job row's result) only after the run is recorded.
         # Same for a NaN/Infinity literal (json.loads accepts them, the
-        # JSONResponse renders with allow_nan=False).
+        # JSONResponse renders with allow_nan=False). The screen walks the
+        # whole 4 MiB body, so it runs in a worker thread, not on the loop.
         try:
-            json.dumps(body, ensure_ascii=False,
-                       allow_nan=False).encode("utf-8")
+            await asyncio.to_thread(
+                lambda: json.dumps(body, ensure_ascii=False,
+                                   allow_nan=False).encode("utf-8"))
         except UnicodeEncodeError:
             raise HTTPException(
                 status_code=422,
@@ -249,10 +251,14 @@ async def translate_text(request: Request,
             # path's csv: "DE" is "de", "fr-ca" the same target as "fr-CA".
             code = _normalise_code(t) if isinstance(t, str) else ""
             if not _TRANSLATE_CODE_RE.match(code):
+                # A container is named by its type: str() of a nested 4 MiB
+                # array would render all of it just to keep 40 characters.
+                _shown = (f"<{type(t).__name__}>"
+                          if isinstance(t, (list, dict)) else str(t))
                 raise HTTPException(
                     status_code=422,
                     detail=f"targets contains an invalid language code: "
-                           f"{str(t)[:40]!r}")
+                           f"{_shown[:40]!r}")
             if code.lower() not in _seen:
                 _seen.add(code.lower())
                 targets.append(code)
