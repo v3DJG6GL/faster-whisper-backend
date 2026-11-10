@@ -84,11 +84,13 @@ services:
       # the app sees the PROXY's IP, so those pages 403 ("host not in
       # allowlist"). To gate on the REAL client
       # IP, trust the proxy's X-Forwarded-For: set FORWARDED_ALLOW_IPS to the
-      # proxy's IP/subnet (uvicorn then rewrites the client IP). Never "*"
-      # unless the container is unreachable except via the proxy (spoofing).
+      # proxy's own fixed IP (uvicorn then rewrites the client IP). Never "*"
+      # unless the container is unreachable except via the proxy (spoofing),
+      # and never a whole Docker range like 172.16.0.0/12: other containers
+      # and docker-proxy-relayed IPv6/hairpin clients come from 172.x too.
       # Then allowlist your real client IP(s) below. ALSO set a bootstrap admin
       # key — without it the server runs in OPEN mode (everyone is admin).
-      # FORWARDED_ALLOW_IPS: "172.16.0.0/12"          # your proxy IP/subnet
+      # FORWARDED_ALLOW_IPS: "172.31.9.5"             # your proxy's fixed IP
       # WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS: "203.0.113.7"   # admin pages (/settings, /docs); default loopback-only
       # WHISPER_USER_WEBUI_ALLOWED_HOSTS: "203.0.113.7"    # user pages (/stats, /logs, …); default OPEN — narrow to restrict
       # WHISPER_SESSION_COOKIE_SECURE: "1"            # required when served over HTTPS
