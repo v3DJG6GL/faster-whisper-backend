@@ -103,6 +103,19 @@ def _inproc_guard():
     return sys.modules["fwb_ssrf_guard_inproc"]
 
 
+def _reset_budget():
+    """A fresh extraction: the manifests one thread parses spend from one
+    segment / variant budget until probe() resets it (observe_dials)."""
+    guard = sys.modules.get("fwb_ssrf_guard_inproc")
+    if guard is not None:
+        guard.reset_budget()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_manifest_budget():
+    _reset_budget()
+
+
 @pytest.fixture(name="public")
 def servers():
     """The public URL base, with a clean INTERNAL hit log."""
@@ -1224,8 +1237,10 @@ def test_guard_parses_an_ordinary_long_manifest_unchanged(monkeypatch):
     fmts, _subs = _parse_mpd(timeline)
     assert len(fmts[0]["fragments"]) == 7200
     # Right at the cap still parses, one past it is refused (the cap is
-    # lowered so the at-cap manifest stays cheap to expand).
+    # lowered so the at-cap manifest stays cheap to expand), in an
+    # extraction of its own.
     assert _registered_guard()["_MAX_MPD_SEGMENTS"] >= 216_000
+    _reset_budget()
     cap = 50_000
     monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
     at_cap = _mpd(_adaptation(_template(timescale="1", duration="1")),
@@ -1343,6 +1358,7 @@ def test_guard_parses_an_ordinary_ism_manifest_unchanged(monkeypatch):
     # A live manifest is left to yt-dlp, which returns nothing for it.
     assert _parse_ism(_ism(_ism_audio('<c t="0" d="1" r="10000000000"/>'),
                            live=True)) == ([], {})
+    _reset_budget()  # the at-cap manifest is an extraction of its own
     cap = 30_000
     monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
     fmts, _subs = _parse_ism(_ism(_ism_audio(
@@ -1577,6 +1593,400 @@ def test_guard_is_not_installed_without_the_hls_fragment_bound(monkeypatch):
         guard.install()  # nothing to bound: still fails closed
         assert not guard.is_installed()
     assert guard.is_installed()
+
+
+# ---- One extraction, one budget: GenericIE parses one MPD per Video.js
+# `src` into a single info dict, so a per-manifest budget let N manifests
+# expand N x 1 M segments. The manifests one extraction parses spend from one
+# running total per thread, which observe_dials() (probe()'s start and end)
+# resets.
+
+def test_guard_charges_segments_across_manifests_in_one_extraction(monkeypatch):
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    six_hundred = _mpd(_adaptation(_template(timescale="1", duration="1")),
+                       duration="PT600S")
+    assert len(_parse_mpd(six_hundred)[0][0]["fragments"]) == 600
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_mpd(six_hundred)
+    # A refused manifest spends nothing: the rest of the budget still parses.
+    four_hundred = _mpd(_adaptation(_template(timescale="1", duration="1")),
+                        duration="PT400S")
+    assert len(_parse_mpd(four_hundred)[0][0]["fragments"]) == 400
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_ism(_ism(_ism_audio('<c t="0" d="1"/>')))
+    # probe() calls observe_dials() as its extraction starts and ends: the
+    # pool thread's next extraction starts from a full budget.
+    guard = _inproc_guard()
+    guard.observe_dials(None)
+    assert len(_parse_mpd(six_hundred)[0][0]["fragments"]) == 600
+    guard.observe_dials(lambda sock: None, deadline=None)
+    try:
+        assert len(_parse_mpd(six_hundred)[0][0]["fragments"]) == 600
+    finally:
+        guard.observe_dials(None)
+
+
+def test_guard_charges_ism_fragments_across_manifests_in_one_extraction(
+        monkeypatch):
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    six_hundred = _ism(_ism_audio('<c t="0" d="1" r="600"/>'))
+    assert len(_parse_ism(six_hundred)[0][0]["fragments"]) == 600
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_ism(six_hundred)
+    _inproc_guard().observe_dials(None)
+    assert len(_parse_ism(six_hundred)[0][0]["fragments"]) == 600
+
+
+def test_guard_charges_variants_across_manifests_in_one_extraction(monkeypatch):
+    cap = 10
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_REPRESENTATIONS", cap)
+    six = _mpd(_adaptation('<BaseURL>a.m4a</BaseURL>', reps=6))
+    assert len(_parse_mpd(six)[0]) == 6
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_mpd(six)
+    # DASH representations and Smooth Streaming levels share the budget.
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_ism(_ism(_ism_audio('<c t="0" d="1"/>', levels=6)))
+    _inproc_guard().observe_dials(None)
+    assert len(_parse_ism(_ism(_ism_audio('<c t="0" d="1"/>', levels=6)))[0]) == 6
+
+
+# ---- HDS (F4M): _parse_f4m_formats makes one format per <media> node, and a
+# set-level manifest (no bootstrapInfo) fetches every node that names another
+# .f4m / .m3u8 — recursively. Each format then costs ~0.5 ms of format pass.
+# The guard counts nodes and nested references before the parse, bounds the
+# nesting depth and the formats nested children add up to.
+
+_F4M_NS = "http://ns.adobe.com/f4m/1.0"
+_F4M_BOOT = '<bootstrapInfo profile="named" id="b">AAAA</bootstrapInfo>'
+
+
+def _f4m(media, *, bootstrap=True):
+    return (f'<?xml version="1.0"?><manifest xmlns="{_F4M_NS}"><id>x</id>'
+            f'{_F4M_BOOT if bootstrap else ""}{media}</manifest>')
+
+
+def _f4m_media(n, url="v{i}"):
+    return "".join(f'<media url="{url.format(i=i)}" bitrate="{i + 1}" '
+                   'bootstrapInfoId="b"/>' for i in range(n))
+
+
+def _parse_f4m(xml, **stubs):
+    """InfoExtractor._parse_f4m_formats on `xml`, with the named methods of
+    the extractor replaced by `stubs` (the nested-manifest fetches)."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        for name, fn in stubs.items():
+            setattr(ie, name, types.MethodType(fn, ie))
+        return ie._parse_f4m_formats(compat_etree_fromstring(xml.encode()),
+                                     "http://cdn.example/m.f4m", "x")
+
+
+def test_guard_refuses_an_f4m_manifest_listing_too_many_formats():
+    import time
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_f4m(_f4m(_f4m_media(_hls_cap() + 1)))
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_guard_refuses_an_f4m_set_manifest_nesting_too_many_manifests():
+    fetched = []
+
+    def _m3u8(self, url, video_id, *a, **kw):
+        fetched.append(url)
+        return [{"url": url, "format_id": url}]
+    nested = _registered_guard()["_MAX_F4M_NESTED"]
+    assert nested >= 8
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_f4m(_f4m(_f4m_media(nested + 1, url="c{i}.m3u8"), bootstrap=False),
+                   _extract_m3u8_formats=_m3u8)
+    assert fetched == []
+    # Under the reference cap, the formats the children add up to are
+    # bounded before the format pass sees them.
+    cap = _hls_cap()
+
+    def _big(self, url, video_id, *a, **kw):
+        return [{"url": f"{url}/{i}", "format_id": f"{url}{i}"}
+                for i in range(cap // 2 + 1)]
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_f4m(_f4m(_f4m_media(2, url="c{i}.m3u8"), bootstrap=False),
+                   _extract_m3u8_formats=_big)
+
+
+def test_guard_refuses_a_self_nesting_f4m_manifest():
+    from yt_dlp.utils import compat_etree_fromstring
+    set_level = _f4m(_f4m_media(1, url="again.f4m"), bootstrap=False)
+    depth = []
+
+    def _again(self, url, video_id, *a, **kw):
+        depth.append(url)
+        if len(depth) >= 5:  # yt-dlp itself recurses until RecursionError
+            return []
+        return self._parse_f4m_formats(compat_etree_fromstring(set_level.encode()),
+                                       url, video_id)
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_f4m(set_level, _extract_f4m_formats=_again)
+    assert len(depth) == _registered_guard()["_MAX_F4M_DEPTH"]
+
+
+def test_guard_parses_an_ordinary_f4m_manifest_unchanged():
+    from yt_dlp.utils import compat_etree_fromstring
+    fmts = _parse_f4m(_f4m(_f4m_media(3)))
+    assert [(f["format_id"], f["protocol"], f["ext"]) for f in fmts] == [
+        ("1", "f4m", "flv"), ("2", "f4m", "flv"), ("3", "f4m", "flv")]
+    # A set-level manifest naming stream-level ones: one level of nesting.
+    stream = _f4m(_f4m_media(1))
+
+    def _child(self, url, video_id, *a, **kw):
+        return self._parse_f4m_formats(compat_etree_fromstring(stream.encode()),
+                                       url, video_id)
+    fmts = _parse_f4m(_f4m(_f4m_media(2, url="s{i}.f4m"), bootstrap=False),
+                      _extract_f4m_formats=_child)
+    assert [f["url"] for f in fmts] == ["http://cdn.example/s0.f4m",
+                                        "http://cdn.example/s1.f4m"]
+    assert len(_parse_f4m(_f4m(_f4m_media(_hls_cap())))) == _hls_cap()
+
+
+def test_guard_is_not_installed_without_the_f4m_bound(monkeypatch):
+    from yt_dlp.extractor.common import InfoExtractor
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(InfoExtractor, "_parse_f4m_formats",
+                  lambda self, *a, **kw: [])
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(InfoExtractor, "_parse_f4m_formats")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+# ---- HDS in the download child: F4mFD's build_fragments_list turns every
+# segment-run count of the bootstrap (a uint32) into that many fragment
+# tuples before it fetches any — a 106-byte bootstrap asks for billions. The
+# guard sums the counts against the segment budget first.
+
+def _boot(runs, *, live=False):
+    return {"segments": [{"segment_run": runs}],
+            "fragments": [{"fragments": [{"first": 5, "ts": 0, "duration": 1,
+                                          "discontinuity_indicator": None}]}],
+            "live": live}
+
+
+@pytest.mark.parametrize("runs", [
+    [(1, 1001)],
+    [(1, 600), (2, 600)],
+    [(1, 4294967294)],
+    [(1, 4294967295)],  # only a live stream clamps it
+], ids=["one-run", "two-runs", "uint32", "uint32-max-not-live"])
+def test_guard_refuses_an_f4m_bootstrap_listing_too_many_fragments(
+        monkeypatch, runs):
+    import time
+    from yt_dlp.downloader import f4m
+    udl.guard_self_check(force=True)
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", 1000)
+    # F4mFD looks the function up in its module at call time.
+    assert f4m.F4mFD.real_download.__globals__ is vars(f4m)
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        f4m.build_fragments_list(_boot(runs))
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_guard_builds_an_ordinary_f4m_bootstrap_unchanged(monkeypatch):
+    from yt_dlp.downloader import f4m
+    udl.guard_self_check(force=True)
+    assert f4m.build_fragments_list(_boot([(1, 3), (2, 2)])) == [
+        (1, 5), (1, 6), (1, 7), (2, 8), (2, 9)]
+    # A live stream keeps the last two, its uint32-max run counts as two.
+    assert f4m.build_fragments_list(_boot([(1, 3), (2, 4294967295)], live=True)) == [
+        (2, 8), (2, 9)]
+    assert f4m.build_fragments_list(_boot([(1, 4294967295)], live=True)) == [
+        (1, 5), (1, 6)]
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", 1000)
+    assert len(f4m.build_fragments_list(_boot([(1, 400), (2, 600)]))) == 1000
+
+
+def test_guard_is_not_installed_without_the_f4m_fragment_bound(monkeypatch):
+    from yt_dlp.downloader import f4m
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(f4m, "build_fragments_list", lambda boot_info: [])
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the function
+        m.delattr(f4m, "build_fragments_list")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+# ---- What a page builds before anything counts it: GenericIE parses every
+# HTML page it scrapes as XML first, and reads every ld+json block with
+# json.loads — up to the 64 MiB body cap, ~1.6 GB of tree or objects. The
+# guard counts elements / arrays and objects in C before either parse.
+
+_ETREE_IMPORTERS = (
+    "yt_dlp.compat", "yt_dlp.utils", "yt_dlp.utils._utils",
+    "yt_dlp.extractor.common", "yt_dlp.extractor.generic",
+    "yt_dlp.extractor.facebook", "yt_dlp.extractor.odnoklassniki",
+    "yt_dlp.extractor.faz", "yt_dlp.extractor.brightcove",
+    "yt_dlp.downloader.f4m")
+
+
+@pytest.mark.parametrize("module", _ETREE_IMPORTERS)
+def test_guard_counts_xml_elements_before_building_the_tree(monkeypatch, module):
+    import importlib
+    import xml.etree.ElementTree as ET
+    udl.guard_self_check(force=True)
+    parse = importlib.import_module(module).compat_etree_fromstring
+    assert _registered_guard()["_MAX_XML_ELEMENTS"] >= 2 * 1_000_000
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_XML_ELEMENTS", cap)
+    over = '<?xml version="1.0"?><x>' + "<a/>" * cap + "</x>"
+    for doc in (over, over.encode()):
+        with pytest.raises(ET.ParseError, match="too many elements"):
+            parse(doc)
+    at_cap = '<?xml version="1.0"?><x>' + "<a/>" * (cap - 2) + "</x>"
+    assert len(parse(at_cap)) == len(parse(at_cap.encode())) == cap - 2
+
+
+def test_guard_is_not_installed_without_the_xml_bound(monkeypatch):
+    import yt_dlp.compat
+    import yt_dlp.extractor.generic as generic
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        # Any loaded module holding an unbounded parse fails closed...
+        m.setattr(generic, "compat_etree_fromstring", lambda text: None)
+        assert not guard.is_installed()
+        guard.install()  # ...until install() bounds it too
+        assert guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that dropped the function
+        m.delitem(vars(yt_dlp.compat), "compat_etree_fromstring")
+        assert not guard.is_installed()
+        guard.install()
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+def _parse_json(doc, *args, **kwargs):
+    """InfoExtractor._parse_json on `doc`: (result or raised error, warnings)."""
+    from yt_dlp.extractor.common import InfoExtractor
+    warnings = []
+    logger = types.SimpleNamespace(debug=lambda m: None, info=lambda m: None,
+                                   warning=warnings.append, error=lambda m: None)
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"logger": logger}) as ydl:
+        try:
+            out = InfoExtractor(ydl)._parse_json(doc, "x", *args, **kwargs)
+        except yt_dlp.utils.ExtractorError as e:
+            out = e
+    return out, warnings
+
+
+def test_guard_counts_json_containers_before_parsing(monkeypatch):
+    assert _registered_guard()["_MAX_JSON_CONTAINERS"] >= 2 * 1_000_000
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_JSON_CONTAINERS", cap)
+    over = "[" + "[]," * (cap - 1) + "{}]"
+    at_cap = "[" + "[]," * (cap - 2) + "{}]"
+    for doc in (over, over.encode()):
+        err, warnings = _parse_json(doc)
+        assert isinstance(err, yt_dlp.utils.ExtractorError)
+        assert "Failed to parse JSON" in str(err) and "too many" in str(err)
+    # The refusal follows _parse_json's own contract for JSON it cannot
+    # parse: fatal raises, otherwise the same warning (none for
+    # errnote=False) and None.
+    why = f"the JSON holds too many arrays and objects (more than {cap})"
+    for args, kwargs, note in (
+            ((), {"fatal": False}, "Failed to parse JSON"),
+            ((None, False, "boom"), {}, "boom"),
+            ((), {"fatal": False, "errnote": False}, None)):
+        broken, broken_warnings = _parse_json("[", *args, **kwargs)
+        out, warnings = _parse_json(over, *args, **kwargs)
+        assert broken is out is None
+        assert warnings == [w.split(f"{note}: ")[0] + f"{note}: {why}"
+                            for w in broken_warnings]
+        assert len(warnings) == (1 if note else 0)
+    assert _parse_json(at_cap)[0] == [[]] * (cap - 2) + [{}]
+    assert _parse_json(at_cap.encode(), fatal=False)[0] == [[]] * (cap - 2) + [{}]
+
+
+def test_guard_is_not_installed_without_the_json_bound(monkeypatch):
+    from yt_dlp.extractor.common import InfoExtractor
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(InfoExtractor, "_parse_json", lambda self, *a, **kw: None)
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(InfoExtractor, "_parse_json")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+class _HtmlForYtDlp(_QuietHandler):
+    """audio/mpeg for the direct-media check, an HTML page for yt-dlp's own
+    GET of the same URL: the shape that hands GenericIE a page to scrape
+    with the shipped settings (direct media on, generic pages off)."""
+
+    page = b""
+
+    def do_GET(self):
+        if (self.headers.get("User-Agent") or "").startswith("faster-whisper-backend"):
+            self._ok_headers("audio/mpeg", 1)
+            self.wfile.write(b"\xff")
+            return
+        self._ok_headers("text/html", len(type(self).page))
+        self.wfile.write(type(self).page)
+
+
+def test_probe_counts_a_scraped_page_before_parsing_it(monkeypatch,
+                                                       public_is_public):
+    import xml.etree.ElementTree as ET
+    import yt_dlp.compat
+    from yt_dlp.utils._utils import LenientJSONDecoder
+    try:
+        with socket.socket() as s:
+            s.bind(("127.0.0.2", 0))
+    except OSError:  # pragma: no cover — non-Linux loopback aliasing
+        pytest.skip("this platform does not alias 127.0.0.2")
+    cap = 1000
+    udl.guard_self_check(force=True)
+    monkeypatch.setitem(_registered_guard(), "_MAX_XML_ELEMENTS", cap)
+    monkeypatch.setitem(_registered_guard(), "_MAX_JSON_CONTAINERS", cap)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    ld_json = "[" + "[]," * (2 * cap) + "[]]"
+    _HtmlForYtDlp.page = (
+        "<html><head><title>t</title>"
+        f'<script type="application/ld+json">{ld_json}</script></head>'
+        "<body>" + "<a/>" * (2 * cap) + "</body></html>").encode()
+    trees, decoded = [], []
+    monkeypatch.setattr(yt_dlp.compat, "etree", types.SimpleNamespace(
+        XML=lambda text, parser=None: trees.append(len(text)) or ET.XML(text, parser),
+        XMLParser=ET.XMLParser))
+    real_decode = LenientJSONDecoder.decode
+    monkeypatch.setattr(LenientJSONDecoder, "decode",
+                        lambda self, s: decoded.append(len(s)) or real_decode(self, s))
+    srv = _serve(_HtmlForYtDlp, "127.0.0.2")
+    with _stopping(srv), pytest.raises(udl.UrlDownloadError, match="isn't supported"):
+        _run(udl.probe(f"http://127.0.0.2:{srv.server_port}/stream", timeout=20))
+    # Neither the page nor its ld+json block was handed to a parser.
+    assert trees == []
+    assert all(n < len(ld_json) for n in decoded), decoded
 
 
 def test_probe_prunes_a_request_handler_registered_by_plugin_loading(

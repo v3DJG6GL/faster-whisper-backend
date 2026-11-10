@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import http.client
 import importlib.util
+import inspect
 import math
 import os
 import re
@@ -68,6 +69,7 @@ import threading
 import types
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree
 import zlib
 
 from yt_dlp.networking import _urllib
@@ -194,6 +196,15 @@ def observe_dials(observer, *, deadline: "float | None" = None) -> None:
     on each of them."""
     _DIALS.tls.observer = observer
     _DIALS.tls.deadline = deadline if observer is not None else None
+    # probe() calls this as its extraction starts and again as it ends, so
+    # a pool thread's next extraction starts from a full manifest budget.
+    reset_budget()
+
+
+def reset_budget() -> None:
+    """Start this thread's manifest budget (see _charge) afresh."""
+    _DIALS.tls.segments = 0
+    _DIALS.tls.variants = 0
 
 
 def _observe(sock) -> None:
@@ -546,8 +557,10 @@ def _refuse_external_downloaders() -> None:
 # 12 h one with ten representations 216 000; the cap (~260 MB of fragment
 # dicts at most) leaves long multi-quality VODs well inside it. Smooth
 # Streaming (_parse_ism_formats_and_subtitles: <c r="N"> expanded once per
-# QualityLevel) and an HLS media playlist (HlsFD: one fragment per segment
-# line) spend from the same budget.
+# QualityLevel), an HLS media playlist (HlsFD: one fragment per segment
+# line) and an HDS bootstrap (F4mFD) count against the same cap. The DASH and
+# Smooth Streaming manifests one extraction parses also spend from one running
+# total (_charge), as every manifest within its own cap is not enough.
 _MAX_MPD_SEGMENTS = 1_000_000
 _MPD_SENTINEL = "_fwb_mpd_bounded"
 # Each Representation also becomes its own format (periods merge only when
@@ -570,6 +583,23 @@ def _too_many_variants(cap: int):
     from yt_dlp.utils import ExtractorError
     return ExtractorError(
         f"the stream lists too many variants (more than {cap})", expected=True)
+
+
+def _charge(segments: int, variants: int) -> None:
+    """Spend a manifest's counts from the budget of the extraction running
+    on this thread. One extraction can parse many manifests into one result
+    (GenericIE parses an MPD per Video.js `src`), so each manifest within
+    its own cap is not enough. A refused manifest spends nothing. probe()
+    resets the budget per extraction (observe_dials); the download child
+    extracts once per process."""
+    total = getattr(_DIALS.tls, "segments", 0) + segments
+    if total > _MAX_MPD_SEGMENTS:
+        raise _too_many_segments()
+    kinds = getattr(_DIALS.tls, "variants", 0) + variants
+    if kinds > _MAX_MPD_REPRESENTATIONS:
+        raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
+    _DIALS.tls.segments = total
+    _DIALS.tls.variants = kinds
 
 
 def _number(value, kind=float):
@@ -667,6 +697,7 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
                 # first expanded representation's, which the next ones use.
                 if not period_duration and n and seconds:
                     period_duration = seconds
+    _charge(count, representations)
 
 
 def _bounded_mpd_periods(original):
@@ -721,6 +752,7 @@ def _refuse_oversized_ism(ism_doc) -> None:
         count += tracks * per_track
         if count > _MAX_MPD_SEGMENTS:
             raise _too_many_segments()
+    _charge(count, variants)
 
 
 def _bounded_ism(original):
@@ -865,6 +897,226 @@ def _hls_fragments_are_bounded() -> bool:
     return getattr(getattr(HlsFD, "can_download", None), _HLS_SENTINEL, False)
 
 
+# HDS (F4M): _parse_f4m_formats turns every <media> node into a format, with
+# the same ~0.5 ms format pass per format as an HLS master, so its nodes are
+# counted against the HLS format cap before the parse. A set-level manifest
+# (one with no bootstrapInfo) also fetches every node that names another
+# .f4m / .m3u8 and parses it in turn, an .f4m child recursively: the nested
+# references, the nesting depth and the formats the children add up to are
+# bounded too. Real HDS lists a handful of bitrates, and a set-level manifest
+# a few stream-level ones one level down.
+_F4M_SENTINEL = "_fwb_f4m_bounded"
+_F4M_NAMESPACES = ("{http://ns.adobe.com/f4m/1.0}", "{http://ns.adobe.com/f4m/2.0}")
+_MAX_F4M_NESTED = 16
+_MAX_F4M_DEPTH = 2
+
+
+def _refuse_oversized_f4m(manifest) -> None:
+    if not isinstance(manifest, xml.etree.ElementTree.Element):
+        return  # yt-dlp returns or fails on its own, before any node
+    # yt-dlp's choice: the 1.0 nodes, else the 2.0 ones.
+    nodes = (manifest.findall(_F4M_NAMESPACES[0] + "media")
+             or manifest.findall(_F4M_NAMESPACES[1] + "media"))
+    if len(nodes) > _MAX_M3U8_FORMATS:
+        raise _too_many_variants(_MAX_M3U8_FORMATS)
+    if any(manifest.find(ns + "bootstrapInfo") is not None
+           for ns in _F4M_NAMESPACES):
+        return  # a stream-level manifest refers to nothing outside it
+    from yt_dlp.utils import determine_ext
+    nested = sum(1 for node in nodes
+                 if determine_ext(node.get("href") or node.get("url") or "")
+                 in ("f4m", "m3u8"))
+    if nested > _MAX_F4M_NESTED:
+        raise _too_many_variants(_MAX_F4M_NESTED)
+
+
+def _bounded_f4m(original):
+    def _parse_f4m_formats(self, manifest, *args, **kwargs):
+        depth = getattr(_DIALS.tls, "f4m_depth", 0)
+        if depth >= _MAX_F4M_DEPTH:
+            raise _too_many_variants(_MAX_F4M_NESTED)
+        _refuse_oversized_f4m(manifest)
+        _DIALS.tls.f4m_depth = depth + 1
+        try:
+            formats = original(self, manifest, *args, **kwargs)
+        finally:
+            _DIALS.tls.f4m_depth = depth
+        # The nested children's formats, summed before the format pass.
+        if isinstance(formats, list) and len(formats) > _MAX_M3U8_FORMATS:
+            raise _too_many_variants(_MAX_M3U8_FORMATS)
+        return formats
+    setattr(_parse_f4m_formats, _F4M_SENTINEL, True)
+    return _parse_f4m_formats
+
+
+def _bound_f4m_formats() -> None:
+    from yt_dlp.extractor.common import InfoExtractor
+    current = getattr(InfoExtractor, "_parse_f4m_formats", None)
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _F4M_SENTINEL, False):
+        InfoExtractor._parse_f4m_formats = _bounded_f4m(current)
+
+
+def _f4m_formats_are_bounded() -> bool:
+    from yt_dlp.extractor.common import InfoExtractor
+    return getattr(getattr(InfoExtractor, "_parse_f4m_formats", None),
+                   _F4M_SENTINEL, False)
+
+
+# HDS in the download child: F4mFD's build_fragments_list (a module function
+# it looks up at call time) turns every segment-run count of the bootstrap, a
+# uint32, into that many fragment tuples before it fetches any, so a 106-byte
+# bootstrap asks for billions (~107 bytes each). The counts are summed against
+# the segment cap first, a live stream's 4294967295 as the two yt-dlp keeps.
+# Real HDS VODs are hundreds to tens of thousands of fragments.
+_F4M_FRAGMENTS_SENTINEL = "_fwb_f4m_fragments_bounded"
+
+
+def _bounded_build_fragments_list(original):
+    def build_fragments_list(boot_info):
+        try:
+            runs = boot_info["segments"][0]["segment_run"]
+            live = boot_info["live"]
+        except (KeyError, IndexError, TypeError):
+            runs, live = (), False  # yt-dlp raises on its own
+        total = 0
+        for _segment, count in runs:
+            total += 2 if count == 4294967295 and live else max(count, 0)
+            if total > _MAX_MPD_SEGMENTS:
+                raise _too_many_segments()
+        return original(boot_info)
+    setattr(build_fragments_list, _F4M_FRAGMENTS_SENTINEL, True)
+    return build_fragments_list
+
+
+def _bound_f4m_fragments() -> None:
+    from yt_dlp.downloader import f4m
+    current = getattr(f4m, "build_fragments_list", None)
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _F4M_FRAGMENTS_SENTINEL, False):
+        f4m.build_fragments_list = _bounded_build_fragments_list(current)
+
+
+def _f4m_fragments_are_bounded() -> bool:
+    from yt_dlp.downloader import f4m
+    return getattr(getattr(f4m, "build_fragments_list", None),
+                   _F4M_FRAGMENTS_SENTINEL, False)
+
+
+# What a page builds before any count above sees it. GenericIE parses every
+# page it scrapes as XML first (an RSS / SMIL / MPD check) and every ld+json
+# block with json.loads, and both run on up to the 64 MiB body cap: ~1.6 GB of
+# element tree or of lists and dicts, seconds of CPU on the probe thread. The
+# elements (start tags) and the JSON arrays and objects are counted in C
+# first; a document no longer than the cap cannot exceed it and pays nothing.
+# Two million elements is twice a DASH manifest at the segment cap, and real
+# pages and API answers hold far fewer arrays and objects.
+_MAX_XML_ELEMENTS = 2_000_000
+_MAX_JSON_CONTAINERS = 2_000_000
+_ETREE_SENTINEL = "_fwb_etree_bounded"
+_ETREE_NAME = "compat_etree_fromstring"
+_JSON_SENTINEL = "_fwb_json_bounded"
+
+
+def _refuse_oversized_xml(text) -> None:
+    if not isinstance(text, (str, bytes, bytearray)) or len(text) <= _MAX_XML_ELEMENTS:
+        return
+    lt, close = ("<", "</") if isinstance(text, str) else (b"<", b"</")
+    if text.count(lt) - text.count(close) > _MAX_XML_ELEMENTS:
+        # What a malformed document raises: every caller handles it (GenericIE
+        # goes on scraping the page as HTML).
+        raise xml.etree.ElementTree.ParseError(
+            f"the document has too many elements (more than {_MAX_XML_ELEMENTS})")
+
+
+def _bounded_etree(original):
+    def compat_etree_fromstring(text):
+        _refuse_oversized_xml(text)
+        return original(text)
+    setattr(compat_etree_fromstring, _ETREE_SENTINEL, True)
+    return compat_etree_fromstring
+
+
+def _etree_bindings():
+    """(module, function) for every loaded yt-dlp module that holds its own
+    reference to compat_etree_fromstring (`from ..compat import ...`)."""
+    for name, module in dict(sys.modules).items():
+        if name.partition(".")[0] not in ("yt_dlp", "yt_dlp_plugins"):
+            continue
+        fn = getattr(module, "__dict__", {}).get(_ETREE_NAME)
+        if fn is not None:
+            yield module, fn
+
+
+def _bound_etree_parses() -> None:
+    import yt_dlp.compat
+    # The compat module first: a module imported later binds the bounded
+    # function. Every module already holding a reference is rebound.
+    wrapped = {}
+    for module, fn in [(yt_dlp.compat, vars(yt_dlp.compat).get(_ETREE_NAME)),
+                       *_etree_bindings()]:
+        if callable(fn) and not getattr(fn, _ETREE_SENTINEL, False):
+            if id(fn) not in wrapped:
+                wrapped[id(fn)] = _bounded_etree(fn)
+            setattr(module, _ETREE_NAME, wrapped[id(fn)])
+
+
+def _etree_parses_are_bounded() -> bool:
+    import yt_dlp.compat
+    # A yt-dlp without the compat function fails closed, as with DASH.
+    return (getattr(vars(yt_dlp.compat).get(_ETREE_NAME), _ETREE_SENTINEL, False)
+            and all(getattr(fn, _ETREE_SENTINEL, False)
+                    for _module, fn in _etree_bindings()))
+
+
+def _json_containers(doc) -> int:
+    if isinstance(doc, str):
+        return doc.count("[") + doc.count("{")
+    return doc.count(b"[") + doc.count(b"{")
+
+
+def _bounded_parse_json(original):
+    signature = inspect.signature(original)
+
+    def _parse_json(self, json_string, *args, **kwargs):
+        if (isinstance(json_string, (str, bytes, bytearray))
+                and len(json_string) > _MAX_JSON_CONTAINERS
+                and _json_containers(json_string) > _MAX_JSON_CONTAINERS):
+            # Refused as yt-dlp refuses JSON it cannot parse: fatal raises,
+            # otherwise a warning (unless errnote is False) and None.
+            from yt_dlp.utils import ExtractorError
+            call = signature.bind(self, json_string, *args, **kwargs)
+            call.apply_defaults()
+            fatal = call.arguments.get("fatal", True)
+            errnote = call.arguments.get("errnote")
+            video_id = call.arguments.get("video_id")
+            error = ValueError("the JSON holds too many arrays and objects "
+                               f"(more than {_MAX_JSON_CONTAINERS})")
+            errnote = "Failed to parse JSON" if errnote is None else errnote
+            if fatal:
+                raise ExtractorError(errnote, cause=error, video_id=video_id)
+            if errnote:
+                self.report_warning(f"{errnote}: {error}", video_id=video_id)
+            return None
+        return original(self, json_string, *args, **kwargs)
+    setattr(_parse_json, _JSON_SENTINEL, True)
+    return _parse_json
+
+
+def _bound_json_parses() -> None:
+    from yt_dlp.extractor.common import InfoExtractor
+    current = getattr(InfoExtractor, "_parse_json", None)
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _JSON_SENTINEL, False):
+        InfoExtractor._parse_json = _bounded_parse_json(current)
+
+
+def _json_parses_are_bounded() -> bool:
+    from yt_dlp.extractor.common import InfoExtractor
+    return getattr(getattr(InfoExtractor, "_parse_json", None),
+                   _JSON_SENTINEL, False)
+
+
 def install() -> None:
     """Register the guard and retire the handlers it supersedes.
 
@@ -885,6 +1137,10 @@ def install() -> None:
     _bound_ism_expansion()
     _bound_m3u8_formats()
     _bound_hls_fragments()
+    _bound_f4m_formats()
+    _bound_f4m_fragments()
+    _bound_etree_parses()
+    _bound_json_parses()
 
 
 def _prefer_guard(rh, request):
@@ -897,8 +1153,11 @@ def is_installed() -> bool:
     allowlist: an unknown handler key fails closed), no downloader can hand
     a fetch to an external program, a DASH or Smooth Streaming manifest's
     segments are counted before yt-dlp expands them, an HLS master's
-    variants and lines before it builds their formats and an HLS media
-    playlist's segments before HlsFD expands them."""
+    variants and lines before it builds their formats, an HLS media
+    playlist's segments before HlsFD expands them, an HDS manifest's nodes
+    and nested manifests before it builds their formats, an HDS bootstrap's
+    fragments before F4mFD expands them, and an XML document's elements and
+    a JSON document's arrays and objects before either is parsed."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
             and set(_REQUEST_HANDLERS) == {GUARD_RH_KEY}
@@ -907,7 +1166,11 @@ def is_installed() -> bool:
             and _mpd_expansion_is_bounded()
             and _ism_expansion_is_bounded()
             and _m3u8_formats_are_bounded()
-            and _hls_fragments_are_bounded())
+            and _hls_fragments_are_bounded()
+            and _f4m_formats_are_bounded()
+            and _f4m_fragments_are_bounded()
+            and _etree_parses_are_bounded()
+            and _json_parses_are_bounded())
 
 
 install()
