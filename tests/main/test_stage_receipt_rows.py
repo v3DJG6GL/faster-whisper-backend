@@ -31,6 +31,8 @@ _STUB_CREATED: list[str] = []
 
 def _stub_separate(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
+    # The stub uploads are bytes PyAV cannot open, which the RAM cap skips.
+    monkeypatch.setattr(app_module, "_sep_ram_cap", lambda: None)
 
     async def _fake(path, *, model_filename=None, progress_cb=None,
                     cancel_check=None):

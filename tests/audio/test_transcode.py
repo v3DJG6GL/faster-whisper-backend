@@ -480,3 +480,24 @@ def test_decode_span_matches_the_full_decode_reference(tmp_path, fixture):
             assert got.dtype == want.dtype and got.shape == want.shape, (
                 skip, seconds)
             assert np.array_equal(got, want), (skip, seconds)
+
+
+def test_is_pcm_wav_or_flac_reads_the_bytes_not_the_name(tmp_path):
+    """A PCM WAV and a FLAC are what they say, whatever their name; an MP3
+    named .wav, or one muxed into a WAV container, is not."""
+    wav = _write_src_wav(str(tmp_path / "pcm.mp3"), rate=RATE, nchannels=2)
+    flac = _silent_flac(str(tmp_path / "s.wav"), seconds=1)
+    mp3 = _damaged_mp3(str(tmp_path / "m.wav"), seconds=1)
+    assert audio_transcode.is_pcm_wav_or_flac(wav) is True
+    assert audio_transcode.is_pcm_wav_or_flac(flac) is True
+    assert audio_transcode.is_pcm_wav_or_flac(mp3) is False
+    mp3_in_wav = str(tmp_path / "mp3in.wav")
+    with av.open(mp3_in_wav, "w", format="wav") as out:
+        st = out.add_stream("libmp3lame", rate=RATE)
+        st.layout = "mono"
+        fr = av.AudioFrame.from_ndarray(
+            np.zeros((1, 1152), dtype=np.int16), format="s16", layout="mono")
+        fr.sample_rate = RATE
+        for pkt in [*st.encode(fr), *st.encode(None)]:
+            out.mux(pkt)
+    assert audio_transcode.is_pcm_wav_or_flac(mp3_in_wav) is False

@@ -19,7 +19,8 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.transcription import run_plan
 from tests._transcription_helpers import (
     fail_model_load, get_progress, post_json_ok, post_transcription as _post,
-    post_translation, post_verbose_ok, record_runs, serve_model, watch_progress)
+    post_translation, post_verbose_ok, record_runs, serve_model, watch_progress,
+    wav_bytes)
 
 
 def test_default_json_returns_text_object(client):
@@ -743,8 +744,10 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
     monkeypatch.setattr(bgm_separation, "separate", _separate)
     transcode_raises(monkeypatch, av.error.InvalidDataError(
         1094995529, "Invalid data", "avcodec_send_packet()"))
+    # A body PyAV opens: the fallback measures the original by decoding it
+    # (one PyAV cannot open is skipped instead).
     body = post_verbose_ok(client, separate_bgm="true",
-                           files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
+                           files={"file": ("a.mp3", wav_bytes(), "audio/mpeg")})
     assert len(calls) == 1 and not calls[0].endswith(".wav")
     assert not any("could not be prepared" in w
                    for w in body.get("warnings") or [])

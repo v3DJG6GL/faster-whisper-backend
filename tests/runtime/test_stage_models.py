@@ -44,6 +44,8 @@ def _stub_separate(app_module, monkeypatch, **cfg):
     the call log."""
     for k, v in {"BGM_SEPARATION_ENABLED": True, **cfg}.items():
         monkeypatch.setattr(app_module.cfg, k, v, raising=False)
+    # The stub upload is bytes PyAV cannot open, which the RAM cap skips.
+    monkeypatch.setattr(app_module, "_sep_ram_cap", lambda: None)
     calls = []
 
     async def _fake(path, *, model_filename=None, progress_cb=None,

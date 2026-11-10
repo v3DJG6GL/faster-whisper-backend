@@ -1369,6 +1369,34 @@ def _sep_ram_cap() -> "int | None":
         return None
 
 
+def _diar_input_wav(src_path: str) -> "str | None":
+    """A private 16 kHz mono WAV of `src_path` for pyannote (the caller
+    unlinks it), or None to hand it `src_path` as before. pyannote decodes
+    its whole input as float32 at the file's native rate and channel count
+    before it downmixes and resamples to 16 kHz mono itself, so 8 channels
+    at 192 kHz cost it nearly 100x what the transcription's own 16 kHz mono
+    decode costs; this copy costs what that decode does. Bounded by the
+    temp dir's free space minus a margin, like the separation transcode;
+    any failure keeps the original, so no file is refused here.
+    "whisperup-" puts a hard restart's leftover in the startup sweep."""
+    fd, dst = tempfile.mkstemp(prefix="whisperup-diar-", suffix=".wav")
+    os.close(fd)
+    try:
+        try:
+            budget = max(0, shutil.disk_usage(os.path.dirname(dst)).free
+                         - 1_000_000_000)
+        except OSError:
+            budget = None
+        _transcode.transcode_to_wav(src_path, dst, rate=16000, layout="mono",
+                                    max_bytes=budget)
+        return dst
+    except Exception as e:  # noqa: BLE001 — pyannote reports its own decode error
+        logger.warning("[diarize] 16 kHz input copy failed (%s); diarizing "
+                       "the original", _log_safe(str(e)))
+        store_common.unlink_quietly(dst)
+        return None
+
+
 def _form_bool(value: "str | None") -> "bool | None":
     """Tri-state multipart boolean: multipart values arrive as strings, and
     FastAPI's bool coercion can't keep "absent" (inherit the config default)
@@ -2427,22 +2455,31 @@ async def transcribe(
                         # by the duration, rate and channel count its
                         # container declares (_sep_bytes_per_s), and one
                         # that declares no rate or channel count is skipped.
-                        # A wav/flac that opens but declares no duration is
-                        # transcoded, so the bounded writer measures it
-                        # instead; the fallback original is also decoded
-                        # and counted, since its header need not be true.
+                        # Only a real PCM WAV or FLAC (by its bytes, not its
+                        # name) is handed over as is: any other .wav/.flac —
+                        # a compressed codec timed by a header byte rate, or
+                        # a body PyAV cannot open but libsndfile reads whole
+                        # (MAT, HTK…) — is transcoded, as is a wav/flac that
+                        # opens but declares no duration, so the bounded
+                        # writer measures it instead. The fallback original
+                        # is also decoded and counted, since its header need
+                        # not be true, and one PyAV cannot open is skipped.
                         _sep_cap = await asyncio.to_thread(_sep_ram_cap)
                         _sep_secs, _sep_rate, _sep_ch = None, None, None
                         _sep_opened, _sep_fell_back = False, False
+                        _sep_native = False
                         if _sep_cap is not None:
                             try:
                                 _sep_secs, _sep_rate, _sep_ch = (
                                     await asyncio.to_thread(
                                         _transcode.declared_shape, tmp_path))
                                 _sep_opened = True
+                                _sep_native = await asyncio.to_thread(
+                                    _transcode.is_pcm_wav_or_flac, tmp_path)
                             except Exception:  # noqa: BLE001 — the decoders report it
                                 pass
                         if (_sep_ext not in ("wav", "flac")
+                                or (_sep_cap is not None and not _sep_native)
                                 or (_sep_opened and _sep_secs is None)):
                             try:
                                 _tfd, _sep_wav = tempfile.mkstemp(
@@ -2532,13 +2569,21 @@ async def transcribe(
                                 "long to separate on this server")
                         if _sep_fell_back and _sep_cap is not None:
                             # A decode error here is the one the transcode
-                            # just met: the header check above stands.
+                            # just met: for an original that opened, the
+                            # header check above stands. One PyAV cannot
+                            # open was never measured, and the separator's
+                            # libsndfile would read it whole: skip it.
                             try:
                                 _sep_fits = await asyncio.to_thread(
                                     _transcode.decoded_cost_within, tmp_path,
                                     cost_per_s=_sep_bytes_per_s,
                                     max_cost=_sep_cap)
-                            except Exception:  # noqa: BLE001
+                            except Exception as _me:  # noqa: BLE001
+                                if not _sep_opened:
+                                    _ps(step=None)
+                                    raise _bgm_separation.BgmSeparationError(
+                                        "music separation skipped: the file "
+                                        "could not be prepared") from _me
                                 _sep_fits = True
                             if not _sep_fits:
                                 logger.warning(
@@ -2956,20 +3001,27 @@ async def transcribe(
                             model=(_diarization_model or None),
                             device=_diarization._resolve_device())
                         tx_progress._check_cancelled(_pid)
-                        async with tx_models.get_inference_semaphore():
+                        # Off the GPU slot, like the separation transcode.
+                        _diar_wav = await asyncio.to_thread(
+                            _diar_input_wav, tmp_path)
+                        try:
                             tx_progress._check_cancelled(_pid)
-                            _turns = await _diarization.diarize(
-                                tmp_path,
-                                num_speakers=_spk.get("num_speakers"),
-                                min_speakers=_spk.get("min_speakers"),
-                                max_speakers=_spk.get("max_speakers"),
-                                model_id=(_diarization_model or None),
-                                progress_cb=lambda f, step=None, **kw: _ps(
-                                    progress=f, step=step,
-                                    target=kw.get("target"),
-                                    target_progress=kw.get("target_progress")),
-                                cancel_check=lambda: tx_progress._cancel_requested(_pid),
-                            )
+                            async with tx_models.get_inference_semaphore():
+                                tx_progress._check_cancelled(_pid)
+                                _turns = await _diarization.diarize(
+                                    _diar_wav or tmp_path,
+                                    num_speakers=_spk.get("num_speakers"),
+                                    min_speakers=_spk.get("min_speakers"),
+                                    max_speakers=_spk.get("max_speakers"),
+                                    model_id=(_diarization_model or None),
+                                    progress_cb=lambda f, step=None, **kw: _ps(
+                                        progress=f, step=step,
+                                        target=kw.get("target"),
+                                        target_progress=kw.get("target_progress")),
+                                    cancel_check=lambda: tx_progress._cancel_requested(_pid),
+                                )
+                        finally:
+                            store_common.unlink_quietly(_diar_wav)
                         # Pure-Python O(segments × turns) — off the loop so a
                         # long file doesn't stall every other request.
                         speakers_list = await asyncio.to_thread(

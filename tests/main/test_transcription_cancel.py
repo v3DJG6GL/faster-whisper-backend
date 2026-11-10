@@ -58,6 +58,8 @@ def test_bgm_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
     # BgmCancelled must abort the request — never the "transcribing the
     # original audio" warning path that BgmSeparationError takes.
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
+    # The stub upload is bytes PyAV cannot open, which the RAM cap skips.
+    monkeypatch.setattr(app_module, "_sep_ram_cap", lambda: None)
     stage_raises(monkeypatch, bgm_separation, "separate", bgm_separation.BgmCancelled())
     r = _post(client, separate_bgm="1", progress_id=_PID)
     assert r.status_code == 499, r.text

@@ -27,6 +27,10 @@ _M4A_UPLOAD = {"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")}
 @pytest.fixture
 def bgm_on(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
+    # These pin the stage contract on stub bytes PyAV cannot open, which the
+    # RAM cap skips; the cap has its own tests in
+    # tests/main/test_bgm_transcode_budget.py.
+    monkeypatch.setattr(app_module, "_sep_ram_cap", lambda: None)
 
 
 def _seed(monkeypatch, sep=None, key=None, leases=None, orphans=None):

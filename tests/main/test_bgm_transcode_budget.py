@@ -9,6 +9,7 @@ the input is also bounded by available RAM: a transcode that trips the RAM
 cap, or a wav/flac (passed to the separator as is) whose duration is past
 it, skips separation instead of handing the separator what it cannot hold."""
 
+import io
 import os
 import shutil
 import tempfile
@@ -95,12 +96,16 @@ def test_transcode_budget_is_free_space_minus_margin(
 
 
 def test_transcode_budget_floors_at_zero_on_a_nearly_full_disk(
-        client, monkeypatch, fake_model, separate_calls):
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
     _available_ram(monkeypatch, available=64_000_000_000)
     _disk_usage_reporting(monkeypatch, free=10_000)
     budgets = _record_budget(monkeypatch, over_budget=True)
-    assert "warnings" not in _post_ok(client, files=_M4A_UPLOAD,
-                                      separate_bgm="true")
+    # A real body: the fallback measures the original, and one PyAV cannot
+    # open is skipped instead.
+    m4a = _flac(tmp_path / "s.mkv", seconds=1.0, fmt="matroska")
+    assert "warnings" not in _post_ok(
+        client, separate_bgm="true",
+        files={"file": ("a.m4a", m4a, "audio/mp4")})
     assert budgets == [0]
     # Over budget is not a refusal: the separator decodes the original.
     assert len(separate_calls) == 1 and separate_calls[0].endswith(".m4a")
@@ -170,7 +175,7 @@ def test_ram_cap_overrun_skips_separation(
 
 
 def test_disk_only_overrun_still_falls_back_when_ram_is_roomy(
-        client, monkeypatch, fake_model, separate_calls):
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
     """A budget overrun where the disk budget, not the RAM cap, was the bound
     keeps the fallback even when the error is the budget subclass."""
     _available_ram(monkeypatch, available=64_000_000_000)
@@ -178,8 +183,10 @@ def test_disk_only_overrun_still_falls_back_when_ram_is_roomy(
     budgets = _record_budget(
         monkeypatch, over_budget=True,
         exc=getattr(audio_transcode, "TranscodeBudgetExceeded", RuntimeError))
-    assert "warnings" not in _post_ok(client, files=_M4A_UPLOAD,
-                                      separate_bgm="true")
+    m4a = _flac(tmp_path / "s.mkv", seconds=1.0, fmt="matroska")
+    assert "warnings" not in _post_ok(
+        client, separate_bgm="true",
+        files={"file": ("a.m4a", m4a, "audio/mp4")})
     assert budgets == [1_000_000_000]
     assert len(separate_calls) == 1 and separate_calls[0].endswith(".m4a")
 
@@ -343,3 +350,103 @@ def test_disk_fallback_keeps_a_short_original(
         client, separate_bgm="true",
         files={"file": ("a.mkv", mkv, "video/x-matroska")})
     assert len(separate_calls) == 1 and separate_calls[0].endswith(".mkv")
+
+
+def _mat5(samples: int) -> bytes:
+    """A MATLAB 5 file as libsndfile writes it: `samples` u8 frames, mono,
+    at 1 Hz. libsndfile (the separator's decoder) reads it whole, but PyAV
+    cannot open it, so nothing on the route has measured it."""
+    import struct
+
+    def matrix(name, dims, data, pad=0):
+        nm = name.encode()
+        body = (struct.pack("<4I", 6, 8, 6, 0)
+                + struct.pack("<2I2i", 5, 8, *dims)
+                + struct.pack("<2I", 1, len(nm))
+                + nm.ljust(16 if len(nm) > 8 else 8, b"\0")
+                + data)
+        return struct.pack("<2I", 14, len(body) + pad) + body
+    rate = matrix("samplerate", (1, 1), struct.pack("<HHI", 4, 2, 1))
+    # libsndfile counts the data matrix's tag 8 bytes long and expects that.
+    wave = matrix("wavedata", (1, samples),
+                  struct.pack("<2I", 2, samples)
+                  + (b"\x80" * samples).ljust(-(-samples // 8) * 8, b"\0"),
+                  pad=8)
+    return b"MATLAB 5.0 MAT-file\0".ljust(124, b" ") + b"\x00\x01IM" + rate + wave
+
+
+@pytest.mark.parametrize("name", ["a.wav", "a.mat"])
+def test_a_body_pyav_cannot_open_never_reaches_the_separator(
+        client, monkeypatch, fake_model, separate_calls, name):
+    """2 KB of MAT5 at 1 Hz costs the separator's 44.1 kHz load about a
+    gigabyte: a file PyAV cannot open is not measured, so it is skipped
+    whatever its name says."""
+    body_bytes = _mat5(2000)
+    with pytest.raises(av.FFmpegError):
+        av.open(io.BytesIO(body_bytes)).close()
+    _available_ram(monkeypatch, available=64_000_000_000)
+    _disk_usage_reporting(monkeypatch, free=5_000_000_000)
+    body = _post_ok(client, separate_bgm="true",
+                    files={"file": (name, body_bytes, "audio/wav")})
+    assert separate_calls == []
+    assert any("could not be prepared" in w for w in body["warnings"])
+
+
+def _mp3_in_wav(path, seconds=10.0, rate=8000) -> bytes:
+    """A `seconds`-long MP3 stream in a WAV container whose fmt byte rate
+    and fact sample count are forged so the header declares about 1 ms."""
+    import struct
+    with av.open(str(path), "w", format="wav") as out:
+        st = out.add_stream("libmp3lame", rate=rate)
+        st.layout = "mono"
+        t = np.arange(int(seconds * rate)) / rate
+        pcm = (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16)
+        for n in range(0, len(pcm), 1152):
+            fr = av.AudioFrame.from_ndarray(pcm[None, n:n + 1152],
+                                            format="s16", layout="mono")
+            fr.sample_rate, fr.pts = rate, n
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    b = bytearray(path.read_bytes())
+    i = b.index(b"fmt ")
+    b[i + 16:i + 20] = struct.pack("<I", 10_000_000)
+    j = b.index(b"fact")
+    b[j + 8:j + 12] = struct.pack("<I", 100)
+    return bytes(b)
+
+
+def test_a_compressed_wav_is_measured_by_the_transcode_not_its_header(
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
+    """Only a PCM WAV's header is a true size: an MP3 inside a WAV whose
+    byte rate lies declares 1 ms for 10 s of audio, past a 2 s cap."""
+    wav = _mp3_in_wav(tmp_path / "src.wav")
+    (tmp_path / "lie.wav").write_bytes(wav)
+    with av.open(str(tmp_path / "lie.wav")) as c:
+        assert c.duration / 1_000_000 < 1
+    _available_ram(monkeypatch, available=4 * 2 * _S16_BYTES_PER_S)
+    _disk_usage_reporting(monkeypatch, free=5_000_000_000)
+    body = _post_ok(client, separate_bgm="true",
+                    files={"file": ("a.wav", wav, "audio/wav")})
+    assert separate_calls == []
+    assert _skipped(body)
+
+
+def test_a_pcm_wav_keeps_the_direct_separator_path(
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
+    import wave
+    with wave.open(str(tmp_path / "src.wav"), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(b"\0\0" * 2 * 44100)
+    _available_ram(monkeypatch, available=64_000_000_000)
+    _disk_usage_reporting(monkeypatch, free=5_000_000_000)
+    calls = _record_budget(monkeypatch)
+    assert "warnings" not in _post_ok(
+        client, separate_bgm="true",
+        files={"file": ("a.wav", (tmp_path / "src.wav").read_bytes(),
+                        "audio/wav")})
+    assert calls == []
+    assert len(separate_calls) == 1 and separate_calls[0].endswith(".wav")

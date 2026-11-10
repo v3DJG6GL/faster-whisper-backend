@@ -89,6 +89,22 @@ def declared_shape(src_path: str) -> "tuple[float | None, int | None, int | None
         container.close()
 
 
+def is_pcm_wav_or_flac(src_path: str) -> bool:
+    """Whether `src_path` IS a PCM WAV or a FLAC — container and codec as the
+    demuxer reads the bytes, whatever the file is named. Only for those does
+    declared_shape's duration bound what a decoder reads: an MP3 or ADPCM
+    stream inside a WAV is timed from a byte rate the uploader wrote. Raises
+    what _open_audio raises."""
+    container, stream = _open_audio(src_path)
+    try:
+        fmt = getattr(container.format, "name", None) or ""
+        codec = getattr(stream.codec_context, "name", None) or ""
+        return ((fmt == "wav" and codec.startswith("pcm_"))
+                or (fmt == "flac" and codec == "flac"))
+    finally:
+        container.close()
+
+
 def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
     """Whether `src_path`, decoded to its end, costs at most `max_cost`: each
     frame is charged its duration times cost_per_s(rate, channels) at its own
