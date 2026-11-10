@@ -114,6 +114,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_ts);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, created_ts);
+-- Revoked rows stay until the hourly purge; the per-user cap's eviction
+-- scan walks this partial index so its cost tracks live rows only.
+CREATE INDEX IF NOT EXISTS idx_sessions_user_live ON sessions(user_id, created_ts)
+  WHERE revoked_ts IS NULL;
 CREATE TABLE IF NOT EXISTS meta (
   k  TEXT PRIMARY KEY,
   v  INTEGER NOT NULL

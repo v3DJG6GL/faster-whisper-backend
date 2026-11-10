@@ -772,3 +772,19 @@ def test_sibling_revoke_still_seen_after_a_failed_rebuild(ak, root_uid, monkeypa
         ak.lookup_by_raw_key(raw)
     monkeypatch.undo()
     assert ak.lookup_by_raw_key(raw) is None
+
+
+def test_own_revoke_still_seen_after_a_failed_rebuild(ak, uid, monkeypatch):
+    """PRAGMA data_version does not move for this connection's own commit,
+    so a rebuild that fails right after revoke_key must still force the next
+    lookup to rebuild instead of authenticating the revoked key from the
+    stale index."""
+    raw, rec = ak.create_key(uid)
+    assert ak.lookup_by_raw_key(raw) is not None
+
+    monkeypatch.setattr(ak, "_require_conn",
+                        failing_rebuild_conn(ak, "SELECT k.key_hash"))
+    with pytest.raises(sqlite3.OperationalError):
+        ak.revoke_key(rec["id"])
+    monkeypatch.undo()
+    assert ak.lookup_by_raw_key(raw) is None

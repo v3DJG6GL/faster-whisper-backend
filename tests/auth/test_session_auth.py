@@ -833,3 +833,17 @@ def test_session_cap_does_not_count_revoked_or_expired(tmp_path, monkeypatch):
     assert w._require_conn().execute(
         "SELECT v FROM meta WHERE k = 'revocations'").fetchone()[0] == gen0
     assert settings_version._CONFIG_VERSION == v0
+
+
+def test_session_cap_eviction_scan_uses_the_live_index(tmp_path):
+    """Revoked rows stay until the hourly purge, so a valid-key login loop
+    piles them up under one user_id; the cap's eviction SELECT must walk
+    only live rows (the partial index), not every revoked row of the hour."""
+    w = _worker("sessions_store_cap_plan", str(tmp_path / "sessions.db"))
+    plan = w._require_conn().execute(
+        "EXPLAIN QUERY PLAN SELECT token_hash FROM sessions WHERE user_id = ?"
+        " AND revoked_ts IS NULL AND expires_ts > ? AND created_ts > ?"
+        " ORDER BY created_ts DESC, rowid DESC LIMIT -1 OFFSET ?",
+        ("u", 0.0, 0.0, 200)).fetchall()
+    assert any("idx_sessions_user_live" in r["detail"] for r in plan), [
+        tuple(r) for r in plan]

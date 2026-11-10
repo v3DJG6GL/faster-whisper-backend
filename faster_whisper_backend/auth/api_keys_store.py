@@ -326,12 +326,20 @@ def _rebuild_index_locked() -> None:
     # Recorded only once the SELECT succeeded: a failed read must leave the
     # sibling commit unseen so the next lookup retries the rebuild.
     version = _data_version_locked()
-    rows = conn.execute(
-        "SELECT k.key_hash, k.id AS key_id, k.label, u.id AS user_id, u.username,"
-        " u.is_admin, u.permissions"
-        " FROM api_keys k JOIN users u ON u.id = k.user_id"
-        " WHERE k.revoked_ts IS NULL AND u.revoked_ts IS NULL"
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT k.key_hash, k.id AS key_id, k.label, u.id AS user_id, u.username,"
+            " u.is_admin, u.permissions"
+            " FROM api_keys k JOIN users u ON u.id = k.user_id"
+            " WHERE k.revoked_ts IS NULL AND u.revoked_ts IS NULL"
+        ).fetchall()
+    except BaseException:
+        # data_version does not move for this connection's own commit, so
+        # after a failed rebuild following a local revoke the version alone
+        # would never trigger a retry. -2 never equals a real data_version
+        # (and -1 is the pre-init value), so the next lookup rebuilds.
+        _DATA_VERSION = -2
+        raise
     _DATA_VERSION = version
     idx: dict[str, dict[str, Any]] = {}
     for r in rows:
