@@ -541,6 +541,17 @@ def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
                                        "2\n00:00:03,40 --> 00:00:03,40\nInverted\n")
 
 
+def test_write_srts_maps_an_unconvertible_hour_field_to_a_parse_error(tmp_path):
+    """The hour field is an unbounded digit run (ffmpeg's %d): one past
+    int()'s digit limit is the caller's malformed track (422), not a 500."""
+    ok = pk.SubtitleTrack("en", "English", "1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+    bad = pk.SubtitleTrack("de", "x", "1\n" + "9" * 5000
+                           + ":00:00,000 --> 00:00:01,000\nhi\n")
+    with pytest.raises(pk.SubtitleParseError, match="subtitle track 2 could not be parsed"):
+        pk._write_srts(str(tmp_path), [ok, bad])
+    assert not os.path.exists(tmp_path / "sub_1.srt")
+
+
 @pytest.mark.parametrize("timing, clamped", [
     ("00:00:10, 000 --> 00:00:05,000", "00:00:10, 000 --> 00:00:10, 000"),
     ("00:00:10,000 --> 00: 00:05,000", "00:00:10,000 --> 00:00:10,000"),

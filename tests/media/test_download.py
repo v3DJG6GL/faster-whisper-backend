@@ -1394,6 +1394,26 @@ def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
     assert seen["thread"].startswith("url-probe")
 
 
+@pytest.mark.parametrize("ctype,ok", [
+    ('image/png"onerror=alert(1)', False),
+    ("image/x,<b>", False),
+    ("image/svg+xml", False),
+    ("image/", False),
+    ("image/webp", True),
+    ("image/x-icon", True),
+    ("image/vnd.microsoft.icon", True),
+])
+def test_thumbnail_accepts_only_a_plain_image_media_type(monkeypatch, ctype, ok):
+    """The Content-Type lands verbatim in the data: URI: anything but a bare
+    image/<subtype> token (quotes, commas, markup) soft-fails to None."""
+    _patch_opener(monkeypatch, lambda: _fake_resp(b"x", ctype))
+    out = _run(udl.fetch_thumbnail_data_uri("https://example.com/t", timeout=1.0))
+    if ok:
+        assert out == f"data:{ctype};base64,eA=="
+    else:
+        assert out is None
+
+
 def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt",
                  length: "int | None" = None):
     """Swap the guarded opener for one that serves `_fake_resp(...)`."""

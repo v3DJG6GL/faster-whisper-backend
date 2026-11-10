@@ -222,6 +222,26 @@ def test_streams_reports_the_probe_and_caches_it(client, package_enabled):
     assert client.get("/v1/audio/media/NOPE/streams").status_code == 422
 
 
+def test_streams_probe_failure_logs_neither_the_id_nor_the_path(
+        client, package_enabled, monkeypatch, caplog):
+    """PyAV's error text names the file (its absolute path holds the media
+    id): the log line carries the extension and the exception class only."""
+    class InvalidDataError(OSError):
+        pass
+
+    def _boom(path):
+        raise InvalidDataError(1094995529, "Invalid data found when processing input", path)
+    monkeypatch.setattr(pk, "probe_streams", _boom)
+    mid = _upload(client, data=b"not a video", ext="mp4").json()["media_id"]
+    with caplog.at_level("INFO"):
+        r = client.get(f"/v1/audio/media/{mid}/streams")
+    assert _ok_body(r)["unreadable"] is True
+    (line,) = [rec.getMessage() for rec in caplog.records
+               if "stream probe failed" in rec.getMessage()]
+    assert mid not in line and os.sep not in line, line
+    assert "InvalidDataError" in line and "mp4" in line, line
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
 def test_ffconcat_upload_naming_a_retained_video_is_unreadable(
         client, package_enabled, monkeypatch, tmp_path):
@@ -530,6 +550,63 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
         package_enabled._package_latch["path"] = None
     assert result["r"].status_code == 200
     assert _package(client, mid, {"container": "mkv"}).status_code == 200
+
+
+def test_package_slot_held_until_response_closes(client, package_enabled, make_user_key):
+    """The muxed copy in TMPDIR lives until the body is sent, so the
+    identity's export slot does too: a client that stalls the download
+    cannot start export after export, each pinning another full copy."""
+    import asyncio
+    import json as _json
+
+    from starlette.requests import Request
+
+    uid, key = make_user_key("alice", is_admin=True)
+    mid = _upload(client, headers=bearer(key)).json()["media_id"]
+    counts = media_routes._media_package_inflight._counts
+    raw = _json.dumps({"container": "mkv", "subtitles": _tracks()}).encode()
+    scope = {"type": "http", "method": "POST", "path": f"/v1/audio/media/{mid}/package",
+             "headers": [(b"content-type", b"application/json")],
+             "query_string": b"", "client": ("203.0.113.9", 1234)}
+
+    sent_body = []
+
+    async def _receive():
+        # The body once, then block like a quiet client: Starlette's
+        # disconnect listener loops on receive() and must be cancellable.
+        if not sent_body:
+            sent_body.append(1)
+            return {"type": "http.request", "body": raw, "more_body": False}
+        await asyncio.Event().wait()
+
+    async def _send(message):
+        if message["type"] == "http.response.body":
+            raise OSError("client went away")
+
+    async def go():
+        resp = await media_routes.package_media(mid, Request(scope, _receive),
+                                                user={"user_id": uid})
+        assert counts.get(uid) == 1
+        assert os.path.isdir(resp._workdir)
+        with pytest.raises(OSError):
+            await resp(scope, _receive, _send)
+        return resp
+    resp = asyncio.run(go())
+    assert counts.get(uid, 0) == 0
+    assert not os.path.isdir(resp._workdir)
+    # Released: the next export by the same identity goes through.
+    assert _package(client, mid, {"container": "mkv"}, headers=bearer(key)).status_code == 200
+    assert counts.get(uid, 0) == 0
+
+
+def test_package_failure_releases_the_slot(client, package_enabled, make_user_key):
+    uid, key = make_user_key("alice", is_admin=True)
+    mid = _upload(client, headers=bearer(key)).json()["media_id"]
+    bad = [{"lang": "de", "srt": "1\n" + "9" * 5000 + ":00:00,000 --> 00:00:01,000\nhi\n"}]
+    r = _package(client, mid, {"container": "mkv", "subtitles": bad}, headers=bearer(key))
+    assert r.status_code == 422 and "subtitle track 1 could not be parsed" in r.text
+    assert media_routes._media_package_inflight._counts.get(uid, 0) == 0
+    assert _package(client, mid, {"container": "mkv"}, headers=bearer(key)).status_code == 200
 
 
 def test_package_refuses_a_container_bomb_before_parsing(client, package_enabled, monkeypatch):

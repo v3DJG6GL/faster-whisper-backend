@@ -316,8 +316,14 @@ def _write_srts(workdir: str, tracks: "list[SubtitleTrack]") -> "list[str]":
     for i, t in enumerate(tracks):
         p = os.path.join(workdir, f"sub_{i}.srt")
         text = t.srt.replace("\r\n", "\n").replace("\r", "\n")
+        try:
+            body = _clamp_inverted_last_cue(text)
+        except ValueError:
+            # int() refuses an hour field past its digit limit — no real
+            # cue has one, so the track is malformed (422), not a 500.
+            raise SubtitleParseError(f"subtitle track {i + 1} could not be parsed") from None
         with open(p, "w", encoding="utf-8", newline="\n") as f:
-            f.write(_clamp_inverted_last_cue(text))
+            f.write(body)
         srt_paths.append(p)
     return srt_paths
 

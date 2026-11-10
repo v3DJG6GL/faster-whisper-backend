@@ -1411,6 +1411,12 @@ async def capped_get(url: str, *, max_bytes: int, deadline: float,
             headers=headers, want_url=want_url)), timeout + 2.0)
 
 
+# The thumbnail's Content-Type is copied into the data: URI: only a bare
+# image/<subtype> token, so a header carrying quotes, commas or markup
+# cannot reshape the URI or whatever attribute it ends up in.
+_IMAGE_CTYPE_RE = re.compile(r"image/[a-z0-9][a-z0-9.+-]{0,63}")
+
+
 async def fetch_thumbnail_data_uri(
     url: "str | None", *, max_bytes: int = 512_000, timeout: float = 5.0,
 ) -> "str | None":
@@ -1423,7 +1429,7 @@ async def fetch_thumbnail_data_uri(
     try:
         ctype, body = await capped_get(
             url, max_bytes=max_bytes, deadline=time.monotonic() + timeout,
-            accept=lambda c: c.startswith("image/") and "svg" not in c)
+            accept=lambda c: bool(_IMAGE_CTYPE_RE.fullmatch(c)) and "svg" not in c)
     except Exception:  # noqa: BLE001 — soft-fail by contract
         return None
     if not body:

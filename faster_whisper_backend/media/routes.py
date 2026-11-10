@@ -16,6 +16,7 @@ import tempfile
 import time
 import unicodedata
 import uuid
+from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -607,8 +608,9 @@ def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
     except ImportError:
         return None
     except Exception as e:  # noqa: BLE001 — a hostile file must not 500 the route
-        logger.info("[package] stream probe failed for %s: %s", media_id,
-                    _log_safe(str(e)))
+        # PyAV's text names the path, which holds the media id.
+        logger.info("[package] stream probe failed (%s): %s",
+                    _log_safe(str(entry.get("ext") or "?")), _log_safe(type(e).__name__))
         facts = _pk.unreadable_streams().as_dict()
     url_media_store.probe_cache_set(media_id, facts)
     return facts
@@ -747,17 +749,26 @@ class _PackageResponse(FileResponse):
     send: its Range branches (400 malformed, 416 unsatisfiable — honoured on
     POST too before Starlette 1.10) return before it, and a client disconnect mid-stream raises
     past it, either way leaving a full copy of the video in TMPDIR until the
-    next restart's sweep."""
+    next restart's sweep. `on_close` runs once after that removal: the
+    identity's export slot covers the copy's whole life, download included,
+    so a stalled download cannot let export after export pin another copy."""
 
-    def __init__(self, *args, workdir: str, **kwargs):
+    def __init__(self, *args, workdir: str,
+                 on_close: "Callable[[], None] | None" = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._workdir = workdir
+        self._on_close = on_close
 
     async def __call__(self, scope, receive, send):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await asyncio.shield(asyncio.to_thread(shutil.rmtree, self._workdir, True))
+            try:
+                await asyncio.shield(asyncio.to_thread(shutil.rmtree, self._workdir, True))
+            finally:
+                if self._on_close is not None:
+                    cb, self._on_close = self._on_close, None
+                    cb()
 
 
 @router.post("/v1/audio/media/{media_id}/package")
@@ -861,6 +872,7 @@ async def package_media(media_id: str, request: Request,
         raise HTTPException(status_code=507,
                             detail="not enough temporary disk space on the server")
     _took_slot = _media_package_inflight.acquire(_key)
+    handed_off = False
     try:
         out = await _pk.package(
             entry["path"], tracks, container=container,
@@ -870,6 +882,18 @@ async def package_media(media_id: str, request: Request,
             # The real video can sit behind a cover-art stream.
             video_index=int(facts.get("video_index") or 0),
             video_codec=facts.get("video_codec"))
+        # Starlette always awaits the returned response, so its close hook
+        # releases the slot however the body send ends.
+        resp = _PackageResponse(
+            path=out,
+            media_type=_VIDEO_MIME[container],
+            filename=f"{stem}.{container}",
+            headers={"Cache-Control": "no-store"},
+            workdir=os.path.dirname(out),
+            on_close=(lambda: _media_package_inflight.release(_key)) if _took_slot else None,
+        )
+        handed_off = True
+        return resp
     except _pk.SubtitleParseError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except _pk.PackageTimeout as e:
@@ -877,12 +901,5 @@ async def package_media(media_id: str, request: Request,
     except _pk.PackageError as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if _took_slot:
+        if _took_slot and not handed_off:
             _media_package_inflight.release(_key)
-    return _PackageResponse(
-        path=out,
-        media_type=_VIDEO_MIME[container],
-        filename=f"{stem}.{container}",
-        headers={"Cache-Control": "no-store"},
-        workdir=os.path.dirname(out),
-    )
