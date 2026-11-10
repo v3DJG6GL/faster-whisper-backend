@@ -333,8 +333,25 @@ class GuardedUrllibRH(_urllib.UrllibRH):
         return opener
 
     def _send(self, request):
+        self._refuse_foreign_proxy(request)
         _check_url(request.url)  # hop 0 — redirects are gated above
         return super()._send(request)
+
+    def _refuse_foreign_proxy(self, request):
+        """Only the operator's proxies (self.proxies: 'proxy' param / env)
+        may carry a request. The proxy hop skips the address policy, and a
+        per-request proxy can come from page data: YoutubeDL.urlopen turns a
+        `Ytdl-Request-Proxy` header into request.proxies (clean_proxies), and
+        MediasiteCatalog copies a header name AND value off the fetched page.
+        A per-request map that names the operator's own proxy again (yt-dlp's
+        PO-token helper does) or none at all (`None` = dial direct, which the
+        address policy gates) trusts nothing new and passes."""
+        operator = {url for key, url in self.proxies.items() if key != "no"}
+        for key, url in (request.proxies or {}).items():
+            if key != "no" and url is not None and url not in operator:
+                raise RequestError(
+                    f"{MARKER}: a per-request proxy would bypass the address "
+                    "policy")
 
 
 # Sentinel on the replacement function, not on this module's own object: the

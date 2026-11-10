@@ -731,3 +731,103 @@ def test_pinned_handlers_stamp_via_proxy_from_the_request(monkeypatch):
     assert built["conn"].via_proxy is False
     handler.http_open(proxied)
     assert built["conn"].via_proxy is True
+
+
+# A public IP literal: no DNS, and every test below either refuses before a
+# socket opens or reaches it only through the loopback proxy listener.
+_PUBLIC_LITERAL = "93.184.216.34"
+
+
+class _ProxyListener(_QuietHandler):
+    """Stands in for a LAN service an extractor names as a 'proxy'. Every
+    request it receives through a page-chosen proxy is a guard failure."""
+
+    hits: "list[str]" = []
+    body = b'{"PresentationDetailsList": [], "CurrentFolder": {"Name": "x"}}'
+
+    def do_GET(self):
+        type(self).hits.append(f"{self.command} {self.path}")
+        self._ok_headers("application/json", len(self.body))
+        self.wfile.write(self.body)
+
+    do_POST = do_GET
+
+
+@pytest.fixture
+def proxy_listener(monkeypatch):
+    """A 127.0.0.1 listener with a clean hit log; no proxy from the env."""
+    for var in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(var.upper(), raising=False)
+    srv = _serve(_ProxyListener, "127.0.0.1")
+    _ProxyListener.hits = []
+    with _stopping(srv):
+        yield f"http://127.0.0.1:{srv.server_port}"
+
+
+def test_guard_refuses_a_per_request_proxy_header(proxy_listener):
+    """Ytdl-Request-Proxy becomes request.proxies, and the proxy hop is
+    trusted — so a header must not be able to name the proxy."""
+    from yt_dlp.networking.common import Request
+    guard = _inproc_guard()
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        with pytest.raises(RequestError, match=guard.MARKER):
+            ydl.urlopen(Request(f"http://{_PUBLIC_LITERAL}/x",
+                                headers={"Ytdl-Request-Proxy": proxy_listener}))
+    assert _ProxyListener.hits == []
+
+
+def test_guard_refuses_mediasite_catalog_header_injection(proxy_listener,
+                                                          monkeypatch):
+    """MediasiteCatalog copies a header NAME and VALUE from the page onto its
+    JSON POST; a page naming Ytdl-Request-Proxy must not reach the LAN."""
+    from yt_dlp.extractor.mediasite import MediasiteCatalogIE
+    guard = _inproc_guard()
+    page = (f'AntiForgeryToken: "{proxy_listener}", '
+            'AntiForgeryHeaderName: "Ytdl-Request-Proxy"')
+    monkeypatch.setattr(MediasiteCatalogIE, "_download_webpage",
+                        lambda self, *a, **kw: page)
+    url = (f"http://{_PUBLIC_LITERAL}/Mediasite/Catalog/Full/"
+           "631f9e48530d454381549f955d08c75e21")
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+        # A bare RequestError, like every other guard refusal: extractors
+        # only rewrap HTTPError / TransportError.
+        with pytest.raises(RequestError, match=guard.MARKER):
+            ydl.extract_info(url, download=False, ie_key="MediasiteCatalog",
+                             process=False)
+    assert _ProxyListener.hits == []
+
+
+def test_guard_still_uses_the_operators_proxy(proxy_listener):
+    """The operator's proxy ('proxy' param / http(s)_proxy env) is the RH's
+    own and is dialled even on a private address — also when a request names
+    it again per request (yt-dlp's PO-token helper does exactly that)."""
+    from yt_dlp.networking.common import Request
+    _inproc_guard()
+    target = f"http://{_PUBLIC_LITERAL}/x"
+    with yt_dlp.YoutubeDL({"quiet": True, "proxy": proxy_listener}) as ydl:
+        assert ydl.urlopen(Request(target)).status == 200
+        assert ydl.urlopen(Request(target, proxies={"all": proxy_listener})
+                           ).status == 200
+    assert _ProxyListener.hits == [f"GET {target}"] * 2
+
+
+def test_guard_still_uses_the_proxy_from_the_env(proxy_listener, monkeypatch):
+    from yt_dlp.networking.common import Request
+    _inproc_guard()
+    monkeypatch.setenv("http_proxy", proxy_listener)
+    target = f"http://{_PUBLIC_LITERAL}/x"
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        assert ydl.urlopen(Request(target)).status == 200
+    assert _ProxyListener.hits == [f"GET {target}"]
+
+
+def test_a_per_request_no_proxy_is_still_gated_as_a_direct_dial(proxy_listener):
+    """{'all': None} names no proxy: nothing to trust, so it is not refused as
+    an override — the direct dial meets the address policy instead."""
+    from yt_dlp.networking.common import Request
+    _inproc_guard()
+    with yt_dlp.YoutubeDL({"quiet": True, "proxy": proxy_listener}) as ydl:
+        with pytest.raises(RequestError, match="forbidden address"):
+            ydl.urlopen(Request(f"{proxy_listener}/x", proxies={"all": None}))
+    assert _ProxyListener.hits == []
