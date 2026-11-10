@@ -298,3 +298,22 @@ def test_fold_fallback_cost_is_bounded_by_the_alphabet_not_the_key_count(monkeyp
     out = pattern.sub(replace, "Das ist sein Haus. " * 20)
     assert out.count("SEIN") == 20
     assert len(calls) <= 100
+
+
+def test_fold_memo_survives_a_clear_between_check_and_read():
+    # The compiled map (and its fold memo) is shared by every thread that runs
+    # the pipeline, and a full memo is cleared. A clear landing between a
+    # membership check and the read raised KeyError inside the sub; the memo
+    # is read with one lookup, so a clear only costs a recomputation.
+    pattern, replace, _lookup = dictation_map.compile_map({"ſein": "SEIN"})
+
+    class ClearedAfterCheck(dict):
+        def __contains__(self, key):
+            hit = dict.__contains__(self, key)
+            self.clear()
+            return hit
+
+    cell = next(c for c in replace.__closure__
+                if isinstance(c.cell_contents, dict) and not c.cell_contents)
+    cell.cell_contents = ClearedAfterCheck()
+    assert pattern.sub(replace, "sein sein") == "SEIN SEIN"

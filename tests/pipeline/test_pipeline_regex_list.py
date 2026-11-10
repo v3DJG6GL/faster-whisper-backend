@@ -88,3 +88,71 @@ def test_flag_conflict_and_deep_nesting_skip_the_entry_not_the_rebuild(app_modul
         _set(app_module, {"name": "dd", "label": "DD", "type": "callback:dedup",
                           "enabled": True, "pattern": bad})
         assert pl_engine._postprocess_text("bar", model_name="") == "bar"
+
+
+def test_postprocess_output_bound_holds_during_the_sub(app_module, monkeypatch):
+    # The bound used to be checked only after a rule's sub, so the entry that
+    # crossed it built its whole result first: one 60x entry on a text just
+    # under 4 M chars allocated 240 M. The entry that would pass the bound is
+    # now not applied at all and the text from before it is kept.
+    dots = {"pattern": r"\.", "replacement": "." * 60}
+    _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
+                      "entries": [dots] * 3})
+    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 10_000)
+    trace: list = []
+    out = pl_engine._postprocess_text("Satz. Satz.", model_name="", trace=trace)
+    assert out == "Satz" + "." * 3600 + " Satz" + "." * 3600
+    assert any("OUTPUT BOUND" in step[0] for step in trace)
+
+
+def test_postprocess_output_bound_holds_during_a_map_sub(app_module, monkeypatch):
+    # Same for a callback:map rule: a 1-char key may carry a 64-char value.
+    from faster_whisper_backend.pipeline import dictation_map
+
+    value = " ".join(["a"] * 32)
+    rules = [{"name": f"m{i}", "label": f"M{i}", "type": "callback:map",
+              "enabled": True, "map": {"a": value}} for i in range(2)]
+    app_module.cfg.PIPELINE_RULES = [*rules, _term()]
+    pl_engine.rebuild_caches()
+    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 10_000)
+    text = "a " * 20
+    cre, replacer, _lookup = dictation_map.compile_map({"a": value})
+    once = cre.sub(replacer, text)
+    assert len(once) <= 10_000 < len(cre.sub(replacer, once))
+    out = pl_engine._postprocess_text(text, model_name="")
+    assert out == once.strip(" \t\r")
+
+
+def test_postprocess_output_bound_counts_a_lookbehind_capture(app_module, monkeypatch):
+    # A group captured in a lookbehind lies outside the zero-width match, so
+    # it copies characters the match never consumed: the growth estimate
+    # that lets a small text skip the exact count must not apply to it.
+    _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
+                      "entries": [{"pattern": r"(?<=(.{5}))", "replacement": "\\1" * 10}]})
+    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 10_000)
+    text = "x" * 900
+    assert pl_engine._postprocess_text(text, model_name="") == text
+
+
+_SAMPLE = ("hallo welt Komma das ist ein Test Punkt und noch ein satz Fragezeichen "
+           "neue Zeile die Zahl 2 Komma 5 und 1000 Euro, ja, , doch Punkt Punkt "
+           "Ausrufezeichen ende")
+
+
+def test_postprocess_below_bound_is_byte_identical(app_module, monkeypatch):
+    # The shipped rule set plus an expanding entry: the result is the same
+    # whether the bound is far off (cheap path) or just above the largest
+    # intermediate text (every rule takes the exact count first).
+    extra = {"name": "grow", "label": "Grow", "type": "regex-list", "enabled": True,
+             "entries": [{"pattern": r"(\w)(\w*)", "replacement": "\\g<0>\\1\\2"},
+                         {"pattern": r"(?<=(..))!", "replacement": "!\\1"}]}
+    app_module.cfg.PIPELINE_RULES = [extra, *app_module.cfg.PIPELINE_RULES]
+    pl_engine.rebuild_caches()
+    sample = _SAMPLE * 40
+    trace: list = []
+    ref = pl_engine._postprocess_text(sample, model_name="", trace=trace)
+    assert ref != sample
+    biggest = max(max(len(b), len(a)) for _label, b, a in trace)
+    for bound in (10_000_000, biggest):
+        monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", bound)
+        assert pl_engine._postprocess_text(sample, model_name="") == ref

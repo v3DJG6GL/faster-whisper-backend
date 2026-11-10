@@ -1238,10 +1238,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                 bad, rank = str(e), 1
                             continue
                         # As in the engine, each entry is its own row and the
-                        # walk stops at the output bound. Unlike the engine,
-                        # which keeps the oversized text, the step shows the
-                        # text from before the entry that would pass it: that
-                        # text is never built.
+                        # walk stops at the output bound: the step shows the
+                        # text from before the entry that would pass it, which
+                        # is never built.
                         if size > pl_engine._POSTPROCESS_MAX_CHARS:
                             lout["capped"] = True
                             break

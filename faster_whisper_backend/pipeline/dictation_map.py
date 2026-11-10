@@ -186,6 +186,8 @@ def _sre_char_eq(a: str, b: str) -> bool:
 
 # Matched strings whose sre-fold lookup the replacer remembers (per map).
 _FOLD_MEMO_MAX = 1024
+# fold_memo.get default: a memoised None means "no key", not "not memoised".
+_MISS = object()
 
 
 def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"], str], dict[str, str]]:
@@ -235,9 +237,10 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
             # (cached per char pair: a 10 000-key map must not compile one
             # full-key pattern per candidate on every miss). First match in
             # key order wins, as before; the result is memoised per string.
-            if key in fold_memo:
-                value = fold_memo[key]
-            else:
+            # One lookup, not a check then a read: other threads share this
+            # memo and may clear it in between.
+            value = fold_memo.get(key, _MISS)
+            if value is _MISS:
                 value = next((lookup[k.lower()] for k in keys_by_len.get(len(key), ())
                               if all(_sre_char_eq(a, b) for a, b in zip(k, key))), None)
                 if len(fold_memo) >= _FOLD_MEMO_MAX:

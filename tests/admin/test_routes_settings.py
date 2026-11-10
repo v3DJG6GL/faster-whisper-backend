@@ -475,10 +475,10 @@ def test_test_pipeline_dry_run(client):
 
 
 def test_test_pipeline_stops_at_the_engine_output_bound(client):
-    # pl_engine._postprocess_text stops the rule walk once the text passes
-    # _POSTPROCESS_MAX_CHARS (keeping that rule's output). The dry run stops
-    # one sub earlier: the rule that would pass the bound keeps the text it
-    # was handed, so nothing the dry run builds ever passes the bound.
+    # pl_engine._postprocess_text stops the rule walk at the rule whose
+    # output would pass _POSTPROCESS_MAX_CHARS, and that rule keeps the text
+    # it was handed. The dry run does the same, so nothing it builds ever
+    # passes the bound.
     bound = pl_engine._POSTPROCESS_MAX_CHARS
     dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
     rules = [list_rule([dbl], name=f"r{i}") for i in range(12)]

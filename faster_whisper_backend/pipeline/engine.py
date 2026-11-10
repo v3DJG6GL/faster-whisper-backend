@@ -71,6 +71,13 @@ class _CompiledRule:
     # hold-back builds its spec from it. Kept out of eq/hash: a dict is
     # unhashable and the replacer already carries the same data.
     map_lookup: "dict[str, str] | None" = _dc_field(default=None, compare=False)
+    # Upper bound on len(output) / (len(input) + 1) for one sub (see
+    # _template_growth), or None when there is none: then _apply_bounded counts
+    # the output exactly before building it.
+    max_growth: "int | None" = _dc_field(default=None, compare=False)
+    # regex-list only: the parsed replacement template, [literal, group,
+    # literal, ...] (re._parser.parse_template), for that exact count.
+    template: "list | None" = _dc_field(default=None, compare=False)
 
 
 _COMPILED_RULES: list[_CompiledRule] = []
@@ -88,9 +95,10 @@ _TERMINAL_LABEL: str = "Trim edges (always-last)"
 # trace step number matches the /settings/pipeline card ordinal. Falls back to
 # len(PIPELINE_RULES)+1 when the user deleted the terminal row.
 _TERMINAL_CARD_NO: int = 0
-# Ceiling on the pipeline's output, checked after every rule. A 30-minute
-# transcript is a few hundred KB, so 4 M chars only ever trips on a rule set
-# that expands its own input (the pipeline runs on admin-editable regexes).
+# Ceiling on the pipeline's output, enforced on every rule before its sub
+# builds the result (_apply_bounded). A 30-minute transcript is a few hundred
+# KB, so 4 M chars only ever trips on a rule set that expands its own input
+# (the pipeline runs on admin-editable regexes).
 _POSTPROCESS_MAX_CHARS = 4_000_000
 # Most passes a repeating rule gets per transcript (see the schema constant).
 _REPEAT_MAX_PASSES = settings_schema.RULE_REPEAT_MAX_PASSES
@@ -228,13 +236,16 @@ def _rebuild_caches_locked() -> None:
                     logger.warning("[pipeline] rule %r entry has invalid regex "
                                    "(%s) — skipping entry", rname, e)
                     continue
+                erepl = entry.get("replacement", "") or ""
+                template, growth = _template_growth(ecre, erepl)
                 # sub_no is the entry's row in the card editor (the enumerate index
                 # advances across skipped empty/bad entries above), so the trace
                 # number `#card_no.sub_no` lines up with what the admin sees.
                 compiled.append(_CompiledRule(
                     rname, f"{rlabel} · {entry.get('label') or epat}",
-                    "regex-list", ecre, entry.get("replacement", "") or "",
-                    rule_enabled, card_no, sub_no, rule_langs, rule_repeat))
+                    "regex-list", ecre, erepl,
+                    rule_enabled, card_no, sub_no, rule_langs, rule_repeat,
+                    max_growth=growth, template=template))
             continue
 
         map_lookup = None
@@ -272,7 +283,8 @@ def _rebuild_caches_locked() -> None:
                                        rule.get("label", rule.get("name", "?")),
                                        rtype, cre, payload, rule_enabled, card_no,
                                        languages=rule_langs, repeat=rule_repeat,
-                                       map_lookup=map_lookup))
+                                       map_lookup=map_lookup,
+                                       max_growth=_callback_growth(rtype, map_lookup)))
     _COMPILED_RULES = compiled
     _TERMINAL_NAME = terminal_name
     _TERMINAL_LABEL = terminal_label
@@ -291,6 +303,110 @@ def _apply_rule(rule: _CompiledRule, text: str) -> str:
     every callback:* type), so every type is one pattern.sub call with no
     per-request closure allocation."""
     return rule.pattern.sub(rule.payload, text)  # type: ignore[arg-type]
+
+
+def _captures_in_lookaround(pattern: "re.Pattern[str]") -> bool:
+    """Whether a group of `pattern` sits inside a lookahead or lookbehind,
+    where it can capture text outside the match. Parse-only."""
+    try:
+        parsed = re._parser.parse(pattern.pattern, pattern.flags)
+    except Exception:  # noqa: BLE001 - it compiled, but assume the worst
+        return True
+    sub_t = re._parser.SubPattern
+
+    def walk(x, inside: bool) -> bool:
+        if isinstance(x, sub_t):
+            for op, av in x:
+                name = str(op)
+                if name == "SUBPATTERN" and inside and av[0] is not None:
+                    return True
+                if walk(av, inside or name in ("ASSERT", "ASSERT_NOT")):
+                    return True
+        elif isinstance(x, (list, tuple)):
+            return any(walk(y, inside) for y in x)
+        return False
+
+    return walk(parsed, False)
+
+
+def _template_growth(pattern: "re.Pattern[str]", repl: str) -> "tuple[list | None, int | None]":
+    """(parsed template, growth bound) for a regex-list entry.
+
+    A match of length L becomes `lit` literal characters plus the groups it
+    references, each at most L long when it lies inside the match, so a text
+    of n characters grows to at most n * (lit + refs) + (n + 1) * lit (the
+    second term: one empty match per position). No bound when a referenced
+    group can sit in a lookaround (it copies text the match never consumed),
+    and no template when the replacement does not parse: the sub raises the
+    same error the engine always raised for it."""
+    try:
+        tmpl = re._parser.parse_template(repl, pattern)
+    except Exception:  # noqa: BLE001 - _apply_rule reports it at the sub
+        return None, None
+    lit = sum(len(s) for s in tmpl[0::2])
+    refs = len(tmpl[1::2])
+    if refs and _captures_in_lookaround(pattern):
+        return tmpl, None
+    return tmpl, max(lit + refs, 1) + lit
+
+
+def _callback_growth(rtype: "str | None", map_lookup: "dict[str, str] | None") -> "int | None":
+    """Growth bound (see _template_growth) for a callback rule's replacer.
+    A map match is a non-empty key (plus a kept punctuation lead) and becomes
+    at most the lead and its value; str.upper / str.lower expand a character
+    to at most 3; dedup returns one mark per match, even for an empty one."""
+    if rtype == "callback:map":
+        try:
+            return max((len(v) for v in (map_lookup or {}).values()), default=0) + 2
+        except TypeError:  # a non-string value: count exactly
+            return None
+    if rtype in ("callback:upper", "callback:lowercase-wordlist", "callback:dedup"):
+        return 3
+    return None
+
+
+class _PastBound(Exception):
+    pass
+
+
+def _apply_bounded(rule: _CompiledRule, text: str) -> "str | None":
+    """_apply_rule, or None when its output would pass _POSTPROCESS_MAX_CHARS.
+
+    The bound is enforced before the result exists: one entry that expands
+    every match 60x turns a text just under the bound into hundreds of MB in
+    a single sub, so checking the length afterwards is too late. A text short
+    enough that even the rule's worst-case growth stays under the bound goes
+    straight to _apply_rule; otherwise the output length is counted match by
+    match first (a string template) or as the replacer runs (a callback)."""
+    bound = _POSTPROCESS_MAX_CHARS
+    growth = rule.max_growth
+    if growth is not None and (len(text) + 1) * growth <= bound:
+        return _apply_rule(rule, text)
+    size = len(text)
+    payload = rule.payload
+    if callable(payload):
+        def counted(m: "re.Match[str]") -> str:
+            nonlocal size
+            r = payload(m)
+            size += len(r) - (m.end() - m.start())
+            if size > bound:
+                raise _PastBound
+            return r
+
+        try:
+            return rule.pattern.sub(counted, text)
+        except _PastBound:
+            return None
+    tmpl = rule.template
+    if tmpl is None:
+        return _apply_rule(rule, text)
+    lit = sum(len(s) for s in tmpl[0::2])
+    groups = tmpl[1::2]
+    for m in rule.pattern.finditer(text):
+        size += lit - (m.end() - m.start()) + sum(m.end(g) - m.start(g) for g in groups)
+        if size > bound:
+            return None
+    return _apply_rule(rule, text)
 
 
 
@@ -410,7 +526,20 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                     continue
                 forced_in = rule.name in include
                 before = text
-                text = _apply_rule(rule, before)
+                out = _apply_bounded(rule, before)
+                if out is None:
+                    # This rule would pass the output bound (see below): it
+                    # is not applied, and the pipeline stops on the text it
+                    # was handed.
+                    logger.warning(
+                        "[pipeline] output would exceed %d chars at rule %r — it and "
+                        "the remaining rules skipped", _POSTPROCESS_MAX_CHARS, rule.name)
+                    if trace is not None:
+                        trace.append((f"{ordinal} {label} [OUTPUT BOUND — not applied]",
+                                      before, before))
+                    capped = True
+                    break
+                text = out
                 if trace is not None:
                     # Force-included rule: tag the trace line so the admin sees
                     # the rule ran *because of* the per-model override, not the
@@ -426,8 +555,9 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                 # Absolute output bound. Rules whose replacement template
                 # expands what it matches compose: each one feeds the next, so
                 # a handful of them can multiply a short transcript into
-                # gigabytes. Stop the pipeline instead and keep what we have —
-                # no real transcript comes near this size.
+                # gigabytes. _apply_bounded refuses the rule that would pass
+                # it; this length check is the backstop. No real transcript
+                # comes near this size.
                 if len(text) > _POSTPROCESS_MAX_CHARS:
                     logger.warning(
                         "[pipeline] output exceeded %d chars at rule %r — remaining "
@@ -487,9 +617,9 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
     streaming seam WARNING. Both texts are walked rule by rule with the same
     selection as _postprocess_text; edges are compared the way the terminal
     trim leaves them. Warning path only, so no caching — but the same output
-    bound as _postprocess_text: the walk stops at the rule that pushes either
-    text past _POSTPROCESS_MAX_CHARS (where the pipeline itself stops), so a
-    compounding rule set cannot run on unbounded strings here."""
+    bound as _postprocess_text: the walk stops at the rule that would push
+    either text past _POSTPROCESS_MAX_CHARS (where the pipeline itself
+    stops), so a compounding rule set cannot run on unbounded strings here."""
     exclude, include = _scoping(model_name, ident)
     a, b = prefix_raw, full_raw
 
@@ -506,9 +636,11 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
         for _pass in range(_card_passes(card)):
             a_in, b_in = a, b
             for rule in card:
-                a, b = _apply_rule(rule, a), _apply_rule(rule, b)
-                if max(len(a), len(b)) > _POSTPROCESS_MAX_CHARS:
+                na, nb = _apply_bounded(rule, a), _apply_bounded(rule, b)
+                if (na is None or nb is None
+                        or max(len(na), len(nb)) > _POSTPROCESS_MAX_CHARS):
                     return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label} (output bound hit)"
+                a, b = na, nb
                 now = extends(a, b)
                 if ok and not now:
                     return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label}"
