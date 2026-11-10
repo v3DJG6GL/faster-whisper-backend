@@ -220,6 +220,27 @@ def test_package_nonzero_exit_never_echoes_stderr_and_classifies_srt(monkeypatch
         assert not isinstance(ei.value, pk.SubtitleParseError), line
 
 
+def test_package_stderr_is_held_as_a_bounded_tail(monkeypatch):
+    """A crafted source makes ffmpeg print a line per bad cluster for the
+    whole run: only the classified tail may stay in the server process."""
+    import tracemalloc
+    _patch_argv(monkeypatch, (
+        "import sys\n"
+        "w = sys.stderr.buffer.write\n"
+        "for _ in range(512): w(b'x' * 65536)\n"
+        "w(b'sub_1.srt: Invalid data found\\n')\n"
+        "sys.stderr.flush(); sys.exit(1)\n"))
+    tracemalloc.start()
+    try:
+        with pytest.raises(pk.SubtitleParseError) as ei:
+            _run(pk.package("/x", _tracks(), container="mkv", default_track=None, timeout=60))
+        _cur, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert "track 2" in str(ei.value)
+    assert peak < 4 * 1024 * 1024, peak
+
+
 def test_package_no_output_is_an_error(monkeypatch):
     _patch_argv(monkeypatch, "pass")
     with pytest.raises(pk.PackageError, match="no output"):

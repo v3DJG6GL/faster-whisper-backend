@@ -491,6 +491,30 @@ def test_package_cover_art_only_says_so(client, package_enabled, monkeypatch):
     assert "cover art" in r.json()["detail"]["message"]
 
 
+def test_package_drops_the_parsed_body_before_the_probe(client, package_enabled, monkeypatch):
+    """A body padded with keys the route ignores must not stay referenced
+    across the stream probe and the ffmpeg run."""
+    import gc
+    import json
+    marks = ("fwb-unread-top-7f3a", "fwb-unread-track-7f3a")
+    held: list = []
+
+    def _probe(path):
+        held.extend(m for o in gc.get_objects() if type(o) is list
+                    for m in marks if m in o)
+        return _streams()
+    monkeypatch.setattr(pk, "probe_streams", _probe)
+    mid = _upload(client).json()["media_id"]
+    # Only the encoded bytes may outlive this line on the test's side.
+    raw = json.dumps({"container": "mkv", "pad": [marks[0]],
+                      "subtitles": [*_tracks()[:-1], {**_tracks()[-1], "pad": [marks[1]]}]})
+    r = client.post(f"/v1/audio/media/{mid}/package", content=raw.encode(),
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+    assert r.content.endswith(b"|muxed:mkv:2")
+    assert held == []
+
+
 def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatch):
     seen = record_calls(monkeypatch, pk, "build_package_argv",
                         lambda *a, **kw: kw.get("video_index"))

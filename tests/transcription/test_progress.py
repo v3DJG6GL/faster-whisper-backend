@@ -110,6 +110,25 @@ def test_tombstone_sweep_is_amortised(monkeypatch):
     assert not any(k.startswith("e") for k in closed)
 
 
+def test_tombstones_are_capped_but_a_ticking_straggler_survives(monkeypatch):
+    """A flood of fresh ids must not grow the tombstones for the whole TTL;
+    the cap evicts the oldest stamps, never one a straggler just restamped."""
+    monkeypatch.setattr(tx_progress, "_PROGRESS_CLOSED_MAX", 50)
+    monkeypatch.setattr(tx_progress, "_PROGRESS_CLOSED_LAST_SWEEP",
+                        time.monotonic() - 61)
+    tx_progress._progress_set(_PID, stage="transcribing", owner="alice")
+    tx_progress._progress_close(_PID)
+    tx_progress._PROGRESS_CLOSED[_PID] = time.monotonic()   # just ticked
+    old = time.monotonic() - 600
+    for i in range(100):
+        tx_progress._PROGRESS_CLOSED[f"e{i:031x}"] = old
+    tx_progress._progress_close("f" * 32)
+    assert len(tx_progress._PROGRESS_CLOSED) <= 52
+    assert _PID in tx_progress._PROGRESS_CLOSED
+    tx_progress._progress_set(_PID, last_text="x")
+    assert _PID not in tx_progress._BATCH_PROGRESS
+
+
 def test_expired_tombstones_still_swept(monkeypatch):
     monkeypatch.setattr(tx_progress, "_PROGRESS_CLOSED_LAST_SWEEP",
                         time.monotonic() - 61)

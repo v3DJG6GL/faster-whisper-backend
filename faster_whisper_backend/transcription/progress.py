@@ -64,6 +64,10 @@ _BATCH_PROGRESS_STALE_S = 2 * 3600
 # sweep's.
 _PROGRESS_CLOSED: "dict[str, float]" = {}
 _PROGRESS_CLOSED_TTL_S = _BATCH_PROGRESS_STALE_S
+# A flood of fresh ids closes far more runs than the TTL alone can bound:
+# past this many, the sweep also evicts the oldest stamps (never one stamped
+# within the last minute, so a still-ticking straggler stays suppressed).
+_PROGRESS_CLOSED_MAX = 100_000
 # Monotonic time of the last tombstone sweep. The sweep runs at most once a
 # minute: tombstones live 2 h, so scanning them on every close would make each
 # close O(n) under a stream of fresh ids, and a minute's delay only lengthens
@@ -85,9 +89,18 @@ def _progress_close(pid: "str | None") -> None:
     if (len(_PROGRESS_CLOSED) > 64
             and now - _PROGRESS_CLOSED_LAST_SWEEP >= 60.0):
         _PROGRESS_CLOSED_LAST_SWEEP = now
-        for k in [k for k, t in list(_PROGRESS_CLOSED.items())
-                  if now - t > _PROGRESS_CLOSED_TTL_S]:
-            _PROGRESS_CLOSED.pop(k, None)
+        snap = list(_PROGRESS_CLOSED.items())
+        for k, t in snap:
+            if now - t > _PROGRESS_CLOSED_TTL_S:
+                _PROGRESS_CLOSED.pop(k, None)
+        excess = len(_PROGRESS_CLOSED) - _PROGRESS_CLOSED_MAX
+        if excess > 0:
+            kept = sorted((t, k) for k, t in snap if now - t <= _PROGRESS_CLOSED_TTL_S)
+            for _t, k in kept[:excess]:
+                # Re-read: a straggler restamped since the snapshot (or
+                # within the last minute) keeps its id closed.
+                if now - _PROGRESS_CLOSED.get(k, now) > 60.0:
+                    _PROGRESS_CLOSED.pop(k, None)
 _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 
 

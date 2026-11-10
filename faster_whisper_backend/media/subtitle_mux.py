@@ -358,15 +358,33 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        # Only the tail is kept while ffmpeg runs: a crafted source makes it
+        # print a line per bad cluster for the whole run (several bytes of
+        # stderr per byte of input), which communicate() would buffer whole.
+        err = bytearray()
+
+        async def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            while True:
+                chunk = await proc.stderr.read(1024)
+                if not chunk:
+                    return
+                err.extend(chunk)
+                if len(err) > _STDERR_TAIL_MAX:
+                    del err[:len(err) - _STDERR_TAIL_MAX]
+
+        drain = asyncio.ensure_future(_drain_stderr())
         try:
-            _out, err = await asyncio.wait_for(proc.communicate(), timeout)
+            await asyncio.wait_for(asyncio.gather(drain, proc.wait()), timeout)
         except asyncio.TimeoutError:
+            drain.cancel()
             await core_proc.terminate_then_kill(proc)
             raise PackageTimeout("packaging timed out") from None
         except asyncio.CancelledError:
+            drain.cancel()
             await core_proc.terminate_then_kill(proc)
             raise
-        tail = (err or b"")[-_STDERR_TAIL_MAX:].decode("utf-8", "replace")
+        tail = bytes(err).decode("utf-8", "replace")
         if proc.returncode != 0:
             logger.warning("[package] ffmpeg exited %s: %s", proc.returncode,
                            log_safe(tail, keep_end=True))

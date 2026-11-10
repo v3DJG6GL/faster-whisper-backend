@@ -862,6 +862,10 @@ async def package_media(media_id: str, request: Request,
     stem = (_MEDIA_FILENAME_RE.sub(
         "", unicodedata.normalize("NFC", filename)).strip()[:80]
             if isinstance(filename, str) else "") or media_id
+    # Every field is copied out: drop the parsed body (and the subtitle
+    # dicts the loop still holds) before the probe and the ffmpeg run, so
+    # a body padded with ignored keys is not pinned for the whole export.
+    body = raw_subs = t = None
     entry = _owned_media_entry(media_id, user)
     facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
     if facts is None:
