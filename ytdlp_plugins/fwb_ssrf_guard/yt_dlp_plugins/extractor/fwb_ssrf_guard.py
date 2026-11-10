@@ -1019,8 +1019,9 @@ def _f4m_fragments_are_bounded() -> bool:
 # first, and so are the attributes (every one needs an `=`, so their count
 # can only overcount), against twice the element cap. JSON scalars cost an
 # object each just the same, and every array item and object member after
-# the first needs a `,`, so those are charged against twice the container
-# cap too (commas inside strings only overcount). expat builds an
+# the first needs a `,`; an object member also needs a `:` and builds a key
+# and a value. Commas and colons are charged against twice the container
+# cap too (those inside strings only overcount). expat builds an
 # internal entity's markup once per reference, where no count of the raw text
 # sees it, so a document that declares entities is refused outright; none of
 # the manifest formats yt-dlp parses declares any. With entities refused, a
@@ -1106,11 +1107,13 @@ def _etree_parses_are_bounded() -> bool:
 
 def _json_oversized(doc) -> bool:
     if isinstance(doc, str):
-        containers, commas = doc.count("[") + doc.count("{"), doc.count(",")
+        containers = doc.count("[") + doc.count("{")
+        items = doc.count(",") + doc.count(":")
     else:
-        containers, commas = doc.count(b"[") + doc.count(b"{"), doc.count(b",")
+        containers = doc.count(b"[") + doc.count(b"{")
+        items = doc.count(b",") + doc.count(b":")
     return (containers > _MAX_JSON_CONTAINERS
-            or containers + commas > 2 * _MAX_JSON_CONTAINERS)
+            or containers + items > 2 * _MAX_JSON_CONTAINERS)
 
 
 def _bounded_parse_json(original):

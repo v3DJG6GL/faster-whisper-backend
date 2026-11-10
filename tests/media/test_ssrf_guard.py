@@ -2033,12 +2033,21 @@ def test_guard_counts_json_scalars_before_parsing(monkeypatch):
     over = "[" + ",".join(["-9"] * (2 * cap + 2)) + "]"  # 1 + 2*cap + 1
     at_cap = "[" + ",".join(["-9"] * 2 * cap) + "]"      # 1 + 2*cap - 1
     members = "{" + ",".join(f'"a{i}":1' for i in range(2 * cap + 1)) + "}"
-    for doc in (over, over.encode(), members, members.encode()):
+    # An object member builds a key and a value, so its ':' is charged too:
+    # cap + 1 members, or cap/2 + 200 one-member objects, pass the comma
+    # count alone yet build as many objects as the scalar array above.
+    flat = "{" + ",".join(f'"a{i}":1' for i in range(cap + 1)) + "}"
+    singles = "[" + ",".join('{"k%d":0}' % i for i in range(cap // 2 + 200)) + "]"
+    for doc in (over, over.encode(), members, members.encode(),
+                flat, flat.encode(), singles, singles.encode()):
         err, _warnings = _parse_json(doc)
         assert isinstance(err, yt_dlp.utils.ExtractorError)
         assert "Failed to parse JSON" in str(err) and "too many" in str(err)
     assert _parse_json(at_cap)[0] == [-9] * 2 * cap
     assert _parse_json(at_cap.encode(), fatal=False)[0] == [-9] * 2 * cap
+    # 1 + (cap - 2) + (cap - 1): an object just under the cap still parses.
+    under = "{" + ",".join(f'"a{i}":1' for i in range(cap - 1)) + "}"
+    assert len(_parse_json(under)[0]) == cap - 1
 
 
 def test_guard_still_parses_a_page_sized_json_document():
