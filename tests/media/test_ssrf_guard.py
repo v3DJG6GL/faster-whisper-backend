@@ -1735,6 +1735,59 @@ def test_guard_refuses_a_self_nesting_f4m_manifest():
     assert len(depth) == _registered_guard()["_MAX_F4M_DEPTH"]
 
 
+def test_guard_counts_a_nested_reference_in_either_f4m_attribute():
+    # yt-dlp reads @href only in a 2.0 manifest and @url otherwise, so a 1.0
+    # node whose href names a plain file still fetches the manifest in url.
+    fetched = []
+
+    def _child(self, url, video_id, *a, **kw):
+        fetched.append(url)
+        return []
+    nested = _registered_guard()["_MAX_F4M_NESTED"]
+    media = "".join(f'<media href="a{i}.flv" url="n{i}.f4m" bitrate="{i + 1}"/>'
+                    for i in range(nested + 1))
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_f4m(_f4m(media, bootstrap=False), _extract_f4m_formats=_child)
+    assert fetched == []
+
+
+def test_guard_bounds_nested_f4m_references_per_extraction():
+    from yt_dlp.utils import compat_etree_fromstring
+    nested = _registered_guard()["_MAX_F4M_NESTED"]
+    half = nested // 2 + 1
+    f4m_fetched, m3u8_fetched = [], []
+
+    def _m3u8(self, url, video_id, *a, **kw):
+        m3u8_fetched.append(url)
+        return []
+
+    def _child(self, url, video_id, *a, **kw):
+        f4m_fetched.append(url)
+        child = _f4m(_f4m_media(nested, url="c{i}.m3u8"), bootstrap=False)
+        return self._parse_f4m_formats(compat_etree_fromstring(child.encode()),
+                                       url, video_id)
+    # Each manifest within the cap, nested ones included, is not enough: one
+    # extraction fetches at most the cap's worth of references in all.
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_f4m(_f4m(_f4m_media(nested, url="s{i}.f4m"), bootstrap=False),
+                   _extract_f4m_formats=_child, _extract_m3u8_formats=_m3u8)
+    assert m3u8_fetched == [] and len(f4m_fetched) <= nested
+    # Two manifests of one extraction share the budget...
+    m3u8_fetched.clear()
+    _reset_budget()
+    _parse_f4m(_f4m(_f4m_media(half, url="a{i}.m3u8"), bootstrap=False),
+               _extract_m3u8_formats=_m3u8)
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_f4m(_f4m(_f4m_media(half, url="b{i}.m3u8"), bootstrap=False),
+                   _extract_m3u8_formats=_m3u8)
+    assert len(m3u8_fetched) == half
+    # ...and the next extraction starts from a full one.
+    _reset_budget()
+    _parse_f4m(_f4m(_f4m_media(half, url="b{i}.m3u8"), bootstrap=False),
+               _extract_m3u8_formats=_m3u8)
+    assert len(m3u8_fetched) == 2 * half
+
+
 def test_guard_parses_an_ordinary_f4m_manifest_unchanged():
     from yt_dlp.utils import compat_etree_fromstring
     fmts = _parse_f4m(_f4m(_f4m_media(3)))
@@ -1858,6 +1911,55 @@ def test_guard_counts_xml_elements_before_building_the_tree(monkeypatch, module)
             parse(doc)
     at_cap = '<?xml version="1.0"?><x>' + "<a/>" * (cap - 2) + "</x>"
     assert len(parse(at_cap)) == len(parse(at_cap.encode())) == cap - 2
+
+
+@pytest.mark.parametrize("module", _ETREE_IMPORTERS)
+def test_guard_counts_xml_attributes_before_building_the_tree(monkeypatch, module):
+    import importlib
+    import xml.etree.ElementTree as ET
+    udl.guard_self_check(force=True)
+    parse = importlib.import_module(module).compat_etree_fromstring
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_XML_ELEMENTS", cap)
+    # One start tag holding millions of attributes builds its whole dict.
+    over = "<a " + " ".join(f'a{i}=""' for i in range(2 * cap)) + "/>"
+    for doc in (over, over.encode()):
+        with pytest.raises(ET.ParseError, match="too many elements"):
+            parse(doc)
+    # A DASH SegmentList at the segment cap (half the element cap), two
+    # attributes per segment, still parses.
+    segs = cap // 2
+    mpd = _mpd('<Period><AdaptationSet mimeType="audio/mp4"><Representation '
+               'id="r" bandwidth="1"><SegmentList duration="1">'
+               + "".join(f'<SegmentURL media="s{i}.m4s" mediaRange="{i}-{i + 9}"/>'
+                         for i in range(segs))
+               + "</SegmentList></Representation></AdaptationSet></Period>")
+    assert len(mpd) > cap
+    for doc in (mpd, mpd.encode()):
+        assert len(parse(doc).findall(f".//{{{_MPD_NS}}}SegmentURL")) == segs
+
+
+@pytest.mark.parametrize("module", _ETREE_IMPORTERS)
+def test_guard_refuses_xml_entity_declarations(module):
+    import importlib
+    import xml.etree.ElementTree as ET
+    udl.guard_self_check(force=True)
+    parse = importlib.import_module(module).compat_etree_fromstring
+    # expat builds an entity's markup once per reference, where no count of
+    # the raw text sees it: ~100 KB here would build ~2.1 M elements.
+    bomb = ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY a "' + "<b/>" * 70
+            + '">]><r>' + "&a;" * 30_000 + "</r>")
+    for doc in (bomb, bomb.encode(), bytearray(bomb.encode()),
+                bomb.encode("utf-16"), bomb.encode("utf-16-le"),
+                bomb.encode("utf-16-be")):
+        with pytest.raises(ET.ParseError, match="declares entities"):
+            parse(doc)
+    # A DOCTYPE without entities (an RSS 0.91 feed) still parses.
+    rss = ('<?xml version="1.0"?><!DOCTYPE rss PUBLIC '
+           '"-//Netscape Communications//DTD RSS 0.91//EN" '
+           '"http://my.netscape.com/publish/formats/rss-0.91.dtd">'
+           '<rss version="0.91"><channel/></rss>')
+    assert parse(rss).tag == parse(rss.encode()).tag == "rss"
 
 
 def test_guard_is_not_installed_without_the_xml_bound(monkeypatch):

@@ -205,6 +205,7 @@ def reset_budget() -> None:
     """Start this thread's manifest budget (see _charge) afresh."""
     _DIALS.tls.segments = 0
     _DIALS.tls.variants = 0
+    _DIALS.tls.f4m_nested = 0
 
 
 def _observe(sock) -> None:
@@ -903,8 +904,10 @@ def _hls_fragments_are_bounded() -> bool:
 # (one with no bootstrapInfo) also fetches every node that names another
 # .f4m / .m3u8 and parses it in turn, an .f4m child recursively: the nested
 # references, the nesting depth and the formats the children add up to are
-# bounded too. Real HDS lists a handful of bitrates, and a set-level manifest
-# a few stream-level ones one level down.
+# bounded too; the references from the budget of the whole extraction, as each
+# child within the cap could otherwise name the cap's worth again. Real HDS
+# lists a handful of bitrates, and a set-level manifest a few stream-level
+# ones one level down.
 _F4M_SENTINEL = "_fwb_f4m_bounded"
 _F4M_NAMESPACES = ("{http://ns.adobe.com/f4m/1.0}", "{http://ns.adobe.com/f4m/2.0}")
 _MAX_F4M_NESTED = 16
@@ -923,11 +926,16 @@ def _refuse_oversized_f4m(manifest) -> None:
            for ns in _F4M_NAMESPACES):
         return  # a stream-level manifest refers to nothing outside it
     from yt_dlp.utils import determine_ext
+    # yt-dlp reads @href in a 2.0 manifest only and @url otherwise: a node
+    # naming a manifest in either counts, which can only overcount.
     nested = sum(1 for node in nodes
-                 if determine_ext(node.get("href") or node.get("url") or "")
-                 in ("f4m", "m3u8"))
-    if nested > _MAX_F4M_NESTED:
+                 if any(determine_ext(node.get(attr) or "") in ("f4m", "m3u8")
+                        for attr in ("href", "url")))
+    # The download child never resets the budget: it extracts once.
+    total = getattr(_DIALS.tls, "f4m_nested", 0) + nested
+    if total > _MAX_F4M_NESTED:
         raise _too_many_variants(_MAX_F4M_NESTED)
+    _DIALS.tls.f4m_nested = total
 
 
 def _bounded_f4m(original):
@@ -1008,9 +1016,15 @@ def _f4m_fragments_are_bounded() -> bool:
 # block with json.loads, and both run on up to the 64 MiB body cap: ~1.6 GB of
 # element tree or of lists and dicts, seconds of CPU on the probe thread. The
 # elements (start tags) and the JSON arrays and objects are counted in C
-# first; a document no longer than the cap cannot exceed it and pays nothing.
-# Two million elements is twice a DASH manifest at the segment cap, and real
-# pages and API answers hold far fewer arrays and objects.
+# first, and so are the attributes (every one needs an `=`, so their count
+# can only overcount), against twice the element cap. expat builds an
+# internal entity's markup once per reference, where no count of the raw text
+# sees it, so a document that declares entities is refused outright; none of
+# the manifest formats yt-dlp parses declares any. With entities refused, a
+# document no longer than the cap cannot exceed it and pays nothing. Two
+# million elements is twice a DASH manifest at the segment cap (its
+# attributes fit the doubled cap), and real pages and API answers hold far
+# fewer arrays and objects.
 _MAX_XML_ELEMENTS = 2_000_000
 _MAX_JSON_CONTAINERS = 2_000_000
 _ETREE_SENTINEL = "_fwb_etree_bounded"
@@ -1018,13 +1032,31 @@ _ETREE_NAME = "compat_etree_fromstring"
 _JSON_SENTINEL = "_fwb_json_bounded"
 
 
+_ENTITY_DECL = "<!ENTITY"
+# expat also reads UTF-16 (either byte order), where the declaration's bytes
+# differ; a literal production, it has no other spelling.
+_ENTITY_DECL_BYTES = (_ENTITY_DECL.encode(), _ENTITY_DECL.encode("utf-16-le"),
+                      _ENTITY_DECL.encode("utf-16-be"))
+
+
 def _refuse_oversized_xml(text) -> None:
-    if not isinstance(text, (str, bytes, bytearray)) or len(text) <= _MAX_XML_ELEMENTS:
+    if isinstance(text, str):
+        declares = _ENTITY_DECL in text
+        lt, close, eq = "<", "</", "="
+    elif isinstance(text, (bytes, bytearray)):
+        declares = any(decl in text for decl in _ENTITY_DECL_BYTES)
+        lt, close, eq = b"<", b"</", b"="
+    else:
         return
-    lt, close = ("<", "</") if isinstance(text, str) else (b"<", b"</")
-    if text.count(lt) - text.count(close) > _MAX_XML_ELEMENTS:
-        # What a malformed document raises: every caller handles it (GenericIE
-        # goes on scraping the page as HTML).
+    # What a malformed document raises: every caller handles it (GenericIE
+    # goes on scraping the page as HTML).
+    if declares:
+        raise xml.etree.ElementTree.ParseError("the document declares entities")
+    if len(text) <= _MAX_XML_ELEMENTS:
+        return
+    elements = text.count(lt) - text.count(close)
+    if (elements > _MAX_XML_ELEMENTS
+            or elements + text.count(eq) > 2 * _MAX_XML_ELEMENTS):
         raise xml.etree.ElementTree.ParseError(
             f"the document has too many elements (more than {_MAX_XML_ELEMENTS})")
 
