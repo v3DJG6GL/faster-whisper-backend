@@ -280,3 +280,21 @@ def test_a_dropped_map_pattern_is_released(monkeypatch):
     finally:
         monkeypatch.undo()
         pl_engine.rebuild_caches()
+
+
+def test_fold_fallback_cost_is_bounded_by_the_alphabet_not_the_key_count(monkeypatch):
+    # A sre-fold miss ("sein" matched by the key "ſein") used to compile one
+    # full-key pattern per same-length key on every occurrence: a page-scoped
+    # non-admin's 10 000-key map made each such word cost ~140 ms on the loop.
+    from faster_whisper_backend.pipeline import dictation_map as dm
+    m = {f"{c}{i:03d}": "x" for c in "abcdefghij" for i in range(999)}
+    m["ſein"] = "SEIN"
+    pattern, replace, _lookup = dm.compile_map(m)
+    if hasattr(dm, "_sre_char_eq"):
+        dm._sre_char_eq.cache_clear()
+    calls = []
+    real = dm.re.fullmatch
+    monkeypatch.setattr(dm.re, "fullmatch", lambda *a, **k: calls.append(1) or real(*a, **k))
+    out = pattern.sub(replace, "Das ist sein Haus. " * 20)
+    assert out.count("SEIN") == 20
+    assert len(calls) <= 100

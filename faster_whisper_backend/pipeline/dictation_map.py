@@ -30,6 +30,7 @@ Pure module: no import of ``main``.
 from __future__ import annotations
 
 import collections
+import functools
 import itertools
 import re
 import threading
@@ -177,6 +178,16 @@ def retain_live_maps(patterns: Iterable["re.Pattern[str]"]) -> None:
             _RECENT.pop(source, None)
 
 
+@functools.lru_cache(maxsize=4096)
+def _sre_char_eq(a: str, b: str) -> bool:
+    """Whether sre's IGNORECASE matches literal char `a` against char `b`."""
+    return a == b or re.fullmatch(re.escape(a), b, re.IGNORECASE) is not None
+
+
+# Matched strings whose sre-fold lookup the replacer remembers (per map).
+_FOLD_MEMO_MAX = 1024
+
+
 def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"], str], dict[str, str]]:
     """Compile a map into ``(pattern, replacer, lookup)``.
 
@@ -208,6 +219,10 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
     else:
         prefix = ""
     pattern = _compile_map_pattern(prefix + r"(" + alternation + r")")
+    keys_by_len: dict[int, list[str]] = {}
+    for k in keys:
+        keys_by_len.setdefault(len(k), []).append(k)
+    fold_memo: dict[str, "str | None"] = {}
 
     def replace(mt: "re.Match[str]") -> str:
         key = mt.group(1)
@@ -216,9 +231,18 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
             # sre's case folding is not str.lower(): "İ" matches "i" but
             # lowers to "i" + U+0307, "ς" matches "σ" but lowers to itself.
             # Ask sre which key it matched; it folds char by char, so only
-            # keys of the matched length can be it.
-            value = next((lookup[k.lower()] for k in keys if len(k) == len(key)
-                          and re.fullmatch(re.escape(k), key, re.IGNORECASE)), None)
+            # keys of the matched length can be it, compared char by char
+            # (cached per char pair: a 10 000-key map must not compile one
+            # full-key pattern per candidate on every miss). First match in
+            # key order wins, as before; the result is memoised per string.
+            if key in fold_memo:
+                value = fold_memo[key]
+            else:
+                value = next((lookup[k.lower()] for k in keys_by_len.get(len(key), ())
+                              if all(_sre_char_eq(a, b) for a, b in zip(k, key))), None)
+                if len(fold_memo) >= _FOLD_MEMO_MAX:
+                    fold_memo.clear()
+                fold_memo[key] = value
         if value is None:
             return mt.group(0)
         lead = mt.start(1) - mt.start(0)
