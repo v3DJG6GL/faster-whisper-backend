@@ -372,6 +372,16 @@ def test_ignore_files_anchor_every_root_only_dir():
     assert "secrets/" in docker
 
 
+def test_dockerignore_mirrors_the_time_ledger_report():
+    """scripts/time_ledger.py writes /time-ledger.html at the repo root by
+    default; .gitignore keeps it out of the public mirror, and a local
+    `docker build .` (COPY . .) must not bake it into an image either."""
+    git = [ln.strip() for ln in _read(".gitignore").splitlines()]
+    docker = [ln.strip() for ln in _read(".dockerignore").splitlines()]
+    assert "/time-ledger.html" in git
+    assert "/time-ledger.html" in docker
+
+
 def test_rotated_logs_under_an_in_repo_data_dir_are_ignored():
     """LOG_FILE defaults to {DATA_DIR}/logs/whisper.log with rotation; under
     an in-checkout DATA_DIR not named data/ (WHISPER_DATA_DIR=./state) the

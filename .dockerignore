@@ -43,6 +43,8 @@ nssm.exe
 ffmpeg/
 # Editor / preview cruft.
 *-preview.html
+# scripts/time_ledger.py's default report (gitignored: it shows when you work).
+/time-ledger.html
 # Review ledgers + local test cruft (gitignored; keep them out of LOCAL builds
 # too — CI builds from a clean checkout and never sees them).
 SECURITY-REVIEW_NOTES.md
