@@ -783,6 +783,64 @@ def test_package_refuses_a_number_bomb_before_building_it(client, package_enable
     assert seen == [(1, 0)] and all(type(i) is int for i in seen[0])
 
 
+def test_package_refuses_a_key_bomb_before_parsing(client, package_enabled, monkeypatch):
+    # Distinct object keys are the costliest strings to parse (4 M short keys
+    # in one object hold the GIL ~2.6 s); counted on the raw bytes, where a
+    # key's closing quote is followed by ':' or JSON whitespace.
+    mid = _upload(client).json()["media_id"]
+    monkeypatch.setattr(media_routes, "_PACKAGE_MAX_KEYS", 1000)
+    parsed = []
+    real = media_routes.json.loads
+    monkeypatch.setattr(media_routes.json, "loads", lambda *a, **k: parsed.append(1) or real(*a, **k))
+    for sep in (":", " :", "\t:", "\n:", "\r:"):
+        body = ('{"container":"mkv","x":{'
+                + ",".join(f'"{i}"{sep}""' for i in range(1001)) + "}}")
+        r = client.post(f"/v1/audio/media/{mid}/package", content=body,
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 422 and "expected a JSON body" in r.text, repr(sep)
+    assert parsed == []
+    # A real export, quoted speech in its labels and text included, still packages.
+    subs = _tracks()
+    subs[0]["label"] = 'say "hi": now'
+    subs[1]["srt"] = '1\n00:00:00,000 --> 00:00:01,000\nHe said "no": fine\n'
+    assert _package(client, mid, {"container": "mkv", "subtitles": subs}).status_code == 200
+
+
+def test_package_cleans_only_a_bounded_prefix_of_filename_and_labels(
+        client, package_enabled, monkeypatch):
+    # The 48 MiB body ceiling would let one filename or label string cost
+    # seconds of regex on the event loop; only a prefix far longer than the
+    # 80 / 64 chars kept is cleaned.
+    seen = []
+
+    class _Spy:
+        def __init__(self, real):
+            self._real = real
+
+        def sub(self, repl, s, *a, **k):
+            seen.append(len(s))
+            return self._real.sub(repl, s, *a, **k)
+    monkeypatch.setattr(media_routes, "_MEDIA_FILENAME_RE", _Spy(media_routes._MEDIA_FILENAME_RE))
+    monkeypatch.setattr(media_routes, "_LABEL_CTRL_RE", _Spy(media_routes._LABEL_CTRL_RE))
+    labels = []
+
+    def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        labels.extend([t.label for t in tracks] + [kw.get("audio_label")])
+        return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'v')"]
+    monkeypatch.setattr(pk, "build_package_argv", _argv)
+    mid = _upload(client).json()["media_id"]
+    subs = _tracks()
+    subs[0]["label"] = "x" * 5000
+    r = _package(client, mid, {"container": "mkv", "subtitles": subs,
+                               "audio_lang": "en", "audio_label": "y" * 5000,
+                               "filename": "a!" * 5000 + "Z"})
+    assert r.status_code == 200, r.text
+    assert seen and max(seen) <= 1024, seen
+    disposition = r.headers["content-disposition"]
+    assert "a" * 80 + ".mkv" in disposition and "a" * 81 not in disposition
+    assert (labels[0], labels[2]) == ("x" * 64, "y" * 64)
+
+
 def test_package_timeout_504(client, package_enabled, monkeypatch, tmp_path):
     monkeypatch.setattr(package_enabled.cfg, "MEDIA_PACKAGE_TIMEOUT_S", 1, raising=False)
     mid = _upload(client).json()["media_id"]

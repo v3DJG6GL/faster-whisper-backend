@@ -566,9 +566,14 @@ _PACKAGE_MAX_CONTAINERS = 4_000_000
 # Numbers are the costliest scalars json.loads builds (a 48 MiB array of
 # floats: ~1.2 s with the GIL held, ~480 MB). A real export carries at most
 # default_track and original_track, so the parse aborts past a handful; with
-# containers bounded too, the worst body left (4 M containers padded with
-# empty strings) parses in ~0.6 s.
+# containers and keys bounded too, the worst body left parses in ~0.6 s.
 _PACKAGE_MAX_NUMBERS = 64
+# Distinct object keys are the costliest strings json.loads builds (each a
+# str plus a memo entry: 4 M short keys ~2.6 s with the GIL held). A key's
+# closing quote is followed by ':' or JSON whitespace, so these byte pairs
+# can only overcount; quote-heavy subtitle text stays far below 1 M.
+_PACKAGE_MAX_KEYS = 1_000_000
+_PACKAGE_KEY_ENDS = (b'":', b'" ', b'"\t', b'"\n', b'"\r')
 _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
 # Free space an upload must leave on the staging volume (the package route's
 # margin): a near-full disk is refused before the transfer, not after it.
@@ -584,6 +589,10 @@ _NO_DISK = "not enough disk space on the server"
 # lose its combining mark (Mn/Mc are not \w) — a mark with no precomposed
 # form (Devanagari vowel signs) is still dropped.
 _MEDIA_FILENAME_RE = re.compile(r"[^\w .()\-]+")
+# Client filename / labels are sliced to this many chars before NFC and the
+# regexes: the 48 MiB body ceiling would otherwise let one string cost seconds
+# of regex on the event loop; 1024 is far above the 80 / 64 chars kept.
+_PACKAGE_TEXT_SCAN = 1024
 
 
 def _package_gate() -> None:
@@ -750,12 +759,13 @@ def _require_lang_code(value, field: str) -> str:
 # encoding: in the SRT size check, or os.fsencode of ffmpeg's argv (a
 # title=/handler_name= label), it is a bare 500 instead of a 422.
 _SURROGATE_RE = store_common.LONE_SURROGATE_RE
+_LABEL_CTRL_RE = re.compile(r"[\x00-\x1f\x7f\ud800-\udfff]")
 
 
 def _clean_label(value) -> str:
     """A client track title: control characters and lone surrogates out, at
     most 64 chars; "" when absent or not a string."""
-    return (re.sub(r"[\x00-\x1f\x7f\ud800-\udfff]", "", value).strip()[:64]
+    return (_LABEL_CTRL_RE.sub("", value[:_PACKAGE_TEXT_SCAN]).strip()[:64]
             if isinstance(value, str) else "")
 
 
@@ -837,6 +847,8 @@ async def package_media(media_id: str, request: Request,
         raw = await request.body()
         if raw.count(b"[") + raw.count(b"{") > _PACKAGE_MAX_CONTAINERS:
             raise ValueError("container bomb")
+        if sum(raw.count(p) for p in _PACKAGE_KEY_ENDS) > _PACKAGE_MAX_KEYS:
+            raise ValueError("key bomb")
         body = _package_json_loads(raw)
     except Exception:  # noqa: BLE001 — malformed body is a caller error
         raise HTTPException(status_code=422, detail="expected a JSON body")
@@ -887,7 +899,7 @@ async def package_media(media_id: str, request: Request,
     audio_label = _clean_label(body.get("audio_label")) or None
     filename = body.get("filename")
     stem = (_MEDIA_FILENAME_RE.sub(
-        "", unicodedata.normalize("NFC", filename)).strip()[:80]
+        "", unicodedata.normalize("NFC", filename[:_PACKAGE_TEXT_SCAN])).strip()[:80]
             if isinstance(filename, str) else "") or media_id
     # Every field is copied out: drop the parsed body (and the subtitle
     # dicts the loop still holds) before the probe and the ffmpeg run, so
