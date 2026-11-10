@@ -62,6 +62,10 @@ _TEXT_TRANSLATE_MAX_CHARS = 200_000
 # A speaker label prefixes every context line of every prompt: clipped, and
 # counted against the character cap like the text it rides with.
 _TEXT_TRANSLATE_MAX_SPEAKER = 64
+# Segment ids are not counted against the character cap, and every
+# kept-original fallback names them once per target: warning prose clips
+# each id (segments[].id still echoes it whole).
+_WARN_ID_MAX = 64
 # While the request queues for the GPU slot or its model loads, nothing
 # reports progress — this keeps a held dictation receipt's idle timer fresh
 # meanwhile (LOG_RECEIPT_HOLD_S is at least 5 s).
@@ -77,13 +81,17 @@ def _client_id_warnings(warnings: "list[str]", ids: "list") -> "list[str]":
     """Rewrite positional 1-based segment references in translation warnings
     to the CLIENT-supplied segment ids (a group span expands to the member
     ids, which need not be sequential)."""
+    def _wid(v) -> str:
+        s = str(v)
+        return s if len(s) <= _WARN_ID_MAX else s[:_WARN_ID_MAX] + "…"
+
     def _sub(m: "re.Match") -> str:
         if m.group(3) is not None:
             i = int(m.group(3)) - 1
-            return f"segment {ids[i]}" if 0 <= i < len(ids) else m.group(0)
+            return f"segment {_wid(ids[i])}" if 0 <= i < len(ids) else m.group(0)
         a, b = int(m.group(1)) - 1, int(m.group(2)) - 1
         if 0 <= a <= b < len(ids):
-            return "segments " + ", ".join(str(ids[j])
+            return "segments " + ", ".join(_wid(ids[j])
                                            for j in range(a, b + 1))
         return m.group(0)
     return [_TR_SEG_WARN_RE.sub(_sub, w) for w in warnings]

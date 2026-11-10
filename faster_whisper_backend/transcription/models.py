@@ -105,6 +105,8 @@ def _end_prefetch(key: tuple, task: "asyncio.Task") -> None:
 # makes the strings caller-chosen.
 _suppress_chars_cache: "OrderedDict[tuple[str, str], tuple[int, ...]]" = OrderedDict()
 _SUPPRESS_CHARS_CACHE_MAX = 256
+# Skipped multi-piece variants named in the one skip line (all are counted).
+_SUPPRESS_SKIP_LOG_MAX = 16
 
 
 def _resolve_suppress_chars(model_id: str,
@@ -115,10 +117,12 @@ def _resolve_suppress_chars(model_id: str,
     Each char is encoded both bare and with a leading space — Whisper's BPE
     often tokenizes a punct char differently in those positions (mirrors
     faster-whisper's own non_speech_tokens approach). Multi-piece results
-    are skipped with a warning (suppressing only the first piece would
-    block every word that starts with that piece). ``from_client``: the
-    chars came from a request, so the resolved-ids line logs at DEBUG, not
-    INFO (a multi-piece skip still warns)."""
+    are skipped (suppressing only the first piece would block every word
+    that starts with that piece) and reported in ONE line per resolve.
+    ``from_client``: the chars came from a request, so the resolved-ids
+    line logs at DEBUG, not INFO, and the skip line at DEBUG, not WARNING
+    (a client picks the chars, so a per-variant warning would let it flood
+    the log and the severity ring)."""
     if not chars:
         return ()
     key = (model_id, chars)
@@ -131,8 +135,9 @@ def _resolve_suppress_chars(model_id: str,
         return cached
     tok = getattr(model, "hf_tokenizer", None)
     ids: set[int] = set()
+    skipped: list[tuple[str, int]] = []
     if tok is not None:
-        for ch in chars:
+        for ch in dict.fromkeys(chars):
             if ch.isspace():
                 continue
             for variant in (ch, " " + ch):
@@ -148,10 +153,12 @@ def _resolve_suppress_chars(model_id: str,
                 if len(raw_ids) == 1:
                     ids.add(int(raw_ids[0]))
                 else:
-                    logger.warning(
-                        "SUPPRESS_CHARS %r tokenises to %d pieces; skipping",
-                        variant, len(raw_ids),
-                    )
+                    skipped.append((variant, len(raw_ids)))
+    if skipped:
+        (logger.debug if from_client else logger.warning)(
+            "SUPPRESS_CHARS skipping %d multi-piece variant(s): %s",
+            len(skipped),
+            ", ".join(f"{v!r}={n}" for v, n in skipped[:_SUPPRESS_SKIP_LOG_MAX]))
     out = tuple(sorted(ids))
     _suppress_chars_cache[key] = out
     while len(_suppress_chars_cache) > _SUPPRESS_CHARS_CACHE_MAX:

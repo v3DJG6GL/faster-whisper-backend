@@ -34,7 +34,10 @@ def rms_dbfs(samples: np.ndarray) -> float:
     """RMS level of float32 [-1, 1] samples in dBFS (full-scale = 0 dB)."""
     if samples.size == 0:
         return float("-inf")
-    rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float64)))))
+    # Square in the input dtype, accumulate in float64: the session gates its
+    # whole utterance buffer (up to STREAMING_MAX_BUFFER_S) on every partial,
+    # and a float64 copy of it would be a 4x transient per call.
+    rms = float(np.sqrt(np.mean(np.square(samples), dtype=np.float64)))
     if rms <= 1e-9:
         return float("-inf")
     return 20.0 * np.log10(rms)

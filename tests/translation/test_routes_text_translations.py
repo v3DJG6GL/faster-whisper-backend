@@ -133,6 +133,35 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
     assert not any("segment 2" in w for w in body["warnings"])
 
 
+def test_warning_ids_are_clipped(client, app_module, monkeypatch):
+    """Segment ids are not counted against the character cap, and every
+    kept-original fallback names them once per target: warnings clip each
+    long id, while segments[].id still echoes it byte-identical."""
+    _enable(app_module, monkeypatch)
+
+    async def _fake(segments, targets, **kwargs):
+        per_seg = [{t: seg["text"] for t in targets} for seg in segments]
+        return per_seg, [
+            "segment 1 (en): kept original — translation failed (length ratio)",
+            "segments 1-2 (en): kept original — translation failed (empty output)",
+        ], {"model": "org/d:Q4", "source": "de", "mode": "fluent",
+            "kept": {0: ["en"], 1: ["en"]}}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    long_x, long_y = "x" * 1000, "y" * 1000
+    r = _post_ok(client, segments=[{"id": long_x, "text": "eins"},
+                                   {"id": long_y, "text": "zwei"}],
+                 source="de")
+    body = r.json()
+    assert all(len(w) < 250 for w in body["warnings"]), body["warnings"]
+    clip_x, clip_y = "x" * 64 + "…", "y" * 64 + "…"
+    assert any(w.startswith(f"segment {clip_x} (en): kept original")
+               for w in body["warnings"])
+    assert any(w.startswith(f"segments {clip_x}, {clip_y} (en): kept original")
+               for w in body["warnings"])
+    assert [s["id"] for s in body["segments"]] == [long_x, long_y]
+
+
 def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
     _enable_stubbed(app_module, monkeypatch)
     r = _post_ok(client, segments=[{"text": "a"}, {"text": "b"}])

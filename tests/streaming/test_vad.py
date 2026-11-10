@@ -25,6 +25,41 @@ def test_rms_dbfs_silence_and_full_scale():
     assert rms_dbfs(np.ones(FRAME_SAMPLES, dtype=np.float32)) == pytest.approx(0.0, abs=1e-6)
 
 
+
+def _rms_dbfs_float64_reference(a):
+    return 20.0 * np.log10(np.sqrt(np.mean(np.square(a.astype(np.float64)))))
+
+
+def test_rms_dbfs_matches_float64_reference_on_long_buffers():
+    """rms_dbfs gates a whole utterance buffer (up to STREAMING_MAX_BUFFER_S)
+    on every partial; it must agree with a full float64 computation closely
+    enough that no gate decision moves."""
+    n = 600 * 16000
+    t = np.arange(n, dtype=np.float64) / 16000.0
+    rng = np.random.default_rng(0)
+    buffers = [
+        np.full(n, 0.01, dtype=np.float32),
+        (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32),
+        rng.uniform(-1.0, 1.0, n).astype(np.float32),
+        (rng.standard_normal(n) * 0.005).astype(np.float32),
+    ]
+    del t
+    for a in buffers:
+        assert rms_dbfs(a) == pytest.approx(_rms_dbfs_float64_reference(a), abs=1e-4)
+
+
+def test_rms_dbfs_does_not_copy_the_buffer_to_float64():
+    """A float64 copy of a 600 s buffer is a 77 MB transient per partial."""
+    import tracemalloc
+    a = np.random.default_rng(1).uniform(-0.1, 0.1, 60 * 16000).astype(np.float32)
+    tracemalloc.start()
+    try:
+        rms_dbfs(a)
+        _cur, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1.5 * a.nbytes, (peak, a.nbytes)
+
 def test_energy_endpointer_hysteresis():
     ep = EnergyEndpointer(threshold_dbfs=-42.0, hysteresis_db=6.0)
     assert ep.is_speech(_frame(0.0)) is False           # silence
