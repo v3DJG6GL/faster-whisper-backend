@@ -120,16 +120,17 @@ def test_transcode_budget_fails_open_when_free_space_is_unknown(
 _S16_BYTES_PER_S = 44100 * 2 * 2
 
 
-def _flac(path, seconds=5.0, rate=8000):
-    """A real `seconds`-long mono FLAC of silence."""
-    with av.open(str(path), "w", format="flac") as out:
+def _flac(path, seconds=5.0, rate=8000, layout="mono", fmt="flac"):
+    """A real `seconds`-long FLAC of silence (in a `fmt` container)."""
+    channels = av.AudioLayout(layout).nb_channels
+    with av.open(str(path), "w", format=fmt) as out:
         st = out.add_stream("flac", rate=rate)
-        st.layout = "mono"
+        st.layout = layout
         n, step = 0, 4000
         while n < seconds * rate:
             fr = av.AudioFrame.from_ndarray(
-                np.zeros((1, step), dtype=np.int16), format="s16",
-                layout="mono")
+                np.zeros((1, step * channels), dtype=np.int16), format="s16",
+                layout=layout)
             fr.sample_rate, fr.pts = rate, n
             for pkt in st.encode(fr):
                 out.mux(pkt)
@@ -253,3 +254,92 @@ def test_ram_cap_unknown_keeps_the_direct_flac_path(
              files={"file": ("a.flac", flac, "audio/flac")})
     assert calls == []
     assert len(separate_calls) == 1 and separate_calls[0].endswith(".flac")
+
+
+def test_multichannel_hirate_flac_is_charged_by_its_real_shape(
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
+    """The separator loads a wav/flac at its native rate and channel count
+    before resampling it: 2 s of 7.1 at 384 kHz costs it what 64 s of
+    stereo at 44.1 kHz would, past a cap of 8 s."""
+    flac = _flac(tmp_path / "src.flac", seconds=2.0, rate=384000,
+                 layout="7.1")
+    _available_ram(monkeypatch, available=4 * 8 * _S16_BYTES_PER_S)
+    _disk_usage_reporting(monkeypatch, free=5_000_000_000)
+    calls = _record_budget(monkeypatch)
+    body = _post_ok(client, separate_bgm="true",
+                    files={"file": ("a.flac", flac, "audio/flac")})
+    assert separate_calls == [] and calls == []
+    assert _skipped(body)
+
+
+def test_a_header_without_a_channel_count_skips_separation(
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
+    flac = _flac(tmp_path / "src.flac", seconds=2.0)
+    _available_ram(monkeypatch, available=64_000_000_000)
+    _disk_usage_reporting(monkeypatch, free=5_000_000_000)
+    monkeypatch.setattr(audio_transcode, "declared_shape",
+                        lambda p: (2.0, 8000, None))
+    calls = _record_budget(monkeypatch)
+    body = _post_ok(client, separate_bgm="true",
+                    files={"file": ("a.flac", flac, "audio/flac")})
+    assert separate_calls == [] and calls == []
+    assert _skipped(body)
+
+
+def test_wav_with_unreadable_channel_count_skips_separation(
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
+    """PyAV reports 0 channels for a 1024-channel WAV and cannot transcode
+    it (an FFmpegError: the fallback hands over the original), while
+    libsndfile reads it whole: its size is unknown, so it is skipped."""
+    import wave
+    with wave.open(str(tmp_path / "src.wav"), "wb") as w:
+        w.setnchannels(1024)
+        w.setsampwidth(1)
+        w.setframerate(8000)
+        w.writeframes(b"\x80" * (1024 * 800))
+    _available_ram(monkeypatch, available=64_000_000_000)
+    _disk_usage_reporting(monkeypatch, free=5_000_000_000)
+    body = _post_ok(client, separate_bgm="true",
+                    files={"file": ("a.wav", (tmp_path / "src.wav").read_bytes(),
+                                    "audio/wav")})
+    assert separate_calls == []
+    assert _skipped(body)
+
+
+def _with_declared_duration(mkv: bytes, seconds: float) -> bytes:
+    """`mkv` with its Segment Info Duration (an 8-byte float in the
+    segment's ms timescale) overwritten to declare `seconds`."""
+    import struct
+    b = bytearray(mkv)
+    i = b.index(b"\x44\x89\x88")
+    b[i + 3:i + 11] = struct.pack(">d", seconds * 1000.0)
+    return bytes(b)
+
+
+def test_disk_fallback_measures_the_original_by_decoding_it(
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
+    """The disk fallback hands the separator the original, whose header the
+    uploader wrote: one declaring 0.5 s while holding 6 s, past a 2 s cap,
+    is measured by decoding it and skipped."""
+    mkv = _with_declared_duration(
+        _flac(tmp_path / "src.mkv", seconds=6.0, fmt="matroska"), 0.5)
+    (tmp_path / "lie.mkv").write_bytes(mkv)
+    with av.open(str(tmp_path / "lie.mkv")) as c:
+        assert c.duration / 1_000_000 < 1
+    _available_ram(monkeypatch, available=4 * 2 * _S16_BYTES_PER_S)
+    _disk_usage_reporting(monkeypatch, free=10_000)
+    body = _post_ok(client, separate_bgm="true",
+                    files={"file": ("a.mkv", mkv, "video/x-matroska")})
+    assert separate_calls == []
+    assert _skipped(body)
+
+
+def test_disk_fallback_keeps_a_short_original(
+        client, monkeypatch, fake_model, separate_calls, tmp_path):
+    mkv = _flac(tmp_path / "src.mkv", seconds=1.0, fmt="matroska")
+    _available_ram(monkeypatch, available=4 * 2 * _S16_BYTES_PER_S)
+    _disk_usage_reporting(monkeypatch, free=10_000)
+    assert "warnings" not in _post_ok(
+        client, separate_bgm="true",
+        files={"file": ("a.mkv", mkv, "video/x-matroska")})
+    assert len(separate_calls) == 1 and separate_calls[0].endswith(".mkv")

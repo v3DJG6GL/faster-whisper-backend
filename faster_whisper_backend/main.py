@@ -1243,7 +1243,16 @@ async def _request_validation_handler(request: Request, exc: RequestValidationEr
     """FastAPI's own 422 body, kept encodable: it echoes each offending value
     back as error.input (see _encodable_json_response)."""
     from fastapi.encoders import jsonable_encoder
-    return _encodable_json_response({"detail": jsonable_encoder(exc.errors())}, 422)
+    errors = exc.errors()
+    try:
+        detail = jsonable_encoder(errors)
+    except RecursionError:
+        # A body nested past the recursion limit echoed back as error.input
+        # (a 2 KB one is enough): keep the 422, without the echo.
+        detail = jsonable_encoder([{k: v for k, v in e.items()
+                                    if k not in ("input", "ctx")}
+                                   for e in errors])
+    return _encodable_json_response({"detail": detail}, 422)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -1338,6 +1347,16 @@ def _refuse_input(path: str) -> None:
 # other half for the separator's chunk buffers and normalised copies.
 _SEP_RAM_DIVISOR = 4
 _SEP_S16_BYTES_PER_S = 44100 * 2 * 2
+
+
+def _sep_bytes_per_s(rate: int, channels: int) -> float:
+    """What a second of `rate`/`channels` audio handed over as is costs the
+    separator, in the cap's 44.1 kHz stereo s16 bytes. It reads the file
+    whole at its native rate and channel count before resampling, so more
+    channels or a higher rate scale the charge; mono or stereo at 48 kHz or
+    below costs what the transcoded WAV would."""
+    return (_SEP_S16_BYTES_PER_S * max(1.0, channels / 2)
+            * max(1.0, rate / 48000))
 
 
 def _sep_ram_cap() -> "int | None":
@@ -1891,7 +1910,9 @@ async def transcribe(
                         audio_bytes += len(chunk)
                         if audio_bytes > max_upload:
                             raise HTTPException(status_code=413, detail="upload too large")
-                        tmp_file.write(chunk)
+                        # Off the loop: a slow or busy temp disk would stall
+                        # every other request for each MiB written.
+                        await asyncio.to_thread(tmp_file.write, chunk)
                 # Until the decoder measures the audio, size it as 128 kbps.
                 _rplan.set_audio_seconds(
                     audio_bytes / _run_plan.BYTES_PER_AUDIO_SECOND,
@@ -2403,15 +2424,21 @@ async def transcribe(
                         # (_sep_ram_cap). The transcode below measures what
                         # it writes; a file handed over as is (a wav/flac,
                         # or the original after the fallback) is measured
-                        # by the duration its container declares. A wav/flac
-                        # that opens but declares none is transcoded, so
-                        # the bounded writer measures it instead.
+                        # by the duration, rate and channel count its
+                        # container declares (_sep_bytes_per_s), and one
+                        # that declares no rate or channel count is skipped.
+                        # A wav/flac that opens but declares no duration is
+                        # transcoded, so the bounded writer measures it
+                        # instead; the fallback original is also decoded
+                        # and counted, since its header need not be true.
                         _sep_cap = await asyncio.to_thread(_sep_ram_cap)
-                        _sep_secs, _sep_opened = None, False
+                        _sep_secs, _sep_rate, _sep_ch = None, None, None
+                        _sep_opened, _sep_fell_back = False, False
                         if _sep_cap is not None:
                             try:
-                                _sep_secs = await asyncio.to_thread(
-                                    _transcode.duration_seconds, tmp_path)
+                                _sep_secs, _sep_rate, _sep_ch = (
+                                    await asyncio.to_thread(
+                                        _transcode.declared_shape, tmp_path))
                                 _sep_opened = True
                             except Exception:  # noqa: BLE001 — the decoders report it
                                 pass
@@ -2487,17 +2514,40 @@ async def transcribe(
                                         "music separation skipped: the file "
                                         "could not be prepared") from _te
                                 _sep_src = tmp_path
+                                _sep_fell_back = True
                         if (_sep_src == tmp_path and _sep_cap is not None
                                 and _sep_secs is not None
-                                and _sep_secs * _SEP_S16_BYTES_PER_S > _sep_cap):
+                                and (_sep_rate is None or _sep_ch is None
+                                     or _sep_secs * _sep_bytes_per_s(
+                                         _sep_rate, _sep_ch) > _sep_cap)):
                             logger.warning(
-                                "[bgm] input declares %.0f s, past the %.0f MB "
-                                "RAM cap; skipping separation", _sep_secs,
+                                "[bgm] input declares %.0f s (%s Hz, %s ch), "
+                                "past the %.0f MB RAM cap or unmeasurable; "
+                                "skipping separation", _sep_secs,
+                                _sep_rate or "?", _sep_ch or "?",
                                 _sep_cap / 1e6)
                             _ps(step=None)
                             raise _bgm_separation.BgmSeparationError(
                                 "music separation skipped: the file is too "
                                 "long to separate on this server")
+                        if _sep_fell_back and _sep_cap is not None:
+                            # A decode error here is the one the transcode
+                            # just met: the header check above stands.
+                            try:
+                                _sep_fits = await asyncio.to_thread(
+                                    _transcode.decoded_cost_within, tmp_path,
+                                    cost_per_s=_sep_bytes_per_s,
+                                    max_cost=_sep_cap)
+                            except Exception:  # noqa: BLE001
+                                _sep_fits = True
+                            if not _sep_fits:
+                                logger.warning(
+                                    "[bgm] input decodes past the %.0f MB RAM "
+                                    "cap; skipping separation", _sep_cap / 1e6)
+                                _ps(step=None)
+                                raise _bgm_separation.BgmSeparationError(
+                                    "music separation skipped: the file is "
+                                    "too long to separate on this server")
                         try:
                             tx_progress._check_cancelled(_pid)
                             # Queue time for the slot, not demix work: the

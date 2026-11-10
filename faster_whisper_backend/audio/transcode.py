@@ -69,17 +69,45 @@ def _open_audio(src_path: str):
     return container, stream
 
 
-def duration_seconds(src_path: str) -> "float | None":
-    """The duration the container (or else its audio stream) declares for
-    `src_path`, in seconds; None when it declares none. Header data only —
-    nothing is decoded. Raises what _open_audio raises."""
+def declared_shape(src_path: str) -> "tuple[float | None, int | None, int | None]":
+    """(seconds, sample rate, channels) the container (or else its audio
+    stream) declares for `src_path`; None for any it does not declare — PyAV
+    reports 0 channels for a WAV of more than 64. Header data only: nothing
+    is decoded. Raises what _open_audio raises."""
     container, stream = _open_audio(src_path)
     try:
         if container.duration and container.duration > 0:
-            return container.duration / 1_000_000    # AV_TIME_BASE units
-        if stream.duration and stream.duration > 0 and stream.time_base:
-            return float(stream.duration * stream.time_base)
-        return None
+            secs = container.duration / 1_000_000    # AV_TIME_BASE units
+        elif stream.duration and stream.duration > 0 and stream.time_base:
+            secs = float(stream.duration * stream.time_base)
+        else:
+            secs = None
+        rate = stream.rate if (stream.rate or 0) > 0 else None
+        channels = stream.channels if (stream.channels or 0) > 0 else None
+        return secs, rate, channels
+    finally:
+        container.close()
+
+
+def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
+    """Whether `src_path`, decoded to its end, costs at most `max_cost`: each
+    frame is charged its duration times cost_per_s(rate, channels) at its own
+    shape. Nothing is written; False as soon as the sum passes `max_cost`, or
+    on a frame without a channel count. Unlike declared_shape this does not
+    trust the header, which the uploader wrote: a Matroska Segment Duration
+    can declare a second for hours of audio. Raises what the decode raises."""
+    container, stream = _open_audio(src_path)
+    try:
+        cost = 0.0
+        for frame in _decoded_frames(container, stream):
+            channels = len(frame.layout.channels)
+            if channels <= 0 or not frame.sample_rate:
+                return False
+            cost += (frame.samples / frame.sample_rate
+                     * cost_per_s(frame.sample_rate, channels))
+            if cost > max_cost:
+                return False
+        return True
     finally:
         container.close()
 

@@ -281,6 +281,18 @@ def test_validation_error_echoing_a_non_finite_float_stays_a_422(client):
         assert err["loc"] == ["body", "trace_ts"] and err["input"] == literal
 
 
+def test_deeply_nested_body_gets_422_not_500(client):
+    # pydantic echoes the refused value as error.input; a list nested 3000
+    # deep (a 6 KB body) made jsonable_encoder raise RecursionError -> a 500.
+    depth = 3000
+    r = client.post("/v1/usage/outcome",
+                    content='{"outcomes": [' + "[" * depth + "]" * depth + "]}",
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 422
+    err = r.json()["detail"][0]
+    assert err["loc"][:2] == ["body", "outcomes"] and "input" not in err
+
+
 def test_http_exception_quoting_a_lone_surrogate_keeps_its_status(client, app_module,
                                                                   monkeypatch):
     # The model gate's 400 quotes the JSON body's raw "model"; a lone UTF-16
