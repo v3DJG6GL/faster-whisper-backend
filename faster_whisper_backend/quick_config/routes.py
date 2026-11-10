@@ -1198,7 +1198,16 @@ async def stream_recent(
                 payload = item.get("data") or {}
                 if ev == "trace" and not _visible(payload):
                     continue
-                yield f"event: {ev}\ndata: {json.dumps(payload)}\n\n"
+                # The publisher hands the same item to every subscriber, so
+                # the first stream to reach it serialises it for all of them:
+                # a capped trace is megabytes of JSON, and one dump per open
+                # stream would stall the loop N times over. No await sits
+                # between the check and the set.
+                frame = item.get("_frame")
+                if frame is None:
+                    frame = item["_frame"] = (
+                        f"event: {ev}\ndata: {json.dumps(payload)}\n\n")
+                yield frame
         finally:
             qc_recent_feed.unsubscribe(q)
 

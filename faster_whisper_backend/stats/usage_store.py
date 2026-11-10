@@ -643,8 +643,15 @@ def record_usage(
                 stub_run = (owner is not None and not owner["utterances"]
                             and owner["reported_ts"] is not None
                             and k in KINDS and k != "dictation")
-                if owner is not None and owner["user_id"] != uid and not (
-                        stub_run and owner["kind"] == "dictation"):
+                # Someone else's stub can only be squatting on this run's
+                # id if it appeared once the run was under way (the minute
+                # is slack for time the run spends outside the processing
+                # and queue time it reports); an older one is a dictation
+                # outcome of its own and stays with its owner.
+                squat = (stub_run and owner["kind"] == "dictation"
+                         and float(owner["created_ts"])
+                         >= created_ts - p - wt - 60)
+                if owner is not None and owner["user_id"] != uid and not squat:
                     # Client-minted ids can collide across users in
                     # theory: count the work, never merge it into
                     # someone else's job.

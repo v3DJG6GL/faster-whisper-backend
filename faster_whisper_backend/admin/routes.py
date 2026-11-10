@@ -693,6 +693,10 @@ _TEST_PIPELINE_MAX_MAP_VALUE = _str_max_length(
 # pins a worker thread for minutes before any guard applies.
 _TEST_PIPELINE_MAX_PATTERN = _field_max_length(
     settings_schema.RegexListEntry.model_fields["pattern"]) or 512
+# And a regex-list's entry count: each distinct pattern costs one structural
+# screen, so an uncapped list fills the request body with seconds of them.
+_TEST_PIPELINE_MAX_ENTRIES = _field_max_length(
+    settings_schema.RegexListRule.model_fields["entries"]) or 200
 
 
 # Killable pre-run of the dry run's patterns (see _probe_chain). sre holds the
@@ -1033,6 +1037,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
             continue
+        ents = rule.get("entries") if rule.get("type") == "regex-list" else None
+        if isinstance(ents, list) and len(ents) > _TEST_PIPELINE_MAX_ENTRIES:
+            return _bad_request(
+                f"rule {idx + 1}: too many entries (max {_TEST_PIPELINE_MAX_ENTRIES})")
         for what, v, cap in _capped_strings(rule):
             if isinstance(v, str) and len(v) > cap:
                 return _bad_request(f"rule {idx + 1}: {what} too long (max {cap} chars)")
@@ -1360,7 +1368,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         # Every match this rule runs in-process must have been timed by the
         # killable probe on exactly this text, or it is not run.
         held: dict[int, str] = {}
-        items = _probe_items(rule)
+        # Off the loop: the structural screen of a new pattern is a compile
+        # plus pairwise overlap matching. Passes run one after another, so
+        # _screened is never touched by two threads at once.
+        items = await asyncio.to_thread(_probe_items, rule)
         if items and probe["on"]:
             h = _text_sha(text)
             if cleared.get(idx, ("",))[0] != h and not probe["exhausted"]:

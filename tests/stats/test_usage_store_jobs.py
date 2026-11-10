@@ -432,6 +432,45 @@ def test_foreign_dictation_rows_are_never_merged(us):
     assert _doc(us, user_id="mallory", days=1)["dictation"]["sessions"] == 2
 
 
+def _stub_at(us, monkeypatch, jid, ts, **kw):
+    """record_outcome's stub for `jid`, stamped at epoch `ts`."""
+    with monkeypatch.context() as m:
+        m.setattr(us.time, "time", lambda: ts)
+        assert _outcome(us, jid, **kw) == "accepted"
+
+
+def test_foreign_stub_older_than_the_run_is_left_to_its_owner(us, monkeypatch):
+    """Only a stub that appeared while the run was under way can be a squat
+    on its id. Bob's own dictation outcome stub from before Alice's run
+    started stays his: his session keeps counting and Alice's run records
+    without a job row, as any foreign collision does."""
+    jid = "d" * 32
+    _stub_at(us, monkeypatch, jid, time.time() - 600, user_id="bob", app_id="vim")
+    _rec(us, user_id="alice", audio_s=100.0, words=500, kind="file",
+         job_id=jid, processing_s=30.0, wait_s=5.0,
+         stages=[{"name": "transcribing", "secs": 3.0}])
+    job = _row(us, "SELECT user_id, kind, utterances, app_id, reported_ts IS NOT NULL"
+                   " FROM usage_jobs")
+    assert tuple(job) == ("bob", "dictation", 0, "vim", 1)
+    assert _row(us, "SELECT COUNT(*) FROM usage_job_stages")[0] == 0
+    assert _row(us, "SELECT SUM(sessions) FROM usage_dictation_hourly")[0] == 1
+    assert _row(us, "SELECT SUM(sessions) FROM usage_app_hourly")[0] == 1
+    assert _doc(us, user_id="alice", days=1)["total"]["file"]["sessions"] == 1
+
+
+def test_foreign_stub_posted_while_the_run_was_under_way_is_taken_over(
+        us, monkeypatch):
+    """A stub younger than the run's start (record time minus processing and
+    queue time) is a squat on the run's id: the run takes it over."""
+    jid = "e" * 32
+    _stub_at(us, monkeypatch, jid, time.time() - 120, user_id="mallory")
+    _rec(us, user_id="alice", audio_s=100.0, words=500, kind="file",
+         job_id=jid, processing_s=200.0, wait_s=5.0)
+    job = _row(us, "SELECT user_id, kind, utterances FROM usage_jobs")
+    assert tuple(job) == ("alice", "file", 1)
+    assert _row(us, "SELECT COUNT(*) FROM usage_dictation_hourly")[0] == 0
+
+
 def test_with_document_dictation_targets_honour_the_kind_filter(us):
     """The with= document's dictation.targets honours the kind filter like
     every other figure: kind=file lists none next to dictation.sessions 0."""

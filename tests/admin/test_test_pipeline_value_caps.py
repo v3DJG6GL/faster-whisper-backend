@@ -128,3 +128,40 @@ def test_non_string_regex_list_pattern_is_skipped_before_the_screens(client, mon
     step = list_step(client, [{"pattern": _LIST_PATTERN, "replacement": "x"}], sample="w000001")
     assert step["error"] == "pattern must be a string"
     assert step["after"] == "w000001"
+
+
+def test_entries_cap_is_read_off_the_schema():
+    assert admin_routes._field_max_length(
+        settings_schema.RegexListRule.model_fields["entries"]) == 200
+    assert admin_routes._TEST_PIPELINE_MAX_ENTRIES == 200
+
+
+def test_too_many_regex_list_entries_are_rejected(client):
+    # Each distinct pattern costs a structural screen; a saved rule cannot
+    # carry more than 200 entries, so the dry run refuses more too.
+    entries = [{"pattern": f"w{i:04d}", "replacement": "x"} for i in range(201)]
+    error = refused_dry_run(client, [list_rule(entries)], "w0001")
+    assert error == "rule 1: too many entries (max 200)"
+
+
+def test_regex_list_entries_at_the_cap_still_run(client):
+    entries = [{"pattern": f"w{i:04d}", "replacement": "x"} for i in range(200)]
+    step = list_step(client, entries, sample="w0199")
+    assert step["after"] == "x"
+
+
+def test_patterns_are_screened_off_the_event_loop(client, monkeypatch):
+    # The screen is a regex compile plus pairwise overlap matching per
+    # distinct pattern; run on the loop, a list of them stalls every client.
+    from tests.conftest import on_event_loop
+
+    seen = []
+
+    def _screen(pat):
+        seen.append(on_event_loop())
+        return False
+    monkeypatch.setattr(admin_routes.regex_guard, "_nested_repetition", _screen)
+    step = list_step(client, [{"pattern": "foo", "replacement": "bar"},
+                              {"pattern": "baz", "replacement": "qux"}], sample="foo baz")
+    assert step["after"] == "bar qux"
+    assert seen and not any(seen)

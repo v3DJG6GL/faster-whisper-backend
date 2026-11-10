@@ -904,6 +904,58 @@ def test_stream_replay_renders_off_the_event_loop(client, make_user_key,
     assert [r["request_id"] for r in rows] == ["old", "new"]
 
 
+def test_stream_live_frame_serialised_once_per_item(client, make_user_key,
+                                                    app_module, monkeypatch):
+    """The publisher hands the same item to every subscriber; serialising
+    it once per stream put N copies of a megabytes-large json.dumps on the
+    loop for N open streams. Every stream still receives the same bytes.
+    Driven directly, never via TestClient streaming."""
+    import json
+
+    from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
+
+    _uid, raw = locked_alice(make_user_key, "all")
+    monkeypatch.setattr(qc, "_replay_frames", lambda *a, **k: [])
+    calls = []
+
+    class _Json:
+        def __getattr__(self, name):
+            return getattr(json, name)
+
+        @staticmethod
+        def dumps(obj, *a, **k):
+            calls.append(obj)
+            return json.dumps(obj, *a, **k)
+
+    async def _receive():
+        await asyncio.Event().wait()
+
+    async def drive():
+        bodies = []
+        for _ in range(2):
+            req = fake_request(bearer(raw), path="/quick-config/stream",
+                               receive=_receive)
+            resp = await qc.stream_recent(req, qc.require_user_or_admin_sse(req))
+            bodies.append(resp.body_iterator)
+        try:
+            nexts = [asyncio.ensure_future(b.__anext__()) for b in bodies]
+            await asyncio.sleep(0.1)   # both generators are parked in q.get()
+            monkeypatch.setattr(qc, "json", _Json())
+            qc_recent_feed._broadcast({"event": "trace",
+                                       "data": {"user_id": "someone-else",
+                                                "final": "x" * 1000}})
+            return await asyncio.wait_for(asyncio.gather(*nexts), timeout=10)
+        finally:
+            for b in bodies:
+                await b.aclose()
+
+    frames = asyncio.run(drive())
+    assert frames[0] == frames[1]
+    assert frames[0].startswith("event: trace\ndata: {")
+    assert json.loads(frames[0].split("data: ", 1)[1])["final"] == "x" * 1000
+    assert len(calls) == 1
+
+
 def test_concurrent_patches_do_not_lose_an_update(client, app_module,
                                                   monkeypatch):
     """Two overlapping patches of DIFFERENT rules both used to snapshot the
