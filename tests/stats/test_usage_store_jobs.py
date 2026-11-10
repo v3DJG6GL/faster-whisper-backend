@@ -369,6 +369,69 @@ def test_outcome_before_a_file_run_does_not_make_it_a_dictation(us):
     assert doc["dictation"]["delivery"]["typed"] == 0
 
 
+def test_foreign_outcome_stub_does_not_drop_a_file_run(us):
+    """Another key holder who saw a batch run's request_id (a live trace, a
+    capture row) can post an outcome under it before the run records usage.
+    That bare dictation stub must not cost the run its job and stage rows:
+    the run takes the row over and the stub's session leaves the poster's
+    dictation / app buckets."""
+    jid = "a" * 32
+    assert _outcome(us, jid, user_id="mallory", app_id="vim") == "accepted"
+    _rec(us, user_id="alice", key_id="ka", audio_s=100.0, words=500,
+         kind="file", job_id=jid,
+         stages=[{"name": "transcribing", "secs": 3.0, "model": "m"}])
+    job = _row(us, "SELECT user_id, key_id, kind, utterances, reported_ts,"
+                   " activation, app_id, words FROM usage_jobs")
+    assert tuple(job) == ("alice", "ka", "file", 1, None, None, None, 500)
+    stage = _row(us, "SELECT job_id, stage FROM usage_job_stages")
+    assert tuple(stage) == (jid, "transcribing")
+    assert _row(us, "SELECT COUNT(*) FROM usage_dictation_hourly")[0] == 0
+    assert _row(us, "SELECT COUNT(*) FROM usage_app_hourly")[0] == 0
+    assert _doc(us, user_id="alice", days=1)["total"]["file"]["sessions"] == 1
+    assert _doc(us, user_id="mallory", days=1)["dictation"]["sessions"] == 0
+
+
+def test_foreign_stub_stage_rows_stay_out_of_the_run_that_takes_it_over(us):
+    """The stub's owner can attach translation stage rows to it (a
+    translation's session_job_id). The run that takes the stub over gets
+    only its own stage rows; the poster's hourly stage rollup keeps the
+    translation, like any request whose job id collided."""
+    jid = "b" * 32
+    _outcome(us, jid, user_id="mallory")
+    _rec(us, user_id="mallory", audio_s=1.0, words=3, kind="text",
+         job_id="c" * 32, session_job_id=jid,
+         stages=[{"name": "translating", "secs": 2.0, "targets": ["de"]}])
+    _rec(us, user_id="alice", audio_s=100.0, words=500, kind="file",
+         job_id=jid, stages=[{"name": "transcribing", "secs": 3.0}])
+    stages = us._require_conn().execute(
+        "SELECT stage FROM usage_job_stages WHERE job_id = ?", (jid,)).fetchall()
+    assert [r["stage"] for r in stages] == ["transcribing"]
+    runs = us._require_conn().execute(
+        "SELECT user_id, stage, runs FROM usage_stage_hourly"
+        " ORDER BY user_id").fetchall()
+    assert [tuple(r) for r in runs] == [
+        ("alice", "transcribing", 1), ("mallory", "translating", 1)]
+
+
+def test_foreign_dictation_rows_are_never_merged(us):
+    """Dictation-vs-dictation collisions (a foreign stub or a foreign
+    session with utterances) still count the work without a job row."""
+    _outcome(us, "s" * 32, user_id="mallory")
+    _rec(us, user_id="alice", audio_s=5.0, words=20, kind="dictation",
+         job_id="s" * 32)
+    _rec(us, user_id="mallory", audio_s=5.0, words=20, kind="dictation",
+         job_id="t" * 32)
+    _rec(us, user_id="alice", audio_s=5.0, words=20, kind="file",
+         job_id="t" * 32)
+    rows = us._require_conn().execute(
+        "SELECT job_id, user_id, kind, utterances FROM usage_jobs"
+        " ORDER BY job_id").fetchall()
+    assert [tuple(r) for r in rows] == [
+        ("s" * 32, "mallory", "dictation", 0),
+        ("t" * 32, "mallory", "dictation", 1)]
+    assert _doc(us, user_id="mallory", days=1)["dictation"]["sessions"] == 2
+
+
 def test_with_document_dictation_targets_honour_the_kind_filter(us):
     """The with= document's dictation.targets honours the kind filter like
     every other figure: kind=file lists none next to dictation.sessions 0."""

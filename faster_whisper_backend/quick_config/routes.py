@@ -139,6 +139,9 @@ def _reauth_on_version_change(request: Request, seen_version: int,
     due = settings_version.reauth_due(seen_version, resolved_at)
     if due is None:
         return None
+    # The connect-time host gate too: a peer cut out of the allowlist loses
+    # its open stream, not only its reconnect.
+    require_user_webui_host(request)
     return require_user_or_admin_sse(request), *due
 
 

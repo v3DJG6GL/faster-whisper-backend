@@ -636,24 +636,41 @@ def record_usage(
             late_outcome: sqlite3.Row | None = None
             if jid is not None:
                 owner = conn.execute(
-                    "SELECT user_id, utterances, created_ts, reported_ts,"
+                    "SELECT user_id, kind, utterances, created_ts, reported_ts,"
                     " activation, delivery, translation, app_id"
                     " FROM usage_jobs WHERE job_id = ?", (jid,)
                 ).fetchone()
-                if owner is not None and owner["user_id"] != uid:
+                stub_run = (owner is not None and not owner["utterances"]
+                            and owner["reported_ts"] is not None
+                            and k in KINDS and k != "dictation")
+                if owner is not None and owner["user_id"] != uid and not (
+                        stub_run and owner["kind"] == "dictation"):
                     # Client-minted ids can collide across users in
                     # theory: count the work, never merge it into
                     # someone else's job.
                     jid = None
                 else:
+                    if owner is not None and owner["user_id"] != uid:
+                        # Someone else's bare outcome stub under a file /
+                        # url / text run's id: the run's request_id reaches
+                        # other viewers (live traces, capture rows) before
+                        # it records, so an outcome posted under it would
+                        # otherwise cost the run its job and stage rows.
+                        # The run owns the id; the stub's own stage rows
+                        # (a translation's session_job_id) stay counted in
+                        # its owner's hourly rollups, never in this job.
+                        conn.execute(
+                            "DELETE FROM usage_job_stages WHERE job_id = ?",
+                            (jid,))
+                        conn.execute(
+                            "UPDATE usage_jobs SET user_id = ? WHERE job_id = ?",
+                            (uid, jid))
                     # A row with no utterance yet is record_outcome's
                     # stub (the report raced the utterances): the session
                     # is still uncounted in usage_hourly, and the stub's
                     # open-mode key_id gives way to the real one.
                     new_session = owner is None or not owner["utterances"]
-                    if (owner is not None and not owner["utterances"]
-                            and owner["reported_ts"] is not None
-                            and k in KINDS and k != "dictation"):
+                    if stub_run:
                         # The stub's id turns out to be a file / url /
                         # text run (its outcome was posted before the
                         # run recorded): it never was a dictation, which

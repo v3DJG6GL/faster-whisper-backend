@@ -187,6 +187,29 @@ def test_stream_reauth_rechecks_an_expired_session_without_a_bump(
             req, seen, at - qc._REAUTH_INTERVAL_S - 1)
 
 
+def test_stream_reauth_rechecks_the_user_host_allowlist(
+        client, make_user_key, monkeypatch):
+    """Narrowing USER_WEBUI_ALLOWED_HOSTS must end an open trace stream from a
+    peer it drops at the next re-check, not only refuse its reconnect."""
+    from fastapi import HTTPException
+
+    from faster_whisper_backend.settings import config
+
+    _uid, raw = locked_alice(make_user_key, "all")
+    req = fake_request(headers=bearer(raw), client=("203.0.113.9", 1))
+    monkeypatch.setattr(config, "USER_WEBUI_ALLOWED_HOSTS", ["0.0.0.0/0"])
+    res = qc._reauth_on_version_change(req, -1, 0.0)
+    assert res is not None
+    _rec, seen, at = res
+    monkeypatch.setattr(config, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1"])
+    # Idle ticks stay cheap: nothing due, no check.
+    assert qc._reauth_on_version_change(req, seen, at) is None
+    with pytest.raises(HTTPException) as e:
+        qc._reauth_on_version_change(
+            req, seen, at - qc._REAUTH_INTERVAL_S - 1)
+    assert e.value.status_code == 403
+
+
 def test_recent_open_mode(client):
     r = client.get("/quick-config/recent")
     assert r.status_code == 200

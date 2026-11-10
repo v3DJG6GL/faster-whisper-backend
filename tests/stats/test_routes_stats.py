@@ -526,6 +526,26 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
         stats_routes._rescope_on_version_change(req, seen2, at2)
 
 
+def test_stream_rescope_rechecks_the_user_host_allowlist(
+        client, make_user_key, monkeypatch):
+    """Narrowing USER_WEBUI_ALLOWED_HOSTS must end an open stream from a peer
+    it drops at the next re-check, not only refuse its reconnect: the
+    re-check re-runs the connect's host gate next to the credential."""
+    _uid, raw = _stats_user(make_user_key, "alice", "all")
+    req = fake_request(headers=bearer(raw), client=("203.0.113.9", 1))
+    monkeypatch.setattr(cfg, "USER_WEBUI_ALLOWED_HOSTS", ["0.0.0.0/0"])
+    res = stats_routes._rescope_on_version_change(req, -1, 0.0)
+    assert res is not None
+    _scope, seen, at = res
+    monkeypatch.setattr(cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1"])
+    # Idle ticks stay cheap: nothing due, no check.
+    assert stats_routes._rescope_on_version_change(req, seen, at) is None
+    with pytest.raises(HTTPException) as e:
+        stats_routes._rescope_on_version_change(
+            req, seen, at - stats_routes._REAUTH_INTERVAL_S - 1)
+    assert e.value.status_code == 403
+
+
 def test_stream_rechecks_the_caller_before_its_first_frame(
         client, make_user_key):
     """A narrowing or revoke that lands between the Depends resolving the

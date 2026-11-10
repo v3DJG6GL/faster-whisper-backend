@@ -285,6 +285,15 @@ async def reports_page() -> HTMLResponse:
     )
 
 
+def _row_for(row: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    """A report row as list / PATCH return it to `user`. The submitter's
+    network address stays admin-only (the export carries it too): a
+    non-admin with scope "all" sees every report, and no page reads it."""
+    if not user.get("is_admin"):
+        row.pop("reporter_host", None)
+    return row
+
+
 class PatchReportIn(BaseModel):
     model_config = {"extra": "forbid"}
     status: Literal["open", "resolved", "dismissed"] | None = None
@@ -321,6 +330,7 @@ async def list_reports_api(
             [r.get("user_id") for r in rows],
         )
         for r in rows:
+            _row_for(r, user)
             r["username"] = usernames.get(r.get("user_id"))
         return json.dumps({
             "reports": rows,
@@ -375,7 +385,7 @@ async def patch_report_api(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     if updated is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
-    return JSONResponse({"ok": True, "report": updated})
+    return JSONResponse({"ok": True, "report": _row_for(updated, user)})
 
 
 @router.delete(

@@ -126,6 +126,9 @@ def _logs_stream_reauth(request: Request, seen_version: int,
     due = settings_version.reauth_due(seen_version, resolved_at)
     if due is None:
         return seen_version, resolved_at
+    # The connect-time host gate too: a peer cut out of the allowlist loses
+    # its open tail, not only its reconnect.
+    require_user_webui_host(request)
     _require_logs_page_sse(auth_dependencies.resolve_user_for_page_sse(request, "logs"))
     return due
 

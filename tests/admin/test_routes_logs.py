@@ -251,6 +251,29 @@ def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
             req, seen, at - logs_routes._REAUTH_INTERVAL_S - 1)
 
 
+def test_logs_stream_reauth_rechecks_the_user_host_allowlist(
+        client, make_user_key, monkeypatch):
+    """Narrowing USER_WEBUI_ALLOWED_HOSTS must end an open tail from a peer it
+    drops at the next re-check, not only refuse its reconnect."""
+    import pytest
+    from fastapi import HTTPException
+
+    from faster_whisper_backend.settings import config
+    from tests.conftest import bearer, fake_request, locked_user
+
+    _uid, raw = locked_user(make_user_key, pages={"logs": "all"})
+    req = fake_request(headers=bearer(raw), client=("203.0.113.9", 1))
+    monkeypatch.setattr(config, "USER_WEBUI_ALLOWED_HOSTS", ["0.0.0.0/0"])
+    seen, at = logs_routes._logs_stream_reauth(req, -1, 0.0)
+    monkeypatch.setattr(config, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1"])
+    # Idle ticks stay cheap: nothing due, no check.
+    assert logs_routes._logs_stream_reauth(req, seen, at) == (seen, at)
+    with pytest.raises(HTTPException) as e:
+        logs_routes._logs_stream_reauth(
+            req, seen, at - logs_routes._REAUTH_INTERVAL_S - 1)
+    assert e.value.status_code == 403
+
+
 def test_logs_stream_rechecks_the_caller_before_the_backlog(
         client, make_user_key, app_module, monkeypatch, tmp_path):
     """The stream snapshotted the config version inside the generator, AFTER

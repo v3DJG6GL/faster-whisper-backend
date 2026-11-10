@@ -502,3 +502,34 @@ def test_withdraw_deletes_the_callers_open_report(client):
     assert r.status_code == 200
     assert client.delete(
         "/quick-config/reports/api/by-request/wd-2").status_code == 404
+
+
+def test_list_and_patch_hide_reporter_host_from_non_admin(client, make_user_key):
+    """A non-admin with reports scope "all" sees every report but not the
+    submitter's network address: no page reads reporter_host, and admins
+    keep it in list / PATCH / export."""
+    from faster_whisper_backend.reports import store as reports_store
+    _root, root_raw = make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("carol", pages={"reports": "all"})
+    reports_store.upsert_report(
+        user_id="u-other", request_id="host-1", trace_ts=1000.0,
+        model="m", raw="r", final="f", steps=[], corrections=[],
+        intended_text="", user_comment="c", reporter_role="user",
+        reporter_host="198.51.100.7",
+    )
+    rows = client.get("/reports/api/list", headers=bearer(raw)).json()["reports"]
+    assert len(rows) == 1 and "reporter_host" not in rows[0]
+    rid = rows[0]["id"]
+    r = client.patch(f"/reports/api/{rid}", headers=bearer(raw),
+                     json={"status": "resolved"})
+    assert r.status_code == 200
+    assert r.json()["report"]["status"] == "resolved"
+    assert "reporter_host" not in r.json()["report"]
+
+    admin = bearer(root_raw)
+    row = client.get("/reports/api/list", headers=admin).json()["reports"][0]
+    assert row["reporter_host"] == "198.51.100.7"
+    r = client.patch(f"/reports/api/{rid}", headers=admin, json={"status": "open"})
+    assert r.json()["report"]["reporter_host"] == "198.51.100.7"
+    export = json.loads(client.get("/reports/api/export", headers=admin).text)
+    assert export["reports"][0]["reporter_host"] == "198.51.100.7"
