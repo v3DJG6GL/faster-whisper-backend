@@ -68,12 +68,13 @@ _PROGRESS_CLOSED_TTL_S = _BATCH_PROGRESS_STALE_S
 # minute: tombstones live 2 h, so scanning them on every close would make each
 # close O(n) under a stream of fresh ids, and a minute's delay only lengthens
 # straggler suppression.
-_PROGRESS_CLOSED_LAST_SWEEP = [0.0]
+_PROGRESS_CLOSED_LAST_SWEEP = 0.0
 
 
 def _progress_close(pid: "str | None") -> None:
     """Retire `pid`'s live progress entry: pop the three registries and
     tombstone the id so a straggling stage-thread tick cannot resurrect it."""
+    global _PROGRESS_CLOSED_LAST_SWEEP
     if not pid:
         return
     _BATCH_PROGRESS.pop(pid, None)
@@ -82,8 +83,8 @@ def _progress_close(pid: "str | None") -> None:
     now = time.monotonic()
     _PROGRESS_CLOSED[pid] = now
     if (len(_PROGRESS_CLOSED) > 64
-            and now - _PROGRESS_CLOSED_LAST_SWEEP[0] >= 60.0):
-        _PROGRESS_CLOSED_LAST_SWEEP[0] = now
+            and now - _PROGRESS_CLOSED_LAST_SWEEP >= 60.0):
+        _PROGRESS_CLOSED_LAST_SWEEP = now
         for k in [k for k, t in list(_PROGRESS_CLOSED.items())
                   if now - t > _PROGRESS_CLOSED_TTL_S]:
             _PROGRESS_CLOSED.pop(k, None)
@@ -464,10 +465,11 @@ def _progress_payload(pid: str, entry: dict) -> dict:
 def _reset_for_tests() -> None:
     """Empty every progress / cancel / binding registry in place (a caller
     holding a reference sees it empty)."""
+    global _PROGRESS_CLOSED_LAST_SWEEP
     _BATCH_PROGRESS.clear()
     _PROGRESS_OWNER.clear()
     _PROGRESS_CLOSED.clear()
-    _PROGRESS_CLOSED_LAST_SWEEP[0] = 0.0
+    _PROGRESS_CLOSED_LAST_SWEEP = 0.0
     _JOB_BY_PID.clear()
     _PLAN_BY_PID.clear()
     _RUN_PLAN_BY_PID.clear()
