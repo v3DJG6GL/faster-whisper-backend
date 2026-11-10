@@ -1120,6 +1120,93 @@ def test_optional_atom_beside_a_multi_width_alternation_is_rejected(pat):
         g.validate([("r", pat, "")])
 
 
+@pytest.mark.parametrize("pat", [
+    r"(?:(?: ?ja|nein) ?)+!",
+    r"(?:(?: ?-|–) ?)+#",
+    r"(?:x(?:-|– ?) ?)+#",
+    r"(?:(?:a?b|c) ?a?)+#",
+    r"(?:(?:ja|nein ?) ?)+!",
+    r"(?:(?: ?-|– ?))+#",
+    r"(?:(?: ?a|b) ?)+#",
+    r"(?:(?:x?a|b)x?)+#",
+    r"(?:(?:,? ?-|–) ?)+#",
+    r"(?:(?:- ?,?|–) ?)+#",
+    r"(?:(?:-|– ?) ?)+#",
+    r"(?: ?(?:Komma|, ?))+#",
+    r"(?:(?:Komma ?|,) ?\w)+#",
+    r"(?: ?-|– ?)+#",
+    r"(?:,|; ?| ?x)+#",
+    r"(?:(?:- ?|–) ?)+#",
+    r"(?: ?(?: ?-|–))+#",
+    r"(?:(?:\s?-|–)\s?)+#",
+    r"(?:(?:a?xa|c)a?)+#",
+])
+def test_optional_edge_of_a_mixed_alternation_is_rejected(pat):
+    """A mixed alternation (`(?: ?-|–)`: every branch has a mandatory atom,
+    some an optional edge atom) stood as one pin, so the optional atoms around
+    it never saw its edges, and a repeated alternation's branches were read
+    one by one. Across a repetition boundary ` ?` traded with the edge beside
+    it, `" -" * 20` split 2**20 ways and re.sub took seconds on a natural
+    `- - -` or `ja ja ja` run."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:b?(?: ?bx|c)b?y)+",
+    r"(?:- ?|–)+#",
+    r"(?: ?-|–)+#",
+    r"(?:, ?|; ?)+",
+    r"(?:(?:ja|nein) ?)+!",
+    r"(?:(?:, ?ja|nein) )+",
+    r"(?:(?: ?/|-) ?\d)+",
+    r"(?:(?: ?,|;) ?x)+",
+    r"(?:(?:,|;)?(?: ?|-)x)+",
+    r"(?:(?:z\.? ?B\.? ?|d\.? ?h\.?) )+",
+    r"(?:(?:,? ?bitte|danke) )+",
+    r"(?:(?: ?bitte|danke) )+",
+    r"(?:(?: ?\(|\[) ?x)+",
+    r"(?:(?: und| oder),? )+",
+    r"(?:x(?: ?a|b ?)y)+",
+    r"(?:(?:ab ?|cd)x)+",
+    r"(?:(?: ?a|b)x)+",
+    r"(?:(?:,? ?|;)x)+",
+    r"(?:(?:Komma|, ?)x)+",
+    r"(?:(?: ?-|–)x)+",
+    r"(?:(?:um|ähm),? )+",
+    r"(?:(?:\.|!|\?) ?[A-Z])+",
+    r"(?:(?: -|–) )+",
+    r"(?:(?:- ?|–)\d)+",
+    r"(a|b)+",
+    r"\d+(,\d+)?",
+    r"(?:ab?c)+",
+    r"(?:(?:,|\.) ?)+",
+    r"(?:ja |nein )+",
+    r"\b(\w+)(?: \1\b)+",
+    r"(?:(?:also|irgendwie) )+",
+    r"(?:,? ?und )+",
+    r"(?:x?(?:y?|z) )+",
+    r"(?P<n>a)((?P=n)|b)+",
+    r"(a)(?:b|\1)+",
+    r"(\d)(?:x|\1)+",
+    r"(ja )(?:nein |\1)+#",
+    r"(\w+)(?:,? \1)+",
+    r"(?:\d\d?\.\s?)+",
+    r"(?:(?:um|umm), )+",
+    r"(?:x?(?:ab|cd))+",
+    r"(?:,?(?:und|oder) )+",
+    r"(?:-?(?:\d|x))+",
+])
+def test_mixed_alternation_whose_edges_cannot_trade_passes(pat):
+    """The edge reading refuses only a split that exists: a mandatory atom
+    between the edges (`(?:(?: ?/|-) ?\\d)+`), an edge no branch's mandatory
+    atoms can take (`(?:b?(?: ?bx|c)b?y)+`: `b` passes neither ` b` nor `c`),
+    or an optional atom with nothing beside it to trade with."""
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
 @pytest.mark.parametrize("pat", [r"(?:a?b(?:a|aa)c)+#", r"(?:(?:a|aa)c)+a?#"])
 def test_multi_width_alternation_pinned_off_an_optional_atom_passes(pat):
     assert not g._nested_repetition(pat)

@@ -731,6 +731,11 @@ def _nested_repetition(pat: str) -> bool:
             # each: see _optional_only.
             if repeats and _optional_only(pat[frame["start"]:close]):
                 frame["rep"] = True
+            # `(?: ?-|– ?)+` trades one branch's tail with the next
+            # repetition's head: see _alt_wrap_overlap.
+            if (repeats and frame["alts"] and not frame.get("conditional")
+                    and _alt_wrap_overlap(pat[frame["start"]:close], icase)):
+                frame["rep"] = True
             if variable and not frame["atomic"] and not possessive:
                 if _rep(frame):
                     return True
@@ -834,7 +839,11 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
     split against each other: `(?:Komma|,)` is not `[K,]` with two loose `m?`
     that take each other's `m`. An alternation that can match empty
     (`(?:j?|b)`) pins nothing and is read as one optional atom that takes
-    any character its branches name. Any other group, a possessive or variable
+    any character its branches name. A mixed alternation whose branches each
+    hold a mandatory atom (`(?: ?-|–)`) keeps its optional edge atoms,
+    position by position, around one middle atom that takes a character only
+    if all of some branch's mandatory atoms take it, so an outer ` ?` still
+    meets the inner one. Any other group, a possessive or variable
     quantifier or an atom that cannot be read stands as a pin — those are
     left to the rest of the screen. The match is one compiled atom against
     one character, so it is safe in-process; DOTALL over-approximates, as in
@@ -846,6 +855,19 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
         if _splits_ambiguously(atoms, flags):
             return True
     return False
+
+
+def _alt_wrap_overlap(body: str, icase: bool = False) -> bool:
+    """True if the branches of the REPEATED alternation ``body`` trade an
+    edge atom across the repetition boundary: one branch's trailing optional
+    atom with another's leading one. `(?: ?-|– ?)+#` reads "– -" as "– " then
+    "-" or as "–" then " -", which _optional_overlap and _optional_only miss
+    because they read the branches one by one. A body that is still read as
+    a pin is left to the rest of the screen."""
+    import re
+    got = _branch_atoms("(?:" + body + ")")
+    return (len(got) == 1 and None not in got[0]
+            and _splits_ambiguously(got[0], re.DOTALL | (re.IGNORECASE if icase else 0)))
 
 
 def _optional_only(body: str) -> bool:
@@ -971,7 +993,42 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                     if names:
                         branches[-1].append(("(?:" + "|".join(names) + ")", True, None, None))
                 else:
-                    branches[-1].append(None)
+                    # A mixed alternation (`(?: ?-|–)`): every branch has a
+                    # mandatory atom, some have optional edge atoms. As a lone
+                    # pin it hid those edges from the outer optionals they
+                    # trade with across a repetition boundary. Keep the
+                    # edges, position by position, and read the middle as one
+                    # atom that takes c only if all of some branch's mandatory
+                    # atoms take c: a union would let `b` pass `(?: ?bx|c)`,
+                    # which no branch can, and refuse the linear
+                    # `(?:b?(?: ?bx|c)b?y)+`.
+                    lead: "list[dict]" = []
+                    trail: "list[dict]" = []
+                    mid: "dict | None" = {}
+                    for b in inner:
+                        m = [p for p, a in enumerate(b) if not a[1]]
+                        if not m:
+                            mid = None
+                            break
+                        for p, a in enumerate(b[:m[0]]):
+                            if p == len(lead):
+                                lead.append({})
+                            lead[p][a[0]] = None
+                        for p, a in enumerate(reversed(b[m[-1] + 1:])):
+                            if p == len(trail):
+                                trail.append({})
+                            trail[p][a[0]] = None
+                        must = [b[p][0] for p in m]
+                        mid["".join("(?=" + t + ")" for t in must[:-1]) + must[-1]] = None
+                    if mid is None:
+                        branches[-1].append(None)
+                    else:
+                        la, ta = object(), object()
+                        for d in lead:
+                            branches[-1].append(("(?:" + "|".join(d) + ")", True, None, la))
+                        branches[-1].append(("(?:" + "|".join(mid) + ")", optional, None, None))
+                        for d in reversed(trail):
+                            branches[-1].append(("(?:" + "|".join(d) + ")", True, None, ta))
             else:
                 branches[-1].extend((t, o or optional, u, v) for t, o, u, v in inner[0])
         elif char is None:
