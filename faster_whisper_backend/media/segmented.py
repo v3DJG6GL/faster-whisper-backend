@@ -39,6 +39,10 @@ MAX_SEGMENTS_PER_PIECE = 16
 SEGMENT_MAX_BYTES = 2 * 1024 * 1024
 TOTAL_MAX_BYTES = 24 * 1024 * 1024     # all segments (+ init) of one check
 PLAYLIST_MAX_BYTES = 2 * 1024 * 1024   # a 4 h playlist of 2 s segments ≈ 1 MB
+# yt-dlp expands a DASH manifest's segment template into one dict per
+# fragment, unbounded: past ~150k (the HLS playlist bound) the list is
+# refused before any walk, and the full download takes over.
+MAX_DASH_FRAGMENTS = 200_000
 BUDGET_S = 60.0                        # every request of one check, wall clock
 MARGIN_S = 1.0                         # around each piece
 # The extractor's request headers we pass on (some CDNs want the page as
@@ -268,7 +272,11 @@ async def fetch_pieces(source: dict, starts: "list[float] | None", seconds: floa
         return body.decode("utf-8", errors="replace"), final
 
     if source.get("protocol") == "dash":
-        media = dash_media(source.get("fragments"), source.get("base"))
+        fragments = source.get("fragments")
+        if isinstance(fragments, list) and len(fragments) > MAX_DASH_FRAGMENTS:
+            raise Unsupported("the stream lists too many segments")
+        # Up to MAX_DASH_FRAGMENTS entries (~0.5 s): walked off the event loop.
+        media = await asyncio.to_thread(dash_media, fragments, source.get("base"))
     else:
         media, url = None, source.get("url")
         for _hop in range(2):  # a master playlist, then its media playlist
@@ -285,10 +293,13 @@ async def fetch_pieces(source: dict, starts: "list[float] | None", seconds: floa
         if media is None:
             raise Unsupported("a master playlist that points at another")
 
-    if starts is None:
-        starts = piece_starts(sum(d for _u, d in media.segments))
-    runs = select_segments([d for _u, d in media.segments], starts, seconds,
-                           MARGIN_S)
+    def _plan(starts: "list[float] | None") -> "tuple[list[float], list]":
+        # Two more walks over every segment: off the event loop too.
+        if starts is None:
+            starts = piece_starts(sum(d for _u, d in media.segments))
+        return starts, select_segments([d for _u, d in media.segments], starts,
+                                       seconds, MARGIN_S)
+    starts, runs = await asyncio.to_thread(_plan, starts)
     for first, end, _skip in runs:
         if end == first:
             raise Unsupported("a piece lies past the stream's end")

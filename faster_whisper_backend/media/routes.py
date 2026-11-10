@@ -567,6 +567,10 @@ _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
 # Free space an upload must leave on the staging volume (the package route's
 # margin): a near-full disk is refused before the transfer, not after it.
 _UPLOAD_DISK_MARGIN = 64 * 1024 * 1024
+# The margin is re-checked while the body streams, once per this many bytes:
+# a chunked body declares no length, and concurrent uploads all passed the
+# pre-check against the same free space.
+_UPLOAD_DISK_CHECK_EVERY = 16 * 1024 * 1024
 _NO_DISK = "not enough disk space on the server"
 # Keeps \w (letters and digits in any script) plus " .()-": FileResponse
 # sends a non-ASCII name as RFC 5987 filename*=utf-8''…, so controls, bidi
@@ -639,14 +643,16 @@ async def upload_media(request: Request,
                  else "upload too large for the server's media store "
                       "(RETAINED_MEDIA_MAX_BYTES)")
     _clen = request.headers.get("content-length")
-    if _clen and _clen.isdigit() and int(_clen) > cap:
+    declared = int(_clen) if _clen and _clen.isdigit() else None
+    if declared is not None and declared > cap:
         raise HTTPException(status_code=413, detail=too_large)
     staging = url_media_store.staging_dir()
-    if _clen and _clen.isdigit() and (
-            shutil.disk_usage(staging).free < int(_clen) + _UPLOAD_DISK_MARGIN):
+    if declared is not None and (
+            shutil.disk_usage(staging).free < declared + _UPLOAD_DISK_MARGIN):
         raise HTTPException(status_code=507, detail=_NO_DISK)
     part = os.path.join(staging, f"upload-{uuid.uuid4().hex}.{ext}.part")
     received = 0
+    next_check = 0
     fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                  | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
     from starlette.requests import ClientDisconnect
@@ -659,6 +665,17 @@ async def upload_media(request: Request,
                     received += len(chunk)
                     if received > cap:
                         raise HTTPException(status_code=413, detail=too_large)
+                    if received > next_check:
+                        # The bytes up to the next check (no more than a
+                        # declared body still has to send) must leave the
+                        # margin free.
+                        ahead = _UPLOAD_DISK_CHECK_EVERY
+                        if declared is not None:
+                            ahead = min(ahead, max(declared - received + len(chunk), 0))
+                        usage = await asyncio.to_thread(shutil.disk_usage, staging)
+                        if usage.free < _UPLOAD_DISK_MARGIN + ahead:
+                            raise HTTPException(status_code=507, detail=_NO_DISK)
+                        next_check = received + _UPLOAD_DISK_CHECK_EVERY
                     await asyncio.to_thread(f.write, chunk)
         except OSError as e:
             # A full disk (or quota) mid-stream — from a write or from the

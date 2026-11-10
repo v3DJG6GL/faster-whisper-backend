@@ -382,6 +382,50 @@ def test_fetch_parses_playlists_off_the_event_loop(served, tmp_path, monkeypatch
     assert on_loop == [False, False]
 
 
+def test_fetch_walks_dash_fragments_off_the_event_loop(served, tmp_path, monkeypatch):
+    # yt-dlp's fragment list can run to a million entries: the walk and the
+    # piece plan must not stall the event loop.
+    table, _calls = served
+    init, frags = fmp4_init_and_fragments(6)
+    base = "https://cdn.test/d/"
+    table[base + "init.dash"] = init
+    for i, body in enumerate(frags):
+        table[f"{base}f{i}.dash"] = body
+    source = {"protocol": "dash", "base": base, "fragments":
+              [{"path": "init.dash"}] + [{"path": f"f{i}.dash", "duration": SEG_S}
+                                          for i in range(len(frags))]}
+    on_loop = []
+
+    def _spy(real):
+        def _wrapped(*a, **k):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(real.__name__)
+            except RuntimeError:
+                pass
+            return real(*a, **k)
+        return _wrapped
+    for name in ("dash_media", "piece_starts", "select_segments"):
+        monkeypatch.setattr(seg, name, _spy(getattr(seg, name)))
+    _fetch(source, None, 6.0, tmp_path)
+    assert on_loop == []
+
+
+def test_fetch_refuses_an_oversized_dash_fragment_list(served, tmp_path, monkeypatch):
+    # Refused before any walk; the route then downloads the whole file.
+    _table, calls = served
+    walked = []
+    real = seg.dash_media
+    monkeypatch.setattr(seg, "dash_media",
+                        lambda *a, **k: walked.append(1) or real(*a, **k))
+    frag = {"path": "f.dash", "duration": SEG_S}
+    source = {"protocol": "dash", "base": "https://cdn.test/d/",
+              "fragments": [frag] * 200_001}
+    with pytest.raises(seg.Unsupported, match="too many segments"):
+        _fetch(source, [0.0], 6.0, tmp_path)
+    assert walked == [] and calls == []
+
+
 def test_fetch_refuses_a_server_that_ignores_the_range(served, tmp_path, monkeypatch):
     table, _calls = served
     table["https://cdn.test/a.m3u8"] = (

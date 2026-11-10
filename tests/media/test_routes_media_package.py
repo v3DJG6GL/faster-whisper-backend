@@ -189,6 +189,95 @@ def test_upload_hitting_a_full_disk_mid_stream_is_507(client, package_enabled,
     assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
 
 
+def _rechunk(client, monkeypatch, size: int) -> None:
+    """The TestClient hands the app the whole body as one message; a real
+    server streams it in pieces. Split it so the per-chunk paths run."""
+    transport = client._transport
+    app = transport.app
+
+    async def _split(scope, receive, send):
+        pending = []
+
+        async def _receive():
+            if not pending:
+                message = await receive()
+                body = message.get("body", b"")
+                if message["type"] != "http.request" or len(body) <= size:
+                    return message
+                more = message.get("more_body", False)
+                pending.extend({"type": "http.request", "body": body[i:i + size],
+                                "more_body": True}
+                               for i in range(0, len(body), size))
+                pending[-1]["more_body"] = more
+            return pending.pop(0)
+        await app(scope, _receive, send)
+    monkeypatch.setattr(transport, "app", _split)
+
+
+def test_chunked_upload_on_a_nearly_full_disk_is_507_mid_stream(
+        client, package_enabled, monkeypatch):
+    # A chunked body declares no length, so the pre-check cannot run: the
+    # margin is re-checked while the body streams.
+    real = shutil.disk_usage
+    monkeypatch.setattr(media_routes.shutil, "disk_usage",
+                        lambda path: real(path)._replace(free=1024))
+    _rechunk(client, monkeypatch, 4096)
+    r = client.post("/v1/audio/media?ext=mp4",
+                    content=(c for c in (b"x" * 4096, b"y" * 4096)))
+    _assert_refused(r, 507, "disk space")
+    assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
+
+
+def test_declared_upload_rechecks_disk_mid_stream(client, package_enabled, monkeypatch):
+    # Concurrent uploads all pass the pre-check against the same free space:
+    # the margin holds per check interval, not just at the start.
+    real = shutil.disk_usage
+    seen = []
+
+    def _shrinking(path):
+        seen.append(path)
+        return real(path)._replace(free=(10**12 if len(seen) <= 2 else 1024))
+    monkeypatch.setattr(media_routes.shutil, "disk_usage", _shrinking)
+    mib = 1024 * 1024
+    _rechunk(client, monkeypatch, mib)
+    body = b"z" * (media_routes._UPLOAD_DISK_CHECK_EVERY + 4 * mib)
+    r = client.post("/v1/audio/media?ext=mp4", content=body)
+    _assert_refused(r, 507, "disk space")
+    assert len(seen) == 3          # the pre-check, the first chunk, one interval on
+    assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
+
+
+def test_upload_on_ample_disk_checks_once_per_interval(client, package_enabled,
+                                                       monkeypatch):
+    real = shutil.disk_usage
+    seen = []
+
+    def _ample(path):
+        seen.append(path)
+        return real(path)._replace(free=10**12)
+    monkeypatch.setattr(media_routes.shutil, "disk_usage", _ample)
+    mib = 1024 * 1024
+    _rechunk(client, monkeypatch, mib)
+    size = media_routes._UPLOAD_DISK_CHECK_EVERY + 4 * mib
+    r = client.post("/v1/audio/media?ext=mp4", content=(b"x" * size for _ in range(1)))
+    assert r.status_code == 200, r.text
+    assert r.json()["bytes"] == size
+    assert len(seen) == 2          # the first chunk, then one interval on
+
+
+def test_small_declared_upload_on_a_tight_disk_still_lands(client, package_enabled,
+                                                           monkeypatch):
+    # Free space that passes the declared-length pre-check also passes the
+    # in-stream check: it asks only for what the body still has to send.
+    real = shutil.disk_usage
+    monkeypatch.setattr(
+        media_routes.shutil, "disk_usage",
+        lambda path: real(path)._replace(free=media_routes._UPLOAD_DISK_MARGIN + 8192))
+    _rechunk(client, monkeypatch, 4096)
+    r = client.post("/v1/audio/media?ext=mp4", content=b"x" * 8192)
+    assert r.status_code == 200, r.text
+
+
 def test_upload_validation_and_gates(client, package_enabled, monkeypatch):
     assert _upload(client, ext="").status_code == 422
     assert _upload(client, ext="MP4!").status_code == 422
