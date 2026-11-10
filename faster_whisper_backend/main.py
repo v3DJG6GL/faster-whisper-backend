@@ -1327,6 +1327,22 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
     return ext if _TMP_SUFFIX_RE.match(ext) else ""
 
 
+async def _unlink_off_loop(*paths: "str | None", job_dir: "str | None" = None) -> None:
+    """Delete a run's temp files (and its private download dir) in a worker
+    thread: unlinking a multi-GB file on the loop stalls every request and
+    stream. One shielded call for all of them, so a cancel landing on this
+    await — a second one too — still lets every delete finish."""
+    if not (any(paths) or job_dir):
+        return
+
+    def _drop():
+        for p in paths:
+            store_common.unlink_quietly(p)
+        if job_dir:
+            shutil.rmtree(job_dir, True)
+    await asyncio.shield(asyncio.to_thread(_drop))
+
+
 def _refuse_input(path: str) -> None:
     """ValueError when `path` opens but is no input for faster-whisper: a
     playlist container, or one with no audio stream (a video-only clip, a
@@ -2537,7 +2553,7 @@ async def transcribe(
                                     _log_safe(str(_te)),
                                     "skipping separation" if _refused else
                                     "separator will decode the original")
-                                store_common.unlink_quietly(_sep_wav)
+                                await _unlink_off_loop(_sep_wav)
                                 _sep_wav = None
                                 if _refused:
                                     # Never hand a refused input to the
@@ -2593,6 +2609,7 @@ async def transcribe(
                                 raise _bgm_separation.BgmSeparationError(
                                     "music separation skipped: the file is "
                                     "too long to separate on this server")
+                        _pre_sep = None
                         try:
                             tx_progress._check_cancelled(_pid)
                             # Queue time for the slot, not demix work: the
@@ -2613,14 +2630,17 @@ async def transcribe(
                                         progress=f, step=None),
                                     cancel_check=lambda: tx_progress._cancel_requested(
                                         _pid))
+                            # The vocals replace the original before any
+                            # await: a cancel from here on leaves tmp_path
+                            # naming the file the outer finally must drop.
+                            _pre_sep, tmp_path = tmp_path, _vocals_path
                         finally:
                             _ps(step=None)
                             # The intermediate WAV is ours alone — unlink it
                             # even on cancel/failure (it's ~10× the source;
-                            # leaking one per request adds up fast).
-                            store_common.unlink_quietly(_sep_wav)
-                        store_common.unlink_quietly(tmp_path)
-                        tmp_path = _vocals_path
+                            # leaking one per request adds up fast). The
+                            # original goes with it once the vocals stand in.
+                            await _unlink_off_loop(_sep_wav, _pre_sep)
                         logger.info("[bgm] separated in %.1fs",
                                     time.perf_counter() - _sep_t0)
                         _stage_timings.append(tx_receipt._done_stage(
@@ -3680,17 +3700,15 @@ async def transcribe(
                     _close_after_attach = True
                 else:
                     tx_progress._progress_close(_pid)
-            store_common.unlink_quietly(tmp_path)
-            store_common.unlink_quietly(_retained_upload)
-            # URL flow: the private download dir (partials, fragments) goes
-            # on every path — cancel, 4xx, 500 included. The retained copy
+            # The run's temp copy, an unregistered retained upload and (URL
+            # flow) the private download dir — partials, fragments — go on
+            # every path: cancel, 4xx, 500 included. The retained copy
             # (url_media_store) has its own TTL lifecycle. Off the loop and
-            # shielded, like media.video._url_staging_job: a cancelled fetch
-            # can leave GBs of partials/fragments, and a cancel landing on
-            # this (last) await still lets the delete finish.
-            if _url_job_dir:
-                await asyncio.shield(
-                    asyncio.to_thread(shutil.rmtree, _url_job_dir, True))
+            # shielded, like media.video._url_staging_job: each can be GBs,
+            # and a cancel landing on this (last) await still lets the
+            # deletes finish.
+            await _unlink_off_loop(tmp_path, _retained_upload,
+                                   job_dir=_url_job_dir)
 
     except asyncio.CancelledError:
         # A dropped connection (and lifespan shutdown) unwinds this handler
@@ -3723,8 +3741,8 @@ async def transcribe(
                 # seeded "waiting" entry.
                 tx_progress._progress_close(_pid)
             # Each binding is popped only while it is still THIS run's: the
-            # progress entry closed in the inner finally, and the URL flow's
-            # rmtree awaited since, so a same-id re-post may already have
+            # progress entry closed in the inner finally, and its temp-file
+            # deletes awaited since, so a same-id re-post may already have
             # claimed _pid and bound its own job / plan / run plan.
             # The plan itself is NOT cancelled here: its warm leases are what
             # keep the models this job just used alive for the next one, and
@@ -3770,7 +3788,7 @@ async def transcribe(
                     plan=_rplan.snapshot()["plan"],
                     model=resolved_model, task=_task_now,
                     # Scoped to this run's row: the progress entry closed
-                    # (and the URL dir rmtree awaited) before this lands, so a
+                    # (and the temp-file deletes awaited) before this lands, so a
                     # same-id re-post may already own the row.
                     request_id=request_id)
                 # No await between this and the done() check below: either

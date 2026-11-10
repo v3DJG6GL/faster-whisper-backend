@@ -125,6 +125,27 @@ def test_upload_over_cap_413_leaves_no_file(client, package_enabled, monkeypatch
     assert not _video_ids()
 
 
+def test_refused_upload_is_deleted_off_the_loop(client, package_enabled, monkeypatch):
+    # A refused upload can be up to MEDIA_MAX_BYTES: its unlink must not
+    # stall the event loop, whether the body was over the cap (.part) or the
+    # store declined the finished file.
+    from faster_whisper_backend.core import store_common
+    from tests.conftest import on_event_loop
+    seen = record_calls(monkeypatch, store_common, "unlink_quietly",
+                        lambda p: (os.path.basename(p).endswith(".part"),
+                                   on_event_loop()) if p else None)
+    monkeypatch.setattr(package_enabled.cfg, "MEDIA_MAX_BYTES", 100, raising=False)
+    assert _upload(client, data=(b"x" * 100 for _ in range(3))).status_code == 413
+    assert [s for s in seen if s] == [(True, False)]
+    monkeypatch.setattr(package_enabled.cfg, "MEDIA_MAX_BYTES", 10_000, raising=False)
+    monkeypatch.setattr(ums, "register", lambda *a, **kw: None)
+    seen.clear()
+    r = _upload(client)
+    assert r.status_code == 507 and "media store is full" in r.text
+    assert [s for s in seen if s] == [(False, False)]
+    assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
+
+
 def test_upload_declared_length_over_cap_is_an_early_413(client, package_enabled,
                                                           monkeypatch):
     monkeypatch.setattr(package_enabled.cfg, "MEDIA_MAX_BYTES", 100, raising=False)
@@ -738,6 +759,28 @@ def test_package_refuses_a_container_bomb_before_parsing(client, package_enabled
     assert parsed == []
     # A real export (a dozen containers) still packages.
     assert _package(client, mid, {"container": "mkv", "subtitles": _tracks()}).status_code == 200
+
+
+def test_package_refuses_a_number_bomb_before_building_it(client, package_enabled, monkeypatch):
+    # Numbers are the costliest scalars to parse (a 48 MiB array of floats
+    # holds the GIL ~1.2 s); a real export carries at most two of them.
+    mid = _upload(client).json()["media_id"]
+    monkeypatch.setattr(media_routes, "_PACKAGE_MAX_NUMBERS", 10)
+    for filler in ("1.5,", "1,", "NaN,", '"k":7,'):
+        inner = filler * 20 + ("1" if filler != '"k":7,' else '"k":7')
+        wrap = "{%s}" if filler.startswith('"') else "[%s]"
+        body = '{"container":"mkv","x":' + wrap % inner + "}"
+        r = client.post(f"/v1/audio/media/{mid}/package", content=body,
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 422 and "expected a JSON body" in r.text, filler
+    # A real export with both legacy indices still packages, the indices
+    # still ints.
+    seen = record_calls(monkeypatch, pk, "build_package_argv",
+                        lambda *a, **k: (k["default_track"], k["original_track"]))
+    r = _package(client, mid, {"container": "mkv", "subtitles": _tracks(),
+                               "default_track": 1, "original_track": 0})
+    assert r.status_code == 200
+    assert seen == [(1, 0)] and all(type(i) is int for i in seen[0])
 
 
 def test_package_timeout_504(client, package_enabled, monkeypatch, tmp_path):

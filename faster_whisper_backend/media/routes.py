@@ -563,6 +563,12 @@ _media_package_inflight = _rl.InFlight(
 # dozen containers plus whatever brackets the subtitle text carries; 4 M bounds
 # one parse near ~270 MB / ~0.4 s. Counted on the raw bytes before parsing.
 _PACKAGE_MAX_CONTAINERS = 4_000_000
+# Numbers are the costliest scalars json.loads builds (a 48 MiB array of
+# floats: ~1.2 s with the GIL held, ~480 MB). A real export carries at most
+# default_track and original_track, so the parse aborts past a handful; with
+# containers bounded too, the worst body left (4 M containers padded with
+# empty strings) parses in ~0.6 s.
+_PACKAGE_MAX_NUMBERS = 64
 _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
 # Free space an upload must leave on the staging volume (the package route's
 # margin): a near-full disk is refused before the transfer, not after it.
@@ -705,11 +711,14 @@ async def upload_media(request: Request,
         media_id = await asyncio.to_thread(
             url_media_store.register, final, user_id=user.get("user_id"), kind="video")
         if media_id is None:
-            store_common.unlink_quietly(final)
+            await asyncio.shield(asyncio.to_thread(store_common.unlink_quietly, final))
             raise HTTPException(status_code=507,
                                 detail="the server's media store is full")
     finally:
-        store_common.unlink_quietly(part)
+        # A refused upload can be gigabytes: unlinking it on the loop would
+        # stall every request. Shielded, so a cancel still lets it finish.
+        if part is not None:
+            await asyncio.shield(asyncio.to_thread(store_common.unlink_quietly, part))
     logger.info("[package] upload retained (%.1f MB, %s)", received / 1e6, ext)
     return {"media_id": media_id, "expires_at": url_media_store.expires_at_unix(media_id),
             "bytes": received}
@@ -758,6 +767,24 @@ def _track_index(body: dict, key: str, count: int) -> "int | None":
                               or not 0 <= value < count):
         raise HTTPException(status_code=422, detail=f"{key} is out of range")
     return value
+
+
+def _package_json_loads(raw: bytes):
+    """json.loads of a package body that raises ValueError past
+    _PACKAGE_MAX_NUMBERS numbers (NaN / Infinity count: they parse nearly as
+    slowly), mid-parse."""
+    seen = 0
+
+    def _counted(conv):
+        def hook(s):
+            nonlocal seen
+            seen += 1
+            if seen > _PACKAGE_MAX_NUMBERS:
+                raise ValueError("number bomb")
+            return conv(s)
+        return hook
+    return json.loads(raw, parse_int=_counted(int), parse_float=_counted(float),
+                      parse_constant=_counted(float))
 
 
 class _PackageResponse(FileResponse):
@@ -810,7 +837,7 @@ async def package_media(media_id: str, request: Request,
         raw = await request.body()
         if raw.count(b"[") + raw.count(b"{") > _PACKAGE_MAX_CONTAINERS:
             raise ValueError("container bomb")
-        body = json.loads(raw)
+        body = _package_json_loads(raw)
     except Exception:  # noqa: BLE001 — malformed body is a caller error
         raise HTTPException(status_code=422, detail="expected a JSON body")
     if not isinstance(body, dict):
