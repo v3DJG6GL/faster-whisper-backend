@@ -1611,6 +1611,7 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
         # `Set-Content -Encoding UTF8` with a UTF-8 BOM (which .strip() keeps,
         # so the secret never matches). An undecodable file or a NUL byte is a
         # warning like an unreadable one, never an import crash.
+        _enc = None
         try:
             with open(_path, "rb") as _fh:
                 _buf = _fh.read()
@@ -1619,7 +1620,13 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
             os.environ[_secret] = _buf.decode(_enc).strip()
             _ENV_FROM_SECRET_FILES.add(_secret)
         except (OSError, ValueError) as _exc:
-            _ENV_WARNINGS.append(f"{_secret}_FILE={_path!r} could not be read: {_exc}")
+            # A codec error's text names the offending byte and its offset,
+            # i.e. part of the secret: only the encoding tried is reported.
+            # OSError text names the path and the OS reason, no file content.
+            _why = (_exc if isinstance(_exc, OSError)
+                    else f"not valid {_enc} text" if isinstance(_exc, UnicodeDecodeError)
+                    else type(_exc).__name__)
+            _ENV_WARNINGS.append(f"{_secret}_FILE={_path!r} could not be read: {_why}")
 
 
 # --- Non-AdminConfig constants (no WebUI row → not in ENV_VAR_MAPPING) -------

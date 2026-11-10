@@ -444,6 +444,20 @@ def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
     assert calls[-1]["targets"] == ["de", "fr-CA"]
 
 
+def test_duplicate_targets_are_bounded_before_the_walk(client, app_module,
+                                                      monkeypatch):
+    """The in-loop cap counts DISTINCT codes only: a raw list of one repeated
+    code is bounded by its length before the walk, inside the
+    release-on-reject bracket."""
+    calls = _enable_stubbed(app_module, monkeypatch, TRANSLATION_MAX_TARGETS=2)
+    r = _post_status(client, 422, targets=["de"] * 65)
+    assert "capped at 64" in r.json()["detail"]
+    assert calls == []
+    _post_ok(client, targets=["de"] * 64)
+    assert calls[-1]["targets"] == ["de"]
+    _assert_parked_receipt_released(client, "dup-t", 422, targets=["de"] * 65)
+
+
 def test_source_must_be_a_language_code(client, app_module, monkeypatch):
     """`source` reaches every prompt and the receipt: a code, "auto" or
     nothing — never a forged log line."""
@@ -809,6 +823,36 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
                  translation_model="org/huge:Q8_0")
     assert calls[0]["model_ref"] == "org/small:Q4_K_M"  # locked value wins
     assert any("locked" in w for w in r.json().get("warnings", []))
+
+
+def test_locked_translate_to_binds_the_text_route(
+        client, app_module, make_user_key, monkeypatch):
+    """A TRANSLATE_TO lock binds here as on the batch path: the locked targets
+    win over the body's, and a locked empty value refuses the route."""
+    calls = _enable_stubbed(app_module, monkeypatch)
+    _, raw_bob = bind_profile(client, make_user_key, "de-only", {
+        "TRANSLATE_TO": "de", "locks": ["TRANSLATE_TO"]})
+    r = _post_ok(client, headers=bearer(raw_bob), targets=["en"])
+    assert calls[-1]["targets"] == ["de"]
+    assert r.json()["translation"]["targets"] == ["de"]
+    assert any(w.startswith("targets is locked")
+               for w in r.json()["warnings"])
+    # Echoing the locked value is no override: no warning.
+    r = _post_ok(client, headers=bearer(raw_bob), targets=["DE"])
+    assert not any("locked" in w for w in r.json()["warnings"])
+
+
+def test_locked_empty_translate_to_refuses_the_text_route(
+        client, app_module, make_user_key, monkeypatch):
+    calls = _enable_stubbed(app_module, monkeypatch)
+    _, raw_bob = bind_profile(client, make_user_key, "no-mt", {
+        "TRANSLATE_TO": "", "locks": ["TRANSLATE_TO"]})
+    _park("off-t", hold_s=90)
+    r = _post_status(client, 403, headers=bearer(raw_bob), targets=["en"],
+                     captured_id="off-t")
+    assert "TRANSLATE_TO" in r.json()["detail"]
+    assert calls == []
+    assert receipt_hold.pending() == 0
 
 
 def test_inflight_refusal_releases_the_held_receipt(client, app_module,

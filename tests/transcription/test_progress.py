@@ -87,6 +87,27 @@ def test_a_cap_evicted_run_still_holds_its_progress_id(monkeypatch):
     assert tx_progress._claim_progress_id(_PID) == _PID
 
 
+def test_cap_evicted_live_run_stays_visible_and_cancellable_to_its_owner(
+        monkeypatch):
+    """Another identity's fresh ids can cap-evict a run that is still queued
+    for the GPU: its owner must keep seeing it ("unknown" tells a poller to
+    stop) and keep cancelling it, while a foreign caller still sees a miss."""
+    monkeypatch.setattr(tx_progress, "_BATCH_PROGRESS_MAX", 2)
+    tx_progress._progress_set(_PID, stage="waiting", owner="alice")
+    tx_progress._progress_set("a1" * 16, stage="waiting", owner="mallory")
+    tx_progress._progress_set("b2" * 16, stage="waiting", owner="mallory")
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    entry = tx_progress._progress_entry_for(_PID, {"user_id": "alice"})
+    assert entry is not None and entry["stage"] == "waiting"
+    assert tx_progress._progress_entry_for(_PID, {"user_id": "mallory"}) is None
+    assert tx_progress._progress_entry_for(
+        _PID, {"user_id": "root", "is_admin": True}) is not None
+    # The synthesised view is not stored: the next tick re-creates the entry.
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    tx_progress._progress_close(_PID)
+    assert tx_progress._progress_entry_for(_PID, {"user_id": "alice"}) is None
+
+
 class _ScanCountingDict(dict):
     scans = 0
 

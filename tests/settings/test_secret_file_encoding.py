@@ -50,6 +50,21 @@ def test_unusable_file_warns_instead_of_failing_import(
     assert "sk" not in (config.BOOTSTRAP_ADMIN_KEY or "")
 
 
+@pytest.mark.parametrize("data", [
+    b"ab\xe4cdefgh",          # invalid UTF-8 continuation byte
+    b"\xff\xfea",             # UTF-16 BOM + a truncated code unit
+], ids=["utf8", "utf16-truncated"])
+def test_undecodable_file_warning_carries_no_secret_bytes(
+        monkeypatch, tmp_path, data, restore_config):
+    """The codec's message names the offending byte and its offset, which
+    is secret material; the warning reaches the log /logs serves."""
+    _reload_with_secret_file(monkeypatch, tmp_path, data)
+    warning = next(m for m in config._ENV_WARNINGS
+                   if m.startswith(_VAR + "_FILE="))
+    assert "could not be read: not valid utf-" in warning
+    assert "0x" not in warning and "position" not in warning
+
+
 def test_helper_leaves_no_secret_behind(tmp_path):
     before = os.environ.get(_VAR)
     with pytest.MonkeyPatch.context() as mp:

@@ -427,7 +427,14 @@ def _progress_entry_for(progress_id: str, user: dict) -> "dict | None":
     (tests / legacy seeds) stays accessible to any authenticated caller."""
     entry = _BATCH_PROGRESS.get(progress_id)
     if entry is None:
-        return None
+        _owner = _PROGRESS_OWNER.get(progress_id)
+        if not _owner:
+            return None
+        # Cap-evicted but still live (only _progress_close pops the stamp):
+        # its owner keeps progress and cancel until the next tick re-creates
+        # the entry. The cancel flag needs no entry, and _progress_close
+        # discards it.
+        entry = {"owner": _owner, "stage": "waiting"}
     _owner = entry.get("owner")
     if (_owner and not user.get("is_admin")
             and _owner not in (user.get("user_id"), user.get("key_id"))):

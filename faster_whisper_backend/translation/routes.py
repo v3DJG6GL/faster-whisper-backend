@@ -22,6 +22,7 @@ from faster_whisper_backend.transcription import run_plan as _run_plan
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core.languages import TRANSLATE_CODE_RE as _TRANSLATE_CODE_RE
 from faster_whisper_backend.core.languages import _normalise_code
+from faster_whisper_backend.core.languages import language_codes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
@@ -59,6 +60,12 @@ _text_translate_rate = _rl.per_minute(
 # body cap (main._max_body_mw) bounds the wire size before either check runs.
 _TEXT_TRANSLATE_MAX_SEGMENTS = 2000
 _TEXT_TRANSLATE_MAX_CHARS = 200_000
+# Raw entry bound for `targets`, duplicates included: the in-loop
+# TRANSLATION_MAX_TARGETS cap counts only DISTINCT codes, so a 4 MiB list of
+# one repeated code would walk ~800k entries on the event loop. 64 matches
+# the batch path's language_codes(..., limit=64), far above the schema
+# maximum of 10.
+_TEXT_TRANSLATE_MAX_RAW_TARGETS = 64
 # A speaker label prefixes every context line of every prompt: clipped, and
 # counted against the character cap like the text it rides with.
 _TEXT_TRANSLATE_MAX_SPEAKER = 64
@@ -223,6 +230,11 @@ async def translate_text(request: Request,
             raise HTTPException(status_code=422,
                                 detail="targets must be a non-empty list of "
                                        "language codes")
+        if len(raw_targets) > _TEXT_TRANSLATE_MAX_RAW_TARGETS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"targets is capped at {_TEXT_TRANSLATE_MAX_RAW_TARGETS} "
+                       "entries")
         targets: "list[str]" = []
         _seen: "set[str]" = set()
         for t in raw_targets:
@@ -244,6 +256,21 @@ async def translate_text(request: Request,
                         status_code=422,
                         detail=f"targets is capped at TRANSLATION_MAX_TARGETS "
                                f"({max_targets})")
+        # A TRANSLATE_TO lock binds as on the batch path: the locked targets
+        # win (a differing request is reported as ignored), and a locked
+        # empty value means no translation for this identity.
+        if "TRANSLATE_TO" in ident.locked:
+            _locked_to = language_codes(
+                effective_config.cfg_for(None, "TRANSLATE_TO", ident) or "",
+                limit=64)[:max_targets]
+            if not _locked_to:
+                raise HTTPException(
+                    status_code=403,
+                    detail="translation targets are locked off for this key "
+                           "(TRANSLATE_TO)")
+            if [c.lower() for c in targets] != [c.lower() for c in _locked_to]:
+                _ignored.append("targets")
+            targets = _locked_to
 
         source = body.get("source")
         if source is not None and not isinstance(source, str):

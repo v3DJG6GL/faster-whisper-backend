@@ -740,7 +740,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # A non-string `model` (a list, a number) would otherwise ride into
         # jobs.job_update and the model load before failing; treat it as absent.
         _req_model = conf.get("model")
-        model_req = (_req_model if isinstance(_req_model, str) and _req_model.strip()
+        # A lone surrogate would reach the jobs row, the usage row and the
+        # refusal frame, none of which can encode it. Replaced, not deleted:
+        # deleting could turn a malformed id into a well-formed one the loader
+        # accepts, while U+FFFD keeps it refused.
+        if isinstance(_req_model, str):
+            _req_model = _SURROGATE_RE.sub("�", _req_model)
+        model_req =(_req_model if isinstance(_req_model, str) and _req_model.strip()
                      else "whisper-1")
         _req_language = conf.get("language")
         # Tri-state, same as batch: key ABSENT → None → inherit DEFAULT_LANGUAGE;
@@ -751,6 +757,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _language_dropped = (req_language is None and isinstance(_req_language, str)
                              and bool(_req_language.strip()))
         response_format = conf.get("response_format", "json")
+        # Echoed in the ready frame: a lone surrogate would make the frame's
+        # UTF-8 encode raise, so it is dropped as in the prompt.
+        if isinstance(response_format, str):
+            response_format = _SURROGATE_RE.sub("", response_format)
         # Per-connection initial prompt (the client's "Vocabulary / prompt"). Sentinel,
         # same as batch: key ABSENT → inherit DEFAULT_PROMPT; present (incl. "") →
         # use verbatim, where "" CLEARS the inherited prompt (no initial_prompt).

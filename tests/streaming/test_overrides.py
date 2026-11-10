@@ -14,7 +14,7 @@ from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.streaming import routes as streaming_routes
 from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 from tests._streaming_helpers import (
-    config_drain, config_frame, const_pcm, dictate_session, handshake,
+    config_drain, config_frame, const_pcm, dictate_session, drain_frames, handshake,
     ready_ws, speak, speak_and_stop, stop_and_drain, stop_if_open_and_drain, stream_ws,
     ws_drain)
 from tests._transcription_helpers import bind_profile, fail_model_load
@@ -169,6 +169,38 @@ def test_stream_handshake_drops_lone_surrogates(
     assert all((f.get("committed") or f.get("tail")).startswith(">> ")
                and "\ud83d" not in (f.get("committed") or f.get("tail"))
                for f in finals)
+
+
+def test_stream_handshake_scrubs_surrogates_from_echoed_fields(
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
+    """`response_format` is echoed in the ready frame and `model` in a refusal
+    frame; a lone surrogate in either would make the real server's UTF-8
+    frame encode raise (TestClient never encodes, hence the explicit
+    .encode). response_format loses it, like the prompt; model gets U+FFFD
+    instead, so a refused id cannot turn into an accepted one."""
+    _, raw_alice = make_user_key("alice")
+    with stream_ws(client, raw_alice) as ws:
+        ws.send_text(json.dumps(config_frame(response_format="json\ud800")))
+        ready = ws.receive_json()
+    assert ready["type"] == "ready"
+    assert ready["response_format"] == "json"
+    json.dumps(ready, ensure_ascii=False).encode("utf-8")
+
+    # The real loader's name gates (the fixture's fake loader skips them).
+    async def _gated_loader(name, *, lease=False):
+        tx_models._check_model_allowed(name)
+        tx_models._check_model_shape(name)
+        return fake_model
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _gated_loader)
+    for allowed in (set(), {"large-v3"}):
+        monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", allowed)
+        with stream_ws(client, raw_alice) as ws:
+            ws.send_text(json.dumps(config_frame(model="x\ud800")))
+            msgs = drain_frames(ws, limit=5)
+        errors = [m for m in msgs if m.get("type") == "error"]
+        assert errors and errors[0]["code"] == "model_load_failed", msgs
+        assert "\ud800" not in errors[0]["message"]
+        json.dumps(msgs, ensure_ascii=False).encode("utf-8")
 
 
 def test_setup_window_error_delivers_internal_error_and_closes(
