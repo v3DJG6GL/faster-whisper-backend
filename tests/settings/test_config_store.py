@@ -424,6 +424,8 @@ def test_log_file_rejects_unc_and_traversal():
     _ok(LOG_FILE="logs/whisper.log")
     _bad(LOG_FILE="\\\\server\\share\\x.log")  # UNC
     _bad(LOG_FILE="//server/share/x.log")       # posix UNC-ish
+    _bad(LOG_FILE="/\\srv\\share\\x.log")      # mixed separators: Win32
+    _bad(LOG_FILE="\\/srv/share/x.log")          # still reads both as UNC
     _bad(LOG_FILE="../etc/passwd")              # .. segment
     _bad(LOG_FILE="logs/../../x")               # .. mid-path
 

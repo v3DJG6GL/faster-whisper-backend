@@ -581,6 +581,42 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
     _assert_revoked_close(msgs, code)
 
 
+
+def test_stream_closes_when_session_cookie_expires_mid_session(
+        client, make_user_key, app_module, monkeypatch, energy_vad):
+    """Session expiry is absolute and bumps nothing (it is only checked at
+    lookup), so a version-only re-auth let a dictation that spanned the
+    cookie's expiry keep decoding. The re-auth also runs once
+    REAUTH_INTERVAL_S has passed, version moved or not."""
+    from faster_whisper_backend.auth import sessions_store
+    from faster_whisper_backend.settings import version as settings_version
+
+    _uid, raw_alice = locked_user(make_user_key)
+    assert client.post("/auth/login", json={"key": raw_alice}).status_code == 200
+    cookie_name = app_module.cfg.SESSION_COOKIE_NAME
+    raw_cookie = client.cookies.get(cookie_name)
+    assert raw_cookie
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream",
+            headers={"cookie": f"{cookie_name}={raw_cookie}"}) as ws:
+        assert handshake(ws)["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
+        time.sleep(0.5)
+        v0 = settings_version._CONFIG_VERSION
+        # The cookie reaches its expiry and the re-auth ceiling has passed.
+        sessions_store._SESSION_INDEX[
+            sessions_store.hash_token(raw_cookie)]["expires_ts"] = time.time() - 1
+        monkeypatch.setattr(settings_version, "REAUTH_INTERVAL_S", 0.0)
+        ws.send_bytes(_pcm(8000, 1500))        # next decode re-auths → expired
+        time.sleep(0.5)
+        ws.send_bytes(_pcm(8000, 200))         # producer notices → closes
+        msgs, code = stop_if_open_and_drain(ws)
+
+    assert settings_version._CONFIG_VERSION == v0   # no bump did it
+    _assert_revoked_close(msgs, code)
+    assert not any(m.get("type") == "final" and m.get("last") for m in msgs), msgs
+
 def test_revocation_during_the_closing_drain_still_closes_with_4401(
         client, make_user_key, app_module, monkeypatch, energy_vad):
     """Revoke AFTER the pump's last decode but BEFORE the client's stop, with

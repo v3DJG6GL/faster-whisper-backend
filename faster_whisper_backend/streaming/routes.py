@@ -646,6 +646,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # and a cold model load come next, and a revocation landing in that window
     # must still force the first decode to re-check the credential.
     _ident_version = settings_version.config_version()
+    _ident_resolved_at = time.monotonic()
     user = authenticate_ws(ws)
     if user is None:
         await _refuse(ws, _WS_UNAUTH, "no valid credential")
@@ -1629,19 +1630,21 @@ async def transcribe_stream(ws: WebSocket) -> None:
             """Re-resolve this connection's per-identity config when the global
             config version changed since we last resolved — so an admin editing a
             binding / profile / setting takes effect on the next decode instead
-            of requiring the client to reconnect. Called by every decode,
-            partials included (about once a second): a revocation stops the
-            partials too, and one utterance's partials may straddle a change.
-            The no-change case is an integer compare plus, at most every 0.25 s
-            per process, a sibling data_version PRAGMA (see
-            settings_version._KEYS_PROBE_MIN_INTERVAL_S); a real change costs a
+            of requiring the client to reconnect — and at least every
+            settings_version.REAUTH_INTERVAL_S regardless, because a cookie
+            session reaching its absolute expiry bumps nothing. Called by every
+            decode, partials included (about once a second): a revocation stops
+            the partials too, and one utterance's partials may straddle a change.
+            The no-change case is an integer compare and a monotonic read plus,
+            at most every 0.25 s per process, a sibling data_version PRAGMA (see
+            settings_version._KEYS_PROBE_MIN_INTERVAL_S); a re-resolve costs a
             couple of indexed SQLite reads. Session-shaping
             STREAMING_*/endpointer params (the client's own knobs included) and
             the word-timestamp gates stay fixed for the connection: a lock added
             mid-session applies to them from the next connection. Never raises —
             a refresh must not break dictation.
 
-            The same bump ALSO revalidates the credential. A WebSocket has no
+            The same re-resolve ALSO revalidates the credential. A WebSocket has no
             request boundary, and an actively speaking client re-arms the idle
             deadline forever, so without this a revoked key or signed-out session
             would keep decoding and writing captures / trace / usage rows.
@@ -1650,13 +1653,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
             for exactly this.
             `authenticate_ws` reads only ws.headers/ws.cookies, both of which
             outlive the handshake, so re-invoking it here is enough."""
-            nonlocal ident, _ident_version, out_prefix, out_suffix
+            nonlocal ident, _ident_version, _ident_resolved_at, out_prefix, out_suffix
             nonlocal user, _auth_revoked
             try:
-                v = settings_version.config_version()
-                if v == _ident_version:
+                due = settings_version.reauth_due(_ident_version, _ident_resolved_at)
+                if due is None:
                     return
-                _ident_version = v
+                _ident_version, _ident_resolved_at = due
                 # authenticate_ws is sync and non-raising BY DESIGN (auth._resolve_user
                 # returns None on an unresolvable credential) — but it reaches SQLite,
                 # so treat an unexpected raise as "cannot prove still-valid" rather

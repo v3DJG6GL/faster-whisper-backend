@@ -728,7 +728,7 @@ def test_login_throttle_holds_under_concurrent_attempts(monkeypatch):
     from faster_whisper_backend.auth import routes as auth_routes
     from faster_whisper_backend.settings import config as cfg
 
-    monkeypatch.setattr(cfg, "LOGIN_FAILURE_RATE", 3, raising=False)
+    monkeypatch.setattr(cfg, "LOGIN_FAILURE_RATE", 3)
     monkeypatch.setattr(auth_routes._ak, "is_locked_down", lambda: True)
     lookups = []
     monkeypatch.setattr(auth_routes._ak, "lookup_by_raw_key",
@@ -761,3 +761,75 @@ def test_login_throttle_holds_under_concurrent_attempts(monkeypatch):
     assert len(codes) == 5
     assert codes == [401, 429, 429, 429, 429]
     assert len(lookups) == 1
+
+
+def _clocked_worker(tmp_path, monkeypatch, name, clock):
+    """A _worker() copy whose clock is `clock[0]`, so created_ts order is exact."""
+    import types
+    w = _worker(name, str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(w, "time", types.SimpleNamespace(
+        time=lambda: clock[0], monotonic=lambda: clock[0]))
+    return w
+
+
+def test_create_session_caps_live_sessions_per_user(tmp_path, monkeypatch):
+    """/auth/login is throttled only on failures, so any key holder could loop
+    it and grow the sessions table and index for 30 days. Past the per-user
+    cap the OLDEST live sessions are revoked (not deleted: sibling workers and
+    live sockets must see it), with the same counter and config-version bumps
+    as a logout."""
+    clock = [1_000_000.0]
+    w = _clocked_worker(tmp_path, monkeypatch, "sessions_store_cap", clock)
+    monkeypatch.setattr(w, "_MAX_SESSIONS_PER_USER", 3)
+    toks = []
+    for _ in range(3):
+        clock[0] += 1.0
+        toks.append(w.create_session("u", 3600.0)[0])
+    clock[0] += 1.0
+    other, _ = w.create_session("v", 3600.0)
+    conn = w._require_conn()
+    assert conn.execute("SELECT v FROM meta WHERE k = 'revocations'").fetchone() is None
+    v0 = settings_version._CONFIG_VERSION
+    clock[0] += 1.0
+    toks.append(w.create_session("u", 3600.0)[0])
+    assert w.lookup_session(toks[0]) is None
+    for t in toks[1:] + [other]:
+        assert w.lookup_session(t) is not None
+    revoked = conn.execute(
+        "SELECT token_hash FROM sessions WHERE revoked_ts IS NOT NULL").fetchall()
+    assert [r[0] for r in revoked] == [w.hash_token(toks[0])]
+    assert conn.execute(
+        "SELECT v FROM meta WHERE k = 'revocations'").fetchone()[0] == 1
+    assert settings_version._CONFIG_VERSION > v0
+    # Under the cap again: the next login evicts the next-oldest, one bump each.
+    v1 = settings_version._CONFIG_VERSION
+    clock[0] += 1.0
+    w.create_session("u", 3600.0)
+    assert w.lookup_session(toks[1]) is None
+    assert settings_version._CONFIG_VERSION > v1
+
+
+def test_session_cap_does_not_count_revoked_or_expired(tmp_path, monkeypatch):
+    """Only LIVE sessions count toward the cap: a revoked or expired row must
+    not push out a session the user is still signed in with, and a login that
+    evicts nothing moves no counter."""
+    clock = [1_000_000.0]
+    w = _clocked_worker(tmp_path, monkeypatch, "sessions_store_cap_live", clock)
+    monkeypatch.setattr(w, "_MAX_SESSIONS_PER_USER", 2)
+    clock[0] += 1.0
+    dead, _ = w.create_session("u", 3600.0)
+    w.revoke_session(dead)
+    clock[0] += 1.0
+    w.create_session("u", 10.0)                     # expires below
+    clock[0] += 1.0
+    live, _ = w.create_session("u", 3600.0)
+    clock[0] += 20.0
+    gen0 = w._require_conn().execute(
+        "SELECT v FROM meta WHERE k = 'revocations'").fetchone()[0]
+    v0 = settings_version._CONFIG_VERSION
+    newest, _ = w.create_session("u", 3600.0)
+    assert w.lookup_session(live) is not None
+    assert w.lookup_session(newest) is not None
+    assert w._require_conn().execute(
+        "SELECT v FROM meta WHERE k = 'revocations'").fetchone()[0] == gen0
+    assert settings_version._CONFIG_VERSION == v0

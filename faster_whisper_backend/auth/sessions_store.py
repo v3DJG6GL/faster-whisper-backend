@@ -11,7 +11,8 @@ Storage layout:
     sessions — { token_hash, user_id, key_id, csrf_token, created_ts,
                  expires_ts, revoked_ts }  (key_id = the API key the
                session signed in with, so per-key locks bind on cookies)
-    meta     — { k, v }: one 'revocations' counter, bumped per logout so a
+    meta     — { k, v }: one 'revocations' counter, bumped per logout (and
+               per login that evicts past _MAX_SESSIONS_PER_USER) so a
                sibling worker's config_version() notices it (see
                revocation_generation)
 
@@ -94,6 +95,13 @@ _LAST_REV_GEN: int = -1
 
 _TOKEN_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit
 
+# Live sessions one user may hold; a login past it revokes that user's oldest.
+# /auth/login is throttled only on FAILURES, so without a bound a valid-key
+# login loop grows the table and _SESSION_INDEX for SESSION_TTL_S. A person
+# signs in once per browser/device per TTL, so 200 is far above any real count
+# (32 would sign out real devices).
+_MAX_SESSIONS_PER_USER = 200
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash  TEXT PRIMARY KEY,
@@ -105,6 +113,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   revoked_ts  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_ts);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, created_ts);
 CREATE TABLE IF NOT EXISTS meta (
   k  TEXT PRIMARY KEY,
   v  INTEGER NOT NULL
@@ -302,15 +311,31 @@ def create_session(user_id: str, ttl_s: float,
         )
         # Insert the one new row rather than rebuilding: /auth/login is
         # throttled only on FAILURES (`LOGIN_FAILURE_RATE`, so a scripted
-        # valid-key login loop is unthrottled), has no per-user session cap,
-        # and rows are reaped only hourly (`_sessions_purge_loop` in main.py),
-        # so a rebuild per login is O(N²) over N logins, on the event loop
-        # (`login` is async and calls this inline). Our own commit does not
-        # move PRAGMA data_version on this connection, so _DATA_VERSION stays
-        # valid without a re-stamp; the pre-write check above keeps the
-        # sibling-detection contract in _refresh_if_sibling_committed.
+        # valid-key login loop is unthrottled) and rows are reaped only hourly
+        # (`_sessions_purge_loop` in main.py), so a rebuild per login is
+        # O(N²) over N logins, on the event loop (`login` is async and calls
+        # this inline). Our own commit does not move PRAGMA data_version on
+        # this connection, so _DATA_VERSION stays valid without a re-stamp;
+        # the pre-write check above keeps the sibling-detection contract in
+        # _refresh_if_sibling_committed.
         _SESSION_INDEX[th] = _index_rec(user_id, key_id, csrf_token, now, expires)
+        # Live means what lookup_session honours (_effective_expiry included),
+        # so a dead row never pushes out a session the user still holds.
+        # Revoked, not deleted: a sibling worker's index and a live
+        # cookie-authenticated socket see a revocation, never a vanished row.
+        excess = [r[0] for r in conn.execute(
+            "SELECT token_hash FROM sessions WHERE user_id = ?"
+            " AND revoked_ts IS NULL AND expires_ts > ? AND created_ts > ?"
+            " ORDER BY created_ts DESC, rowid DESC LIMIT -1 OFFSET ?",
+            (user_id, now, now - float(cfg.SESSION_TTL_S),
+             _MAX_SESSIONS_PER_USER),
+        )]
+        evicted = bool(excess) and _revoke_hashes_locked(conn, excess, now)
     logger.info("[auth] session created user=%s ttl=%.0fs", user_id[:8], ttl_s)
+    if evicted:
+        logger.info("[auth] revoked %d oldest session(s) user=%s (cap %d)",
+                    len(excess), user_id[:8], _MAX_SESSIONS_PER_USER)
+        settings_version.bump_config_version()
     return raw_token, csrf_token
 
 
@@ -364,7 +389,6 @@ def revoke_session(raw_token: str) -> None:
     No-op while the store is not ready (init_db failed, which main treats as
     non-fatal), like lookup_session: logout then still clears the cookies
     instead of failing with a 500."""
-    global _LAST_REV_GEN
     if not raw_token or not _DB_READY:
         return
     th = hash_token(raw_token)
@@ -375,52 +399,65 @@ def revoke_session(raw_token: str) -> None:
         # never by re-stamping the counter after our own commit.
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
-        # The connection autocommits, so without the explicit transaction the
-        # revoke and the counter bump would be two commits: a SQLITE_BUSY / disk
-        # error on the second would leave the row revoked with this worker's
-        # index still honouring it (our own commit does not move our
-        # data_version) and the siblings' counter never moving.
+        revoked = _revoke_hashes_locked(conn, [th], now)
+    if revoked:
+        settings_version.bump_config_version()
+
+
+def _revoke_hashes_locked(conn: sqlite3.Connection, hashes: list[str],
+                          now: float) -> bool:
+    """Soft-revoke the sessions `hashes` and bump the 'revocations' counter
+    once, in one transaction. True when at least one row was revoked; the
+    caller then bumps the config version after releasing _lock. Caller holds
+    _lock."""
+    global _LAST_REV_GEN
+    revoked = False
+    # The connection autocommits, so without the explicit transaction the
+    # revoke and the counter bump would be two commits: a SQLITE_BUSY / disk
+    # error on the second would leave the row revoked with this worker's
+    # index still honouring it (our own commit does not move our
+    # data_version) and the siblings' counter never moving.
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
+            for th in hashes:
                 cur = conn.execute(
                     "UPDATE sessions SET revoked_ts = ?"
                     " WHERE token_hash = ? AND revoked_ts IS NULL",
                     (now, th),
                 )
-                revoked = cur.rowcount > 0
-                gen = None
-                if revoked:
-                    conn.execute(
-                        "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
-                        " ON CONFLICT(k) DO UPDATE SET v = v + 1")
-                    gen = int(conn.execute(
-                        "SELECT v FROM meta WHERE k = 'revocations'"
-                        ).fetchone()[0])
-                conn.execute("COMMIT")
-                # Our own revocation is already reflected in the index (the
-                # pop below), so mark its counter step seen: otherwise the
-                # next revocation_generation() would redo the full O(live
-                # sessions) rebuild on the event loop for every local logout.
-                # Only when no sibling revocation interleaved (gap of exactly
-                # one); a larger gap still forces that rebuild.
-                if gen is not None and _LAST_REV_GEN == gen - 1:
-                    _LAST_REV_GEN = gen
-            except BaseException:
-                try:
-                    conn.execute("ROLLBACK")
-                except sqlite3.Error:
-                    pass
-                raise
-        finally:
-            # Drop the one key, as create_session inserts one: a full rebuild
-            # is O(live sessions) on the event loop (~37 ms at 20 000 rows)
-            # and N is caller-growable (see create_session). In a finally: a
-            # failed write still stops THIS worker honouring the cookie it was
-            # asked to sign out.
+                revoked = cur.rowcount > 0 or revoked
+            gen = None
+            if revoked:
+                conn.execute(
+                    "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
+                    " ON CONFLICT(k) DO UPDATE SET v = v + 1")
+                gen = int(conn.execute(
+                    "SELECT v FROM meta WHERE k = 'revocations'"
+                    ).fetchone()[0])
+            conn.execute("COMMIT")
+            # Our own revocation is already reflected in the index (the
+            # pops below), so mark its counter step seen: otherwise the
+            # next revocation_generation() would redo the full O(live
+            # sessions) rebuild on the event loop for every local logout.
+            # Only when no sibling revocation interleaved (gap of exactly
+            # one); a larger gap still forces that rebuild.
+            if gen is not None and _LAST_REV_GEN == gen - 1:
+                _LAST_REV_GEN = gen
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+    finally:
+        # Drop just these keys, as create_session inserts one: a full
+        # rebuild is O(live sessions) on the event loop (~37 ms at 20 000
+        # rows). In a finally: a failed write still stops THIS worker
+        # honouring a cookie it was asked to sign out.
+        for th in hashes:
             _SESSION_INDEX.pop(th, None)
-    if revoked:
-        settings_version.bump_config_version()
+    return revoked
 
 
 def revocation_generation() -> int:
@@ -440,8 +477,8 @@ def revocation_generation() -> int:
     bump. The rebuild is unconditional, not gated on `PRAGMA data_version`:
     _data_version_locked() answers a failed header read with the cached
     value, which would read as "no sibling commit" and skip the rebuild. The
-    counter moves once per logout, so the O(live sessions) cost stays
-    bounded."""
+    counter moves once per logout or cap eviction, so the O(live sessions)
+    cost stays bounded."""
     global _LAST_REV_GEN, _LAST_REFRESH_TS
     if not _DB_READY:
         return -1

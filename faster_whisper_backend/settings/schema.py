@@ -1692,7 +1692,8 @@ class AdminConfig(BaseModel):
         if v is None:
             return v
         # UNC and \\?\ paths: an admin typing a network share by accident.
-        if v.startswith("\\\\") or v.startswith("//"):
+        # Win32 reads ANY two leading separators as UNC, mixed ones included.
+        if len(v) >= 2 and v[0] in "\\/" and v[1] in "\\/":
             raise ValueError("UNC / network paths are not allowed")
         # Both path flavours: the deploy target is Windows, the dev box may be
         # Linux.
