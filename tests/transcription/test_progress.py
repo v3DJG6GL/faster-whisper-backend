@@ -49,6 +49,48 @@ def test_a_close_racing_a_tick_leaves_no_owner_less_entry(monkeypatch):
     assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "bob"
 
 
+def test_a_tick_inside_the_close_leaves_no_owner_less_entry(monkeypatch):
+    """A stage-thread tick can run while the loop thread is half-way through
+    _progress_close (registries popped, tombstone not yet written): it must
+    not re-create the entry owner-less and readable by any caller."""
+
+    class _TickingSet(set):
+        def discard(self, item):
+            tx_progress._progress_set(_PID, last_text="x")
+            super().discard(item)
+
+    tx_progress._progress_set(_PID, stage="transcribing", owner="alice")
+    monkeypatch.setattr(tx_progress, "_BATCH_CANCELLED", _TickingSet())
+    tx_progress._progress_close(_PID)
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    assert tx_progress._progress_entry_for(_PID, {"user_id": "mallory"}) is None
+
+
+def test_a_close_between_the_create_check_and_the_create_is_undone(monkeypatch):
+    """A tick of a cap-evicted run that passed the closed check right before
+    the entry creation, with the close landing in between: the created entry
+    is taken back, never left behind after the run closed."""
+    tx_progress._progress_set(_PID, stage="transcribing", owner="alice")
+    tx_progress._BATCH_PROGRESS.pop(_PID)  # the cap eviction
+    real_monotonic = time.monotonic
+    closed = []
+
+    def _monotonic():
+        # The first clock read of the tick is the creation sweep's `now`,
+        # after the closed check: close the run right there.
+        if not closed:
+            closed.append(True)
+            tx_progress._progress_close(_PID)
+        return real_monotonic()
+
+    monkeypatch.setattr(tx_progress, "time", type("T", (), {
+        "monotonic": staticmethod(_monotonic)}))
+    tx_progress._progress_set(_PID, last_text="x")
+    assert closed
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    assert _PID in tx_progress._PROGRESS_CLOSED
+
+
 def test_the_stale_sweep_spares_an_owner_stamped_run():
     """A batch run waiting on the GPU gate ticks nothing for as long as the
     queue holds it: the stale sweep must not pop it (404 to its owner) and

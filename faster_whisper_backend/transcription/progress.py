@@ -81,11 +81,13 @@ def _progress_close(pid: "str | None") -> None:
     global _PROGRESS_CLOSED_LAST_SWEEP
     if not pid:
         return
+    # Tombstone FIRST: a stage-thread tick landing between the pops below
+    # then no-ops instead of re-creating the entry owner-less.
+    now = time.monotonic()
+    _PROGRESS_CLOSED[pid] = now
     _BATCH_PROGRESS.pop(pid, None)
     _PROGRESS_OWNER.pop(pid, None)
     _BATCH_CANCELLED.discard(pid)
-    now = time.monotonic()
-    _PROGRESS_CLOSED[pid] = now
     if (len(_PROGRESS_CLOSED) > 64
             and now - _PROGRESS_CLOSED_LAST_SWEEP >= 60.0):
         _PROGRESS_CLOSED_LAST_SWEEP = now
@@ -373,8 +375,18 @@ def _progress_set(pid: "str | None", **fields) -> None:
             if _snap:
                 oldest = min(_snap, key=lambda kv: kv[1].get("updated", 0))[0]
                 _BATCH_PROGRESS.pop(oldest, None)
+        # One .get, not `in` then `[]`: a loop-thread close can pop the owner
+        # in between, and a KeyError here would break the stage thread.
+        _owner = _PROGRESS_OWNER.get(pid)
         entry = _BATCH_PROGRESS[pid] = (
-            {"owner": _PROGRESS_OWNER[pid]} if pid in _PROGRESS_OWNER else {})
+            {"owner": _owner} if _owner is not None else {})
+        if fields.get("owner") is None and pid in _PROGRESS_CLOSED:
+            # The close landed between the check above and this store. Store
+            # then re-check pairs with the close's tombstone-then-pop: either
+            # this sees the tombstone, or the close's pop comes after the store.
+            if _BATCH_PROGRESS.get(pid) is entry:
+                _BATCH_PROGRESS.pop(pid, None)
+            return
     entry.update(fields)
     entry["updated"] = time.monotonic()
     _rp = _RUN_PLAN_BY_PID.get(pid)
