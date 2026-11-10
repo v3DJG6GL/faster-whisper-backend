@@ -897,6 +897,20 @@ def _optional_quantifier(q: str) -> bool:
     return q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None
 
 
+def _conditional_body(body: str, i: int, group: "str | None") -> "str | None":
+    """``group`` as an alternation of what may run: a conditional with no
+    `no` branch (`(?(1)x)`) matches empty when the condition fails, so it is
+    read as `x|`. Every other group comes back unchanged."""
+    if group is None or not body.startswith("(?(", i):
+        return group
+    k = 0
+    while k < len(group):
+        if group[k] == "|":
+            return group
+        k = _next_atom(group, k)[2]
+    return group + "|"
+
+
 def _matches_empty(body: str, depth: int = 0, branches: int = 1) -> bool:
     """True if ``branches`` top-level branches of the group body ``body`` can
     match the empty string: every item in them is optional, zero-width or a
@@ -915,6 +929,7 @@ def _matches_empty(body: str, depth: int = 0, branches: int = 1) -> bool:
             i += 1
             continue
         char, group, j = _next_atom(body, i)
+        group = _conditional_body(body, i, group)
         k = _read_quantifier(body, j)[2]
         start, i = i, max(k, j)
         if not empty or re.fullmatch(r"(?:[?*]|\{0*(?:,[0-9]*)?\})[?+]?", body[j:k]):
@@ -950,6 +965,7 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
             i += 1
             continue
         char, group, j = _next_atom(body, i)
+        group = _conditional_body(body, i, group)
         _repeats, possessive, k, variable = _read_quantifier(body, j)
         text, q = body[i:j], body[j:k]
         i = max(k, j)
@@ -968,7 +984,12 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
             # less. As a pin, a no-op `(?>)` hid `(?: ?-|–(?>) ?)+#`.
             inner = None if depth >= 4 else _branch_atoms(group, depth + 1)
             pinned = inner is not None and None in (a for b in inner for a in b)
-            if (inner is None or (q and not optional)
+            if pinned and len(inner) == 1 and not q:
+                # `(?:–(?:x){2} ?)` matches exactly as its items do in
+                # place; as one pin it would hide the trailing ` ?` of
+                # `(?: ?-|(?:–(?:x){2} ?))+#` from _alt_wrap_overlap.
+                branches[-1].extend(inner[0])
+            elif (inner is None or (q and not optional)
                     or pinned and (len(inner) == 1 or _matches_empty(group))):
                 branches[-1].append(None)
             elif len(inner) > 1:
@@ -1711,6 +1732,12 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
                 j = k + 1
             elif k < n and pat[k] == "<" and k + 1 < n and pat[k + 1] in "=!":
                 zero_width, j = True, k + 2
+            elif k < n and pat[k] == "(":
+                # (?(1)yes|no): a group whose body starts past the
+                # condition's `)`. Read as `(?P=name)` it would end at that
+                # `)` and spill `yes|no` into the enclosing branch list.
+                close = pat.find(")", k)
+                j = n if close == -1 else close + 1
             elif k < n and pat[k] in "aiLmsux":
                 m = k
                 while m < n and pat[m] in "aiLmsux-":

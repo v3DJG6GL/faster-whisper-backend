@@ -220,6 +220,38 @@ def test_conditional_group_is_a_real_frame():
         g.validate([("r", r"(x)?((?(1)\w+\s?|b))+#", "")])
 
 
+@pytest.mark.parametrize("pat", [
+    r"(\w)?(?:\.?(?(1)\.|y))+#",
+    r"(n)?(?:-?(?(1)-|y))+#",
+    r"(n)?(?:-?(?(1)-))+#",
+    r"(n)?(?: ?(?(1) |y))+#",
+    r"(?:-?(?(1)-|y)(n)?)+#",
+    r"(?P<a>n)?(?:-?(?(a)-|y))+#",
+    r"(n)?(?:(?(1)-|y)-?)+#",
+])
+def test_conditional_body_is_read_by_the_overlap_screen(pat):
+    """A conditional's body is `yes|no` (`yes|` with no `no` branch: it
+    matches empty when the condition fails). Read as a self-closing
+    `(?P=name)`, the body spilled into the enclosing branch list and the
+    optional `-?` beside `(?(1)-|y)` never saw the `-` it trades with, so
+    `"n" + "-" * 40` hung re.sub."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(x)?((?(1)a|b))+",
+    r"(\()?\d+(?(1)\))",
+    r"(<)?\w+(?(1)>)",
+    r"(\w)?(?:x(?(1)\.|y))+#",
+    r"(?:(\d)?(?(1)\.|,) )+",
+])
+def test_conditional_body_without_a_trading_edge_passes(pat):
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
 def test_verbose_mode_is_scanned_without_its_whitespace_and_comments():
     """Under `(?x)` whitespace is ignored and `#` starts a comment, so the
     `+` in `(?x)(a+) +#` repeats the group — the screen used to count it as
@@ -1147,6 +1179,13 @@ def test_optional_atom_beside_a_multi_width_alternation_is_rejected(pat):
     r"(?: ?-|(ja)\1 ?)+#",
     r"(?: ?-|–(?:(?:(?:(?:x)))) ?)+#",
     r"(?:(?: ?-|–(?:x){2}) ?)+#",
+    r"(?: ?-|(?:–(?:x){2} ?))+#",
+    r"(?: ?-|(?:(ja)\1 ?))+#",
+    r"(?: ?-|(?:–(?:(?:(?:(?:y)))) ?))+#",
+    r"(?: ?-|(?P<a>–(?:x){2} ?))+#",
+    r"(?: ?-|(–(?:x){2} ?))+#",
+    r"(?: ?-|(?:–(?:x){2} ?){1,1})+#",
+    r"(?: ?-|(?>–(?:x){2} ?))+#",
 ])
 def test_optional_edge_of_a_mixed_alternation_is_rejected(pat):
     """A mixed alternation (`(?: ?-|–)`: every branch has a mandatory atom,
@@ -1210,6 +1249,11 @@ def test_optional_edge_of_a_mixed_alternation_is_rejected(pat):
     r"(?:(?:,|;\d{2}) ?x)+",
     r"(?:x?(?:ab|c(?:d){2}))+",
     r"(?:(?:ja|nein)(?:x){2} )+",
+    r"(?:(?:\d{3})\.?)+",
+    r"(?:(?:(\w)\1) )+",
+    r"(?:(?:\.\d{3}) ?)+€",
+    r"(?:,?(?:x){2}\s?)+#",
+    r"(?:(?:\d{3})(?:x){2}\.?)+",
 ])
 def test_mixed_alternation_whose_edges_cannot_trade_passes(pat):
     """The edge reading refuses only a split that exists: a mandatory atom
