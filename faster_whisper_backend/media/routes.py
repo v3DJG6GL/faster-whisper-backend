@@ -566,7 +566,8 @@ _PACKAGE_MAX_CONTAINERS = 4_000_000
 # Numbers are the costliest scalars json.loads builds (a 48 MiB array of
 # floats: ~1.2 s with the GIL held, ~480 MB). A real export carries at most
 # default_track and original_track, so the parse aborts past a handful; with
-# containers and keys bounded too, the worst body left parses in ~0.6 s.
+# containers, keys and strings bounded too, the worst body left parses in
+# ~0.6 s.
 _PACKAGE_MAX_NUMBERS = 64
 # Distinct object keys are the costliest strings json.loads builds (each a
 # str plus a memo entry: 4 M short keys ~2.6 s with the GIL held). A key's
@@ -574,6 +575,13 @@ _PACKAGE_MAX_NUMBERS = 64
 # can only overcount; quote-heavy subtitle text stays far below 1 M.
 _PACKAGE_MAX_KEYS = 1_000_000
 _PACKAGE_KEY_ENDS = (b'":', b'" ', b'"\t', b'"\n', b'"\r')
+# String values cost like keys minus the memo: a 48 MiB array of "ab" builds
+# ~10 M str objects (~540 MB, ~0.55 s with the GIL held), twice the container
+# bound. A value's closing quote is followed by ',' ']' or '}' (whitespace is
+# already in _PACKAGE_KEY_ENDS), so these pairs can only overcount; a real
+# export carries a few dozen strings.
+_PACKAGE_MAX_STRINGS = 1_000_000
+_PACKAGE_STRING_ENDS = (b'",', b'"]', b'"}')
 _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
 # Free space an upload must leave on the staging volume (the package route's
 # margin): a near-full disk is refused before the transfer, not after it.
@@ -849,6 +857,8 @@ async def package_media(media_id: str, request: Request,
             raise ValueError("container bomb")
         if sum(raw.count(p) for p in _PACKAGE_KEY_ENDS) > _PACKAGE_MAX_KEYS:
             raise ValueError("key bomb")
+        if sum(raw.count(p) for p in _PACKAGE_STRING_ENDS) > _PACKAGE_MAX_STRINGS:
+            raise ValueError("string bomb")
         body = _package_json_loads(raw)
     except Exception:  # noqa: BLE001 — malformed body is a caller error
         raise HTTPException(status_code=422, detail="expected a JSON body")

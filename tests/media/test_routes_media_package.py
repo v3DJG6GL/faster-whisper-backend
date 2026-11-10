@@ -806,6 +806,29 @@ def test_package_refuses_a_key_bomb_before_parsing(client, package_enabled, monk
     assert _package(client, mid, {"container": "mkv", "subtitles": subs}).status_code == 200
 
 
+def test_package_refuses_a_string_bomb_before_parsing(client, package_enabled, monkeypatch):
+    # String values cost a str each like keys (a 48 MiB array of "ab" builds
+    # ~10 M of them, ~540 MB); counted on the raw bytes, where a value's
+    # closing quote is followed by ',' ']' or '}'.
+    mid = _upload(client).json()["media_id"]
+    monkeypatch.setattr(media_routes, "_PACKAGE_MAX_STRINGS", 1000)
+    parsed = []
+    real = media_routes.json.loads
+    monkeypatch.setattr(media_routes.json, "loads", lambda *a, **k: parsed.append(1) or real(*a, **k))
+    for body in ('{"container":"mkv","x":[' + '"ab",' * 1001 + '"ab"]}',
+                 '{"container":"mkv","x":["ab"' + ',["ab"]' * 1001 + "]}",
+                 '{"container":"mkv","x":[' + ",".join(['{"k":"ab"}'] * 1001) + "]}"):
+        r = client.post(f"/v1/audio/media/{mid}/package", content=body,
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 422 and "expected a JSON body" in r.text, body[:40]
+    assert parsed == []
+    # A real export, quoted speech in its labels and text included, still packages.
+    subs = _tracks()
+    subs[0]["label"] = 'say "hi"'
+    subs[1]["srt"] = '1\n00:00:00,000 --> 00:00:01,000\nHe said "no", fine\n'
+    assert _package(client, mid, {"container": "mkv", "subtitles": subs}).status_code == 200
+
+
 def test_package_cleans_only_a_bounded_prefix_of_filename_and_labels(
         client, package_enabled, monkeypatch):
     # The 48 MiB body ceiling would let one filename or label string cost
