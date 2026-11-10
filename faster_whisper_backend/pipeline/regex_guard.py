@@ -866,7 +866,7 @@ def _alt_wrap_overlap(body: str, icase: bool = False) -> bool:
     a pin is left to the rest of the screen."""
     import re
     got = _branch_atoms("(?:" + body + ")")
-    return (len(got) == 1 and None not in got[0]
+    return (len(got) == 1
             and _splits_ambiguously(got[0], re.DOTALL | (re.IGNORECASE if icase else 0)))
 
 
@@ -963,9 +963,13 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
         elif re.fullmatch(r"\{0*(?:,0*)?\}\??", q):
             continue  # `{0}` matches nothing at all
         elif group is not None:
-            inner = (None if text.startswith("(?>") or depth >= 4
-                     else _branch_atoms(group, depth + 1))
-            if inner is None or None in (a for b in inner for a in b) or (q and not optional):
+            # An atomic group is read like `(?:...)`: atomicity only takes
+            # backtracking away, so reading through it refuses more, never
+            # less. As a pin, a no-op `(?>)` hid `(?: ?-|–(?>) ?)+#`.
+            inner = None if depth >= 4 else _branch_atoms(group, depth + 1)
+            pinned = inner is not None and None in (a for b in inner for a in b)
+            if (inner is None or (q and not optional)
+                    or pinned and (len(inner) == 1 or _matches_empty(group))):
                 branches[-1].append(None)
             elif len(inner) > 1:
                 # `(?:,|;)` is the class `[,;]`: an alternation of runs of
@@ -975,7 +979,7 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                 # past the shortest branch: `(?:a|aa)` is `aa?`. A pin there
                 # hid `a?` in `(?:a?(?:a|aa)c)+#` from the check, and each
                 # repetition matched `aac` two ways.
-                if all(b and not any(a[1] for a in b) for b in inner):
+                if not pinned and all(b and not any(a[1] for a in b) for b in inner):
                     low = min(len(b) for b in inner)
                     tail, alt = object(), object()
                     for p in range(max(len(b) for b in inner)):
@@ -1005,8 +1009,11 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                     lead: "list[dict]" = []
                     trail: "list[dict]" = []
                     mid: "dict | None" = {}
+                    # A pin inside a branch counts as one of its mandatory
+                    # items and makes the middle a pin: dropping the whole
+                    # alternation hid the edges of `(?: ?-|–(?:x){2} ?)+#`.
                     for b in inner:
-                        m = [p for p, a in enumerate(b) if not a[1]]
+                        m = [p for p, a in enumerate(b) if a is None or not a[1]]
                         if not m:
                             mid = None
                             break
@@ -1018,6 +1025,8 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                             if p == len(trail):
                                 trail.append({})
                             trail[p][a[0]] = None
+                        if pinned:
+                            continue
                         must = [b[p][0] for p in m]
                         mid["".join("(?=" + t + ")" for t in must[:-1]) + must[-1]] = None
                     if mid is None:
@@ -1026,7 +1035,8 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                         la, ta = object(), object()
                         for d in lead:
                             branches[-1].append(("(?:" + "|".join(d) + ")", True, None, la))
-                        branches[-1].append(("(?:" + "|".join(mid) + ")", optional, None, None))
+                        branches[-1].append(None if pinned else
+                                            ("(?:" + "|".join(mid) + ")", optional, None, None))
                         for d in reversed(trail):
                             branches[-1].append(("(?:" + "|".join(d) + ")", True, None, ta))
             else:

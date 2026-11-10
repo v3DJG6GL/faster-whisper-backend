@@ -1140,6 +1140,13 @@ def test_optional_atom_beside_a_multi_width_alternation_is_rejected(pat):
     r"(?: ?(?: ?-|–))+#",
     r"(?:(?:\s?-|–)\s?)+#",
     r"(?:(?:a?xa|c)a?)+#",
+    r"(?: ?-|(?>–) ?)+#",
+    r"(?: ?-|(?>–) ?)+$",
+    r"(?: ?-|–(?:x){2} ?)+#",
+    r"(?: ?-|–(?:x|y){2} ?)+#",
+    r"(?: ?-|(ja)\1 ?)+#",
+    r"(?: ?-|–(?:(?:(?:(?:x)))) ?)+#",
+    r"(?:(?: ?-|–(?:x){2}) ?)+#",
 ])
 def test_optional_edge_of_a_mixed_alternation_is_rejected(pat):
     """A mixed alternation (`(?: ?-|–)`: every branch has a mandatory atom,
@@ -1197,6 +1204,12 @@ def test_optional_edge_of_a_mixed_alternation_is_rejected(pat):
     r"(?:x?(?:ab|cd))+",
     r"(?:,?(?:und|oder) )+",
     r"(?:-?(?:\d|x))+",
+    r"(?:, ?|;(?:x){2})+",
+    r"(?:(?: ?/|-(?:\d){2}) ?\d)+",
+    r"(?:,|;(?>x) ?)+",
+    r"(?:(?:,|;\d{2}) ?x)+",
+    r"(?:x?(?:ab|c(?:d){2}))+",
+    r"(?:(?:ja|nein)(?:x){2} )+",
 ])
 def test_mixed_alternation_whose_edges_cannot_trade_passes(pat):
     """The edge reading refuses only a split that exists: a mandatory atom
@@ -1209,6 +1222,37 @@ def test_mixed_alternation_whose_edges_cannot_trade_passes(pat):
 
 @pytest.mark.parametrize("pat", [r"(?:a?b(?:a|aa)c)+#", r"(?:(?:a|aa)c)+a?#"])
 def test_multi_width_alternation_pinned_off_an_optional_atom_passes(pat):
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?: ?-|–(?>) ?)+#",
+    r"(?: ?-|–(?>x)? ?)+#",
+    r"(?:,?(?>)\s?)+#",
+    r"(?:a?(?>)(?:a|aa)c)+#",
+    r"(?:(?: ?-|–) ?(?>))+#",
+])
+def test_atomic_group_does_not_hide_a_trading_edge(pat):
+    """An atomic group stood as a pin, so even an empty `(?>)` cut the
+    optional atoms around it off from each other: `(?:,?(?>)\\s?)+#` was
+    accepted while `(?:,?\\s?)+#` was refused, and `", " * 20` split 2**20
+    ways. Atomicity only takes backtracking away, so its body is read like
+    a `(?:...)` body."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:(?>ab)c)+",
+    r"(?:(?>a)?b)+",
+    r"(?:(?>Komma|,) )+",
+    r"\b(?:(?>Herr|Frau) )+",
+    r"(?:(?>\d+)[.,])+",
+    r"(\d{4})+",
+])
+def test_atomic_group_read_through_keeps_benign_rules(pat):
     assert not g._nested_repetition(pat)
     g.validate([("r", pat, "")])
 
