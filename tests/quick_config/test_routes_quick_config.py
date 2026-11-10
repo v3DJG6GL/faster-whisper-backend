@@ -838,6 +838,49 @@ def test_stream_recent_rechecks_the_caller_before_the_replay(
     assert '"own"' in got and "someone-else" not in got
 
 
+def test_stream_replay_renders_off_the_event_loop(client, make_user_key,
+                                                  app_module, monkeypatch):
+    """Up to a page of capped rows (megabytes of raw/final/steps JSON) is
+    rendered once per connect: in a worker thread, as the same frames in the
+    same oldest-first order with the same scope filter. Driven directly,
+    never via TestClient streaming."""
+    import json
+
+    from tests.conftest import on_event_loop
+    uid, raw = locked_alice(make_user_key, "own")
+    _seed_recent(("old", "a", "a", uid), ("foreign", "b", "b", "someone-else"),
+                 ("new", "c", "c", uid))
+    seen = []
+
+    class _Json:
+        def __getattr__(self, name):
+            return getattr(json, name)
+
+        @staticmethod
+        def dumps(obj, *a, **k):
+            if isinstance(obj, dict) and "final" in obj:
+                seen.append(on_event_loop())
+            return json.dumps(obj, *a, **k)
+    monkeypatch.setattr(qc, "json", _Json())
+    req = fake_request(headers=bearer(raw))
+
+    async def drive():
+        resp = await qc.stream_recent(req, qc.require_user_or_admin_sse(req))
+        body = resp.body_iterator
+        try:
+            return [await asyncio.wait_for(body.__anext__(), timeout=10)
+                    for _ in range(2)]
+        finally:
+            await body.aclose()
+
+    frames = asyncio.run(drive())
+    assert seen == [False, False]
+    assert all(f.startswith("event: trace\ndata: {") and f.endswith("}\n\n")
+               for f in frames)
+    rows = [json.loads(f.split("data: ", 1)[1]) for f in frames]
+    assert [r["request_id"] for r in rows] == ["old", "new"]
+
+
 def test_concurrent_patches_do_not_lose_an_update(client, app_module,
                                                   monkeypatch):
     """Two overlapping patches of DIFFERENT rules both used to snapshot the

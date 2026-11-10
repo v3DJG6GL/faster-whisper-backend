@@ -37,7 +37,7 @@ import functools
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
@@ -87,20 +87,23 @@ def _state_body(row: dict[str, Any] | None) -> dict[str, Any]:
 @router.get("/synced-client-settings")
 @router.get("/client-settings", deprecated=True)
 async def get_client_settings(
-    response: Response,
     user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
+) -> JSONResponse:
     """The caller's stored settings blob. Empty store is 200 with
     `{version: 0, blob: null}` — NOT 404/204, because the desktop client
     reads a route-level 404 as "backend too old for sync" and a 204 would
     force a bodyless special case."""
-    # Sensitive blob (may hold the client's API keys): never in a shared cache.
-    response.headers["Cache-Control"] = "no-store"
     try:
-        return _state_body(
-            await asyncio.to_thread(client_settings_store.get, user["user_id"]))
+        row = await asyncio.to_thread(client_settings_store.get, user["user_id"])
     except client_settings_store.StoreUnavailable:
         raise _store_unavailable() from None
+    # Rendered as the PUT answers are, in a worker thread and without an
+    # inferred response model: FastAPI's Python walk of a ~4 MiB blob would
+    # otherwise run on the loop. Sensitive blob (may hold the client's API
+    # keys): never in a shared cache.
+    return await asyncio.to_thread(functools.partial(
+        JSONResponse, content=_state_body(row),
+        headers={"Cache-Control": "no-store"}))
 
 
 @router.put("/synced-client-settings")

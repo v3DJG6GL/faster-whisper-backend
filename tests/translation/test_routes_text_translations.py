@@ -456,6 +456,33 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
     assert seen == [("done", False)]
 
 
+def test_result_is_rendered_off_the_event_loop(client, app_module, monkeypatch):
+    """The answer echoes every client id (up to a 4 MiB body of them): its
+    jsonable_encoder walk and JSON render run on a worker thread, and the
+    bytes stay those FastAPI renders for the same dict."""
+    import json
+
+    from fastapi.encoders import jsonable_encoder
+    from starlette.responses import JSONResponse
+    _enable_stubbed(app_module, monkeypatch)
+    seen = []
+    real = JSONResponse.render
+
+    def _spy(self, content):
+        if isinstance(content, dict) and "segments" in content:
+            seen.append(on_event_loop())
+        return real(self, content)
+    monkeypatch.setattr(JSONResponse, "render", _spy)
+    r = _post_ok(client, segments=[{"id": "ä", "text": "eins"},
+                                   {"id": [1, {"k": None}], "text": ""}])
+    assert seen == [False]
+    assert r.headers["content-type"] == "application/json"
+    assert r.content == json.dumps(
+        jsonable_encoder(r.json()), ensure_ascii=False, allow_nan=False,
+        separators=(",", ":")).encode("utf-8")
+    assert [s["id"] for s in r.json()["segments"]] == ["ä", [1, {"k": None}]]
+
+
 def _register_load(secs):
     """What translation.engine's load records in the model registry (minus
     the model-size ledger write): the stub model loaded NOW in `secs`."""

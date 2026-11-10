@@ -12,6 +12,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
@@ -86,6 +87,16 @@ def _client_id_warnings(warnings: "list[str]", ids: "list") -> "list[str]":
                                            for j in range(a, b + 1))
         return m.group(0)
     return [_TR_SEG_WARN_RE.sub(_sub, w) for w in warnings]
+
+
+def _render_result(content: dict) -> JSONResponse:
+    """The response FastAPI builds from a dict a field-less route returns
+    (jsonable_encoder, then JSONResponse), as a plain call so the handler can
+    run it in a worker thread: the answer echoes every client-supplied id,
+    and jsonable_encoder's pure-Python walk of a 4 MiB body of them stalls
+    the loop for most of a second otherwise."""
+    from fastapi.encoders import jsonable_encoder
+    return JSONResponse(jsonable_encoder(content))
 
 
 @router.post("/v1/text/translations")
@@ -771,4 +782,4 @@ async def translate_text(request: Request,
         await asyncio.to_thread(_rplan.finish_run, "ok")
     except Exception:  # noqa: BLE001 — never fail on a ledger write
         pass
-    return _result
+    return await asyncio.to_thread(_render_result, _result)

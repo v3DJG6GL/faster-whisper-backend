@@ -303,3 +303,29 @@ def test_put_answers_are_rendered_off_the_event_loop(client, monkeypatch):
     assert _put(client, {"n": 1}, 0).status_code == 200
     assert _put(client, {"n": 2}, 0).status_code == 409
     assert seen == [False, False]
+
+
+def test_get_answer_is_rendered_off_the_event_loop(client, monkeypatch):
+    # The answer carries the whole stored blob (up to ~4 MiB): it is built on
+    # a worker thread, with the no-store header the GET always sent.
+    from tests.conftest import on_event_loop
+    seen = []
+    real = routes.JSONResponse
+
+    def _spy(*a, **k):
+        seen.append(on_event_loop())
+        return real(*a, **k)
+    monkeypatch.setattr(routes, "JSONResponse", _spy)
+    r = client.get(_URL)
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["content-type"] == "application/json"
+    assert r.json() == {"version": 0, "blob": None, "updated_ts": None,
+                        "device": None}
+    assert seen == [False]
+    seen.clear()
+    assert _put(client, {"n": [1.5, "ä", None]}, 0).status_code == 200
+    r = client.get(_URL)
+    assert r.headers["cache-control"] == "no-store"
+    assert r.json()["blob"] == {"n": [1.5, "ä", None]}
+    assert seen == [False, False]

@@ -1090,6 +1090,30 @@ async def post_recent_search(
     )
 
 
+def _trace_visible(entry: dict[str, Any] | None, sees_all: bool,
+                   caller_uid: str) -> bool:
+    """Whether a trace row reaches a /stream subscriber of this scope."""
+    if sees_all:
+        return True
+    # caller_uid is already coerced from None to "" by the caller; coerce the
+    # entry side too so a persisted row with user_id=NULL doesn't get
+    # silently excluded for a caller whose own user_id is missing.
+    return bool(entry) and (entry.get("user_id") or "") == caller_uid
+
+
+def _replay_frames(page_size: int, sees_all: bool,
+                   caller_uid: str) -> list[str]:
+    """The /stream connect replay: the freshest page as `event: trace`
+    frames, oldest first. Fetched AND rendered in one worker-thread call: a
+    page of capped rows is megabytes of JSON, and each row's json.dumps is
+    its own C call, so the loop gets the GIL back between rows."""
+    replay = recent_transcriptions_store.list_recent(
+        limit=page_size, user_id_filter=None if sees_all else caller_uid)
+    return [f"event: trace\ndata: {json.dumps(entry)}\n\n"
+            for entry in reversed(replay)
+            if _trace_visible(entry, sees_all, caller_uid)]
+
+
 @router.get(
     "/stream",
     dependencies=[Depends(require_user_webui_host)],
@@ -1121,12 +1145,7 @@ async def stream_recent(
     resolved_at = time.monotonic()
 
     def _visible(entry: dict[str, Any] | None) -> bool:
-        if sees_all:
-            return True
-        # caller_uid is already coerced from None to "" above; coerce the
-        # entry side too so a persisted row with user_id=NULL doesn't get
-        # silently excluded for a caller whose own user_id is missing.
-        return bool(entry) and (entry.get("user_id") or "") == caller_uid
+        return _trace_visible(entry, sees_all, caller_uid)
 
     async def _rescope() -> bool:
         """Re-resolve the caller when the config version moved or the
@@ -1154,16 +1173,9 @@ async def stream_recent(
             # in chronological order.
             page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
             # Off the loop with its siblings — this runs once per SSE connect.
-            replay = await asyncio.to_thread(
-                functools.partial(
-                    recent_transcriptions_store.list_recent,
-                    limit=page_size,
-                    user_id_filter=None if sees_all else caller_uid,
-                )
-            )
-            for entry in reversed(replay):
-                if _visible(entry):
-                    yield f"event: trace\ndata: {json.dumps(entry)}\n\n"
+            for frame in await asyncio.to_thread(
+                    _replay_frames, page_size, sees_all, caller_uid):
+                yield frame
             while True:
                 if await request.is_disconnected():
                     break
