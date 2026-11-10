@@ -128,6 +128,16 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('"[ \\t]*([^"]*?)[ \\t]*("|\\Z)', '"\\1\\2'),
         ('"[ \\t]*((?:[^"]*?[^" \\t])?)[ \\t]*("|\\Z)', '"\\1\\2'),
     ),
+    # The quoted text could run past a later „, so from every „ the scan went
+    # on to the end of the line looking for a “. A whole transcript is one
+    # line, so a repeated dictated "Anführungszeichen unten" (or Whisper
+    # looping on it) took quadratic time on /transcribe (10000 items: 10 s).
+    # The quoted text now stops at the next „; the output is the same (a
+    # match from that later „ removes the same spaces).
+    "tighten-german-quote-close": (
+        ('(„[^“\\n]*?)[ \\t]+“', '\\1“'),
+        ('(„[^“„\\n]*?)[ \\t]+“', '\\1“'),
+    ),
     # The old pattern also fired right after a digit, so "vom 3.-10 Oktober"
     # became "vom 310 Oktober" ("12.-14.03." → "1214.03.", "2,-5 mg" →
     # "25 mg"). The new one never fires after a digit.

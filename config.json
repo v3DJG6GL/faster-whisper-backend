@@ -743,7 +743,7 @@
           "note": "Removes spaces after a German opening quote: „ text → „text."
         },
         {
-          "pattern": "(„[^“\\n]*?)[ \\t]+“",
+          "pattern": "(„[^“„\\n]*?)[ \\t]+“",
           "replacement": "\\1“",
           "label": "tighten-german-quote-close",
           "note": "Removes spaces before the “ that closes a „ on the same line: „text “ → „text“. A “ with no „ before it (an English opening quote) is left alone."
