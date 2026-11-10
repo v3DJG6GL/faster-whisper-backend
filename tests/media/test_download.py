@@ -2239,3 +2239,67 @@ def test_probe_carries_the_ladder_when_video_is_enabled(monkeypatch):
         "label": "audio only · m4a · 129 kbps"}
     monkeypatch.setattr(udl.cfg, "URL_VIDEO_ENABLED", False, raising=False)
     assert _run(udl.probe("https://example.com/watch?v=x", timeout=5.0)).video_ladder == []
+
+
+class _UndrainableFp:
+    """A 30x body urllib must not read: read() fails the test, close() is
+    what the redirect handler is expected to do instead."""
+
+    def __init__(self):
+        self.closed = False
+
+    def read(self, *a):
+        if not self.closed:
+            raise AssertionError("the redirect body was drained")
+        return b""
+
+    def close(self):
+        self.closed = True
+
+
+def test_redirect_body_is_not_drained(monkeypatch):
+    """urllib's http_error_302 drains the 30x body with an UNBOUNDED fp.read()
+    before following the redirect, which would let one hop stream past every
+    byte cap of _capped_get and the direct-media probe."""
+    import email.message
+    import urllib.request
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    handler = udl._NoPrivateRedirects()
+    req = urllib.request.Request("https://public.example/a")
+    headers = email.message.Message()
+    headers["Location"] = "https://public.example/x"
+    fp = _UndrainableFp()
+    new = handler.redirect_request(req, fp, 302, "Found", headers,
+                                   "https://public.example/x")
+    assert isinstance(new, urllib.request.Request)
+    assert new.full_url == "https://public.example/x"
+    assert fp.closed
+
+    # End to end through urllib's own http_error_302: the redirect is still
+    # followed, and the drain it performs reads nothing.
+    followed = []
+
+    class _Parent:
+        def open(self, new_req, timeout=None):
+            followed.append(new_req.full_url)
+            return "followed"
+
+    handler.parent = _Parent()
+    req.timeout = 5  # OpenerDirector.open stamps this before any handler runs
+    fp = _UndrainableFp()
+    assert handler.http_error_302(req, fp, 302, "Found", headers) == "followed"
+    assert followed == ["https://public.example/x"] and fp.closed
+
+
+@pytest.mark.parametrize("newurl", ["file:///etc/passwd",
+                                    "https://intra.example/x"])
+def test_refused_redirect_closes_its_body(monkeypatch, newurl):
+    monkeypatch.setattr(udl, "_host_is_forbidden",
+                        lambda h: h == "intra.example")
+    import urllib.request
+    fp = _UndrainableFp()
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        udl._NoPrivateRedirects().redirect_request(
+            urllib.request.Request("https://public.example/a"), fp, 302,
+            "Found", {}, newurl)
+    assert ei.value.fp is fp and fp.closed

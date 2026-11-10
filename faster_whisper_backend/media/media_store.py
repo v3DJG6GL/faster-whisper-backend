@@ -185,6 +185,9 @@ def make_pipeline_copy(src: str) -> "str | None":
     tmp = os.path.join(tempfile.gettempdir(), f"urlmedia-{uuid.uuid4().hex}{suffix}")
     try:
         try:
+            # The link shares src's inode, so tighten it FIRST: the name must
+            # never appear in the shared tempdir wider than 0600.
+            secure_file(src)
             os.link(src, tmp)
         except OSError:
             fd = os.open(
@@ -198,8 +201,9 @@ def make_pipeline_copy(src: str) -> "str | None":
         logger.error("[url-dl] pipeline copy failed: %s", e)
         unlink_quietly(tmp)
         return None
-    # The os.link fast path inherits the download's umask mode (typically
-    # 0644) in the shared tempdir — tighten it like the fallback already is.
+    # Still needed after the pre-link chmod: secure_file swallows a failed
+    # chmod of src, and the link then carries the download's umask mode
+    # (typically 0644).
     secure_file(tmp)
     return tmp
 

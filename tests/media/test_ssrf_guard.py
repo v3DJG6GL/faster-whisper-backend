@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 from asyncio import run as _run
+import gzip
 import http.server
 import json
 import os
@@ -37,7 +38,9 @@ import socket
 import subprocess
 import sys
 import threading
+import types
 from unittest import mock
+import zlib
 
 import pytest
 import yt_dlp
@@ -831,3 +834,164 @@ def test_a_per_request_no_proxy_is_still_gated_as_a_direct_dial(proxy_listener):
         with pytest.raises(RequestError, match="forbidden address"):
             ydl.urlopen(Request(f"{proxy_listener}/x", proxies={"all": None}))
     assert _ProxyListener.hits == []
+
+
+# ---- Content-Encoding: yt-dlp inflates a compressed response whole, in memory,
+# before anyone reads it (in-process that is the server's own probe), so the
+# guard's handler bounds what a body may expand to.
+
+class _Encoded(_QuietHandler):
+    """Answers every request (through the operator proxy) with `body` sent
+    under `encoding`."""
+
+    body = b""
+    encoding = "gzip"
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Encoding", type(self).encoding)
+        self.send_header("Content-Length", str(len(type(self).body)))
+        self.end_headers()
+        self.wfile.write(type(self).body)
+
+
+def _registered_guard():
+    """The globals of the guard load whose handler yt-dlp actually uses: the
+    file loads more than once (a forced self-check reloads it under the same
+    module name) and only the first load registers (install())."""
+    udl.guard_self_check(force=True)
+    from yt_dlp.networking.common import _REQUEST_HANDLERS
+    return _REQUEST_HANDLERS["FwbSsrfGuard"]._send.__globals__
+
+
+@pytest.fixture
+def encoded_listener(monkeypatch):
+    for var in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(var.upper(), raising=False)
+    srv = _serve(_Encoded, "127.0.0.1")
+    with _stopping(srv):
+        yield f"http://127.0.0.1:{srv.server_port}"
+
+
+def _raw_deflate(data):
+    c = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    return c.compress(data) + c.flush()
+
+
+_ENCODERS = {
+    "gzip": gzip.compress,
+    "deflate": _raw_deflate,
+    "deflate-zlib": zlib.compress,  # the zlib-wrapped fallback yt-dlp accepts
+}
+
+
+def _fetch_encoded(listener, encoding, body):
+    from yt_dlp.networking.common import Request
+    _Encoded.encoding = encoding.split("-")[0]
+    _Encoded.body = _ENCODERS[encoding](body)
+    with yt_dlp.YoutubeDL({"quiet": True, "proxy": listener}) as ydl:
+        return ydl.urlopen(Request(f"http://{_PUBLIC_LITERAL}/page")).read()
+
+
+@pytest.mark.parametrize("encoding", sorted(_ENCODERS))
+def test_guard_refuses_a_compression_bomb(encoded_listener, encoding,
+                                          monkeypatch):
+    guard = _registered_guard()
+    monkeypatch.setitem(guard, "_MAX_DECODED_BYTES", 1 << 20)
+    with pytest.raises(RequestError, match=guard["MARKER"]):
+        _fetch_encoded(encoded_listener, encoding, b"\0" * (4 << 20))
+
+
+@pytest.mark.parametrize("encoding", sorted(_ENCODERS))
+def test_guard_decodes_a_compressed_page_unchanged(encoded_listener, encoding,
+                                                   monkeypatch):
+    guard = _registered_guard()
+    monkeypatch.setitem(guard, "_MAX_DECODED_BYTES", 1 << 20)
+    page = os.urandom(1000) + b"<html>" * 50_000  # ~300 KB, under the cap
+    assert _fetch_encoded(encoded_listener, encoding, page) == page
+    exact = b"a" * (1 << 20)  # exactly the cap still decodes
+    assert _fetch_encoded(encoded_listener, encoding, exact) == exact
+
+
+def _outcome(fn, data):
+    try:
+        return ("ok", fn(data))
+    except zlib.error as e:
+        return ("zlib.error", str(e))
+
+
+_GZ = gzip.compress(b"hello " * 1000)
+_RAW = _raw_deflate(b"hello " * 1000)
+_ZLIB = zlib.compress(b"hello " * 1000)
+
+
+@pytest.mark.parametrize("method, data", [
+    ("gz", b""),
+    ("gz", _GZ),
+    ("gz", _GZ + b"trailing junk"),
+    ("gz", _GZ + gzip.compress(b"second member")),  # only ONE member decodes
+    ("gz", _GZ[:-3]),                               # truncated
+    ("gz", _GZ[:10] + b"\xff" * 40),                # corrupt
+    ("gz", _RAW),                                   # not gzip at all
+    ("deflate", b""),
+    ("deflate", _RAW),
+    ("deflate", _RAW + b"junk"),
+    ("deflate", _ZLIB),                             # zlib-wrapped fallback
+    ("deflate", _ZLIB + b"junk"),
+    ("deflate", _RAW[:-4]),
+    ("deflate", _ZLIB[:-4]),
+    ("deflate", b"\xff" * 40),
+])
+def test_bounded_decoders_match_yt_dlp_under_the_cap(method, data):
+    """Every input under the cap decodes to the same bytes, or fails with the
+    same zlib.error (yt-dlp maps that to a TransportError), as yt-dlp's own."""
+    from yt_dlp.networking import _urllib
+    guard = _registered_guard()
+    ours = getattr(guard["_GuardedHTTPHandler"], method)
+    theirs = getattr(_urllib.HTTPHandler, method)
+    assert _outcome(ours, data) == _outcome(theirs, data)
+
+
+class _FakeBrotliError(Exception):
+    pass
+
+
+def _fake_brotli(output, *, finished=True, limit_supported=True):
+    class Decompressor:
+        def process(self, data, **kw):
+            if kw and not limit_supported:
+                raise TypeError("process() takes no keyword arguments")
+            return output
+
+        def is_finished(self):
+            return finished
+
+    return types.SimpleNamespace(Decompressor=Decompressor,
+                                 error=_FakeBrotliError,
+                                 decompress=lambda data: output)
+
+
+def test_bounded_brotli(monkeypatch):
+    from yt_dlp.networking import _urllib
+    guard = _registered_guard()
+    monkeypatch.setitem(guard, "_MAX_DECODED_BYTES", 100)
+    br = guard["_GuardedHTTPHandler"].brotli
+    monkeypatch.setattr(_urllib, "brotli", _fake_brotli(b"x" * 100))
+    assert br(b"compressed") == b"x" * 100
+    assert br(b"") == b""
+    monkeypatch.setattr(_urllib, "brotli", _fake_brotli(b"x" * 101))
+    with pytest.raises(RequestError, match=guard["MARKER"]):
+        br(b"compressed")
+    # brotli.decompress raises on a truncated stream; so does the bound one.
+    monkeypatch.setattr(_urllib, "brotli",
+                        _fake_brotli(b"x", finished=False))
+    with pytest.raises(_FakeBrotliError):
+        br(b"compressed")
+    # A brotli module without an output limit (brotlicffi, Brotli < 1.2)
+    # is refused rather than inflated unbounded.
+    monkeypatch.setattr(_urllib, "brotli",
+                        _fake_brotli(b"x", limit_supported=False))
+    with pytest.raises(RequestError, match=guard["MARKER"]):
+        br(b"compressed")

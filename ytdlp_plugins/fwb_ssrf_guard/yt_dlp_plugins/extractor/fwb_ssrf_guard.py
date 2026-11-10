@@ -66,6 +66,7 @@ import threading
 import types
 import urllib.parse
 import urllib.request
+import zlib
 
 from yt_dlp.networking import _urllib
 from yt_dlp.networking.common import (
@@ -244,11 +245,83 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         _observe(self.sock)
 
 
+# The most a Content-Encoding may expand a response body to. yt-dlp inflates
+# a compressed response whole, in memory, before anything reads it — in
+# process that is the server's own probe — so unbounded, ~1 MB on the wire
+# becomes ~1 GiB. Extractor pages, JSON APIs, player JS and manifests are a
+# few MB (a long live DASH manifest some tens), and media fetches send
+# Accept-Encoding: identity, so 64 MiB leaves every legitimate body as is.
+_MAX_DECODED_BYTES = 64 * 1024 * 1024
+
+
+def _expands_past_the_cap() -> RequestError:
+    return RequestError(
+        f"{MARKER}: a compressed response expands past "
+        f"{_MAX_DECODED_BYTES} bytes — refusing to decode it")
+
+
+def _inflate(data: bytes, wbits: int) -> bytes:
+    """zlib.decompress(data, wbits) that stops past the cap. Like the one-shot
+    call it decodes ONE stream (trailing bytes are ignored) and raises
+    zlib.error on a truncated one."""
+    d = zlib.decompressobj(wbits)
+    out = d.decompress(data, _MAX_DECODED_BYTES + 1)
+    if len(out) > _MAX_DECODED_BYTES:
+        raise _expands_past_the_cap()
+    if not d.eof:  # under the cap, so all input was consumed: truncated
+        raise zlib.error(
+            "Error -5 while decompressing data: incomplete or truncated stream")
+    return out
+
+
+def _unbrotli(data: bytes) -> bytes:
+    """brotli.decompress(data) that stops past the cap (Brotli >= 1.2's
+    output_buffer_limit). A module without that limit is refused, not
+    inflated unbounded."""
+    brotli = _urllib.brotli
+    d = brotli.Decompressor()
+    try:
+        out = d.process(data, output_buffer_limit=_MAX_DECODED_BYTES + 1)
+    except TypeError:  # brotlicffi / Brotli < 1.2: no output limit
+        raise RequestError(
+            f"{MARKER}: the installed brotli module cannot bound its output "
+            "— refusing to decode") from None
+    if len(out) > _MAX_DECODED_BYTES:
+        raise _expands_past_the_cap()
+    if not d.is_finished():  # brotli.decompress fails a truncated stream too
+        raise brotli.error("brotli: decoder failed")
+    return out
+
+
 class _GuardedHTTPHandler(_urllib.HTTPHandler):
     """yt-dlp's HTTPHandler with the connection classes swapped for pinned
-    ones. A SOCKS proxy is refused rather than silently unguarded: the
-    connection would then be to the proxy and the real target resolved on the
-    far side, where this policy cannot reach."""
+    ones and the Content-Encoding decoders bounded (_MAX_DECODED_BYTES). A
+    SOCKS proxy is refused rather than silently unguarded: the connection
+    would then be to the proxy and the real target resolved on the far side,
+    where this policy cannot reach."""
+
+    # The inherited http_response calls these for gzip / deflate / br; the
+    # empty-body and deflate's zlib-wrapped fallback match yt-dlp's own.
+    @staticmethod
+    def gz(data):
+        if not data:
+            return data
+        return _inflate(data, zlib.MAX_WBITS | 16)
+
+    @staticmethod
+    def deflate(data):
+        if not data:
+            return data
+        try:
+            return _inflate(data, -zlib.MAX_WBITS)
+        except zlib.error:
+            return _inflate(data, zlib.MAX_WBITS)
+
+    @staticmethod
+    def brotli(data):
+        if not data:
+            return data
+        return _unbrotli(data)
 
     def _make_conn_class(self, base, req):  # type: ignore[override]
         if req.headers.pop("Ytdl-socks-proxy", None):

@@ -651,12 +651,28 @@ class _NoPrivateRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         parts = urllib.parse.urlsplit(newurl)
         if parts.scheme.lower() not in ("http", "https"):
+            _close_quietly(fp)
             raise urllib.error.HTTPError(
                 newurl, code, "redirect to a non-http URL", headers, fp)
         if not parts.hostname or _host_is_forbidden(parts.hostname):
+            _close_quietly(fp)
             raise urllib.error.HTTPError(
                 newurl, code, "redirect to a forbidden address", headers, fp)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            # urllib's http_error_302 drains the 30x body with an UNBOUNDED
+            # fp.read() once this returns; closed, that read is b"", so a
+            # redirect hop cannot stream past the callers' byte caps. Every
+            # hop dials a fresh connection, so nothing reuses fp.
+            _close_quietly(fp)
+        return new
+
+
+def _close_quietly(fp) -> None:
+    try:
+        fp.close()
+    except Exception:  # noqa: BLE001 — never mask the refusal / the redirect
+        pass
 
 
 # build_opener() drops its default HTTPHandler/HTTPSHandler when a SUBCLASS

@@ -225,6 +225,26 @@ def test_pipeline_copy_link_path_is_0600(tmp_path):
     os.unlink(copy)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_pipeline_copy_link_never_wider_than_0600(tmp_path, monkeypatch):
+    # The link shares the source's inode: the moment the name appears in the
+    # world-listable tempdir, the inode must already be 0600, or a local
+    # reader can open it before the chmod and keep the fd.
+    src = _make_src(tmp_path, size=64)
+    os.chmod(src, 0o644)
+    real_link = os.link
+    seen = []
+
+    def _recording_link(a, b, **kw):
+        real_link(a, b, **kw)
+        seen.append(os.stat(b).st_mode & 0o777)
+
+    monkeypatch.setattr(ums.os, "link", _recording_link)
+    copy = ums.make_pipeline_copy(src)
+    assert copy is not None and seen == [0o600]
+    os.unlink(copy)
+
+
 def test_register_refreshes_mtime_for_orphan_guard(tmp_path):
     # The move preserves the download's mtime; the orphan scan must see the
     # PLACEMENT time, or a slow cross-device move lands already "old".
