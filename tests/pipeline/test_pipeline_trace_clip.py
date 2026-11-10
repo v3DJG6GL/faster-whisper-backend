@@ -120,3 +120,31 @@ def test_trace_retained_text_is_bounded_by_steps_times_cap(app_module, monkeypat
     assert len(out) > 500_000 and len(trace) >= 200
     retained = sum(len(t) for _n, b, a in trace for t in (b, a))
     assert retained <= len(trace) * 2 * _CAP
+
+
+def test_rows_on_one_long_text_share_one_cut_copy(app_module, monkeypatch):
+    # 200 skipped rows on a 60 000-char text hold one cut copy, not 400.
+    off = {"name": "off", "label": "Off", "type": "regex-list", "enabled": False,
+           "entries": [_entry(f"q{i}", "Q") for i in range(200)]}
+    _set(app_module, off)
+    text = "\U0001f600" + "a" * 59_999
+    trace: list = []
+    pl_engine._postprocess_text(text, model_name="", trace=trace)
+    assert len(trace) == 200
+    texts = [t for _n, b, a in trace for t in (b, a)]
+    assert len({id(t) for t in texts}) == 1
+    assert all(isinstance(t, pl_engine._ClippedText) and t.full_len == 60_000
+               and t.changed is False for t in texts)
+
+
+def test_changing_rows_share_the_cut_copy_they_hand_on(app_module, monkeypatch):
+    # Each changing step's cut after-text is the next step's cut before-text.
+    card = {"name": "pre", "label": "Pre", "type": "regex-list", "enabled": True,
+            "entries": [_entry(r"\A", "Z")] * 5}
+    _set(app_module, card)
+    trace: list = []
+    pl_engine._postprocess_text("a" * 60_000, model_name="", trace=trace)
+    assert len(trace) == 5
+    for (_n1, _b1, a1), (_n2, b2, _a2) in zip(trace, trace[1:]):
+        assert a1 is b2
+        assert a1.changed is True

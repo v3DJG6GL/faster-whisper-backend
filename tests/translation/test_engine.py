@@ -3223,3 +3223,42 @@ def test_progress_carries_target_and_target_progress(base_cfg, monkeypatch):
         pytest.approx([0.0, 1 / 3, 2 / 3, 1.0])
     # Order of appearance follows the target list.
     assert [t for t, _ in ticks][0] == "de" and [t for t, _ in ticks][-1] == "fr"
+
+
+@pytest.mark.parametrize("mode", ["faithful", "fluent"])
+def test_output_guard_and_redistribution_run_off_the_event_loop(
+        base_cfg, monkeypatch, mode):
+    """The output guard (~37 ms on a 2 500-char member) and the fluent
+    redistribution run in a worker thread, not on the event loop; the
+    result is the same."""
+    # "Zweite Zeile hier." comes back unchanged: the guard rejects it, so the
+    # context-free retry (_translate_guarded) runs its guard too.
+    _install_fake(monkeypatch, lambda t: t if t == "Zweite Zeile hier." else _xlate(t))
+    segs = _segs("Erste Zeile.", "Zweite Zeile hier.", "Dritte", "Zeile.")
+    expected = _de_en(segs, mode=mode)
+    assert any("kept original" in w for w in expected[1])
+
+    threads: "dict[str, set[int]]" = {"guard": set(), "redistribute": set()}
+
+    def _recording(name, fn):
+        def wrapper(*args, **kwargs):
+            threads[name].add(threading.get_ident())
+            return fn(*args, **kwargs)
+        return wrapper
+    monkeypatch.setattr(translation, "_guard_reason",
+                        _recording("guard", translation._guard_reason))
+    monkeypatch.setattr(translation, "_redistribute",
+                        _recording("redistribute", translation._redistribute))
+
+    loop_thread: "list[int]" = []
+
+    async def _go():
+        loop_thread.append(threading.get_ident())
+        return await translation.translate_segments(
+            segs, ["en"], source_lang="de", mode=mode)
+    assert _run(_go()) == expected
+    assert threads["guard"]
+    assert loop_thread[0] not in threads["guard"]
+    if mode == "fluent":
+        assert threads["redistribute"]
+        assert loop_thread[0] not in threads["redistribute"]

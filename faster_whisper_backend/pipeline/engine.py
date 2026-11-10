@@ -390,11 +390,31 @@ def _trace_text(s: str, changed: bool) -> str:
     return clipped
 
 
-def _trace_row(label: str, before: str, after: str) -> tuple:
+def _trace_clip(s: str, changed: bool, memo: "list | None") -> str:
+    """_trace_text, reusing the last cut copy when `s` is the same object.
+
+    Consecutive rows trace one string (a skipped card's rows all trace the
+    same text, and a changing step's after-text is the next step's
+    before-text), so one cut copy serves them all. `memo` holds the source
+    object itself, not its id, so a freed id cannot be matched."""
+    if len(s) <= _TRACE_TEXT_MAX:
+        return s
+    if memo is not None and memo[0] is s and memo[1] == changed:
+        return memo[2]
+    clipped = _trace_text(s, changed)
+    if memo is not None:
+        memo[:] = [s, changed, clipped]
+    return clipped
+
+
+def _trace_row(label: str, before: str, after: str,
+               memo: "list | None" = None) -> tuple:
     """One `(label, before, after)` trace row, its texts cut by _trace_text;
-    whether the step changed the text is decided on the uncut strings."""
+    whether the step changed the text is decided on the uncut strings.
+    `memo` is the one-slot cache of a single _postprocess_text walk."""
     changed = before != after
-    return (label, _trace_text(before, changed), _trace_text(after, changed))
+    b = _trace_clip(before, changed, memo)
+    return (label, b, b if after is before else _trace_clip(after, changed, memo))
 
 
 class _PastBound(Exception):
@@ -534,6 +554,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     """
     exclude, include = _scoping(model_name, ident, extra_excludes)
     capped = False
+    memo = [None, False, None] if trace is not None else None
     for card in _cards(_COMPILED_RULES):
         # A skipped card changes nothing, so it is traced once and left
         # after its first pass.
@@ -555,7 +576,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                             why = f"SKIPPED lang:{language} ∉ {sorted(rule.languages)}"
                         else:
                             why = "SKIPPED globally disabled"
-                        trace.append(_trace_row(f"{ordinal} {label} [{why}]", text, text))
+                        trace.append(_trace_row(f"{ordinal} {label} [{why}]", text, text, memo))
                     continue
                 forced_in = rule.name in include
                 before = text
@@ -570,7 +591,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                     if trace is not None:
                         trace.append(_trace_row(
                             f"{ordinal} {label} [OUTPUT BOUND — not applied]",
-                            before, before))
+                            before, before, memo))
                     capped = True
                     break
                 text = out
@@ -582,9 +603,9 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                     if forced_in and not rule.enabled and (pass_no == 1 or before != text):
                         trace.append(_trace_row(
                             f"{ordinal} {label} [FORCED on for {model_name}]",
-                            before, text))
+                            before, text, memo))
                     elif before != text:
-                        trace.append(_trace_row(f"{ordinal} {label}", before, text))
+                        trace.append(_trace_row(f"{ordinal} {label}", before, text, memo))
                 # Absolute output bound. Rules whose replacement template
                 # expands what it matches compose: each one feeds the next, so
                 # a handful of them can multiply a short transcript into
@@ -606,12 +627,12 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
         if trace is not None:
             trace.append(_trace_row(
                 f"{term_ordinal} {_TERMINAL_LABEL} [EXCLUDED for {model_name}]",
-                text, text))
+                text, text, memo))
     else:
         before_trim = text
         text = text.lstrip(" \t\r").rstrip(" \t\r")
         if trace is not None and before_trim != text:
-            trace.append(_trace_row(f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text))
+            trace.append(_trace_row(f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text, memo))
     return text
 
 

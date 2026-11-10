@@ -1860,9 +1860,13 @@ async def translate_segments(
 
     async def _translate_guarded(text: str, target: str,
                                  context: str) -> "tuple[str, str | None]":
-        """_translate_fit plus the output guard: (output, guard_reason)."""
+        """_translate_fit plus the output guard: (output, guard_reason).
+        The guard runs in a worker thread: on a long member it costs tens
+        of ms of regex work, which would stall every other client's I/O."""
         out, reason = await _translate_fit(text, target, context)
-        return out, reason or _guard(text, out, target)
+        if not reason:
+            reason = await asyncio.to_thread(_guard, text, out, target)
+        return out, reason
 
     def _keep_original(span: str, indices: "list[int]", target: str,
                        reason: str) -> None:
@@ -1980,7 +1984,7 @@ async def translate_segments(
                         continue
                     for j, out in zip(live_idx, parsed):
                         src = segments[j].get("text") or ""
-                        reason = _guard(src, out, target)
+                        reason = await asyncio.to_thread(_guard, src, out, target)
                         if reason is None:
                             results[j][target] = out
                             last_ok = out
@@ -2043,7 +2047,8 @@ async def translate_segments(
                         joined, target, "")
                 pieces: "list[str]" = []
                 if reason is None:
-                    pieces = _redistribute(src_texts, translated)
+                    pieces = await asyncio.to_thread(
+                        _redistribute, src_texts, translated)
                     if not all(p.strip() for p, s in zip(pieces, src_texts)
                                if s.strip()):
                         # A reply shorter than the member count cannot be

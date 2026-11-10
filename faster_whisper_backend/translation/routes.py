@@ -193,7 +193,7 @@ async def translate_text(request: Request,
                     detail=f"segments[{i}] must be an object with a string "
                            "'text'")
             speaker = seg.get("speaker")
-            speaker = (_log_safe(speaker.strip())[:_TEXT_TRANSLATE_MAX_SPEAKER]
+            speaker = (_log_safe(speaker.strip()[:_TEXT_TRANSLATE_MAX_SPEAKER])
                        or None) if isinstance(speaker, str) else None
             total_chars += len(seg["text"]) + len(speaker or "")
             seg_in.append({"text": seg["text"], "speaker": speaker})

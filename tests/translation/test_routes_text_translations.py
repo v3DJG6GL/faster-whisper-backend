@@ -1029,3 +1029,16 @@ def test_a_foreign_captured_id_neither_claims_nor_releases_the_hold(
     assert receipt_hold.pending() == 1
     _post_ok(client, bearer(raw_alice), captured_id="cap-x")
     assert receipt_hold.pending() == 0
+
+
+def test_huge_bidi_speaker_is_clipped_before_sanitising(client, app_module,
+                                                        monkeypatch):
+    """The sanitiser runs over the clipped speaker only, not a body-sized
+    one, and the label is the same as sanitising first then clipping."""
+    calls = _enable_stubbed(app_module, monkeypatch)
+    seen = record_calls(monkeypatch, tr_routes, "_log_safe",
+                        lambda s, **kw: len(s))
+    _post_ok(client, segments=[
+        {"id": 0, "text": "eins", "speaker": "‮" * 200_000}])
+    assert seen and max(seen) <= tr_routes._TEXT_TRANSLATE_MAX_SPEAKER
+    assert calls[-1]["segments"][0]["speaker"] == "?" * 64
