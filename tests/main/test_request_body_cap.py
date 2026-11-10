@@ -4,7 +4,9 @@ FastAPI parses `await request.json()` BEFORE solve_dependencies, so a JSON body
 is buffered and json.loads-expanded ahead of the host gate, get_current_user and
 any in-handler rate limiter. The middleware therefore caps a declared
 application/json body far below MAX_REQUEST_BYTES; multipart audio uploads must
-keep the full ceiling.
+keep the full ceiling. A non-JSON body to any other route is buffered whole
+before auth just the same (and no such route takes one), so it shares the
+JSON ceiling; the raw-body media upload and the package route keep their own.
 """
 
 import inspect
@@ -146,27 +148,101 @@ def test_multipart_upload_is_not_subject_to_the_json_cap(client, app_module,
     ) == {"text": "hallo welt"}
 
 
-def test_non_json_content_type_is_not_held_to_the_json_cap(client):
-    # text/plain is neither JSON nor an upload: it gets the non-upload
-    # backstop (min(MAX_REQUEST_BYTES, 256 MiB), pinned below), not the JSON
-    # cap; only the route may reject it, on its own terms.
+def test_non_json_body_to_a_json_route_is_held_to_the_json_cap(client):
+    # FastAPI buffers a text/plain body whole (request.body()) before the
+    # host gate and get_current_user, and the route could only 422 it: it
+    # gets the JSON ceiling, not the upload one.
     r = client.put("/v1/synced-client-settings", content=b"x" * (8 * 1024 * 1024),
                    headers={"Content-Type": "text/plain"})
+    assert r.status_code == 413
+    assert r.json() == {"detail": "request body too large"}
+
+
+def test_small_non_json_body_reaches_the_route(client):
+    # Under the cap the route answers on its own terms (a 422 here).
+    r = client.put("/v1/synced-client-settings", content=b"x" * 1024,
+                   headers={"Content-Type": "text/plain"})
+    assert r.status_code == 422
+
+
+def _spy_request_body(monkeypatch):
+    """Lengths of every body Starlette's Request.body() hands back."""
+    from starlette.requests import Request
+    seen = []
+    real = Request.body
+
+    async def _body(self):
+        b = await real(self)
+        seen.append(len(b))
+        return b
+    monkeypatch.setattr(Request, "body", _body)
+    return seen
+
+
+def test_non_json_body_is_refused_before_it_is_buffered(client, monkeypatch):
+    # Unauthenticated, before the reports host gate: a 5 MiB text/plain body
+    # is refused on its declared length, and none of it is read.
+    seen = _spy_request_body(monkeypatch)
+    r = client.post("/quick-config/reports/api/submit",
+                    content=b"x" * (5 * 1024 * 1024),
+                    headers={"Content-Type": "text/plain"})
+    assert r.status_code == 413
+    assert r.json() == {"detail": "request body too large"}
+    assert seen == []
+
+
+def test_chunked_non_json_body_is_cut_off_at_the_json_cap(client, monkeypatch):
+    # No Content-Length: the receive-side counter stops it at the JSON cap.
+    seen = _spy_request_body(monkeypatch)
+    payload = b"x" * (8 * 1024 * 1024)
+
+    def _gen():
+        for i in range(0, len(payload), 65536):
+            yield payload[i:i + 65536]
+    client.post("/captures/api/samples/preview-audio", content=_gen(),
+                headers={"Content-Type": "application/x-www-form-urlencoded"})
+    assert all(n <= 4 * 1024 * 1024 for n in seen)
+
+
+def test_form_encoded_post_to_an_upload_route_keeps_the_backstop(
+        client, app_module, monkeypatch):
+    # The upload routes take Form() params, which FastAPI also reads from an
+    # application/x-www-form-urlencoded body; their credential is checked
+    # before the parse, so that body keeps the backstop, not the JSON cap.
+    monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 1024, raising=False)
+    r = client.post("/v1/audio/transcriptions",
+                    content=b"model=whisper-1&prompt=" + b"x" * 4096,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"})
     assert r.status_code != 413
 
 
-def test_non_multipart_non_json_keeps_a_256mib_backstop(client, app_module,
-                                                       monkeypatch):
+def test_non_multipart_non_json_to_an_upload_route_keeps_a_256mib_backstop(
+        client, app_module, monkeypatch):
     # MAX_REQUEST_BYTES is sized for a MEDIA_MAX_BYTES video upload (GiB);
-    # only multipart upload routes get that ceiling, so a text/plain PUT
-    # declaring 300 MiB is still refused up front.
+    # only a multipart body to an upload route gets that ceiling, so a
+    # text/plain POST there declaring 300 MiB is still refused up front.
     monkeypatch.setattr(app_module.cfg, "MAX_REQUEST_BYTES",
                         10 * 1024 * 1024 * 1024, raising=False)
-    r = client.put("/v1/synced-client-settings", content=b"x",
-                   headers={"Content-Type": "text/plain",
-                            "Content-Length": str(300 * 1024 * 1024)})
+    r = client.post("/v1/audio/transcriptions", content=b"x",
+                    headers={"Content-Type": "text/plain",
+                             "Content-Length": str(300 * 1024 * 1024)})
     assert r.status_code == 413
     assert r.json() == {"detail": "request body too large"}
+
+
+def test_raw_media_upload_keeps_its_own_ceiling(client, app_module,
+                                                monkeypatch):
+    # The raw-body video upload (/v1/audio/media) is not held to the JSON
+    # cap: its ceiling is MEDIA_MAX_BYTES.
+    from faster_whisper_backend.media import media_store
+    monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 1024, raising=False)
+    monkeypatch.setattr(media_store, "media_max_bytes", lambda: 10_000)
+    small = client.post("/v1/audio/media", content=b"x" * 4096,
+                        headers={"Content-Type": "video/mp4"})
+    assert small.status_code != 413
+    big = client.post("/v1/audio/media", content=b"x" * 20_000,
+                      headers={"Content-Type": "video/mp4"})
+    assert big.status_code == 413
 
 
 def test_self_parsing_route_holds_a_non_json_type_to_the_json_cap(client):
@@ -201,8 +277,8 @@ def test_chunked_non_json_body_to_a_self_parsing_route_is_cut_off(
 
 
 def test_every_self_parsing_post_route_is_held_to_the_json_cap(app_module):
-    # A new route that parses its own JSON must join the path set, or a
-    # non-JSON Content-Type hands it the 256 MiB backstop again.
+    # A new route that parses its own JSON must join the path set, which
+    # holds it to the JSON cap whatever ceiling its Content-Type gets.
 
     def _walk(routes):
         # FastAPI 0.141 wraps each include_router in an _IncludedRouter.
@@ -223,12 +299,12 @@ def test_every_self_parsing_post_route_is_held_to_the_json_cap(app_module):
     assert found == app_module._SELF_PARSED_JSON_PATHS
 
 
-def test_multipart_label_on_a_non_upload_route_keeps_the_backstop(
+def test_multipart_label_on_a_non_upload_route_gets_the_json_cap(
         client, app_module, monkeypatch):
     # FastAPI buffers a non-JSON body whole before auth on every route with
     # a body field: a multipart label must not hand a JSON route the
     # gigabyte upload ceiling.
-    monkeypatch.setattr(app_module, "_NON_UPLOAD_BODY_BACKSTOP", 1024)
+    monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 1024, raising=False)
     r = client.put("/v1/synced-client-settings", content=b"x" * 4096,
                    headers={"Content-Type": "multipart/form-data; boundary=x"})
     assert r.status_code == 413

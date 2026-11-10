@@ -89,3 +89,23 @@ def test_rendered_bytes_match_fastapis_own_serialisation(
     else:
         assert r.headers["content-type"] == "text/plain; charset=utf-8"
 
+
+
+def test_joined_postprocess_runs_off_the_loop(client, fake_model, monkeypatch,
+                                              recording_captures):
+    """The joined transcript's pipeline walk (and the capture-form second
+    walk) is many rule subs over the whole text: on a 3 h run each walk
+    costs ~0.1 s, so both run in a worker thread like the srt/vtt walk."""
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    seen = []
+    real = pl_engine._postprocess_text
+
+    def _walk(text, *a, **kw):
+        seen.append(("capture" if "extra_excludes" in kw else "user",
+                     _on_loop()))
+        return real(text, *a, **kw)
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _walk)
+    r = post_transcription(client, response_format="json")
+    assert r.status_code == 200, r.text
+    assert len(recording_captures) == 1
+    assert sorted(seen) == [("capture", False), ("user", False)]

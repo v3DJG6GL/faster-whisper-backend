@@ -416,3 +416,67 @@ def test_transcode_to_wav_max_bytes_none_or_roomy_is_unchanged(tmp_path):
             src, dst, rate=44100, layout="stereo", max_bytes=budget) == n
         with open(dst, "rb") as a, open(plain, "rb") as b:
             assert a.read() == b.read()
+
+
+def _silent_flac(path, *, seconds, rate=8000):
+    with av.open(path, "w", format="flac") as out:
+        st = out.add_stream("flac", rate=rate)
+        st.layout = "mono"
+        n, step = 0, 4000
+        while n < seconds * rate:
+            fr = av.AudioFrame.from_ndarray(
+                np.zeros((1, step), dtype=np.int16), format="s16",
+                layout="mono")
+            fr.sample_rate, fr.pts = rate, n
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+            n += step
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    return path
+
+
+def test_decode_span_does_not_hold_the_skipped_audio(tmp_path):
+    """The skip is dropped while decoding: the piece holds `want` samples
+    (plus at most one resampled frame), not everything before it. A link's
+    language check takes the skip from a remote playlist."""
+    src = _silent_flac(str(tmp_path / "long.flac"), seconds=600)
+    a = audio_transcode.decode_span_16k(src, 580.0, 1.0)
+    assert a.dtype == np.float32 and a.size == RATE
+    assert a.base is None or a.base.nbytes <= 2 * RATE * 4
+
+
+def _read_16k_holding_everything(container, stream, want, *, skip=0):
+    """The implementation that kept every skipped sample: the reference
+    the drop-while-decoding one must match sample for sample."""
+    chunks, have = [], 0
+    for out in audio_transcode._resampled(
+            audio_transcode._decoded_frames(container, stream),
+            format="flt", layout="mono", rate=16000):
+        chunk = out.to_ndarray().reshape(-1)
+        chunks.append(chunk)
+        have += chunk.size
+        if have >= skip + want:
+            break
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks)[skip:skip + want]
+
+
+@pytest.mark.parametrize("fixture", ["two.m4a", "concat.mp3"])
+def test_decode_span_matches_the_full_decode_reference(tmp_path, fixture):
+    src = (_two_tone(str(tmp_path / fixture)) if fixture == "two.m4a"
+           else _concat_mp3(tmp_path))
+    for skip in (0.0, 0.001, 1.0, 3.9999, 7.3, 59.999, 61.2, 1000.0):
+        for seconds in (0.0, 0.01, 1.0, 20.0):
+            got = audio_transcode.decode_span_16k(src, skip, seconds)
+            container, stream = audio_transcode._open_audio(src)
+            try:
+                want = _read_16k_holding_everything(
+                    container, stream, int(seconds * 16000),
+                    skip=int(skip * 16000))
+            finally:
+                container.close()
+            assert got.dtype == want.dtype and got.shape == want.shape, (
+                skip, seconds)
+            assert np.array_equal(got, want), (skip, seconds)

@@ -99,8 +99,10 @@ def test_separation_row_has_no_transcode_detail_for_wav_input(
     calls = []
     monkeypatch.setattr(audio_transcode, "transcode_to_wav",
                         lambda *a, **k: calls.append(a))
+    # A real WAV: a wav/flac that declares no duration is transcoded so its
+    # size can be bounded.
     for name in ("a.wav", "a.flac"):
-        row = _separating_row(client, monkeypatch, (name, b"RIFFxxxxWAVE", "audio/wav"))
+        row = _separating_row(client, monkeypatch, (name, _wav_bytes(), "audio/wav"))
         assert not row.get("detail")
     assert calls == []
 

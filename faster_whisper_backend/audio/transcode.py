@@ -27,6 +27,13 @@ _OUT_FORMAT = "s16"
 _OUT_CODEC = "pcm_s16le"     # WAV's native uncompressed codec
 
 
+class TranscodeBudgetExceeded(RuntimeError):
+    """transcode_to_wav's output passed its `max_bytes` budget. A
+    RuntimeError, so a caller that only knows the base class still reads it
+    as a failed transcode; one that passed a budget for a reason of its own
+    (main.py's BGM RAM cap) can tell it apart."""
+
+
 def _av():
     try:
         import av
@@ -60,6 +67,21 @@ def _open_audio(src_path: str):
         container.close()
         raise ValueError("source has no audio stream")
     return container, stream
+
+
+def duration_seconds(src_path: str) -> "float | None":
+    """The duration the container (or else its audio stream) declares for
+    `src_path`, in seconds; None when it declares none. Header data only —
+    nothing is decoded. Raises what _open_audio raises."""
+    container, stream = _open_audio(src_path)
+    try:
+        if container.duration and container.duration > 0:
+            return container.duration / 1_000_000    # AV_TIME_BASE units
+        if stream.duration and stream.duration > 0 and stream.time_base:
+            return float(stream.duration * stream.time_base)
+        return None
+    finally:
+        container.close()
 
 
 def refuse_multi_input(path: str) -> None:
@@ -150,17 +172,26 @@ def _read_16k(container, stream, want: int, *, skip: int = 0,
     frames = (f for f in _decoded_frames(container, stream)
               if after is None or f.time is None
               or f.time + f.samples / f.sample_rate >= after)
-    chunks, have = [], 0
+    # The skipped samples are dropped as they decode, never collected: the
+    # skip of a link's language-check piece comes from a remote playlist, so
+    # holding it would let a tiny body ask for gigabytes.
+    chunks, have, drop = [], 0, skip
     # Fresh resampler per call: it keeps samples buffered across a seek.
     for out in _resampled(frames, format="flt", layout="mono", rate=16000):
         chunk = out.to_ndarray().reshape(-1)
+        if drop:
+            cut = min(drop, chunk.size)
+            drop -= cut
+            chunk = chunk[cut:]
+            if not chunk.size:
+                continue
         chunks.append(chunk)
         have += chunk.size
-        if have >= skip + want:
+        if have >= want:
             break
     if not chunks:
         return np.zeros(0, dtype=np.float32)
-    return np.concatenate(chunks)[skip:skip + want]
+    return np.concatenate(chunks)[:want]
 
 
 def decode_pieces_16k(src_path: str, starts: "list[float]",
@@ -227,7 +258,7 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
     `max_bytes` bounds the PCM written: a few hundred KB of low-bitrate
     Opus/MP3 expands several hundred times into 44.1 kHz stereo, so a
     caller writing to a shared temp dir passes its free space and the
-    transcode aborts (RuntimeError) before it fills the disk."""
+    transcode aborts (TranscodeBudgetExceeded) before it fills the disk."""
     av = _av()
     in_container = None
     out_container = None
@@ -246,7 +277,7 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
             # s16: two bytes per sample per channel.
             written += resampled.samples * len(resampled.layout.channels) * 2
             if max_bytes is not None and written > max_bytes:
-                raise RuntimeError(
+                raise TranscodeBudgetExceeded(
                     "transcode output exceeds the free-space budget")
             for packet in out_stream.encode(resampled):
                 out_container.mux(packet)

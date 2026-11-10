@@ -925,16 +925,18 @@ async def _csrf_mw(request: Request, call_next):
     return await call_next(request)
 
 
-# Non-JSON, non-multipart bodies never legitimately approach the media cap;
-# they keep the pre-media-cap service ceiling.
+# A non-multipart, non-JSON body to an upload route (an urlencoded Form()
+# post) never legitimately approaches the media cap; it keeps the
+# pre-media-cap service ceiling.
 _NON_UPLOAD_BODY_BACKSTOP = 268_435_456
 _MEDIA_PACKAGE_PATH_RE = re.compile(
     rf"\A/v1/audio/media/{url_media_store.MEDIA_ID_PATTERN}/package\Z")
 # POST routes that call `await request.json()` themselves: Starlette parses
 # the buffered body whatever its Content-Type, so a text/plain (or any other
-# non-JSON) body would otherwise ride the 256 MiB backstop into json.loads —
-# /auth/login before any credential or failure limiter. The package route
-# parses its own JSON too but keeps its own (larger) ceiling below.
+# non-JSON) body must not reach json.loads past the JSON ceiling — /auth/login
+# before any credential or failure limiter. Held to it by path, whatever the
+# Content-Type branch decided. The package route parses its own JSON too but
+# keeps its own (larger) ceiling below.
 _SELF_PARSED_JSON_PATHS = frozenset({
     "/auth/login",
     "/v1/text/translations",
@@ -945,9 +947,9 @@ _SELF_PARSED_JSON_PATHS = frozenset({
     "/v1/audio/url-language",
 })
 # The only routes that take a multipart body (File()/Form() params): the
-# full MAX_REQUEST_BYTES is theirs alone. FastAPI buffers any other route's
-# non-JSON body whole before auth, so a multipart label there must not lift
-# it past the non-upload backstop.
+# full MAX_REQUEST_BYTES is theirs alone, and _upload_preauth_mw checks their
+# credential before the parse. FastAPI buffers any other route's non-JSON
+# body whole before auth, so there any label gets the JSON ceiling.
 _MULTIPART_UPLOAD_PATHS = frozenset({
     "/v1/audio/transcriptions",
     "/v1/audio/translations",
@@ -997,9 +999,16 @@ async def _max_body_mw(request: Request, call_next):
     if not _ctype or (_main == "application"
                       and (_sub == "json" or _sub.endswith("+json"))):
         max_body = min(max_body, int(getattr(cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
-    elif (_ctype != "multipart/form-data"
-          or request.url.path not in _MULTIPART_UPLOAD_PATHS):
-        max_body = min(max_body, _NON_UPLOAD_BODY_BACKSTOP)
+    elif request.url.path in _MULTIPART_UPLOAD_PATHS:
+        if _ctype != "multipart/form-data":
+            max_body = min(max_body, _NON_UPLOAD_BODY_BACKSTOP)
+    else:
+        # Every other route takes JSON or no body (the raw-body media upload
+        # and the package route get their own ceilings below), yet FastAPI
+        # buffers a body of any other type whole (request.body()) before the
+        # host gate and get_current_user: unauthenticated, it gets the JSON
+        # ceiling too.
+        max_body = min(max_body, int(getattr(cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
     # Two path-exact exceptions for the media export: the raw-body video
     # upload (the route counts its own bytes against MEDIA_MAX_BYTES, so the
     # ceiling here just matches it) and the packaging request, whose JSON
@@ -1321,6 +1330,24 @@ def _refuse_input(path: str) -> None:
     except av.FFmpegError:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
         return
     container.close()
+
+
+# The BGM separator loads its whole input as float32 44.1 kHz stereo: twice
+# the s16 WAV the pre-separation transcode writes. Capping that s16 size at a
+# quarter of available RAM keeps the float32 load at half of it, leaving the
+# other half for the separator's chunk buffers and normalised copies.
+_SEP_RAM_DIVISOR = 4
+_SEP_S16_BYTES_PER_S = 44100 * 2 * 2
+
+
+def _sep_ram_cap() -> "int | None":
+    """Most bytes of 44.1 kHz stereo s16 audio the separator may take on, or
+    None (no cap: fail open) when available RAM cannot be read."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available) // _SEP_RAM_DIVISOR
+    except Exception:  # noqa: BLE001 — fail open
+        return None
 
 
 def _form_bool(value: "str | None") -> "bool | None":
@@ -2257,9 +2284,15 @@ async def transcribe(
                 _plan_hint = (preload_plan or "").strip() or None
                 if _plan_hint is not None and not tx_progress._PROGRESS_ID_RE.match(_plan_hint):
                     _plan_hint = None   # malformed → derive one, never a 422
+                # The policy the entries were judged under, so the dequeue
+                # re-check refuses one the admin has since withdrawn.
+                _keys = ("DIARIZATION_MODEL", "BGM_SEPARATION_UVR_MODEL",
+                         "TRANSLATION_MODEL")
                 _plan = preload.register_plan(
                     _user_id, _preload_entries, plan_id=_plan_hint,
-                    trigger="job", user_name=user.get("username"))
+                    trigger="job", user_name=user.get("username"),
+                    policy=({k: (_model_cfg(k) or "").strip() for k in _keys},
+                            frozenset(k for k in _keys if k in ident.locked)))
                 _bound_plan_id = _plan["plan_id"]
                 tx_progress._PLAN_BY_PID[_pid] = _bound_plan_id
 
@@ -2363,9 +2396,27 @@ async def transcribe(
                         # wav/flac are safe in every libsndfile; leave those.
                         _sep_src = tmp_path
                         _sep_wav = None
+                        _sep_budget = None
                         _sep_ext = (os.path.splitext(tmp_path)[1]
                                     .lstrip(".").lower())
-                        if _sep_ext not in ("wav", "flac"):
+                        # The separator holds its whole input in RAM
+                        # (_sep_ram_cap). The transcode below measures what
+                        # it writes; a file handed over as is (a wav/flac,
+                        # or the original after the fallback) is measured
+                        # by the duration its container declares. A wav/flac
+                        # that opens but declares none is transcoded, so
+                        # the bounded writer measures it instead.
+                        _sep_cap = await asyncio.to_thread(_sep_ram_cap)
+                        _sep_secs, _sep_opened = None, False
+                        if _sep_cap is not None:
+                            try:
+                                _sep_secs = await asyncio.to_thread(
+                                    _transcode.duration_seconds, tmp_path)
+                                _sep_opened = True
+                            except Exception:  # noqa: BLE001 — the decoders report it
+                                pass
+                        if (_sep_ext not in ("wav", "flac")
+                                or (_sep_opened and _sep_secs is None)):
                             try:
                                 _tfd, _sep_wav = tempfile.mkstemp(
                                     prefix="sepsrc-", suffix=".wav")
@@ -2386,10 +2437,13 @@ async def transcribe(
                                         - 1_000_000_000)
                                 except OSError:
                                     _sep_budget = None
+                                _sep_bounds = [b for b in (_sep_budget, _sep_cap)
+                                               if b is not None]
                                 await asyncio.to_thread(
                                     _transcode.transcode_to_wav, tmp_path,
                                     _sep_wav, rate=44100, layout="stereo",
-                                    max_bytes=_sep_budget)
+                                    max_bytes=(min(_sep_bounds)
+                                               if _sep_bounds else None))
                                 logger.info(
                                     "[bgm] input .%s → 44.1 kHz WAV for "
                                     "separation in %.1fs (%.1f MB)",
@@ -2401,9 +2455,19 @@ async def transcribe(
                                 # PyAV's errors subclass ValueError too; only
                                 # _open_audio's own ValueError (a playlist
                                 # container, no audio stream) is a refusal.
+                                # An overrun of the RAM cap is one too: the
+                                # separator could not hold the original
+                                # either. A disk-budget overrun keeps the
+                                # fallback.
                                 import av as _av
-                                _refused = (isinstance(_te, ValueError)
-                                            and not isinstance(_te, _av.FFmpegError))
+                                _refused = (
+                                    (isinstance(_te, ValueError)
+                                     and not isinstance(_te, _av.FFmpegError))
+                                    or (isinstance(
+                                            _te, _transcode.TranscodeBudgetExceeded)
+                                        and _sep_cap is not None
+                                        and (_sep_budget is None
+                                             or _sep_cap <= _sep_budget)))
                                 logger.warning(
                                     "[bgm] input transcode failed (%s); %s",
                                     _log_safe(str(_te)),
@@ -2423,6 +2487,17 @@ async def transcribe(
                                         "music separation skipped: the file "
                                         "could not be prepared") from _te
                                 _sep_src = tmp_path
+                        if (_sep_src == tmp_path and _sep_cap is not None
+                                and _sep_secs is not None
+                                and _sep_secs * _SEP_S16_BYTES_PER_S > _sep_cap):
+                            logger.warning(
+                                "[bgm] input declares %.0f s, past the %.0f MB "
+                                "RAM cap; skipping separation", _sep_secs,
+                                _sep_cap / 1e6)
+                            _ps(step=None)
+                            raise _bgm_separation.BgmSeparationError(
+                                "music separation skipped: the file is too "
+                                "long to separate on this server")
                         try:
                             tx_progress._check_cancelled(_pid)
                             # Queue time for the slot, not demix work: the
@@ -3013,7 +3088,11 @@ async def transcribe(
             _postprocess = functools.partial(
                 pl_engine._postprocess_text, model_name=resolved_model,
                 ident=ident, language=_detected_lang)
-            full_text_str = _postprocess(raw_full_text, trace=trace)
+            # In a worker thread, like the srt/vtt walk below: a walk over
+            # the joined text of a long run takes ~0.1 s. `trace` is filled
+            # there and read only after the await.
+            full_text_str = await asyncio.to_thread(
+                _postprocess, raw_full_text, trace=trace)
             # Captures-form text — same pipeline minus the captures-specific
             # exclude set (default-skips `de-dictation-map` + `capitalize-after-
             # terminator` so the stored text matches Whisper's raw output
@@ -3022,7 +3101,8 @@ async def transcribe(
             # case shouldn't pay a second pipeline walk. No trace: the trace
             # describes the user-facing pipeline.
             if will_capture:
-                training_text_str = _postprocess(
+                training_text_str = await asyncio.to_thread(
+                    _postprocess,
                     raw_full_text,
                     trace=None,
                     extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
