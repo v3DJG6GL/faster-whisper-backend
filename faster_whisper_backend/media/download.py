@@ -719,7 +719,12 @@ class _WallClockCutoff:
         # ends in a short b"" (http.client never raises IncompleteRead for
         # read(amt)), which a caller must not take for a complete body.
         self.fired = False
-        self._timer = threading.Timer(max(0.0, seconds), self.cut)
+        self._seconds = max(0.0, seconds)
+        # time.monotonic() when the timer fires, set as it starts: a dial
+        # spends from the same budget (net_policy.connect_pinned), since a
+        # socket is only recorded here once its connect has returned.
+        self.deadline: "float | None" = None
+        self._timer = threading.Timer(self._seconds, self.cut)
         self._timer.daemon = True
 
     def add(self, sock) -> None:
@@ -748,6 +753,7 @@ class _WallClockCutoff:
             pass
 
     def __enter__(self):
+        self.deadline = time.monotonic() + self._seconds
         self._timer.start()
         return self
 
@@ -763,13 +769,21 @@ def _guarded_opener(cutoff: "_WallClockCutoff | None" = None,
     http_cls = net_policy.PinnedHTTPConnection
     https_cls = net_policy.PinnedHTTPSConnection
     if cutoff is not None:
+        def _before_dial(conn) -> None:
+            # A hop dialled after the cutoff fired is not dialled at all.
+            if cutoff.fired:
+                raise TimeoutError("timed out (past the probe deadline)")
+            conn.dial_deadline = cutoff.deadline
+
         class http_cls(net_policy.PinnedHTTPConnection):  # type: ignore[no-redef]
             def connect(self):
+                _before_dial(self)
                 super().connect()
                 cutoff.add(self.sock)
 
         class https_cls(net_policy.PinnedHTTPSConnection):  # type: ignore[no-redef]
             def connect(self):
+                _before_dial(self)
                 super().connect()
                 cutoff.add(self.sock)
     return urllib.request.build_opener(
@@ -1242,11 +1256,12 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         if pin:
             opts["allowed_extractors"] = pin
         # socket_timeout is per socket op (see _WallClockCutoff): every
-        # socket the guard dials for this thread is shut at the deadline.
+        # socket the guard dials for this thread is shut at the deadline,
+        # and its dial loop spends from the same deadline.
         observe = getattr(_guard_module, "observe_dials", None)
         with _WallClockCutoff(max(1.0, deadline - time.monotonic())) as cutoff:
             if observe is not None:
-                observe(cutoff.add)
+                observe(cutoff.add, deadline=cutoff.deadline)
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.sanitize_info(
@@ -1902,8 +1917,10 @@ async def _run_yt_dlp(
         start_new_session=os.name != "nt",
     )
     stderr_tail = bytearray()
+    tail_cut = False
 
     async def _drain_stderr() -> None:
+        nonlocal tail_cut
         assert proc.stderr is not None
         while True:
             chunk = await proc.stderr.read(1024)
@@ -1912,6 +1929,7 @@ async def _run_yt_dlp(
             stderr_tail.extend(chunk)
             if len(stderr_tail) > _STDERR_TAIL_MAX:
                 del stderr_tail[:len(stderr_tail) - _STDERR_TAIL_MAX]
+                tail_cut = True
 
     async def _kill() -> None:
         await core_proc.terminate_then_kill(proc)
@@ -2067,9 +2085,14 @@ async def _run_yt_dlp(
 
     if proc.returncode != 0:
         tail = stderr_tail.decode("utf-8", "replace")
+        # A cut tail can start inside a URL whose scheme (what the mask keys
+        # on) fell off: drop that first partial token from the log. A URL
+        # holds no whitespace, so the first run of non-space is the only
+        # place a cut one can hide.
+        shown = re.sub(r"\A\S+", "", tail) if tail_cut else tail
         logger.warning("[url-dl] yt-dlp exited %s for host %s: %s",
                        proc.returncode, host_for_log(url),
-                       log_safe(_mask_userinfo(tail), keep_end=True))
+                       log_safe(_mask_userinfo(shown), keep_end=True))
         raise classified_error(tail)
 
     try:

@@ -23,6 +23,7 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import socket
+import time
 
 # Carrier-grade NAT (RFC 6598). `ipaddress` has no property for it, yet it is
 # exactly as internal as RFC1918 from a hosted backend's point of view.
@@ -119,19 +120,50 @@ def proxied_conn_factory(conn_class, via_proxy: bool):
     return make
 
 
-def connect_pinned(conn) -> socket.socket:
+def dial_timeout(timeout, deadline: "float | None"):
+    """The timeout for one connect attempt: `timeout` (a conn's per-op
+    value, possibly socket._GLOBAL_DEFAULT_TIMEOUT) clamped to what is left
+    before `deadline` (time.monotonic()). TimeoutError when nothing is left."""
+    if deadline is None:
+        return timeout
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("timed out (past the dial deadline)")
+    if (timeout is socket._GLOBAL_DEFAULT_TIMEOUT  # type: ignore[attr-defined]
+            or timeout is None or timeout > left):
+        return left
+    return timeout
+
+
+def undeadlined_timeout(timeout):
+    """What a dialled socket's timeout is without a deadline: `timeout`, or
+    the process default a fresh socket starts with."""
+    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
+        return socket.getdefaulttimeout()
+    return timeout
+
+
+def connect_pinned(conn, *, deadline: "float | None" = None) -> socket.socket:
     """http.client-compatible connect: dial the pinned answers for
-    conn.host:conn.port, honouring conn.timeout / conn.source_address."""
+    conn.host:conn.port, honouring conn.timeout / conn.source_address.
+
+    `deadline` (time.monotonic()) bounds the whole dial loop: a name can
+    carry dozens of answers that drop the SYN, and each attempt would
+    otherwise get the full per-op timeout. The dialled socket keeps
+    conn.timeout for its reads either way."""
     last = None
     infos = resolve_pinned(conn.host, conn.port, trusted=dials_a_proxy(conn))
     for family, socktype, proto, _canon, sockaddr in infos:
+        timeout = dial_timeout(conn.timeout, deadline)
         sock = socket.socket(family, socktype, proto)
         try:
-            if conn.timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
-                sock.settimeout(conn.timeout)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
+                sock.settimeout(timeout)
             if conn.source_address:
                 sock.bind(conn.source_address)
             sock.connect(sockaddr)
+            if timeout is not conn.timeout:
+                sock.settimeout(undeadlined_timeout(conn.timeout))
         except OSError as e:
             sock.close()
             last = e
@@ -148,18 +180,20 @@ def connect_pinned(conn) -> socket.socket:
 # validation still see the NAME the URL carried.
 class PinnedHTTPConnection(http.client.HTTPConnection):
     via_proxy = False  # set by proxied_conn_factory for plain-HTTP proxying
+    dial_deadline: "float | None" = None  # see connect_pinned
 
     def connect(self):
-        self.sock = connect_pinned(self)
+        self.sock = connect_pinned(self, deadline=self.dial_deadline)
         if self._tunnel_host:
             self._tunnel()
 
 
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
     via_proxy = False
+    dial_deadline: "float | None" = None
 
     def connect(self):
-        sock = connect_pinned(self)
+        sock = connect_pinned(self, deadline=self.dial_deadline)
         if self._tunnel_host:
             self.sock = sock
             self._tunnel()

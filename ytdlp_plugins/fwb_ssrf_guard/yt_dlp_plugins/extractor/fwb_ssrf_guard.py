@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import http.client
 import importlib.util
+import math
 import os
 import socket
 import sys
@@ -182,10 +183,16 @@ if not hasattr(_DIALS, "tls"):
     _DIALS.tls = threading.local()
 
 
-def observe_dials(observer) -> None:
+def observe_dials(observer, *, deadline: "float | None" = None) -> None:
     """Report every connection this thread opens from now on to
-    ``observer(sock)`` (the TLS-wrapped socket for https); None stops."""
+    ``observer(sock)`` (the TLS-wrapped socket for https); None stops.
+
+    `deadline` (time.monotonic()) bounds each dial loop too: the observer
+    only sees a socket once its connect returns, and a name with many
+    answers that drop the SYN would otherwise spend the full socket timeout
+    on each of them."""
     _DIALS.tls.observer = observer
+    _DIALS.tls.deadline = deadline if observer is not None else None
 
 
 def _observe(sock) -> None:
@@ -196,15 +203,19 @@ def _observe(sock) -> None:
 
 def _connect_pinned(conn) -> "socket.socket":
     infos = _resolve_pinned(conn.host, conn.port, trusted=_dials_a_proxy(conn))
+    deadline = getattr(_DIALS.tls, "deadline", None)
     last = None
     for family, socktype, proto, _canon, sockaddr in infos:
+        timeout = net_policy.dial_timeout(conn.timeout, deadline)
         sock = socket.socket(family, socktype, proto)
         try:
-            if conn.timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
-                sock.settimeout(conn.timeout)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
+                sock.settimeout(timeout)
             if conn.source_address:
                 sock.bind(conn.source_address)
             sock.connect(sockaddr)
+            if timeout is not conn.timeout:  # reads keep the per-op timeout
+                sock.settimeout(net_policy.undeadlined_timeout(conn.timeout))
         except OSError as e:
             sock.close()
             last = e
@@ -251,13 +262,62 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 # becomes ~1 GiB. Extractor pages, JSON APIs, player JS and manifests are a
 # few MB (a long live DASH manifest some tens), and media fetches send
 # Accept-Encoding: identity, so 64 MiB leaves every legitimate body as is.
+# The same bound applies to a body read whole (_bound_whole_reads).
 _MAX_DECODED_BYTES = 64 * 1024 * 1024
+# The most Content-Encoding layers a response may stack. yt-dlp decodes one
+# layer per comma token, each bounded on its own above, so without a layer
+# count a few hundred KB can buy minutes of CPU. Servers send one coding; a
+# double-gzipping proxy sends two.
+_MAX_CODINGS = 2
+_DECODED_CODINGS = ("gzip", "deflate", "br")
+# Chunk size of a bounded whole-body read (see _bound_whole_reads).
+_WHOLE_READ_CHUNK = 1024 * 1024
 
 
 def _expands_past_the_cap() -> RequestError:
     return RequestError(
         f"{MARKER}: a compressed response expands past "
         f"{_MAX_DECODED_BYTES} bytes — refusing to decode it")
+
+
+def _body_past_the_cap() -> RequestError:
+    return RequestError(
+        f"{MARKER}: a response body runs past {_MAX_DECODED_BYTES} bytes "
+        "— refusing to read it whole")
+
+
+def _bound_whole_reads(resp) -> None:
+    """Make a size-less resp.read() stop past _MAX_DECODED_BYTES.
+
+    yt-dlp reads webpages, manifests, API answers and the raw body its
+    decoders get with a bare read(), whole, in memory — so a host that once
+    answered the direct-media probe with media and then serves an endless
+    page grows the reader without limit. Sized reads (HttpFD / FragmentFD
+    read(block_size) for media) pass straight through. A body whose
+    Content-Length fits is read by the original call, so its errors
+    (IncompleteRead on a short body) stay exactly as they were."""
+    read = resp.read
+
+    def bounded_read(amt=None):
+        if amt is not None and amt >= 0:
+            return read(amt)
+        cap = _MAX_DECODED_BYTES
+        length = getattr(resp, "length", None)
+        if length is not None and not getattr(resp, "chunked", False):
+            if length > cap:
+                resp.close()
+                raise _body_past_the_cap()
+            return read()
+        parts, total = [], 0
+        while chunk := read(min(_WHOLE_READ_CHUNK, cap + 1 - total)):
+            parts.append(chunk)
+            total += len(chunk)
+            if total > cap:
+                resp.close()
+                raise _body_past_the_cap()
+        return b"".join(parts)
+
+    resp.read = bounded_read
 
 
 def _inflate(data: bytes, wbits: int) -> bytes:
@@ -295,7 +355,8 @@ def _unbrotli(data: bytes) -> bytes:
 
 class _GuardedHTTPHandler(_urllib.HTTPHandler):
     """yt-dlp's HTTPHandler with the connection classes swapped for pinned
-    ones and the Content-Encoding decoders bounded (_MAX_DECODED_BYTES). A
+    ones, the Content-Encoding decoders and whole-body reads bounded
+    (_MAX_DECODED_BYTES) and the number of codings capped (_MAX_CODINGS). A
     SOCKS proxy is refused rather than silently unguarded: the connection
     would then be to the proxy and the real target resolved on the far side,
     where this policy cannot reach."""
@@ -322,6 +383,23 @@ class _GuardedHTTPHandler(_urllib.HTTPHandler):
         if not data:
             return data
         return _unbrotli(data)
+
+    def http_response(self, req, resp):  # type: ignore[override]
+        # The same first-header lookup the inherited decoder loop reads, so
+        # the count and the decoding cannot disagree.
+        codings = [e.strip() for e in
+                   resp.headers.get("Content-encoding", "").split(",")]
+        if sum(c in _DECODED_CODINGS for c in codings) > _MAX_CODINGS:
+            resp.close()
+            raise RequestError(
+                f"{MARKER}: a response stacks more than {_MAX_CODINGS} "
+                "content codings — refusing to decode it")
+        _bound_whole_reads(resp)
+        return super().http_response(req, resp)
+
+    # The parent's `https_response = http_response` binds the PARENT's
+    # function, so the override has to be re-bound here.
+    https_response = http_response
 
     def _make_conn_class(self, base, req):  # type: ignore[override]
         if req.headers.pop("Ytdl-socks-proxy", None):
@@ -457,6 +535,140 @@ def _refuse_external_downloaders() -> None:
             cls.real_download = _refuse_external_fd
 
 
+# DASH: yt-dlp's InfoExtractor._parse_mpd_periods expands every
+# SegmentTemplate ($Number$: ceil(period length / segment duration)) and
+# SegmentTimeline (1 + S@r per entry) into one fragment dict per segment, in
+# process and with no cap, so a ~300-byte manifest can ask for billions (the
+# probe worker grows by ~260 bytes per segment until the OOM killer stops it).
+# The manifest's segments are counted, across every representation, before
+# the expansion. A 4 h stream at 2 s segments is 7 200 per representation, a
+# 12 h one with ten representations 216 000; the cap (~260 MB of fragment
+# dicts at most) leaves long multi-quality VODs well inside it.
+_MAX_MPD_SEGMENTS = 1_000_000
+_MPD_SENTINEL = "_fwb_mpd_bounded"
+
+
+def _too_many_segments():
+    from yt_dlp.utils import ExtractorError
+    return ExtractorError(
+        f"the stream lists too many segments (more than {_MAX_MPD_SEGMENTS})",
+        expected=True)
+
+
+def _number(value, kind=float):
+    """`value` as yt-dlp parses it, or None where yt-dlp's own parse raises
+    on it (it then fails on its own, after the count)."""
+    try:
+        return kind(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _mpd_segment_info(element, parent: dict, q) -> dict:
+    """The counting half of yt-dlp's extract_multisegment_info: a level's
+    SegmentList / SegmentTemplate overrides what it inherits."""
+    info = dict(parent)
+    source = element.find(q("SegmentList"))
+    is_list = source is not None
+    if not is_list:
+        source = element.find(q("SegmentTemplate"))
+    if source is None:
+        return info
+    timeline = source.find(q("SegmentTimeline"))
+    entries = timeline.findall(q("S")) if timeline is not None else []
+    if entries:
+        info["s"] = [(_number(e.get("d"), int) or 0,
+                      max(_number(e.get("r", 0), int) or 0, 0)) for e in entries]
+    timescale = source.get("timescale")
+    if timescale:
+        info["timescale"] = _number(timescale, int)
+    duration = source.get("duration")
+    if duration:
+        info["duration"] = _number(duration)
+    if is_list:
+        urls = source.findall(q("SegmentURL"))
+        if urls:
+            info["urls"] = len(urls)
+    elif source.get("media"):
+        info["media"] = True
+    return info
+
+
+def _representation_segments(info: dict, period_duration):
+    """(segments yt-dlp would build for one representation, their total
+    seconds or None) — the same branches as _parse_mpd_periods."""
+    timescale = info.get("timescale") or 0
+    if "urls" not in info and info.get("media") and "s" not in info:
+        if not info.get("duration") or not timescale or not period_duration:
+            return 0, None
+        seconds = info["duration"] / timescale
+        n = period_duration / seconds
+        if not math.isfinite(n):
+            return _MAX_MPD_SEGMENTS + 1, None
+        n = max(math.ceil(n), 0)
+        return n, n * seconds
+    if "s" in info:
+        n = sum(1 + r for _d, r in info["s"])
+        total = sum(d * (1 + r) for d, r in info["s"])
+        return n, (total / timescale if timescale else None)
+    if "urls" in info:
+        n = info["urls"]
+        seconds = (info["duration"] / timescale
+                   if info.get("duration") and timescale else None)
+        return n, (n * seconds if seconds else None)
+    return 0, None
+
+
+def _refuse_oversized_mpd(mpd_doc) -> None:
+    from yt_dlp.utils import parse_duration
+    tag = getattr(mpd_doc, "tag", "") or ""
+    ns = tag[1:tag.index("}")] if tag.startswith("{") and "}" in tag else ""
+
+    def q(name):
+        return f"{{{ns}}}{name}" if ns else name
+    mpd_duration = parse_duration(mpd_doc.get("mediaPresentationDuration"))
+    count = 0
+    for period in mpd_doc.findall(q("Period")):
+        period_duration = (parse_duration(period.get("duration"))
+                           or mpd_duration)
+        period_info = _mpd_segment_info(period, {"timescale": 1}, q)
+        for adaptation in period.findall(q("AdaptationSet")):
+            set_info = _mpd_segment_info(adaptation, period_info, q)
+            for representation in adaptation.findall(q("Representation")):
+                info = _mpd_segment_info(representation, set_info, q)
+                n, seconds = _representation_segments(info, period_duration)
+                count += n
+                if count > _MAX_MPD_SEGMENTS:
+                    raise _too_many_segments()
+                # yt-dlp's own fallback: a period with no length takes the
+                # first expanded representation's, which the next ones use.
+                if not period_duration and n and seconds:
+                    period_duration = seconds
+
+
+def _bounded_mpd_periods(original):
+    def _parse_mpd_periods(self, mpd_doc, *args, **kwargs):
+        _refuse_oversized_mpd(mpd_doc)
+        return original(self, mpd_doc, *args, **kwargs)
+    setattr(_parse_mpd_periods, _MPD_SENTINEL, True)
+    return _parse_mpd_periods
+
+
+def _bound_mpd_expansion() -> None:
+    from yt_dlp.extractor.common import InfoExtractor
+    current = getattr(InfoExtractor, "_parse_mpd_periods", None)
+    # A yt-dlp without the method gets nothing to wrap, and is_installed()
+    # then fails closed rather than trusting an expansion it cannot see.
+    if callable(current) and not getattr(current, _MPD_SENTINEL, False):
+        InfoExtractor._parse_mpd_periods = _bounded_mpd_periods(current)
+
+
+def _mpd_expansion_is_bounded() -> bool:
+    from yt_dlp.extractor.common import InfoExtractor
+    return getattr(getattr(InfoExtractor, "_parse_mpd_periods", None),
+                   _MPD_SENTINEL, False)
+
+
 def install() -> None:
     """Register the guard and retire the handlers it supersedes.
 
@@ -473,6 +685,7 @@ def install() -> None:
     for key in [k for k in _REQUEST_HANDLERS if k != GUARD_RH_KEY]:
         _REQUEST_HANDLERS.pop(key, None)
     _refuse_external_downloaders()
+    _bound_mpd_expansion()
 
 
 def _prefer_guard(rh, request):
@@ -482,13 +695,15 @@ def _prefer_guard(rh, request):
 
 def is_installed() -> bool:
     """True when the guard is the only request handler registered (an
-    allowlist: an unknown handler key fails closed) and no downloader can hand
-    a fetch to an external program."""
+    allowlist: an unknown handler key fails closed), no downloader can hand
+    a fetch to an external program and a DASH manifest's segments are
+    counted before yt-dlp expands them."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
             and set(_REQUEST_HANDLERS) == {GUARD_RH_KEY}
             and all(getattr(cls.real_download, _FD_SENTINEL, False)
-                    for cls in _refusing_fd_classes()))
+                    for cls in _refusing_fd_classes())
+            and _mpd_expansion_is_bounded())
 
 
 install()

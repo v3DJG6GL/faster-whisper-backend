@@ -1065,6 +1065,24 @@ def test_download_failure_log_masks_the_links_query(tmp_path, monkeypatch, caplo
     assert "s3cret" not in caplog.text
 
 
+def test_download_failure_log_masks_a_url_cut_by_the_tail(tmp_path, monkeypatch, caplog):
+    """The stderr tail keeps the last _STDERR_TAIL_MAX bytes, so its cut can
+    land inside a URL and take the scheme the mask keys on with it."""
+    url1 = "https://u:pw@cdn.example/x?sig=SECRET"
+    mid = " ERROR: redirect to https://evil.example/r?"
+    pad = udl._STDERR_TAIL_MAX + 4 - len(url1) - len(mid) - 1
+    rest = url1 + mid + "A" * pad + "\n"
+    assert len(rest) == udl._STDERR_TAIL_MAX + 4  # the cut: 4 chars into url1
+    _patch_argv(monkeypatch, _failing_yt_dlp("Q" * 100 + rest))
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        with pytest.raises(udl.UrlDownloadError):
+            _fetch(udl.download, tmp_path, url="https://cdn.example/x")
+    rec = [r.getMessage() for r in caplog.records if "yt-dlp exited" in r.getMessage()]
+    assert rec and "ERROR: redirect to https://evil.example/r?***" in rec[0]
+    assert "SECRET" not in caplog.text
+    assert "pw@" not in caplog.text
+
+
 def test_probe_failure_log_masks_the_links_query(monkeypatch, caplog):
     url = "https://nas.example.com/page?token=s3cret#frag"
 
@@ -1706,6 +1724,79 @@ def test_cutoff_shuts_a_socket_added_after_it_fired():
     finally:
         a.close()
         b.close()
+
+
+_BLACKHOLE = "blackhole.example"
+
+
+def _black_hole_dns(monkeypatch, n):
+    """`blackhole.example` answers `n` public-looking addresses that drop the
+    SYN (a connect sleeps its whole timeout, then times out); every other
+    name and address behaves for real. Returns the dial-attempt log."""
+    real_gai, real_connect = socket.getaddrinfo, socket.socket.connect
+    answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"203.0.113.{i}", 80))
+               for i in range(1, n + 1)]
+
+    def gai(host, *a, **kw):
+        return list(answers) if host == _BLACKHOLE else real_gai(host, *a, **kw)
+    attempts = []
+
+    def connect(self, addr):
+        if not str(addr[0]).startswith("203.0.113."):
+            return real_connect(self, addr)
+        attempts.append(time.monotonic())
+        time.sleep(self.gettimeout() or 0)
+        raise socket.timeout("timed out")
+    monkeypatch.setattr(socket, "getaddrinfo", gai)
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    _open_loopback(monkeypatch)
+    return attempts
+
+
+def test_direct_media_probe_dial_loop_honours_the_wall_clock(monkeypatch):
+    """The pinned dial gave every getaddrinfo answer the full per-op timeout
+    and the cutoff only sees a socket once connect returns, so a name with
+    many black-holed records held a _PROBE_POOL worker for N x timeout."""
+    attempts = _black_hole_dns(monkeypatch, 6)
+    t0 = time.monotonic()
+    with pytest.raises(udl.UrlTimeoutError, match="too long"):
+        udl._direct_media_probe_sync(f"http://{_BLACKHOLE}/a.mp3", timeout=1.0)
+    assert attempts
+    assert time.monotonic() - t0 < 2.5  # was 6 x 1.0 s
+
+
+def test_direct_media_probe_redirect_hop_dial_honours_the_wall_clock(monkeypatch):
+    """A redirect hop dials a fresh name: its dial spends from the same
+    budget, and a hop dialled after the cutoff fired is not dialled at all."""
+    import http.server
+
+    class _Redirect(_QuietHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://{_BLACKHOLE}/a.mp3")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+    attempts = _black_hole_dns(monkeypatch, 6)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Redirect)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    with _stopping(srv):
+        t0 = time.monotonic()
+        with pytest.raises(udl.UrlTimeoutError, match="too long"):
+            udl._direct_media_probe_sync(
+                f"http://127.0.0.1:{srv.server_port}/r", timeout=1.0)
+        assert attempts
+        assert time.monotonic() - t0 < 2.5  # was 6 x 1.0 s past the hop
+
+
+def test_guarded_opener_refuses_a_dial_after_the_cutoff_fired(monkeypatch):
+    attempts = _black_hole_dns(monkeypatch, 1)
+    cutoff = udl._WallClockCutoff(10.0)
+    with cutoff:
+        cutoff.cut()
+        with pytest.raises(urllib.error.URLError) as e:
+            udl._guarded_opener(cutoff).open(f"http://{_BLACKHOLE}/a", timeout=5)
+    assert isinstance(e.value.reason, TimeoutError)
+    assert attempts == []
 
 
 def _fmt(**kw):

@@ -51,7 +51,7 @@ from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.media import download as udl
 from tests.conftest import read_repo_text
 from tests.media._server_helpers import _QuietHandler, _stopping
-from tests.media.test_download import _fetch
+from tests.media.test_download import _black_hole_dns, _fetch
 
 SECRET = b"INTERNAL-SECRET-" * 64
 PUBLIC_BODY = b"\xff\xfb\x90\x44" + b"\x00" * 4092  # plausible MPEG audio head
@@ -995,3 +995,259 @@ def test_bounded_brotli(monkeypatch):
                         _fake_brotli(b"x", limit_supported=False))
     with pytest.raises(RequestError, match=guard["MARKER"]):
         br(b"compressed")
+
+
+# ---- Stacked Content-Encodings: yt-dlp decodes one layer per comma token, each
+# bounded on its own, so the number of layers is bounded too.
+
+def _fetch_stacked(listener, encoding, body):
+    from yt_dlp.networking.common import Request
+    _Encoded.encoding = encoding
+    _Encoded.body = body
+    with yt_dlp.YoutubeDL({"quiet": True, "proxy": listener}) as ydl:
+        return ydl.urlopen(Request(f"http://{_PUBLIC_LITERAL}/page")).read()
+
+
+def test_guard_refuses_stacked_content_codings(encoded_listener):
+    guard = _registered_guard()
+    page = b"<html>" * 1000
+    body = gzip.compress(gzip.compress(gzip.compress(page)))
+    with pytest.raises(RequestError, match=guard["MARKER"]):
+        _fetch_stacked(encoded_listener, "gzip, gzip, gzip", body)
+    with pytest.raises(RequestError, match=guard["MARKER"]):
+        _fetch_stacked(encoded_listener, "gzip,deflate,br",
+                       gzip.compress(_raw_deflate(page)))
+
+
+def test_guard_decodes_two_stacked_gzip_codings(encoded_listener):
+    """A double-gzipping proxy is the one multi-coding case seen in practice."""
+    _registered_guard()
+    page = b"<html>" * 1000
+    assert _fetch_stacked(encoded_listener, "gzip, gzip",
+                          gzip.compress(gzip.compress(page))) == page
+    # An unknown token is not decoded by yt-dlp, so it does not count.
+    assert _fetch_stacked(encoded_listener, "identity, gzip, gzip",
+                          gzip.compress(gzip.compress(page))) == page
+
+
+def test_guarded_handler_binds_https_response_to_its_own_override():
+    handler = _registered_guard()["_GuardedHTTPHandler"]
+    assert handler.https_response is handler.http_response
+    from yt_dlp.networking import _urllib
+    assert handler.http_response is not _urllib.HTTPHandler.http_response
+
+
+# ---- A whole-body read (read() with no size: yt-dlp's webpage / manifest / API
+# reads and its decoders' raw read) is bounded; sized reads (HttpFD's
+# read(block_size)) are not touched.
+
+class _Plain(_QuietHandler):
+    """`body` as text/html, with or without a Content-Length."""
+
+    body = b""
+    with_length = True
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        if type(self).with_length:
+            self.send_header("Content-Length", str(len(type(self).body)))
+        self.end_headers()
+        self.wfile.write(type(self).body)
+
+
+@pytest.fixture
+def plain_listener(monkeypatch):
+    for var in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(var.upper(), raising=False)
+    srv = _serve(_Plain, "127.0.0.1")
+    with _stopping(srv):
+        yield f"http://127.0.0.1:{srv.server_port}"
+
+
+def _read_plain(listener, body, *, with_length, block=None):
+    from yt_dlp.networking.common import Request
+    _Plain.body = body
+    _Plain.with_length = with_length
+    with yt_dlp.YoutubeDL({"quiet": True, "proxy": listener}) as ydl:
+        resp = ydl.urlopen(Request(f"http://{_PUBLIC_LITERAL}/page"))
+        if block is None:
+            return resp.read()
+        parts = []
+        while chunk := resp.read(block):
+            parts.append(chunk)
+        return b"".join(parts)
+
+
+@pytest.mark.parametrize("with_length", [True, False])
+def test_guard_refuses_a_whole_body_read_past_the_cap(plain_listener,
+                                                      with_length, monkeypatch):
+    guard = _registered_guard()
+    monkeypatch.setitem(guard, "_MAX_DECODED_BYTES", 1 << 20)
+    with pytest.raises(RequestError, match=guard["MARKER"]):
+        _read_plain(plain_listener, b"x" * (4 << 20), with_length=with_length)
+
+
+@pytest.mark.parametrize("with_length", [True, False])
+def test_guard_passes_whole_bodies_under_the_cap_and_sized_reads(
+        plain_listener, with_length, monkeypatch):
+    guard = _registered_guard()
+    monkeypatch.setitem(guard, "_MAX_DECODED_BYTES", 1 << 20)
+    page = os.urandom(1000) + b"<html>" * 50_000
+    assert _read_plain(plain_listener, page, with_length=with_length) == page
+    exact = b"a" * (1 << 20)
+    assert _read_plain(plain_listener, exact, with_length=with_length) == exact
+    media = os.urandom(4 << 20)  # a media fetch reads in blocks: never capped
+    assert _read_plain(plain_listener, media, with_length=with_length,
+                       block=32768) == media
+
+
+
+# ---- The in-process extraction's dial loop spends from the probe's deadline:
+# the dial observer only sees a socket once connect returns, so a name with
+# many black-holed answers held the worker for N x socket_timeout.
+
+def test_guard_connect_pinned_stops_at_the_observed_deadline(monkeypatch):
+    import time
+    guard = _inproc_guard()
+    attempts = _black_hole_dns(monkeypatch, 5)
+    conn = types.SimpleNamespace(host="blackhole.example", port=80, timeout=1.0,
+                                 source_address=None)
+    t0 = time.monotonic()
+    guard.observe_dials(lambda sock: None, deadline=t0 + 0.5)
+    try:
+        with pytest.raises(TimeoutError):
+            guard._connect_pinned(conn)
+    finally:
+        guard.observe_dials(None)
+    assert attempts and time.monotonic() - t0 < 0.9
+    # Stopping the observer drops the deadline: the next dial is as before.
+    assert getattr(sys.modules["fwb_ssrf_guard_dials"].tls, "deadline") is None
+
+
+def test_probe_extraction_dial_loop_honours_the_wall_clock(monkeypatch):
+    import time
+    attempts = _black_hole_dns(monkeypatch, 8)
+    udl.guard_self_check(force=True)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_SOCKET_TIMEOUT_S", 1.0, raising=False)
+
+    async def _generic(url, *, deadline=None):
+        return "Generic"
+    monkeypatch.setattr(udl, "check_url_policy", _generic)
+    t0 = time.monotonic()
+    with pytest.raises(udl.UrlDownloadError):
+        _run(udl.probe("http://blackhole.example/a.mp3", timeout=2.0))
+    # The worker thread outlives the abandoned await: give it time to dial
+    # on (it did, for 8 x 1 s), then check it stopped at the deadline.
+    time.sleep(max(0.0, t0 + 4.5 - time.monotonic()))
+    assert attempts
+    assert max(attempts) - t0 < 2.5, [round(a - t0, 2) for a in attempts]
+
+
+# ---- DASH: yt-dlp expands a SegmentTemplate / SegmentTimeline into one dict
+# per segment, in process, with no cap — a ~300-byte manifest can ask for
+# billions. The guard counts the segments before the expansion.
+
+_MPD_NS = "urn:mpeg:dash:schema:mpd:2011"
+
+
+def _mpd(body, *, duration="PT14400S"):
+    dur = f' mediaPresentationDuration="{duration}"' if duration else ""
+    return (f'<?xml version="1.0"?><MPD xmlns="{_MPD_NS}" type="static"{dur}>'
+            f'{body}</MPD>')
+
+
+def _template(**attrs):
+    a = " ".join(f'{k}="{v}"' for k, v in attrs.items())
+    return f'<SegmentTemplate media="s$Number$.m4s" {a}/>'
+
+
+def _adaptation(inner, reps=1):
+    return ('<Period><AdaptationSet mimeType="audio/mp4">' + inner
+            + "".join(f'<Representation id="r{i}" bandwidth="{i + 1}" '
+                      'codecs="mp4a.40.2"/>' for i in range(reps))
+            + "</AdaptationSet></Period>")
+
+
+def _parse_mpd(xml):
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        return ie._parse_mpd_formats_and_subtitles(
+            compat_etree_fromstring(xml.encode()),
+            mpd_base_url="http://cdn.example/", mpd_url="http://cdn.example/m.mpd")
+
+
+@pytest.mark.parametrize("xml", [
+    # 14 400 s at 1 µs per segment: 1.44e10 fragment dicts.
+    _mpd(_adaptation(_template(timescale="1000000", duration="1"))),
+    # A SegmentTimeline repeat count, likewise unbounded by the manifest size.
+    _mpd(_adaptation('<SegmentTemplate media="s$Time$.m4s" timescale="1">'
+                     '<SegmentTimeline><S t="0" d="1" r="99999999999"/>'
+                     '</SegmentTimeline></SegmentTemplate>')),
+    # Many representations each expanding a modest template.
+    _mpd(_adaptation(_template(timescale="1", duration="1"), reps=100),
+         duration="PT30000S"),
+    # No duration on the MPD: the first representation's timeline sets the
+    # period's length, which the next one's template then expands.
+    _mpd('<Period><AdaptationSet mimeType="audio/mp4">'
+         '<Representation id="a" bandwidth="1" codecs="mp4a.40.2">'
+         '<SegmentTemplate media="a$Time$.m4s" timescale="1"><SegmentTimeline>'
+         '<S t="0" d="100000000000"/></SegmentTimeline></SegmentTemplate>'
+         '</Representation>'
+         '<Representation id="b" bandwidth="1" codecs="mp4a.40.2">'
+         '<SegmentTemplate media="b$Number$.m4s" timescale="1" duration="1"/>'
+         '</Representation></AdaptationSet></Period>', duration=None),
+])
+def test_guard_refuses_a_manifest_listing_too_many_segments(xml):
+    import time
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_mpd(xml)
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_guard_parses_an_ordinary_long_manifest_unchanged(monkeypatch):
+    """A 4 h stream at 2 s segments (7 200) across a few representations, and
+    a timeline, expand exactly as yt-dlp does on its own."""
+    xml = _mpd(_adaptation(_template(timescale="1000", duration="2000"), reps=5))
+    fmts, _subs = _parse_mpd(xml)
+    assert len(fmts) == 5
+    assert all(len(f["fragments"]) == 7200 for f in fmts)
+    timeline = _mpd(_adaptation(
+        '<SegmentTemplate media="s$Time$.m4s" timescale="1000"><SegmentTimeline>'
+        '<S t="0" d="2000" r="7199"/></SegmentTimeline></SegmentTemplate>'))
+    fmts, _subs = _parse_mpd(timeline)
+    assert len(fmts[0]["fragments"]) == 7200
+    # Right at the cap still parses, one past it is refused (the cap is
+    # lowered so the at-cap manifest stays cheap to expand).
+    assert _registered_guard()["_MAX_MPD_SEGMENTS"] >= 216_000
+    cap = 50_000
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    at_cap = _mpd(_adaptation(_template(timescale="1", duration="1")),
+                  duration=f"PT{cap}S")
+    fmts, _subs = _parse_mpd(at_cap)
+    assert len(fmts[0]["fragments"]) == cap
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_mpd(_mpd(_adaptation(_template(timescale="1", duration="1")),
+                        duration=f"PT{cap + 1}S"))
+
+
+def test_guard_is_not_installed_without_the_mpd_bound(monkeypatch):
+    from yt_dlp.extractor.common import InfoExtractor
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(InfoExtractor, "_parse_mpd_periods",
+                  lambda self, *a, **kw: iter(()))
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(InfoExtractor, "_parse_mpd_periods")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
