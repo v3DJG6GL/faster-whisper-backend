@@ -1273,6 +1273,21 @@ def test_guard_counts_segments_under_a_root_yt_dlp_does_not_namespace(monkeypatc
         _parse_mpd(xml)
 
 
+def test_guard_refuses_an_mpd_listing_too_many_representations(monkeypatch):
+    """Every Representation is a format yt-dlp parses and processes, so a
+    manifest of one-segment representations stays under the segment budget
+    yet costs seconds per thousand. They are counted across periods."""
+    cap = 40
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_REPRESENTATIONS", cap)
+    plain = '<BaseURL>a.m4a</BaseURL>'
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_mpd(_mpd(_adaptation(plain, reps=cap + 1)))
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_mpd(_mpd(_adaptation(plain, reps=cap // 2 + 1) * 2))
+    formats, _ = _parse_mpd(_mpd(_adaptation(plain, reps=cap // 2) * 2))
+    assert formats
+
+
 # ---- Smooth Streaming: yt-dlp expands every <c r="N"> into N fragment dicts
 # for each QualityLevel of the stream, in process and with no cap. The guard
 # counts them against the DASH budget before the expansion.

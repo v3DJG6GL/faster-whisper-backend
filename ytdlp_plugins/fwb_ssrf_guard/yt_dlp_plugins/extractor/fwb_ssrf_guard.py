@@ -549,6 +549,12 @@ def _refuse_external_downloaders() -> None:
 # QualityLevel) spends from the same budget.
 _MAX_MPD_SEGMENTS = 1_000_000
 _MPD_SENTINEL = "_fwb_mpd_bounded"
+# Each Representation also becomes its own format (periods merge only when
+# every field but the fragments matches), and yt-dlp's parse + format pass
+# cost grows faster than linearly in their number: 20 000 one-segment
+# representations take ~20 s of CPU, a 64 MiB manifest hours. A 12 h stream
+# split into 720 ad periods of ten representations each is 7 200.
+_MAX_MPD_REPRESENTATIONS = 20_000
 
 
 def _too_many_segments():
@@ -633,7 +639,7 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
     def q(name):
         return f"{{{ns}}}{name}" if ns else name
     mpd_duration = parse_duration(mpd_doc.get("mediaPresentationDuration"))
-    count = 0
+    count = representations = 0
     for period in mpd_doc.findall(q("Period")):
         period_duration = (parse_duration(period.get("duration"))
                            or mpd_duration)
@@ -641,6 +647,12 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
         for adaptation in period.findall(q("AdaptationSet")):
             set_info = _mpd_segment_info(adaptation, period_info, q)
             for representation in adaptation.findall(q("Representation")):
+                representations += 1
+                if representations > _MAX_MPD_REPRESENTATIONS:
+                    from yt_dlp.utils import ExtractorError
+                    raise ExtractorError(
+                        "the stream lists too many variants (more than "
+                        f"{_MAX_MPD_REPRESENTATIONS})", expected=True)
                 info = _mpd_segment_info(representation, set_info, q)
                 n, seconds = _representation_segments(info, period_duration)
                 count += n
