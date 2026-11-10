@@ -1532,7 +1532,7 @@ async def translation_test(
     # Optional progress plumbing: joins the shared _BATCH_PROGRESS registry
     # so the lab JS can poll the existing progress endpoint while a cold
     # test downloads (multi-GB) + loads + translates.
-    _pid = tx_progress._valid_progress_id(body.progress_id)
+    _pid = tx_progress._claim_progress_id(body.progress_id)
     # Owner-stamped like the transcription and batch-translation seeds: an
     # owner-less entry is readable/cancellable by ANY authenticated caller
     # holding the id.

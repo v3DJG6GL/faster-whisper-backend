@@ -50,3 +50,30 @@ def test_translation_test_forwards_target_progress(
     lab_run(client, text="hallo", target="en", progress_id=pid)
     assert seen.get("target") == "en"
     assert seen.get("target_progress") == 0.5
+
+
+def test_translation_test_refuses_a_live_progress_id(
+        client, app_module, monkeypatch):
+    """A progress id already in flight belongs to another run: the lab must
+    claim ids like the request paths do, or its seed overwrites that run's
+    owner stamp and its finally closes (tombstones) the live entry."""
+    from faster_whisper_backend.translation import engine as translation
+
+    enable_translation(app_module, monkeypatch)
+    pid = "beef" * 8
+
+    async def fake_translate(segments, targets, **kwargs):
+        return ([{"en": "hi"}], [], {"model": "org/m", "source": "de",
+                                     "mode": "faithful"})
+
+    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    tx_progress._PROGRESS_OWNER[pid] = "other"
+    tx_progress._BATCH_PROGRESS[pid] = {"stage": "transcribing"}
+    try:
+        lab_run(client, text="hallo", target="en", progress_id=pid)
+        assert tx_progress._PROGRESS_OWNER.get(pid) == "other"
+        assert tx_progress._BATCH_PROGRESS.get(pid, {}).get("stage") == "transcribing"
+        assert pid not in tx_progress._PROGRESS_CLOSED
+    finally:
+        tx_progress._progress_close(pid)
+        tx_progress._PROGRESS_CLOSED.pop(pid, None)

@@ -501,18 +501,29 @@ def _errors_in(seconds: float) -> int:
     return n
 
 
-def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
-                       ) -> dict[str, Any]:
+def project_recent_row(r: dict[str, Any], *, include_identity: bool = False,
+                       viewer_user_id: "str | None" = None) -> dict[str, Any]:
     """One recent-transcriptions row in the timing-only shape /stats
     renders (the snapshot's recent_transcriptions and the paged
     /stats/jobs). A non-admin holder of pages.stats='all' sees every user's
     rows and must not read other users' transcripts (or identities): the
     projection carries no raw/final text, and username / user_id /
     key_label are blanked unless `include_identity`. Nulls become numeric defaults so
-    `r.audio_s.toFixed(1)` on error-path rows cannot freeze the view."""
+    `r.audio_s.toFixed(1)` on error-path rows cannot freeze the view.
+
+    The request id doubles as the run's usage job id, which POST
+    /v1/usage/outcome could squat while the run is still in flight, so
+    rows that are neither identity-visible nor `viewer_user_id`'s own carry
+    only the 8-char prefix the page displays (like jobs.jobs_snapshot
+    withholding foreign row ids). The cut is deterministic, so the snapshot
+    and /stats/jobs still agree on the page's dedupe key."""
+    rid = r.get("request_id") or ""
+    if not include_identity and not (viewer_user_id
+                                     and r.get("user_id") == viewer_user_id):
+        rid = rid[:8]
     return {
         "ts": r.get("ts"),
-        "request_id": r.get("request_id") or "",
+        "request_id": rid,
         "model": r.get("model") or "",
         "language": r.get("language") or "",
         "audio_s": r.get("audio_s") or 0.0,
@@ -535,13 +546,16 @@ def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
 
 
 def metrics_snapshot(*, include_identity: bool = False,
-                     user_id: "str | None" = None) -> dict[str, Any]:
+                     user_id: "str | None" = None,
+                     viewer_user_id: "str | None" = None) -> dict[str, Any]:
     """Build the JSON payload returned by /stats/snapshot and /stats/stream.
 
     ``include_identity`` follows jobs.jobs_snapshot's gate: admins (and
     own-scope viewers, whose rows are all their own) get the username /
     key_label of the recent jobs. ``user_id`` narrows the recent rows to
-    that owner (the /stats "own" page scope); None = every user."""
+    that owner (the /stats "own" page scope); None = every user.
+    ``viewer_user_id`` keeps the full request id on the viewer's own rows
+    (see project_recent_row)."""
     durations = sorted(_latency)
     loads_summary = {}
     # Copies, as in _errors_in: the model-loader threads add keys and trim
@@ -569,7 +583,8 @@ def metrics_snapshot(*, include_identity: bool = False,
         except Exception as e:
             logger.warning("[metrics] list_recent failed: %s", e)
             rows = []
-    recent = [project_recent_row(r, include_identity=include_identity)
+    recent = [project_recent_row(r, include_identity=include_identity,
+                                 viewer_user_id=viewer_user_id)
               for r in rows]
     return {
         "uptime_sec": round(time.time() - START_TS, 1),

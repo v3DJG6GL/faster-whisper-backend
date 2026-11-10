@@ -1012,6 +1012,30 @@ def test_stats_jobs_scope_rules(client, make_user_key):
     assert prev["scope"] == "own" and len(prev["jobs"]) == 2
 
 
+def test_stats_recent_request_id_truncated_for_foreign_viewer(client, make_user_key):
+    """A non-admin "all" viewer gets only the 8-char display prefix of other
+    users' request ids (the full id is the usage job id, which POST
+    /v1/usage/outcome could squat while the run is in flight); their own
+    rows and every admin row keep the full id. The snapshot and /stats/jobs
+    truncate identically, so the page's request_id dedupe stays consistent."""
+    raw_admin, alice, _, bob, raw_bob, _ = _two_users(make_user_key)
+    _seed_jobs_pages(2, user_id=alice)
+    _seed_jobs_pages(1, user_id=bob)
+    full = {f"{alice}-0", f"{alice}-1", f"{bob}-0"}
+    as_bob_jobs = client.get("/stats/jobs", headers=bearer(raw_bob)).json()["jobs"]
+    as_bob_snap = client.get("/stats/snapshot",
+                             headers=bearer(raw_bob)).json()["recent_transcriptions"]
+    for rows in (as_bob_jobs, as_bob_snap):
+        ids = sorted(r["request_id"] for r in rows)
+        assert ids == sorted([f"{alice}-0"[:8], f"{alice}-1"[:8], f"{bob}-0"])
+    assert ({r["request_id"] for r in as_bob_jobs}
+            == {r["request_id"] for r in as_bob_snap})
+    for url, key in (("/stats/jobs", "jobs"),
+                     ("/stats/snapshot", "recent_transcriptions")):
+        rows = client.get(url, headers=bearer(raw_admin)).json()[key]
+        assert {r["request_id"] for r in rows} == full
+
+
 def test_stats_jobs_users_filter(client, make_user_key):
     """`users=` narrows the paged jobs server-side (the page's who-filter),
     the cursor walks inside the filter, own scope is refused, and a scrubbed

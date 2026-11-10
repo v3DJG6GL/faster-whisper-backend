@@ -48,3 +48,11 @@ def test_redesigned_card_controls_present(client):
     r = client.get("/settings/pipeline")
     for needle in ("rule-rail", "lock-btn", "color-btn", "color-pop", "head-actions"):
         assert needle in r.text, needle
+
+
+def test_card_colour_dot_is_built_as_a_node(client):
+    # rule.color reaches the dot as a dataset value, never spliced into an
+    # innerHTML string (same <span class="color-dot" data-color> markup).
+    r = client.get("/settings/pipeline")
+    assert "colorBtn.innerHTML" not in r.text
+    assert "_dot.dataset.color = rule.color || '';" in r.text

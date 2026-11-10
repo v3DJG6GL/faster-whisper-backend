@@ -3145,7 +3145,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Colour swatch — a curated tint for visual grouping only; rank + label
     // still identify the rule.
     const colorBtn = _button('color-btn', '', 'Card colour');
-    colorBtn.innerHTML = '<span class="color-dot" data-color="' + (rule.color || '') + '"></span>';
+    const _dot = _el('span', 'color-dot');
+    _dot.dataset.color = rule.color || '';
+    colorBtn.appendChild(_dot);
 
     // Right-aligned action cluster: colour + edit/expand. Promote / reset sit
     // in the sync slot on the "applies to" line and delete in the body footer,

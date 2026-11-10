@@ -84,7 +84,8 @@ class StatsScope:
 
       scope            "own" (the caller's own jobs + usage) or "all"
       user_id          owner filter for jobs / recent rows / usage; None = no filter
-      viewer_user_id   the caller's own id (cancel handles on their rows)
+      viewer_user_id   the caller's own id (cancel handles and full request ids
+                       on their rows)
       include_identity user/key/detail on job rows, names on recent rows —
                        admins, and own-scope viewers (every row is theirs)
       sees_machine     the machine cards (gpu/host/process/latency/endpoints/
@@ -229,7 +230,8 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
             }
         recent = metrics.metrics_snapshot(
             include_identity=scope.include_identity,
-            user_id=scope.user_id)["recent_transcriptions"]
+            user_id=scope.user_id,
+            viewer_user_id=scope.viewer_user_id)["recent_transcriptions"]
         return {**base, "server": server, "recent_transcriptions": recent}
     # In the lite payload too: preloading's likeliest failure is SILENCE (no
     # worker, no plans, no loads), invisible everywhere else. Built here so
@@ -254,7 +256,8 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
     return {
         **base,
         **metrics.metrics_snapshot(include_identity=scope.include_identity,
-                                   user_id=scope.user_id),
+                                   user_id=scope.user_id,
+                                   viewer_user_id=scope.viewer_user_id),
         **sysnap,
         "models": models,
     }
@@ -655,7 +658,8 @@ async def stats_jobs(
             kind=kind_list or None, status=status_q or None, slow_rtf=slow_rtf)
         out = {
             "jobs": [metrics.project_recent_row(
-                r, include_identity=scope.include_identity) for r in rows],
+                r, include_identity=scope.include_identity,
+                viewer_user_id=scope.viewer_user_id) for r in rows],
             "next_cursor": rows[-1]["ts"] if len(rows) >= n else None,
             "scope": scope.scope,
         }
