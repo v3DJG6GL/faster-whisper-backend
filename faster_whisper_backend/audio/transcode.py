@@ -103,8 +103,11 @@ def is_pcm_wav_or_flac(src_path: str) -> bool:
     stream inside a WAV is timed from a byte rate the uploader wrote. A PCM
     WAV counts only when its byte rate is its sample shape (rate x channels
     x bits): FFmpeg times a WAV whose data size overruns the file by that
-    byte rate, while libsndfile reads every sample there is. An unknown
-    pcm_* codec fails closed. Raises what _open_audio raises."""
+    byte rate, while libsndfile reads every sample there is. Its fmt chunk's
+    container width and block align must also be that codec's (see
+    _wav_fmt_shape); an RF64 or an fmt the RIFF walk cannot read goes the
+    transcode way. An unknown pcm_* codec fails closed. Raises what
+    _open_audio raises."""
     container, stream = _open_audio(src_path)
     try:
         fmt = getattr(container.format, "name", None) or ""
@@ -112,11 +115,58 @@ def is_pcm_wav_or_flac(src_path: str) -> bool:
         if fmt == "wav":
             bits = _PCM_BITS.get(codec)
             rate, ch = stream.rate or 0, stream.channels or 0
-            return (bits is not None and rate > 0 and ch > 0
-                    and stream.codec_context.bit_rate == rate * ch * bits)
+            if not (bits is not None and rate > 0 and ch > 0
+                    and stream.codec_context.bit_rate == rate * ch * bits):
+                return False
+            # FFmpeg picks the codec from an extensible header's
+            # wValidBitsPerSample, libsndfile frames the samples by
+            # wBitsPerSample: a container narrower than the valid bits is
+            # timed short by FFmpeg and read whole by the separator. Both
+            # round the width up to whole bytes (20-in-24, a 20-bit PCM).
+            shape = _wav_fmt_shape(src_path)
+            return (shape is not None
+                    and (shape[0] + 7) // 8 * 8 == bits
+                    and shape[1] == ch * bits // 8)
         return fmt == "flac" and codec == "flac"
     finally:
         container.close()
+
+
+_WAV_MAX_CHUNKS = 64
+
+
+def _wav_fmt_shape(src_path: str) -> "tuple[int, int] | None":
+    """(wBitsPerSample, nBlockAlign) of the one 'fmt ' chunk ahead of 'data'
+    in a RIFF (or big-endian RIFX) WAVE file; None for anything else — RF64,
+    a second fmt, an fmt shorter than 16 bytes, no data within
+    _WAV_MAX_CHUNKS chunks, a truncated header. Raises OSError when the
+    file cannot be read."""
+    import struct
+    with open(src_path, "rb") as f:
+        hdr = f.read(12)
+        if len(hdr) < 12 or hdr[8:12] != b"WAVE":
+            return None
+        endian = {b"RIFF": "<", b"RIFX": ">"}.get(hdr[:4])
+        if endian is None:
+            return None
+        found = None
+        for _ in range(_WAV_MAX_CHUNKS):
+            head = f.read(8)
+            if len(head) < 8:
+                return None
+            cid, size = head[:4], struct.unpack(endian + "I", head[4:])[0]
+            if cid == b"data":
+                return found
+            if cid == b"fmt ":
+                body = f.read(16)
+                if found is not None or size < 16 or len(body) < 16:
+                    return None
+                block_align, bits = struct.unpack(endian + "HH", body[12:16])
+                found = (bits, block_align)
+                f.seek(size - 16 + (size & 1), os.SEEK_CUR)
+            else:
+                f.seek(size + (size & 1), os.SEEK_CUR)
+        return None
 
 
 def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:

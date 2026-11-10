@@ -577,3 +577,94 @@ def test_is_pcm_wav_or_flac_refuses_a_forged_byte_rate(tmp_path):
     assert audio_transcode.declared_shape(forged)[0] < 0.01
     assert audio_transcode.is_pcm_wav_or_flac(forged) is False
 
+
+
+_KSDATAFORMAT_TAIL = bytes([0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71])
+
+
+def _hand_wav(path, *, ch=2, bits=16, valid=None, tag=1, ext=False,
+              block_align=None, byte_rate=None, list_first=False,
+              rate=44100, seconds=1.0, magic=b"RIFF"):
+    """A WAV written byte by byte, for fmt shapes no muxer writes: `ext`
+    makes it WAVE_FORMAT_EXTENSIBLE with SubFormat `tag` and
+    wValidBitsPerSample `valid`. The data chunk holds `seconds` of samples
+    framed by the container width (ch x bits/8, rounded up to whole bytes),
+    whatever block_align and byte_rate claim."""
+    import struct
+    e = ">" if magic == b"RIFX" else "<"
+    ba = block_align if block_align is not None else ch * ((bits + 7) // 8)
+    br = byte_rate if byte_rate is not None else rate * ba
+    if ext:
+        fmt = (struct.pack(e + "HHIIHH", 0xFFFE, ch, rate, br, ba, bits)
+               + struct.pack(e + "HHI", 22, valid or bits, 0)
+               + struct.pack("<IHH", tag, 0, 0x10) + _KSDATAFORMAT_TAIL)
+    else:
+        fmt = struct.pack(e + "HHIIHH", tag, ch, rate, br, ba, bits)
+    data = bytes(int(rate * seconds) * ch * ((bits + 7) // 8))
+    chunks = b""
+    if list_first:
+        info = b"INFOINAM" + struct.pack(e + "I", 5) + b"titl\0" + b"\0"
+        chunks += b"LIST" + struct.pack(e + "I", len(info)) + info
+    chunks += b"fmt " + struct.pack(e + "I", len(fmt)) + fmt
+    chunks += b"data" + struct.pack(e + "I", len(data)) + data
+    body = b"WAVE" + chunks
+    with open(path, "wb") as f:
+        f.write(magic + struct.pack(e + "I", len(body)) + body)
+    return path
+
+
+@pytest.mark.parametrize("bits,valid,block_align", [
+    (8, 64, None), (8, 32, None), (16, 64, None), (8, 64, 16)])
+def test_is_pcm_wav_or_flac_refuses_a_container_narrower_than_valid_bits(
+        tmp_path, bits, valid, block_align):
+    """An extensible WAV whose container (wBitsPerSample) is narrower than
+    its valid bits: FFmpeg picks its codec from the valid bits and times
+    the data that wide, while libsndfile frames it by the container and
+    reads every sample — a fraction of its samples is declared, so it is
+    not handed over as a native PCM WAV."""
+    path = _hand_wav(str(tmp_path / "narrow.wav"), bits=bits, valid=valid,
+                     ext=True, block_align=block_align,
+                     byte_rate=44100 * 2 * valid // 8)
+    assert audio_transcode.declared_shape(path)[0] <= 0.5
+    assert audio_transcode.is_pcm_wav_or_flac(path) is False
+
+
+@pytest.mark.parametrize("kw", [
+    {"bits": 8}, {"bits": 16}, {"bits": 24}, {"bits": 32},
+    {"bits": 20}, {"bits": 32, "tag": 3}, {"bits": 64, "tag": 3},
+    {"bits": 16, "ext": True}, {"bits": 24, "ext": True},
+    {"bits": 32, "ext": True}, {"bits": 32, "tag": 3, "ext": True},
+    {"bits": 24, "valid": 20, "ext": True},
+    {"bits": 24, "valid": 18, "ext": True},
+    {"bits": 16, "valid": 12, "ext": True},
+    {"bits": 24, "ch": 6, "ext": True}, {"bits": 16, "ch": 1},
+    {"bits": 16, "list_first": True}, {"bits": 24, "rate": 48000},
+    {"bits": 16, "magic": b"RIFX"},
+], ids=repr)
+def test_is_pcm_wav_or_flac_keeps_an_honest_hand_written_wav(tmp_path, kw):
+    """Every honest fmt shape — valid bits narrower than the container
+    (20-in-24) included, and a chunk ahead of fmt — stays a native PCM
+    WAV."""
+    path = _hand_wav(str(tmp_path / "honest.wav"), **kw)
+    assert audio_transcode.is_pcm_wav_or_flac(path) is True
+
+
+def test_wav_fmt_shape_reads_only_one_fmt_ahead_of_data(tmp_path):
+    """The RIFF walk answers for one fmt chunk ahead of data; RF64, a second
+    fmt and a data chunk before any fmt read as None."""
+    import struct
+    honest = _hand_wav(str(tmp_path / "h.wav"), bits=24, valid=20, ext=True)
+    assert audio_transcode._wav_fmt_shape(honest) == (24, 6)
+    raw = open(honest, "rb").read()
+    rf64 = tmp_path / "rf64.wav"
+    rf64.write_bytes(b"RF64" + raw[4:])
+    assert audio_transcode._wav_fmt_shape(str(rf64)) is None
+    fmt_at = raw.index(b"fmt ")
+    fmt_size = struct.unpack_from("<I", raw, fmt_at + 4)[0]
+    fmt_chunk = raw[fmt_at:fmt_at + 8 + fmt_size]
+    twice = tmp_path / "twice.wav"
+    twice.write_bytes(raw[:fmt_at] + fmt_chunk + raw[fmt_at:])
+    assert audio_transcode._wav_fmt_shape(str(twice)) is None
+    no_fmt = tmp_path / "nofmt.wav"
+    no_fmt.write_bytes(raw[:fmt_at] + raw[fmt_at + 8 + fmt_size:])
+    assert audio_transcode._wav_fmt_shape(str(no_fmt)) is None
