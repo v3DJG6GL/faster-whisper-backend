@@ -24,11 +24,6 @@ import tempfile
 import threading
 import time
 
-# A hard dependency (requirements.txt) that system_stats already imports
-# unguarded; NVML is the optional one, and system_stats hides that behind
-# gpu_mem_free_bytes() returning None.
-import psutil
-
 from faster_whisper_backend.core import atomic_json
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import system_stats
@@ -474,7 +469,7 @@ def fits(name: str, device: str, compute_type: str, *,
         if need is None:
             return (None, "size_unknown")
         return (True, None) if free - need >= reserve_bytes else (False, "insufficient_vram")
-    free = int(psutil.virtual_memory().available)
+    free = system_stats.available_ram_bytes()
     need = estimate(name, device, compute_type)
     if need is None:
         return (None, "size_unknown")

@@ -72,6 +72,8 @@ def _available_ram(monkeypatch, available=None, exc=None):
             raise exc
         return real()._replace(available=available)
     monkeypatch.setattr(psutil, "virtual_memory", _vm)
+    monkeypatch.setattr(_main.system_stats, "_cgroup_headroom",
+                        lambda total: None)
     monkeypatch.setattr(_main, "_upload_decode_cap_s", lambda: None)
 
 

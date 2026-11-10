@@ -12,6 +12,7 @@ gpu_mem_used_bytes() around each load) is runtime.model_registry.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import Any, Callable
 
@@ -138,6 +139,89 @@ def _build_gpu() -> dict[str, Any] | None:
         ),
         "p_state": f"P{p_state}" if isinstance(p_state, int) else None,
     }
+
+
+_CGROUP_ROOT = "/sys/fs/cgroup"
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="ascii") as f:
+        return f.read()
+
+
+def _stat_field(text: str, key: str) -> int:
+    """`key`'s value in a cgroup memory.stat; ValueError when it is absent."""
+    for line in text.splitlines():
+        name, _, value = line.partition(" ")
+        if name == key:
+            return int(value)
+    raise ValueError(f"memory.stat has no {key}")
+
+
+def _cgroup_headroom(host_total: "int | None") -> "int | None":
+    """Bytes this process's memory cgroup — its own or any ancestor's limit,
+    whichever is tightest — still allows before the kernel OOM-kills inside
+    it: the limit minus what the group holds, its reclaimable inactive page
+    cache excluded. None when no limit applies or the files cannot be read.
+    cgroup v2 first (memory.max, "max" = no limit); v1 (memory controller)
+    only for a limit below the host's RAM, v1's "no limit" being a huge
+    number."""
+    try:
+        groups = [line.split(":", 2)
+                  for line in _read_text("/proc/self/cgroup").splitlines()]
+        v2 = next((rel for hid, ctrls, rel in groups
+                   if hid == "0" and not ctrls), None)
+        v1 = next((rel for _hid, ctrls, rel in groups
+                   if "memory" in ctrls.split(",")), None)
+        for rel, base, files in (
+                (v2, _CGROUP_ROOT, ("memory.max", "memory.current",
+                                    "inactive_file")),
+                (v1, _CGROUP_ROOT + "/memory", ("memory.limit_in_bytes",
+                                                "memory.usage_in_bytes",
+                                                "total_inactive_file"))):
+            if rel is None:
+                continue
+            # The process's own group up to the root of the mount: inside a
+            # container's cgroup namespace that is the container's group;
+            # a group the mount does not show is skipped.
+            parts = [p for p in rel.split("/") if p]
+            found, heads = False, []
+            for depth in range(len(parts), -1, -1):
+                d = os.path.join(base, *parts[:depth])
+                try:
+                    limit = _read_text(os.path.join(d, files[0])).strip()
+                except FileNotFoundError:
+                    continue
+                found = True
+                if limit == "max" or (files[0] == "memory.limit_in_bytes"
+                                      and (host_total is None
+                                           or int(limit) >= host_total)):
+                    continue
+                used = (int(_read_text(os.path.join(d, files[1])))
+                        - _stat_field(_read_text(os.path.join(d, "memory.stat")),
+                                      files[2]))
+                heads.append(max(0, int(limit) - used))
+            if found:
+                return min(heads) if heads else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def available_ram_bytes() -> int:
+    """psutil's available RAM, capped by what this process's memory cgroup
+    still allows (see _cgroup_headroom): psutil reads /proc/meminfo, which
+    inside a container is the HOST's, so under `docker run --memory` it
+    reports RAM the kernel would OOM-kill the container for using. Linux
+    only; elsewhere, or with no limit set, psutil's figure as is. Raises
+    what psutil raises."""
+    vm = psutil.virtual_memory()
+    free = int(vm.available)
+    if not sys.platform.startswith("linux"):
+        return free
+    total = getattr(vm, "total", None)
+    head = _cgroup_headroom(int(total) if total else None)
+    return free if head is None else min(free, head)
 
 
 def _build_host() -> dict[str, Any]:

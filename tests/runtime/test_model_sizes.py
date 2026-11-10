@@ -134,7 +134,10 @@ def test_fits_cpu_uses_psutil_even_without_nvml(ledger, monkeypatch):
 
     class _VM:
         available = 5 * GB
-    monkeypatch.setattr(model_sizes.psutil, "virtual_memory", lambda: _VM())
+    monkeypatch.setattr(model_sizes.system_stats.psutil, "virtual_memory",
+                        lambda: _VM())
+    monkeypatch.setattr(model_sizes.system_stats, "_cgroup_headroom",
+                        lambda total: None)
 
     assert model_sizes.fits("large-v3", "cpu", "int8",
                             reserve_bytes=3 * GB) == (True, None)

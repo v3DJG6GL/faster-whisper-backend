@@ -35,6 +35,9 @@ def test_the_ceiling_is_half_the_free_ram_at_the_decode_peak(app_module,
     real = psutil.virtual_memory
     monkeypatch.setattr(psutil, "virtual_memory",
                         lambda: real()._replace(available=16_000_000_000))
+    # Whatever memory cgroup the suite runs in stays out of the figure.
+    monkeypatch.setattr(app_module.system_stats, "_cgroup_headroom",
+                        lambda total: None)
     # 8 GB at 16 kHz x 12 B per sample: ~11.6 h of audio.
     assert app_module._upload_decode_cap_s() == 16_000_000_000 / 2 / (16000 * 12)
 

@@ -1459,10 +1459,10 @@ _DECODE_RAM_DIVISOR = 2
 
 def _upload_decode_cap_s() -> "float | None":
     """Most seconds of audio one upload may decode to, from the RAM free
-    right now; None (no ceiling: fail open) when it cannot be read."""
+    right now (a container's memory limit included); None (no ceiling: fail
+    open) when it cannot be read."""
     try:
-        import psutil
-        free = int(psutil.virtual_memory().available)
+        free = system_stats.available_ram_bytes()
     except Exception:  # noqa: BLE001 — fail open
         return None
     return free / _DECODE_RAM_DIVISOR / _DECODE_BYTES_PER_S
@@ -1472,8 +1472,7 @@ def _sep_ram_cap() -> "int | None":
     """Most bytes of 44.1 kHz stereo s16 audio the separator may take on, or
     None (no cap: fail open) when available RAM cannot be read."""
     try:
-        import psutil
-        return int(psutil.virtual_memory().available) // _SEP_RAM_DIVISOR
+        return system_stats.available_ram_bytes() // _SEP_RAM_DIVISOR
     except Exception:  # noqa: BLE001 — fail open
         return None
 
