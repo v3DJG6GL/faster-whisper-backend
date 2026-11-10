@@ -163,11 +163,17 @@ def _write_pcm16_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
     # outlive the process.
     fd, path = tempfile.mkstemp(prefix="whisperup-", suffix=".wav")
     os.close(fd)
-    with wave.open(path, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm16.tobytes())
+    # The caller's unlink only covers a returned path, so a failed write
+    # (full TMPDIR) removes its own partial file.
+    try:
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm16.tobytes())
+    except BaseException:
+        store_common.unlink_quietly(path)
+        raise
     return path
 
 # Live session ids, counted against the server-wide STREAMING_MAX_SESSIONS cap.
@@ -1321,6 +1327,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
         async def emit(message):
             kind = message.get("type")
             if kind == "final":
+                # The near-silence gate sends a final without a decode, i.e.
+                # before any other latch site: a revoked identity must not get
+                # this last transcript. The raise reaches the same 4401 close
+                # as a revoked decode.
+                _require_live_credential()
                 if not include_words:
                     message.pop("words", None)   # word timestamps only for verbose_json
                 if not _doc_open[0]:

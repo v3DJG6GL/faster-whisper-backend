@@ -250,6 +250,28 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
         "the revoked identity still got a trace/usage row through the gate path"
 
 
+def test_revoked_identity_gets_no_final_through_the_gate_path(
+        client, make_user_key, app_module, monkeypatch, energy_vad):
+    """The gate path sends its ``final`` before on_final's latch runs, so the
+    emit sink checks for itself: a revoked identity gets no last transcript
+    of the gated utterance, only the 4401 close."""
+    from faster_whisper_backend.auth import api_keys_store
+
+    make_user_key("admin", is_admin=True)
+    uid, raw_alice = make_user_key("alice")
+
+    with ready_ws(client, raw_alice) as ws:
+        _gate_second_utterance(monkeypatch, ws,
+                               before_second=lambda: api_keys_store.revoke_user(uid))
+        ws.send_bytes(_pcm(0, 200))
+        msgs, code = stop_if_open_and_drain(ws)
+    assert code == _WS_UNAUTH, (code, msgs)
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert finals, msgs                    # utterance 1 decoded while still live
+    assert {m.get("utterance") for m in finals} == {finals[0].get("utterance")}, \
+        "the revoked identity still got the gated utterance's final"
+
+
 def test_translate_expect_is_ignored_when_translation_is_disabled(
         client, app_module, monkeypatch, energy_vad, recording_captures):
     """/v1/text/translations refuses before it can claim a receipt, so a

@@ -182,3 +182,18 @@ def test_a_prefix_completed_into_a_whole_key_by_the_held_tail_stays_held():
     spec = sh.build_spec([{"p q r": "X", "r s": "Y"}])
     assert "a p q r"[sh.held_start("a p q r", spec):].strip() == "p q r"
     assert "a p r"[sh.held_start("a p r", spec):].strip() == "r"
+
+
+def test_the_seam_culprit_cannot_forge_log_lines(caplog):
+    """The culprit names user-editable rule labels, so a CR/LF in one must not
+    start a new physical line in the log /logs reads."""
+    s, _msgs = inert_session(
+        postprocess=lambda raw: raw.replace("alpha beta", "X"),
+        diagnose=lambda a, b: "#1.1 X\n2026-01-01 00:00:00Z WARNING forged",
+    )
+    with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
+        grow_and_close(s, " alpha", " beta")
+    seam = [r.getMessage() for r in caplog.records if "seam:" in r.getMessage()]
+    assert seam, [r.getMessage() for r in caplog.records]
+    assert all("\n" not in m and "\r" not in m for m in seam), seam
+    assert all("#1.1 X?2026" in m for m in seam), seam

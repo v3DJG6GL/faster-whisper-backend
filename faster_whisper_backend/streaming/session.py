@@ -63,6 +63,7 @@ from typing import Awaitable, Callable, Optional
 
 import numpy as np
 
+from faster_whisper_backend.core import store_common
 from faster_whisper_backend.streaming.localagreement import LocalAgreementProcessor
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, iter_frames, rms_dbfs
 
@@ -790,10 +791,12 @@ class StreamSession:
                                             raw[self._anchor_raw:end])
                 except Exception as exc:  # noqa: BLE001 — diagnostics only
                     culprit = f"? ({type(exc).__name__})"
+            # The culprit names user-editable rule labels: screened, so a
+            # CR/LF in one cannot start a forged line in the log.
             logger.warning("[stream %s] seam: document diverges from sent text at char "
                            "%d/%d (culprit %s; sent %d chars stay as typed) — formatting "
                            "new text on its own from here", self.session_id[:8], at,
-                           len(self._sent), culprit, len(self._sent))
+                           len(self._sent), store_common.log_safe(culprit), len(self._sent))
             self._reanchor()
             doc = self._format_from_anchor(end)
         return doc, end
