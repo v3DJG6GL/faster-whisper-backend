@@ -58,12 +58,17 @@ _BATCH_PROGRESS_STALE_S = 2 * 3600
 # since _PROGRESS_OWNER was popped too — and leave it readable by any
 # authenticated caller until the stale sweep. A closed id is a no-op in
 # _progress_set until a fresh owner-stamped seed re-opens it. Bounded by the
-# TTL sweep in _progress_close (every run end); each suppressed tick restamps
+# TTL sweep in _progress_close (on a run end, at most once a minute); each suppressed tick restamps
 # the tombstone, so a stage thread still ticking keeps its id closed however
 # long it outlives the close, and the TTL is never shorter than the stale
 # sweep's.
 _PROGRESS_CLOSED: "dict[str, float]" = {}
 _PROGRESS_CLOSED_TTL_S = _BATCH_PROGRESS_STALE_S
+# Monotonic time of the last tombstone sweep. The sweep runs at most once a
+# minute: tombstones live 2 h, so scanning them on every close would make each
+# close O(n) under a stream of fresh ids, and a minute's delay only lengthens
+# straggler suppression.
+_PROGRESS_CLOSED_LAST_SWEEP = [0.0]
 
 
 def _progress_close(pid: "str | None") -> None:
@@ -76,7 +81,9 @@ def _progress_close(pid: "str | None") -> None:
     _BATCH_CANCELLED.discard(pid)
     now = time.monotonic()
     _PROGRESS_CLOSED[pid] = now
-    if len(_PROGRESS_CLOSED) > 64:
+    if (len(_PROGRESS_CLOSED) > 64
+            and now - _PROGRESS_CLOSED_LAST_SWEEP[0] >= 60.0):
+        _PROGRESS_CLOSED_LAST_SWEEP[0] = now
         for k in [k for k, t in list(_PROGRESS_CLOSED.items())
                   if now - t > _PROGRESS_CLOSED_TTL_S]:
             _PROGRESS_CLOSED.pop(k, None)
@@ -460,6 +467,7 @@ def _reset_for_tests() -> None:
     _BATCH_PROGRESS.clear()
     _PROGRESS_OWNER.clear()
     _PROGRESS_CLOSED.clear()
+    _PROGRESS_CLOSED_LAST_SWEEP[0] = 0.0
     _JOB_BY_PID.clear()
     _PLAN_BY_PID.clear()
     _RUN_PLAN_BY_PID.clear()

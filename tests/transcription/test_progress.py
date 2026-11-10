@@ -85,3 +85,35 @@ def test_a_cap_evicted_run_still_holds_its_progress_id(monkeypatch):
     # Once the run closes, the id is free again.
     tx_progress._progress_close(_PID)
     assert tx_progress._claim_progress_id(_PID) == _PID
+
+
+class _ScanCountingDict(dict):
+    scans = 0
+
+    def items(self):
+        type(self).scans += 1
+        return super().items()
+
+
+def test_tombstone_sweep_is_amortised(monkeypatch):
+    """Past 64 tombstones a close must not rescan all of them every time: a
+    flood of fresh ids would make every close O(n) for the 2 h TTL."""
+    closed = _ScanCountingDict()
+    old = time.monotonic() - tx_progress._PROGRESS_CLOSED_TTL_S - 1
+    for i in range(100):
+        closed[f"e{i:031x}"] = old
+    monkeypatch.setattr(tx_progress, "_PROGRESS_CLOSED", closed)
+    _ScanCountingDict.scans = 0
+    for i in range(70):
+        tx_progress._progress_close(f"{i:032x}")
+    assert _ScanCountingDict.scans == 1
+    assert not any(k.startswith("e") for k in closed)
+
+
+def test_expired_tombstones_still_swept():
+    tx_progress._PROGRESS_CLOSED_LAST_SWEEP[0] = time.monotonic() - 61
+    old = time.monotonic() - tx_progress._PROGRESS_CLOSED_TTL_S - 1
+    for i in range(70):
+        tx_progress._PROGRESS_CLOSED[f"e{i:031x}"] = old
+    tx_progress._progress_close(_PID)
+    assert list(tx_progress._PROGRESS_CLOSED) == [_PID]

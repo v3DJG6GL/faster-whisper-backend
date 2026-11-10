@@ -2072,15 +2072,25 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
                 "text beyond the match — it can repeat the rest of the "
                 "transcript at every position. Capture outside the lookahead."
             )
-        if _repl and (_lookbehind_ref_charge(pattern, _repl)
-                      > max(_MAX_GROWTH * max(_min_width(pattern), 1),
-                            _MIN_ABS_GROWTH)):
-            raise ValueError(
-                f"{where}: regex test failed: the replacement references a "
-                "group captured inside a lookbehind `(?<=(...))`, which copies "
-                "text before the match — it can repeat that text at every "
-                "position. Capture outside the lookbehind."
-            )
+        _lb = _lookbehind_ref_charge(pattern, _repl) if _repl else 0
+        if _lb:
+            # Every match emits the lookbehind copy AND the literal text and
+            # other references, so the bound sees their sum, counted as the
+            # child's analytic check counts them (each reference charged the
+            # shortest match on top, a small deliberate over-approximation).
+            import re
+
+            _mm = max(_min_width(pattern), 1)
+            _ref_re = r"\\(?:\d+|g<[^>]*>)"
+            _total = (len(re.sub(_ref_re, "", _repl)) + _lb
+                      + len(re.findall(_ref_re, _repl)) * _mm)
+            if _total > max(_MAX_GROWTH * _mm, _MIN_ABS_GROWTH):
+                raise ValueError(
+                    f"{where}: regex test failed: the replacement references "
+                    "a group captured inside a lookbehind `(?<=(...))`, which "
+                    "copies text before the match — it can repeat that text "
+                    "at every position. Capture outside the lookbehind."
+                )
         if spent + time.perf_counter() - t0 > budget:
             raise _slow_compile(where, budget)
     left = min(budget, _HOLD_MAX - spent) - (time.perf_counter() - t0)

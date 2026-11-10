@@ -1694,6 +1694,14 @@ def test_validate_refuses_a_lookbehind_capture_amplifier(pattern, repl):
         g.validate([("t", pattern, repl)])
 
 
+def test_validate_refuses_lookbehind_charge_plus_literal():
+    """The lookbehind copy (10 x 6 = 60) and the literal text (54) are each
+    under the 64-character floor, but every match emits both: 114 characters
+    per one-character match. The bound has to see their sum."""
+    with pytest.raises(ValueError, match="lookbehind"):
+        g.validate([("t", r"(?<=(.{6}))q", "\\1" * 10 + "x" * 54)])
+
+
 @pytest.mark.parametrize("pattern,repl", [
     (r"(?<=(\d))\s", "\\1"),
     (r"(?<=\d)(\d{3})", ".\\1"),

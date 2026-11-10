@@ -468,3 +468,47 @@ def test_segment_row_text_cannot_start_a_forged_log_record():
              for ln in entry.split("\n")]
     assert not any(ln.startswith("2026-") for ln in lines)
     assert any("a??2026-01-01T00:00:00Z ERROR forged" in ln for ln in lines)
+
+
+def test_receipt_step_name_cannot_forge_a_log_record(app_module):
+    # A regex-list entry label (or its pattern, when unlabelled) names the
+    # step; a CR/LF in it must not start a timestamped line the /logs viewer
+    # reads as a record of its own.
+    block = _block(app_module, steps=[
+        ("#1 RL · x\n2026-11-10T12:00:00Z ERROR whisper-api forged", "a", "b")])
+    stamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s")
+    assert not any(stamp.match(ln) for ln in block.split("\n"))
+    assert "▸ #1 RL · x?2026" in block
+
+
+def test_receipt_caps_step_text(app_module):
+    # A long transcript through many steps must not render every step's full
+    # before/after: each is cut at the store's raw-text cap with a marker.
+    steps = [("s", "x" * 70_000, "y" * 70_000)] * 20
+    block = _block(app_module, steps=steps)
+    assert len(block) < 20 * 2 * 50_100
+    assert "…[+20000 chars]" in block
+    assert "PIPELINE  (20 steps changed text)" in block
+
+
+def test_receipt_short_step_text_is_unchanged(app_module):
+    steps = [("#1 a", "hallo welt", "Hallo Welt"), ("#2 b", "x", "x")]
+    lines = _block(app_module, steps=steps).split("\n")
+    i = lines.index("    ▸ #1 a")
+    assert lines[i + 1:i + 6] == [
+        "        'hallo welt'", "     →  'Hallo Welt'",
+        "    ▸ #2 b", "        'x'", "     →  'x'"]
+    assert not any("omitted" in ln for ln in lines)
+
+
+def test_receipt_renders_only_the_last_steps(app_module):
+    from faster_whisper_backend.stats import recent_transcriptions_store as rts
+
+    n = rts._CAP_STEPS_ROWS + 7
+    steps = [(f"#{i}", "a", "b" if i % 2 else "a") for i in range(n)]
+    block = _block(app_module, steps=steps)
+    changed = sum(1 for i in range(n) if i % 2)
+    assert f"PIPELINE  ({changed} steps changed text, {n - changed} unchanged)" in block
+    assert "    … 7 earlier steps omitted" in block
+    assert "▸ #6\n" not in block and "▸ #7\n" in block
+    assert block.count("    ▸ #") == rts._CAP_STEPS_ROWS

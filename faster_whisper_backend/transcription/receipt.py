@@ -18,6 +18,7 @@ from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.stats import recent_transcriptions_store
 
 logger = logging.getLogger("whisper-api")
 
@@ -875,15 +876,32 @@ def _format_request_block(
         if unchanged:
             header += f", {unchanged} unchanged"
         lines.append(header + ")")
-        for name, before, after in steps:
-            lines.append(f"    ▸ {name}")
-            lines.append(f"        {before!r}")
-            lines.append(f"     →  {after!r}")
+        # Rendered under the same caps the durable stores keep this trace
+        # at: every step of a long transcript otherwise copies the whole text
+        # twice into one log record, hundreds of MB for a 4 h job.
+        shown = steps[-recent_transcriptions_store._CAP_STEPS_ROWS:]
+        if len(shown) < len(steps):
+            lines.append(f"    … {len(steps) - len(shown)} earlier steps omitted")
+        for name, before, after in shown:
+            # The name carries a rule's label or pattern; a CR/LF in it must
+            # not start a forged record in the line-oriented log.
+            lines.append(f"    ▸ {store_common._LOG_UNSAFE_RE.sub('?', str(name))}")
+            lines.append(f"        {_step_text(before)}")
+            lines.append(f"     →  {_step_text(after)}")
         lines.append(rule)
     lines.append(f"  FINAL        {final!r}")
     lines.append(title_rule)
 
     return "\n".join(lines)
+
+
+def _step_text(s: str) -> str:
+    """repr() of one pipeline step's text, cut at the store's raw-text cap
+    with a marker naming how much was dropped."""
+    cap = recent_transcriptions_store._CAP_RAW
+    if not isinstance(s, str) or len(s) <= cap:
+        return repr(s)
+    return repr(s[:cap]) + f" …[+{len(s) - cap} chars]"
 
 
 def _failed_stage(name: str, t0: float, model: "str | None",
