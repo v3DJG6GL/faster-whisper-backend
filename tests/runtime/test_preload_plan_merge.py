@@ -466,3 +466,89 @@ def test_stats_page_renders_the_preload_diagnostics(client, app_module,
     assert 'id="preload-line"' in html
     assert "snap.preload" in html
     assert "worker_alive" in html and "queue_depth" in html
+
+
+# The allowlist key and the configured-model key per non-whisper family, so
+# one test covers the stage gate and the translation gate alike.
+_WITHDRAWN = {
+    "translation": ("TRANSLATION_ALLOWED_MODELS", "TRANSLATION_DEFAULT_MODEL",
+                    "o/x:Q4", "o/y:Q4"),
+    "diarization": ("DIARIZATION_ALLOWED_MODELS", "DIARIZATION_MODEL",
+                    "p/x", "p/y"),
+}
+_GLOBAL_POLICY = ({}, frozenset())
+
+
+def _withdraw_x_keep_y(monkeypatch, family):
+    """Register X under an allowlist naming it, then let the admin replace it
+    with Y and merge a Y registration into the same plan; returns
+    (pid, x, y, loaded)."""
+    allowed_key, default_key, x, y = _WITHDRAWN[family]
+    cfg = _enable(monkeypatch, **{allowed_key: {x}, default_key: "o/d"})
+    _fits(monkeypatch, (None, "size_unknown"))     # nothing enqueues yet
+    loaded = []
+
+    async def _load(fam, mid):
+        loaded.append((fam, mid))
+    monkeypatch.setattr(preload, "_load", _load)
+    pid = "c" * 8
+    preload.register_plan("u", [(family, x)], plan_id=pid,
+                          policy=_GLOBAL_POLICY)
+    monkeypatch.setattr(cfg, allowed_key, {y}, raising=False)
+    preload.register_plan("u", [(family, y)], plan_id=pid,
+                          policy=_GLOBAL_POLICY)
+    assert (family, x) in preload._plans[pid].entries
+    _fits(monkeypatch, (True, None))
+    return pid, x, y, loaded
+
+
+@pytest.mark.parametrize("family", sorted(_WITHDRAWN))
+def test_withdrawn_translation_model_is_not_warmed_at_dequeue(
+        monkeypatch, family):
+    """A merge restamps the whole plan, so an entry the admin has since taken
+    off the allowlist would keep being warmed; the dequeue re-judges it under
+    the policy it was registered with. The still-allowed entry loads as
+    before."""
+    pid, x, y, loaded = _withdraw_x_keep_y(monkeypatch, family)
+    asyncio.run(preload._handle((pid, family, x)))
+    assert loaded == []
+    asyncio.run(preload._handle((pid, family, y)))
+    assert loaded == [(family, y)]
+
+
+def test_stage_ahead_skips_a_withdrawn_entry_and_still_advances(monkeypatch):
+    """The walk passes over the withdrawn entry to the next one still
+    allowed, and the cursor moves as it would have."""
+    pid, _x, y, _loaded = _withdraw_x_keep_y(monkeypatch, "diarization")
+
+    async def _run():
+        await preload.start()
+        preload._worker.cancel()
+        preload.on_stage_start(pid, "transcribing")
+        await asyncio.sleep(0)
+        assert preload._queue.qsize() == 1
+        assert preload._queue.get_nowait() == (pid, "diarization", y)
+    asyncio.run(_run())
+    assert preload._plans[pid].cursor == 1
+
+
+def test_a_registration_without_policy_is_not_rejudged(monkeypatch):
+    """The job binding hands over entries its own stage gates already
+    admitted (identity-effective models included, which the global rule
+    alone would refuse): without a policy the dequeue keeps today's verdict."""
+    _enable(monkeypatch, DIARIZATION_ALLOWED_MODELS=set(),
+            DIARIZATION_MODEL="p/default")
+    _fits(monkeypatch, (None, "size_unknown"))
+    _evicted, loaded = _handle_recording(monkeypatch, "diarization",
+                                         "p/identity", "d" * 8)
+    assert loaded == [("diarization", "p/identity")]
+
+
+def test_a_later_registration_replaces_an_entrys_policy(monkeypatch):
+    """The latest registration of an entry is the verdict that holds: a
+    policy-less re-registration (the job binding) of X clears the client's
+    policy for it, and a policy re-registration sets it again."""
+    pid, x, _y, loaded = _withdraw_x_keep_y(monkeypatch, "diarization")
+    preload.register_plan("u", [("diarization", x)], plan_id=pid)
+    asyncio.run(preload._handle((pid, "diarization", x)))
+    assert loaded == [("diarization", x)]

@@ -129,6 +129,14 @@ class Plan:
     # False = the client drives its own pipeline and will POST again; the plan
     # still holds its warm leases, the server just never advances it.
     stage_ahead: bool = True
+    # (effective, locked) per entry: the policy its latest registration was
+    # judged under. A merge or a progress tick restamps the whole plan, so the
+    # dequeue re-judges the entry against the LIVE allowlists with it — a
+    # model the admin has since withdrawn stops being warmed. An entry without
+    # one (the job binding, whose own stage gates already admitted it) keeps
+    # the verdict it was registered with.
+    policies: "dict[tuple[str, str], tuple[dict, frozenset]]" = field(
+        default_factory=dict)
 
 
 def normalize_id(family: str, model_id: str) -> str:
@@ -455,6 +463,22 @@ def _static_refusal(family: str, model_id: str) -> "str | None":
     return None
 
 
+def _policy_allows(family: str, model_id: str,
+                   policy: "tuple[dict, frozenset] | None") -> bool:
+    """Is a plan entry still admitted under the policy its registration
+    carried? whisper is not re-judged here: _get_or_load_model applies its
+    gates on every load. A failing check refuses: the job then loads the
+    model in-band, behind the stage's own gate."""
+    if policy is None or family == "whisper":
+        return True
+    try:
+        # Lazy: preload_routes imports this module.
+        from faster_whisper_backend.runtime import preload_routes
+        return preload_routes._allowed(family, model_id, *policy)
+    except Exception:  # noqa: BLE001 — a judgement must never raise here
+        return False
+
+
 def _pending_state() -> str:
     q = _queue
     if _busy or (q is not None and not q.empty()):
@@ -497,7 +521,8 @@ def register_plan(user_id: "str | None",
                   denied: "dict[tuple[str, str], str] | None" = None,
                   stage_ahead: bool = True,
                   trigger: "str | None" = None,
-                  user_name: "str | None" = None) -> dict:
+                  user_name: "str | None" = None,
+                  policy: "tuple[dict, frozenset] | None" = None) -> dict:
     """Create or restamp a plan; returns the endpoint's response body.
 
     NEVER raises. Every failure mode — an unknown family, a full registry, a
@@ -514,7 +539,11 @@ def register_plan(user_id: "str | None",
     an operator can tell which client path fired.
 
     `user_name` is the caller's display name for the plan's /stats row (the
-    page shows and filters `user` as a username); the opaque id when unset."""
+    page shows and filters `user` as a username); the opaque id when unset.
+
+    `policy` is the (effective, locked) pair the caller judged `entries`
+    under (preload_routes._allowed's arguments). The worker re-applies it at
+    dequeue; None means the caller's verdict stands as given."""
     kept = [(f, m) for f, m in entries if (f, m) not in (denied or {})]
     kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
     resolved_pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
@@ -522,7 +551,8 @@ def register_plan(user_id: "str | None",
     try:
         return _register_plan(user_id, entries, plan_id=plan_id,
                               denied=denied or {}, stage_ahead=stage_ahead,
-                              trigger=trigger, user_name=user_name)
+                              trigger=trigger, user_name=user_name,
+                              policy=policy)
     except Exception as e:  # noqa: BLE001 — a preload must never fail a request
         logger.error("[preload] register_plan failed: %s", e)
         # Drop every plan this caller owns under the ids _register_plan could
@@ -558,7 +588,7 @@ def _deferred_row(fam: str, mid: str, reason: str) -> dict:
 
 
 def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
-                   trigger=None, user_name=None) -> dict:
+                   trigger=None, user_name=None, policy=None) -> dict:
     now = time.monotonic()
     ttl = _ttl()
     kept = [(f, m) for f, m in entries if (f, m) not in denied]
@@ -646,6 +676,14 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
             plan.warmed = {stats_key(f, m) for f, m in plan.entries
                            if stats_key(f, m) in plan.warmed
                            and is_resident(f, m)}
+        # The latest registration of an entry is the verdict that holds.
+        for e in kept:
+            if e not in plan.entries:
+                continue
+            if policy is None:
+                plan.policies.pop(e, None)
+            else:
+                plan.policies[e] = policy
         _recompute_warm_locked()
 
     # _lock is released around every _admit call below, and a concurrent
@@ -822,6 +860,10 @@ def on_stage_start(plan_id: str, stage: str) -> None:
             for i, (fam, mid) in enumerate(plan.entries):
                 if plan.stages[i] <= idx:
                     continue
+                if not _policy_allows(fam, mid, plan.policies.get((fam, mid))):
+                    # Withdrawn since registration: the job loads it in-band
+                    # behind its own gate, if at all.
+                    continue
                 key = stats_key(fam, mid)
                 if key in plan.inflight:
                     continue
@@ -930,6 +972,10 @@ async def _handle(item: "tuple[str, str, str]") -> None:
             if is_resident(family, model_id):
                 return
             plan.warmed.discard(key)
+        policy = plan.policies.get((family, model_id))
+    if not _policy_allows(family, model_id, policy):
+        logger.info("[preload] %s deferred: not_allowed", key)
+        return
     # The dequeue run of the ladder (see _admit): this verdict is the one that acts.
     state, reason = _admit(family, model_id)
     if state == "resident":

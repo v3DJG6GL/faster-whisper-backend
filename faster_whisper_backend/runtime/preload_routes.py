@@ -234,4 +234,7 @@ async def preload_models(body: PreloadRequest,
                                  plan_id=body.plan_id, denied=denied,
                                  stage_ahead=body.stage_ahead,
                                  trigger=trigger,
-                                 user_name=user.get("username"))
+                                 user_name=user.get("username"),
+                                 # The worker re-judges each entry under it at
+                                 # dequeue, against the allowlists then live.
+                                 policy=(effective, locked))

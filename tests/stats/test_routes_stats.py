@@ -479,12 +479,15 @@ def test_nonadmin_all_scope_unchanged(client):
         stats_routes.stats_scope_for(_user("all")))
     assert snap["scope"] == "all" and snap["machine"] is True
     assert {"gpu", "host", "latency_ms"} <= set(snap)
-    rows = {j["id"]: j for j in snap["jobs"]}
-    assert set(rows) == {a, b}
-    for r in (rows[a], rows[b]):
+    assert len(snap["jobs"]) == 2
+    for r in snap["jobs"]:
         assert not ({"user", "key", "detail"} & set(r))
-    assert rows[a]["progress_id"] == "pid-a"
-    assert "progress_id" not in rows[b]
+    # Only the viewer's own row carries its server id and cancel handle.
+    own = [j for j in snap["jobs"] if "id" in j]
+    assert [j["id"] for j in own] == [a]
+    assert own[0]["progress_id"] == "pid-a"
+    other = next(j for j in snap["jobs"] if "id" not in j)
+    assert "progress_id" not in other
 
 
 def test_snapshot_route_own_user_over_http(client, make_user_key, monkeypatch):

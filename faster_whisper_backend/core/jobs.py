@@ -20,8 +20,9 @@ diarize/separate runs) are therefore invisible to own-scope viewers — they
 see such work only as the parent job's `stage`. The non-admin "all" variant
 omits `user`, `key` and `detail`, mirroring the recent-transcriptions
 projection: a non-admin holder of pages.stats="all" must not read other
-users' identities. `progress_id` (the cancel handle) is emitted for admins
-and for the row's own owner. No transcript text ever enters a job entry
+users' identities. `progress_id` (the cancel handle) and the row's `id` (the
+run's server id, also its usage job id) are emitted for admins and for the
+row's own owner. No transcript text ever enters a job entry
 (last_text stays in _BATCH_PROGRESS only).
 
 Bounded: a job leak (a code path that misses its job_end) is capped at
@@ -139,10 +140,10 @@ def jobs_snapshot(include_identity: bool = False, *,
     kind/model/progress/stage/step/total_bytes plus elapsed seconds; the
     identity fields (user, key, detail) only when `include_identity`.
     `user_id` keeps only that owner's rows (own-scope viewers; rows without
-    an owner are dropped). `progress_id` — the cancel handle — is emitted
-    when `include_identity` or when the row belongs to `viewer_user_id`, so
-    a non-admin can still cancel their own job. `user_id` itself is never
-    emitted."""
+    an owner are dropped). `progress_id` — the cancel handle — and `id` are
+    emitted when `include_identity` or when the row belongs to
+    `viewer_user_id`, so a non-admin can still cancel their own job.
+    `user_id` itself is never emitted."""
     now = time.monotonic()
     with _lock:
         entries = sorted(_jobs.values(), key=lambda e: e["started_mono"])
@@ -152,7 +153,6 @@ def jobs_snapshot(include_identity: bool = False, *,
             if user_id is not None and owner != user_id:
                 continue
             row = {
-                "id": e["id"],
                 "kind": e["kind"],
                 "model": e["model"],
                 "progress": e["progress"],
@@ -168,6 +168,11 @@ def jobs_snapshot(include_identity: bool = False, *,
                 row["detail"] = e["detail"]
             if include_identity or (viewer_user_id is not None
                                     and owner == viewer_user_id):
+                # The id is the run's server request/session id, which
+                # doubles as its usage job id while the client named none:
+                # a foreign viewer could claim that job via
+                # /v1/usage/outcome before the run records it.
+                row["id"] = e["id"]
                 # Not the security boundary: the cancel endpoint re-checks
                 # ownership.
                 row["progress_id"] = e.get("progress_id")

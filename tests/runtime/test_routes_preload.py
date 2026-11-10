@@ -7,6 +7,7 @@ broken plan when a loader raises. Stage modules are stubbed at the same
 boundary as test_stage_models — nothing here imports pyannote or onnxruntime.
 """
 
+import asyncio
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
@@ -500,3 +501,29 @@ def test_job_plan_skips_non_allowlisted_translation_model(
     assert any((fam, mid) == ("translation", "org/default-GGUF:Q4")
                for plan in preload._plans.values()
                for fam, mid in plan.entries)
+
+
+def test_route_plan_is_rejudged_after_the_allowlist_withdraws_a_model(
+        client, app_module, monkeypatch):
+    """The endpoint hands its allowlist policy to the plan, so a model the
+    admin withdraws after the POST is not warmed at dequeue."""
+    cfg = _enable(app_module, monkeypatch, DIARIZATION_MODEL="p/default",
+                  DIARIZATION_ALLOWED_MODELS={"p/x"})
+    loads = []
+
+    async def _rec(family, model_id):
+        loads.append((family, model_id))
+    monkeypatch.setattr(preload, "_load", _rec)
+    pid = "e" * 8
+    r = client.post(_URL, json={"models": [{"family": "diarization",
+                                            "id": "p/x"}], "plan_id": pid})
+    assert r.status_code == 202 and r.json()["plan_id"] == pid
+    _fits(monkeypatch, (True, None))
+    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", set(),
+                        raising=False)
+    asyncio.run(preload._handle((pid, "diarization", "p/x")))
+    assert loads == []
+    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", {"p/x"},
+                        raising=False)
+    asyncio.run(preload._handle((pid, "diarization", "p/x")))
+    assert loads == [("diarization", "p/x")]

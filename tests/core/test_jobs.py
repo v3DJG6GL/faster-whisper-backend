@@ -46,7 +46,7 @@ def test_update_merges_only_non_none_and_ignores_unknown_ids():
 def test_snapshot_sorted_by_start_and_caller_id_wins():
     jobs.job_start("transcribe", id="a" * 32)
     jobs.job_start("dictate", id="b" * 32)
-    snap = jobs.jobs_snapshot()
+    snap = jobs.jobs_snapshot(include_identity=True)
     assert [r["id"] for r in snap] == ["a" * 32, "b" * 32]
     assert snap[1]["kind"] == "dictate"
 
@@ -74,9 +74,11 @@ def test_snapshot_filters_by_user_id():
     a = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
     b = jobs.job_start("dictate", model="m", user="bob", user_id="ub")
     d = jobs.job_start("download", model="gguf:org/m")
-    ids = {r["id"] for r in jobs.jobs_snapshot(user_id="ua")}
+    ids = {r["id"] for r in jobs.jobs_snapshot(include_identity=True,
+                                               user_id="ua")}
     assert ids == {a}
-    assert {r["id"] for r in jobs.jobs_snapshot()} == {a, b, d}
+    assert {r["id"] for r in jobs.jobs_snapshot(include_identity=True)} == {
+        a, b, d}
     assert jobs.jobs_snapshot(user_id="nobody") == []
 
 
@@ -97,3 +99,15 @@ def test_progress_id_visible_to_owner_and_admin_only():
     assert jobs.jobs_snapshot(viewer_user_id="ua")[0]["progress_id"] == "pid-1"
     assert "progress_id" not in jobs.jobs_snapshot(viewer_user_id="ub")[0]
     assert "progress_id" not in jobs.jobs_snapshot()[0]
+
+
+def test_server_id_visible_to_owner_and_admin_only():
+    """The row id is the run's server request/session id, which is also its
+    usage job id while the client named none: a foreign viewer holding it
+    could claim that job via POST /v1/usage/outcome before the run records.
+    So it rides the row under the cancel handle's gate."""
+    jid = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
+    assert jobs.jobs_snapshot(include_identity=True)[0]["id"] == jid
+    assert jobs.jobs_snapshot(viewer_user_id="ua")[0]["id"] == jid
+    assert "id" not in jobs.jobs_snapshot(viewer_user_id="ub")[0]
+    assert "id" not in jobs.jobs_snapshot()[0]
