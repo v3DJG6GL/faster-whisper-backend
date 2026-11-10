@@ -19,6 +19,8 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.audio import transcode as audio_transcode
 from tests._transcription_helpers import post_verbose_ok as _post_ok
+from tests._transcription_helpers import wav_bytes
+from tests.audio.test_transcode import mp3_whisper_stops_early
 from tests.conftest import write_wav
 
 _Usage = namedtuple("_Usage", "total used free")
@@ -110,9 +112,50 @@ def test_a_failed_downmix_keeps_the_original_path(
 
 def test_an_undecodable_upload_keeps_the_original_path(
         client, fake_model, diarize_seen, monkeypatch):
-    def _boom(src, dst, *, rate, layout, max_bytes=None):
+    def _boom(src, dst, *, rate, layout, **_kw):
         raise RuntimeError("no decoder")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
     _post_ok(client, diarize="true")
     [(path, _shape)] = diarize_seen
     assert not os.path.basename(path).startswith("whisperup-diar-")
+
+
+def test_the_copy_stops_a_few_seconds_past_what_whisper_decoded(app_module, tmp_path):
+    """faster-whisper's decode ends at an mp3's first invalid packet; the
+    transcode skips it and reads on. pyannote gets what Whisper heard (plus
+    a margin), not the hour of audio behind the damaged frame — speaker
+    turns past the transcript have no words to label anyway."""
+    src = mp3_whisper_stops_early(str(tmp_path / "d.mp3"))
+    decoded_s = audio_transcode.decode_16k_bounded(src, max_seconds=None).size / 16000
+    assert decoded_s < 20
+    dst = app_module._diar_input_wav(src, decoded_s)
+    try:
+        assert dst is not None
+        assert os.path.getsize(dst) <= (decoded_s + 5) * 32000 + 44
+    finally:
+        os.unlink(dst)
+
+
+def test_the_copy_of_intact_audio_is_unchanged(app_module, tmp_path):
+    src = _stereo_wav(tmp_path / "src.wav", rate=48000, seconds=3.0)
+    plain = str(tmp_path / "plain.wav")
+    audio_transcode.transcode_to_wav(src, plain, rate=16000, layout="mono")
+    dst = app_module._diar_input_wav(src, 3.0)
+    try:
+        with open(dst, "rb") as a, open(plain, "rb") as b:
+            assert a.read() == b.read()
+    finally:
+        os.unlink(dst)
+
+
+def test_the_route_bounds_the_copy_by_the_transcribed_duration(
+        client, app_module, fake_model, diarize_seen):
+    """The handler passes the duration Whisper reported: a model that heard
+    1 s of a 10 s upload hands pyannote at most 6 s."""
+    assert fake_model._info.duration == 1.0
+    app_module.cfg.LEADING_SILENCE_PAD_MS = 0
+    _post_ok(client, diarize="true",
+             files={"file": ("a.wav", wav_bytes(seconds=10.0), "audio/wav")})
+    [(_path, shape)] = diarize_seen
+    assert shape[:2] == (16000, 1)
+    assert shape[2] <= 6 * 16000

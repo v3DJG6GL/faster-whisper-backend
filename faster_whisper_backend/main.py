@@ -214,6 +214,7 @@ from faster_whisper_backend.transcription import receipt as tx_receipt
 # them imports main, so they load at module level like the rest.
 from faster_whisper_backend.audio import bgm_separation as _bgm_separation
 from faster_whisper_backend.audio import diarization as _diarization
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.audio import transcode as _transcode
 from faster_whisper_backend.auth import dependencies as _auth
 from faster_whisper_backend.auth import sessions_store
@@ -1403,11 +1404,26 @@ def _refuse_input(path: str) -> None:
     playlist container, or one with no audio stream (a video-only clip, a
     text file the tty demuxer opens) — decode_audio raises a bare IndexError
     on that, a 500. A file that does not open at all is not refused here:
-    the real decoder raises the av error, answered as undecodable."""
+    the real decoder raises the av error, answered as undecodable — unless
+    FFmpeg's default open reads it as a playlist (see below)."""
     import av
     try:
         container, _stream = _transcode._open_audio(path)
     except av.FFmpegError:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
+        # The fallbacks — transcribe(path), pyannote, the separator — open
+        # with FFmpeg's default nested whitelist (file,crypto,data), not the
+        # file-only one: an HLS playlist decrypting a sibling segment fails
+        # only the latter, and must not reach them.
+        try:
+            container = av.open(path, metadata_errors="ignore")
+        except av.FFmpegError:
+            return
+        try:
+            if audio_ffmpeg.is_multi_input_format(
+                    getattr(container.format, "name", None)):
+                raise ValueError("unsupported container")
+        finally:
+            container.close()
         return
     container.close()
 
@@ -1462,7 +1478,8 @@ def _sep_ram_cap() -> "int | None":
         return None
 
 
-def _diar_input_wav(src_path: str) -> "str | None":
+def _diar_input_wav(src_path: str,
+                    decoded_s: "float | None" = None) -> "str | None":
     """A private 16 kHz mono WAV of `src_path` for pyannote (the caller
     unlinks it), or None to hand it `src_path` as before. pyannote decodes
     its whole input as float32 at the file's native rate and channel count
@@ -1471,6 +1488,9 @@ def _diar_input_wav(src_path: str) -> "str | None":
     decode costs; this copy costs what that decode does. Bounded by the
     temp dir's free space minus a margin, like the separation transcode;
     any failure keeps the original, so no file is refused here.
+    `decoded_s`, the seconds Whisper decoded, ends the copy 5 s past them:
+    Whisper's decode stops at an mp3's first invalid packet, the transcode
+    reads on past it, and speaker turns past the transcript label nothing.
     "whisperup-" puts a hard restart's leftover in the startup sweep."""
     fd, dst = tempfile.mkstemp(prefix="whisperup-diar-", suffix=".wav")
     os.close(fd)
@@ -1480,8 +1500,10 @@ def _diar_input_wav(src_path: str) -> "str | None":
                          - 1_000_000_000)
         except OSError:
             budget = None
-        _transcode.transcode_to_wav(src_path, dst, rate=16000, layout="mono",
-                                    max_bytes=budget)
+        _transcode.transcode_to_wav(
+            src_path, dst, rate=16000, layout="mono", max_bytes=budget,
+            stop_at_bytes=(int((decoded_s + 5.0) * 32000)  # 16 kHz s16 mono
+                           if decoded_s else None))
         return dst
     except Exception as e:  # noqa: BLE001 — pyannote reports its own decode error
         logger.warning("[diarize] 16 kHz input copy failed (%s); diarizing "
@@ -2846,6 +2868,12 @@ async def transcribe(
                         _path, max_seconds=_upload_decode_cap_s())
                 except _transcode.DecodeTooLong:
                     raise
+                except MemoryError as _mem:
+                    # Not a property of a frame transcribe() would meet the
+                    # same way: it would decode the whole file again, with
+                    # no ceiling, inside the inference slot.
+                    raise _transcode.DecodeTooLong(
+                        "audio does not fit in free memory") from _mem
                 except Exception as _dec_err:
                     # transcribe() runs the same steps on the path and meets
                     # the same error at the same frame, so handing it the
@@ -3111,7 +3139,8 @@ async def transcribe(
                         tx_progress._check_cancelled(_pid)
                         # Off the GPU slot, like the separation transcode.
                         _diar_wav = await asyncio.to_thread(
-                            _diar_input_wav, tmp_path)
+                            _diar_input_wav, tmp_path,
+                            float(getattr(info, "duration", 0.0) or 0.0))
                         try:
                             tx_progress._check_cancelled(_pid)
                             async with tx_models.get_inference_semaphore():

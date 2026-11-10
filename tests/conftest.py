@@ -491,7 +491,7 @@ async def assert_stream_ends(body, timeout=10):
     raise AssertionError(f"stream kept going after revoke: {got[:80]!r}")
 
 
-def fake_wav_transcode(src_path, dst_path):
+def fake_wav_transcode(src_path, dst_path, **_kw):
     """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
     write_wav(dst_path, b"\x00\x00" * 100)
     return 1234

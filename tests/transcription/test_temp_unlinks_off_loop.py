@@ -122,7 +122,7 @@ def test_the_diarization_input_copy_is_removed_off_the_loop(
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake)
 
-    def _transcode(src, dst, *, rate, layout, max_bytes=None):
+    def _transcode(src, dst, *, rate, layout, **_kw):
         with open(dst, "wb") as f:
             f.write(b"RIFF16kWAVE")
         return 11

@@ -6,6 +6,7 @@ its decode steps; the encoded fixtures come from the ffmpeg CLI and skip when
 it (or one of its encoders) is unavailable."""
 
 import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ from faster_whisper.audio import decode_audio
 
 from faster_whisper_backend.audio import transcode
 from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
+from tests.audio.test_transcode import one_hertz_flac, run_under_ram_ceiling
 from tests.conftest import write_wav
 
 
@@ -43,6 +45,9 @@ def stereo_wav(tmp_path):
 @pytest.mark.parametrize("name,args", [
     ("a.wav", ["-ar", "16000", "-ac", "1"]),
     ("a8k.wav", ["-ar", "8000", "-ac", "1"]),
+    # Past 62.5 s at 8 kHz the output reaches a group's 500 000 samples
+    # before the input does, so the output-side flush runs on real audio.
+    ("a8k_long.wav", ["-ar", "8000", "-ac", "1", "-af", "aloop=loop=30:size=132300"]),
     ("a.flac", ["-ar", "48000", "-c:a", "flac", "-frame_size", "65535"]),
     ("a.mp3", ["-c:a", "libmp3lame", "-b:a", "64k"]),
     ("a.ogg", ["-c:a", "libopus", "-b:a", "24k"]),
@@ -86,3 +91,43 @@ def test_a_one_hertz_block_is_refused_before_it_is_resampled(tmp_path):
         pytest.skip("ffmpeg cannot write a 1 Hz flac")
     with pytest.raises(transcode.DecodeTooLong):
         transcode.decode_16k_bounded(str(tmp_path / "low.flac"), max_seconds=36000)
+
+
+def _groups(src, max_seconds=None):
+    container, stream = transcode._open_audio(src)
+    try:
+        yield from transcode._fw_bounded_groups(
+            transcode._fw_valid_frames(container.decode(stream)), 500000,
+            max_seconds)
+    finally:
+        container.close()
+
+
+def test_a_low_rate_group_is_bounded_by_what_it_resamples_to(tmp_path):
+    """At 1 Hz 500 000 input samples are 8 * 10^9 output samples: a group
+    flushes once its OUTPUT reaches 500 000 samples, so a low declared rate
+    costs per decoded second what a 16 kHz file does — and decodes to the
+    same samples as faster-whisper."""
+    src = one_hertz_flac(tmp_path, frame_size=31, samples=256)
+    for g in _groups(src):
+        assert g.samples / g.sample_rate * 16000 <= 500000 + 31 * 16000
+    assert np.array_equal(transcode.decode_16k_bounded(src, max_seconds=None),
+                          decode_audio(src, sampling_rate=16000))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="RLIMIT_AS and /proc/self/status are Linux's")
+def test_a_frame_longer_than_60_s_is_refused(tmp_path):
+    """No ceiling (free RAM unreadable) still refuses one decoded frame past
+    60 s — the longest a real encoder writes is 8.2 s — before a single
+    resampler call turns it into gigabytes. DecodeTooLong, so the handler
+    answers 413 instead of handing transcribe() the path."""
+    src = one_hertz_flac(tmp_path, frame_size=8192, samples=8192 * 2)
+    got = run_under_ram_ceiling(
+        "try:\n"
+        f"    transcode.decode_16k_bounded({src!r}, max_seconds=None)\n"
+        "except Exception as e:\n"
+        "    print(type(e).__name__)\n"
+        "else:\n"
+        "    print('ok')\n")
+    assert got == "DecodeTooLong"

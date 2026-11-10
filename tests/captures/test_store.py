@@ -10,6 +10,7 @@ import pytest
 
 from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.settings import config
+from tests.audio.test_transcode import mp3_whisper_stops_early
 from tests.captures._store_helpers import create_stub_capture, insert_sample
 from tests.conftest import (
     install_fake_wav_transcode,
@@ -212,7 +213,7 @@ def test_create_capture_truncates_text(captures_store_db, monkeypatch, tmp_path)
 def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
 
-    def _boom(src, dst):
+    def _boom(src, dst, **_kw):
         raise RuntimeError("ffmpeg exploded")
 
     monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", _boom)
@@ -220,6 +221,37 @@ def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypa
         create_stub_capture(cs, tmp_path)
     assert cs.count() == 0
     assert _audio_files(cs, ".tmp") == []
+
+
+def test_the_capture_wav_stops_a_few_seconds_past_what_was_transcribed(
+        captures_store_db, tmp_path):
+    """A damaged mp3 Whisper stopped reading a few seconds in: the training
+    row keeps what was transcribed (plus a margin), not the hours the
+    transcode would read on past the bad frame, row after row."""
+    cs = captures_store_db
+    src = mp3_whisper_stops_early(str(tmp_path / "d.mp3"))
+    audio_s = audio_transcode.decode_16k_bounded(src, max_seconds=None).size / 16000
+    assert audio_s < 20
+    cid = cs.create_capture(
+        audio_src_path=src, request_id="r1", model="small", language="de",
+        audio_s=audio_s, raw="r", final="f", words=[], segments=[])
+    row = cs.get_capture(cid)
+    assert os.path.getsize(cs.abs_audio_path(row["audio_relpath"])) <= (
+        (audio_s + 5) * 32000 + 44)
+
+
+def test_the_capture_wav_never_runs_past_the_recording_window(
+        captures_store_db, monkeypatch, tmp_path):
+    cs = captures_store_db
+    monkeypatch.setattr(config, "CAPTURES_RECORDING_MAX_DURATION_S", 1.0,
+                        raising=False)
+    install_fake_wav_transcode(monkeypatch)
+    seen = record_calls(monkeypatch, audio_transcode,
+                        "transcode_to_wav_16k_mono",
+                        lambda a, b, **kw: kw.get("stop_at_bytes"))
+    create_stub_capture(cs, tmp_path, audio_s=None)
+    create_stub_capture(cs, tmp_path, audio_s=900.0)
+    assert seen == [(1.0 + 5) * 32000] * 2
 
 
 def test_create_capture_insert_failure_unlinks_audio(captures_store_db, monkeypatch, tmp_path):
@@ -705,7 +737,7 @@ def test_a_store_full_of_ready_rows_records_nothing(
     assert cs.ready_fills_cap() is True
     install_fake_wav_transcode(monkeypatch)
     calls = record_calls(monkeypatch, audio_transcode, "transcode_to_wav_16k_mono",
-                         lambda a, b: a)
+                         lambda a, b, **_kw: a)
     assert create_stub_capture(cs, tmp_path) is None
     assert calls == []
     assert cs.count() == 10

@@ -35,6 +35,14 @@ _PCM_BITS = {"pcm_u8": 8, "pcm_s8": 8, "pcm_alaw": 8, "pcm_mulaw": 8,
              "pcm_f64le": 64, "pcm_f64be": 64}
 
 
+# Longest decoded frame any reader here resamples. A frame goes through the
+# resampler in one call, ahead of every output-side budget, and its rate is
+# whatever the container declares: one 8192-sample block at 1 Hz is
+# ~1.3 * 10^8 output samples (2+ GB). Real encoders stop at 8.2 s (65535
+# samples of 8 kHz FLAC).
+_MAX_FRAME_S = 60.0
+
+
 class DecodeTooLong(Exception):
     """decode_16k_bounded's input ran past its `max_seconds` ceiling."""
 
@@ -215,19 +223,31 @@ def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
     """faster_whisper.audio._group_frames plus the duration ceiling. Each
     frame is charged its own length as it leaves the decoder, BEFORE the
     group reaches the resampler: one 500 000-sample group of a stream that
-    declares a 1 Hz rate would resample to ~10^10 samples in a single call."""
+    declares a 1 Hz rate would resample to ~10^10 samples in a single call.
+    For the same reason a group is also handed on once what it resamples
+    to (16 kHz output) reaches `num_samples`, and a single frame past
+    _MAX_FRAME_S is refused. The resampler streams, so where a group ends
+    changes no output sample."""
     fifo = _av().audio.fifo.AudioFifo()
     seconds = 0.0
+    out = 0.0
     for frame in frames:
-        if max_seconds is not None and frame.sample_rate:
-            seconds += frame.samples / frame.sample_rate
-            if seconds > max_seconds:
+        if frame.sample_rate:
+            dur = frame.samples / frame.sample_rate
+            if dur > _MAX_FRAME_S:
                 raise DecodeTooLong(
-                    f"audio runs past {max_seconds:.0f} s of decoded input")
+                    f"a decoded frame runs past {_MAX_FRAME_S:.0f} s")
+            if max_seconds is not None:
+                seconds += dur
+                if seconds > max_seconds:
+                    raise DecodeTooLong(
+                        f"audio runs past {max_seconds:.0f} s of decoded input")
+            out += dur * 16000
         frame.pts = None  # Ignore timestamp check.
         fifo.write(frame)
-        if fifo.samples >= num_samples:
+        if fifo.samples >= num_samples or out >= num_samples:
             yield fifo.read()
+            out = 0.0
     if fifo.samples > 0:
         yield fifo.read()
 
@@ -334,6 +354,12 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
             yield out
 
     for frame in frames:
+        # Checked before the resampler sees the frame: it resamples the
+        # whole frame in one call (see _MAX_FRAME_S).
+        if frame.sample_rate and frame.samples / frame.sample_rate > _MAX_FRAME_S:
+            raise ValueError(
+                f"unsupported audio: a decoded frame runs past "
+                f"{_MAX_FRAME_S:.0f} s")
         frame_setup = (frame.format.name, frame.layout.name, frame.sample_rate)
         if frame_setup != setup:
             if resampler is not None:
@@ -433,13 +459,17 @@ def _close_quietly(container):
     return container
 
 
-def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:
-    return transcode_to_wav(src_path, dst_path, rate=16000, layout="mono")
+def transcode_to_wav_16k_mono(src_path: str, dst_path: str, *,
+                              max_bytes: "int | None" = None,
+                              stop_at_bytes: "int | None" = None) -> int:
+    return transcode_to_wav(src_path, dst_path, rate=16000, layout="mono",
+                            max_bytes=max_bytes, stop_at_bytes=stop_at_bytes)
 
 
 def transcode_to_wav(src_path: str, dst_path: str, *,
                      rate: int, layout: str,
-                     max_bytes: "int | None" = None) -> int:
+                     max_bytes: "int | None" = None,
+                     stop_at_bytes: "int | None" = None) -> int:
     """Decode anything PyAV understands, resample to `rate`/`layout`, write
     a RIFF/WAVE file at dst_path. Returns bytes written. On any failure
     the destination is best-effort unlinked.
@@ -447,7 +477,12 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
     `max_bytes` bounds the PCM written: a few hundred KB of low-bitrate
     Opus/MP3 expands several hundred times into 44.1 kHz stereo, so a
     caller writing to a shared temp dir passes its free space and the
-    transcode aborts (TranscodeBudgetExceeded) before it fills the disk."""
+    transcode aborts (TranscodeBudgetExceeded) before it fills the disk.
+
+    `stop_at_bytes` ends the WAV instead, a valid file of at most that much
+    PCM: for a copy of what another decode already read. That decode
+    (faster-whisper's) stops at an mp3's first invalid packet, while this
+    one skips the packet and reads on, possibly for hours of audio."""
     av = _av()
     in_container = None
     out_container = None
@@ -465,6 +500,8 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
                 format=_OUT_FORMAT, layout=layout, rate=rate):
             # s16: two bytes per sample per channel.
             written += resampled.samples * len(resampled.layout.channels) * 2
+            if stop_at_bytes is not None and written > stop_at_bytes:
+                break
             if max_bytes is not None and written > max_bytes:
                 raise TranscodeBudgetExceeded(
                     "transcode output exceeds the free-space budget")

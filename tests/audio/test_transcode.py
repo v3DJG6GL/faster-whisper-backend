@@ -668,3 +668,159 @@ def test_wav_fmt_shape_reads_only_one_fmt_ahead_of_data(tmp_path):
     no_fmt = tmp_path / "nofmt.wav"
     no_fmt.write_bytes(raw[:fmt_at] + raw[fmt_at + 8 + fmt_size:])
     assert audio_transcode._wav_fmt_shape(str(no_fmt)) is None
+
+
+def mp3_whisper_stops_early(path, *, tone_s=5, silence_s=120):
+    """`tone_s` of 440 Hz then `silence_s` of silence as a 32 kbps mp3 with
+    400 bytes overwritten 5% in: faster-whisper's decode (and
+    decode_16k_bounded) ends at the first invalid packet, a few seconds in,
+    while _decoded_frames skips it and carries on to the end."""
+    with av.open(path, "w", format="mp3") as out:
+        st = out.add_stream("libmp3lame", rate=RATE)
+        st.layout = "mono"
+        st.bit_rate = 32000
+        t = np.arange(RATE * tone_s) / RATE
+        x = np.concatenate([
+            (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32),
+            np.zeros(RATE * silence_s, dtype=np.float32)])
+        for i in range(0, len(x), 1152):
+            fr = av.AudioFrame.from_ndarray(
+                x[i:i + 1152].reshape(1, -1), format="flt", layout="mono")
+            fr.sample_rate = RATE
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    data = bytearray(open(path, "rb").read())
+    at = len(data) // 20
+    for i in range(at, at + 400):
+        data[i] = 0x00 if i % 2 else 0xFF
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def test_stop_at_bytes_ends_the_wav_where_the_caller_stops_reading(tmp_path):
+    """A damaged mp3 the transcode reads past the point Whisper stopped at:
+    stop_at_bytes keeps the copy to what the caller decoded, as a valid,
+    shorter WAV rather than a failure."""
+    src = mp3_whisper_stops_early(str(tmp_path / "d.mp3"))
+    decoded_s = audio_transcode.decode_16k_bounded(src, max_seconds=None).size / RATE
+    assert decoded_s < 20
+    stop = int((decoded_s + 5.0) * 32000)
+    dst = str(tmp_path / "out.wav")
+    n = audio_transcode.transcode_to_wav_16k_mono(src, dst, stop_at_bytes=stop)
+    assert 44 < n <= stop + 44
+    with wave.open(dst, "rb") as w:
+        assert w.getnframes() * 2 <= stop
+        assert w.getnframes() >= decoded_s * RATE
+
+
+def test_stop_at_bytes_past_the_audio_changes_nothing(tmp_path):
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=44100, nchannels=2,
+                         dur_s=3.0)
+    plain = str(tmp_path / "plain.wav")
+    n = audio_transcode.transcode_to_wav_16k_mono(src, plain)
+    dst = str(tmp_path / "out.wav")
+    assert audio_transcode.transcode_to_wav_16k_mono(
+        src, dst, stop_at_bytes=int((3.0 + 5.0) * 32000)) == n
+    with open(dst, "rb") as a, open(plain, "rb") as b:
+        assert a.read() == b.read()
+
+
+def one_hertz_flac(tmp_path, *, frame_size, samples=65535, name="low.flac"):
+    """A FLAC declaring a 1 Hz rate, `frame_size` samples per block: a few
+    KB that a resampler turns into 16 000 output samples per input one."""
+    import subprocess
+
+    from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
+    raw = tmp_path / "z.raw"
+    raw.write_bytes((bytes(range(7, 256, 7)) * (samples // 36 * 2 + 2))[:samples * 2])
+    out = tmp_path / name
+    try:
+        r = subprocess.run(
+            [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "s16le", "-ar", "1", "-ac", "1", "-i", str(raw),
+             "-c:a", "flac", "-frame_size", str(frame_size), str(out)],
+            capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.skip("ffmpeg unavailable")
+    if r.returncode != 0:
+        pytest.skip("ffmpeg cannot write a 1 Hz flac")
+    return str(out)
+
+
+def run_under_ram_ceiling(code: str, *, headroom: int = 256 << 20) -> str:
+    """Run `code` in a fresh interpreter whose address space may grow by at
+    most `headroom` past what its imports took; its stdout, stripped. A
+    regression then fails as a MemoryError instead of taking gigabytes from
+    the machine running the suite."""
+    import subprocess
+    prelude = (
+        "import resource\n"
+        "import av, numpy\n"
+        "from faster_whisper_backend.audio import transcode\n"
+        "vm = [int(l.split()[1]) * 1024 for l in open('/proc/self/status')"
+        " if l.startswith('VmSize:')][0]\n"
+        f"resource.setrlimit(resource.RLIMIT_AS, (vm + {headroom}, vm + {headroom}))\n")
+    r = subprocess.run([sys.executable, "-c", prelude + code],
+                       capture_output=True, text=True, timeout=120,
+                       cwd=os.path.dirname(os.path.dirname(
+                           os.path.dirname(os.path.abspath(__file__)))))
+    assert r.returncode == 0, r.stderr[-2000:]
+    return r.stdout.strip()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="RLIMIT_AS and /proc/self/status are Linux's")
+def test_a_frame_longer_than_60_s_is_refused_before_it_is_resampled(tmp_path):
+    """One 8192-sample block at 1 Hz resamples to ~10^8 samples (2+ GB) in a
+    single resampler call, ahead of every output-side budget. The refusal is
+    a plain ValueError — a refused input upstream — not an av error."""
+    src = one_hertz_flac(tmp_path, frame_size=8192, samples=8192 * 2)
+    dst = str(tmp_path / "out.wav")
+    got = run_under_ram_ceiling(
+        "def kind(fn):\n"
+        "    try:\n"
+        "        fn()\n"
+        "    except av.FFmpegError as e:\n"
+        "        return 'ffmpeg:' + type(e).__name__\n"
+        "    except Exception as e:\n"
+        "        return type(e).__name__\n"
+        "    return 'ok'\n"
+        f"print(kind(lambda: transcode.transcode_to_wav({src!r}, {dst!r},"
+        " rate=44100, layout='stereo', max_bytes=10_000_000)),"
+        f" kind(lambda: transcode.decode_pieces_16k({src!r}, [0.0], 30.0)),"
+        f" kind(lambda: transcode.decode_span_16k({src!r}, 0.0, 30.0)))\n")
+    assert got == "ValueError ValueError ValueError"
+    assert not os.path.exists(dst)
+
+
+def test_an_8k_flac_with_the_longest_legal_frames_still_transcodes(tmp_path):
+    """65535 samples at 8 kHz (8.2 s) is the longest block a real encoder
+    writes; it stays well under the per-frame refusal."""
+    src = _silent_flac(str(tmp_path / "big.flac"), seconds=20)
+    with av.open(src, "w", format="flac") as out:
+        st = out.add_stream("flac", rate=8000)
+        st.layout = "mono"
+        st.codec_context.options = {"frame_size": "65535"}
+        x = (np.sin(2 * np.pi * 440 * np.arange(8000 * 20) / 8000)
+             * 8000).astype(np.int16)
+        fr = av.AudioFrame.from_ndarray(x.reshape(1, -1), format="s16",
+                                        layout="mono")
+        fr.sample_rate, fr.pts = 8000, 0
+        for pkt in st.encode(fr):
+            out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    container, stream = audio_transcode._open_audio(src)
+    try:
+        longest = max(f.samples for f in audio_transcode._decoded_frames(
+            container, stream))
+    finally:
+        container.close()
+    assert longest > 8000 * 8
+    dst = str(tmp_path / "out.wav")
+    audio_transcode.transcode_to_wav_16k_mono(src, dst)
+    with wave.open(dst, "rb") as w:
+        assert w.getnframes() == 20 * RATE

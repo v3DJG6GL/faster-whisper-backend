@@ -394,6 +394,7 @@ def create_capture(
     and Whisper's native input rate, so fine-tuning loses no quality."""
     from faster_whisper_backend.audio import transcode as audio_transcode
     from faster_whisper_backend.captures import merge as audio_merge
+    from faster_whisper_backend.settings import config as cfg
 
     if ready_fills_cap():
         logger.info("[captures] not recorded: ready rows fill CAPTURES_MAX")
@@ -405,9 +406,22 @@ def create_capture(
 
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
     tmp_path = abs_path + ".tmp"
+    # The WAV holds what was transcribed, plus a margin: the transcode reads
+    # on past an mp3's invalid packet, where Whisper's decode stopped, so
+    # `audio_s` is no bound on what it would write. The recording window
+    # caps it for a caller that passes none (or past it); the free space
+    # bounds it like the other transcodes into a shared dir.
+    max_s = float(getattr(cfg, "CAPTURES_RECORDING_MAX_DURATION_S", 600.0))
+    keep_s = min(float(audio_s), max_s) if audio_s else max_s
+    try:
+        budget = max(0, shutil.disk_usage(os.path.dirname(abs_path)).free
+                     - 1_000_000_000)
+    except OSError:
+        budget = None
     try:
         wav_bytes = audio_transcode.transcode_to_wav_16k_mono(
-            audio_src_path, tmp_path,
+            audio_src_path, tmp_path, max_bytes=budget,
+            stop_at_bytes=int((keep_s + 5.0) * 32000),  # 16 kHz s16 mono
         )
     except Exception as e:
         store_common.unlink_quietly(tmp_path)
