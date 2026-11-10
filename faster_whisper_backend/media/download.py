@@ -1089,10 +1089,16 @@ def handoff_match_filters(key: str) -> "list[str] | None":
     (The probe's verdict is stricter: it re-checks the Content-Type of the
     URL GenericIE was handed, so a scraped page embedding HLS is refused
     there while this filter's protocol^=m3u8 would take it.)
-    None: no filter (Generic is the matched key — pinned_extractors already
-    holds it to GenericIE — or GenericIE is allowed outright)."""
-    if key == "Generic" or getattr(cfg, "URL_ALLOW_GENERIC", False):
+    Generic as the matched key was admitted as direct media, and
+    pinned_extractors holds it to GenericIE, whose GET may still get a page
+    the probe never saw: only what GenericIE serves itself — a "direct"
+    file, an HLS or HDS (f4m) manifest — passes (the probe's
+    _generic_served_itself is stricter again: it names the URL).
+    None: no filter (GenericIE is allowed outright)."""
+    if getattr(cfg, "URL_ALLOW_GENERIC", False):
         return None
+    if key == "Generic":
+        return ["direct", "protocol^=m3u8", "protocol=f4m"]
     filters = ["extractor_key!=Generic"]
     if getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True):
         filters += ["direct", "protocol^=m3u8"]
@@ -1167,6 +1173,22 @@ async def _handoff_serves_media(target: str, deadline: float) -> bool:
         lambda: _direct_media_probe_sync(target, timeout=budget, accept_hls=True))
 
 
+def _generic_served_itself(info: dict) -> bool:
+    """Is `info` what GenericIE gives a link that IS media — the file, or
+    the manifest it parsed — rather than an embed scraped off a page?
+    Every format's source must be the URL GenericIE fetched ("webpage_url";
+    after a redirect GenericIE re-runs on the final URL, which becomes it):
+    a file's one format is that URL, a media playlist's single format IS
+    it, a master's variants name it as their manifest_url. yt-dlp's
+    "direct" flag is not enough: on a url_transparent embed (JSON-LD) it
+    describes the third-party URL while webpage_url names the page."""
+    page = info.get("webpage_url")
+    fmts = info.get("formats") or [info]
+    srcs = {f.get("manifest_url") or f.get("url")
+            for f in fmts if isinstance(f, dict)}
+    return isinstance(page, str) and bool(page) and srcs == {page}
+
+
 def _policy_check_extractor(key: str, info: dict, *,
                             handoff_is_media: bool = False) -> None:
     """The extractor that actually produced `info` must pass the policy the
@@ -1178,7 +1200,13 @@ def _policy_check_extractor(key: str, info: dict, *,
     same Content-Type check check_url_policy gives a pasted Generic URL
     (`handoff_is_media`, see _generic_handoff_target) — what
     URL_ALLOW_DIRECT_MEDIA admits. yt-dlp's own "direct" flag is not that
-    verdict: it marks any non-HTML body, and never an HLS manifest."""
+    verdict: it marks any non-HTML body, and never an HLS manifest.
+    GenericIE's own GET of a Generic URL admitted as direct media may get a
+    page the probe's request never saw (cloaking, a redirect): what it
+    scraped off that page is generic extraction too."""
+    if (key == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False)
+            and not _generic_served_itself(info)):
+        raise UrlPolicyError(_HANDOFF_REFUSED)
     xk = str(info.get("extractor_key") or key)
     if xk == key:
         return

@@ -12,6 +12,7 @@ import asyncio
 # asyncio.run (not a bare new_event_loop): the loop must be CLOSED after
 # each call or every test leaks an epoll fd + subprocess-watcher state.
 from asyncio import run as _run
+import io
 import os
 import socket
 import sys
@@ -611,7 +612,6 @@ def test_download_subprocess_cannot_hand_off_to_a_scraped_generic_page(
     file / manifest GenericIE served itself."""
     _handoff_policy(monkeypatch)
     filters = udl.handoff_match_filters("Youtube")
-    assert udl.handoff_match_filters("Generic") is None
     for build in (udl.build_download_argv, udl.build_video_download_argv):
         argv = build("https://e.com/a", dest_dir="/tmp/x", max_bytes=1,
                      match_filters=filters)
@@ -628,6 +628,147 @@ def test_download_subprocess_cannot_hand_off_to_a_scraped_generic_page(
     assert udl.handoff_match_filters("Youtube") == ["extractor_key!=Generic"]
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
     assert udl.handoff_match_filters("Youtube") is None
+
+
+def test_download_subprocess_holds_a_direct_media_link_to_what_generic_serves(
+        monkeypatch):
+    """A Generic link admitted as direct media is re-extracted by the
+    subprocess too, and GenericIE there may get a page the probe never saw:
+    only the file or manifest GenericIE serves itself may be downloaded —
+    an HDS (f4m) manifest included, which is neither "direct" nor HLS."""
+    _handoff_policy(monkeypatch)
+    filters = udl.handoff_match_filters("Generic")
+    assert filters == ["direct", "protocol^=m3u8", "protocol=f4m"]
+    for build in (udl.build_download_argv, udl.build_video_download_argv):
+        argv = build("https://e.com/a.mp3", dest_dir="/tmp/x", max_bytes=1,
+                     match_filters=filters)
+        assert argv.index("--match-filters") < argv.index("--")
+        match = yt_dlp.parse_options(argv[2:-2]).ydl_opts["match_filter"]
+        for served in ({"protocol": "https", "direct": True},
+                       {"protocol": "m3u8_native"},
+                       {"protocol": "m3u8_native+m3u8_native"},
+                       {"protocol": "f4m"}):
+            assert match({"extractor_key": "Generic", **served}) is None, served
+        assert "does not pass filter" in match(
+            {"extractor_key": "Generic", "protocol": "https"})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
+    assert udl.handoff_match_filters("Generic") is None
+
+
+def test_probe_refuses_a_scraped_page_for_a_direct_media_link(monkeypatch):
+    """The probe's own request saw audio/*, but GenericIE's GET got a page
+    and scraped an embed off it: generic extraction, which
+    URL_ALLOW_GENERIC=off forbids."""
+    _handoff_policy(monkeypatch)
+    _stand_in_yt_dlp(monkeypatch, "Generic", {
+        "title": "t", "extractor_key": "Generic",
+        "webpage_url": "https://x/a.mp3",
+        "formats": [{"url": "https://third.example/scraped.mp4",
+                     "protocol": "https"}]})
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
+        _run(udl.probe("https://x/a.mp3", timeout=5.0))
+
+
+_HLS_MEDIA = (b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nseg1.ts\n"
+              b"#EXT-X-ENDLIST\n")
+_HLS_MASTER = (b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000,CODECS="mp4a.40.2"\n'
+               b"v1.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=200000\nv2.m3u8\n")
+_DASH = (b'<?xml version="1.0"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" '
+         b'type="static" mediaPresentationDuration="PT10S"><Period>'
+         b'<AdaptationSet mimeType="audio/mp4"><Representation id="a" '
+         b'bandwidth="64000" codecs="mp4a.40.2"><BaseURL>a.mp4</BaseURL>'
+         b"</Representation></AdaptationSet></Period></MPD>")
+_F4M_STREAM = (b'<?xml version="1.0"?><manifest xmlns="http://ns.adobe.com/f4m/1.0">'
+               b'<bootstrapInfo profile="named" id="b">AAAA</bootstrapInfo>'
+               b'<media url="seg" bitrate="100" bootstrapInfoId="b"/></manifest>')
+_VIDEOJS_PAGE = (b"<html><head><title>x</title></head><body><script>"
+                 b'var p = videojs("v"); p.src({"src": '
+                 b'"https://third.example/scraped.mp4", "type": "video/mp4"});'
+                 b"</script></body></html>")
+_JSON_LD_PAGE = (b'<html><head><title>x</title><script type="application/ld+json">'
+                 b'{"@context": "https://schema.org", "@type": "VideoObject", '
+                 b'"name": "n", "contentUrl": "https://third.example/media"}'
+                 b"</script></head><body></body></html>")
+_MP3 = ("audio/mpeg", b"ID3\x04\x00")
+
+# What a server answers GenericIE, per URL: (Content-Type, body), or the
+# Location of a 302.
+_SERVED_ITSELF = {
+    "mp3": {"https://m.example/a.mp3": _MP3},
+    "mp4 with a signed query": {
+        "https://m.example/v.mp4?sig=abc&e=1": ("video/mp4", b"\0\0\0 ftyp")},
+    "ogg": {"https://m.example/x.ogg": ("application/ogg", b"OggS")},
+    "302 to a CDN file": {"https://m.example/a.mp3": "https://cdn.example/real.mp3",
+                          "https://cdn.example/real.mp3": _MP3},
+    "HLS media playlist": {
+        "https://m.example/a.mp3": ("audio/x-mpegurl", _HLS_MEDIA)},
+    "HLS master": {"https://m.example/a.mp3": ("audio/mpegurl", _HLS_MASTER),
+                   "https://m.example/v1.m3u8": ("application/x-mpegurl", _HLS_MEDIA),
+                   "https://m.example/v2.m3u8": ("application/x-mpegurl", _HLS_MEDIA)},
+    "302 to a tokenised HLS playlist": {
+        "https://m.example/a.mp3": "https://cdn.example/l.m3u8?tok=1",
+        "https://cdn.example/l.m3u8?tok=1": ("audio/x-mpegurl", _HLS_MEDIA)},
+    "DASH manifest": {
+        "https://m.example/a.mp3": ("video/vnd.mpeg.dash.mpd", _DASH)},
+    "octet-stream body": {
+        "https://m.example/a.mp3": ("application/octet-stream", b"\0\1bin")},
+    "HDS stream manifest": {"https://m.example/a.mp3": ("video/f4m", _F4M_STREAM)},
+}
+_SCRAPED = {
+    "Video.js embed": {"https://m.example/a.mp3": ("text/html", _VIDEOJS_PAGE)},
+    "302 to a page": {"https://m.example/a.mp3": "https://evil.example/page",
+                      "https://evil.example/page": ("text/html", _VIDEOJS_PAGE)},
+    # url_transparent: yt-dlp overlays the page's webpage_url on GenericIE's
+    # "direct" result for the third-party URL.
+    "JSON-LD embed": {"https://m.example/a.mp3": ("text/html", _JSON_LD_PAGE),
+                      "https://third.example/media": _MP3},
+}
+
+
+def _generic_serving(monkeypatch, site):
+    """probe() of a link the offline match calls Generic and the direct-media
+    check admitted, through the REAL yt-dlp (pinned to GenericIE) with every
+    request answered from `site` (see _SERVED_ITSELF) instead of the
+    network."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.networking import Response
+    from yt_dlp.utils import ExtractorError
+    from yt_dlp.utils.networking import normalize_url
+
+    def _answer(ie, url_or_request, video_id, *a, **kw):
+        # yt-dlp's Request normalises its URL; a redirect lands on Location.
+        url = normalize_url(getattr(url_or_request, "url", url_or_request))
+        while isinstance(site.get(url), str):
+            url = site[url]
+        if url not in site:
+            raise ExtractorError(f"nothing served at {url}")
+        ctype, body = site[url]
+        return Response(io.BytesIO(body), url, {"Content-Type": ctype}, status=200)
+
+    async def _admitted_as_generic(url, deadline=None):
+        return "Generic"
+    _handoff_policy(monkeypatch)
+    monkeypatch.setattr(InfoExtractor, "_request_webpage", _answer)
+    monkeypatch.setattr(udl, "check_url_policy", _admitted_as_generic)
+    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
+    monkeypatch.setattr(udl, "_guard_module", types.SimpleNamespace(
+        install=lambda: None, is_installed=lambda: True))
+
+
+@pytest.mark.parametrize("site", _SERVED_ITSELF.values(), ids=_SERVED_ITSELF)
+def test_probe_admits_what_generic_serves_for_a_direct_link(monkeypatch, site):
+    """Every shape GenericIE gives a link that IS media — a file, a file
+    behind a redirect, a manifest it parses itself — stays admitted."""
+    _generic_serving(monkeypatch, site)
+    info = _run(udl.probe(next(iter(site)), timeout=30.0))
+    assert info.extractor_key == "Generic"
+
+
+@pytest.mark.parametrize("site", _SCRAPED.values(), ids=_SCRAPED)
+def test_probe_refuses_what_generic_scrapes_for_a_direct_link(monkeypatch, site):
+    _generic_serving(monkeypatch, site)
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
+        _run(udl.probe(next(iter(site)), timeout=30.0))
 
 
 def test_probe_reports_a_pinned_out_hand_off_as_a_policy_refusal(monkeypatch):
@@ -655,7 +796,9 @@ def test_classify_error_maps_no_suitable_extractor_to_the_policy():
 
 def test_probe_admits_the_extractor_it_matched(monkeypatch):
     _handoff_policy(monkeypatch)
-    _probe_with_extractor(monkeypatch, "Generic", "Generic")
+    _stand_in_yt_dlp(monkeypatch, "Generic", {
+        "title": "t", "extractor_key": "Generic", "direct": True,
+        "url": "https://x/a.mp3", "webpage_url": "https://x/a.mp3"})
     assert _run(udl.probe("https://x/a.mp3", timeout=5.0)).extractor_key == "Generic"
 
 
