@@ -546,14 +546,16 @@ def _refuse_external_downloaders() -> None:
 # 12 h one with ten representations 216 000; the cap (~260 MB of fragment
 # dicts at most) leaves long multi-quality VODs well inside it. Smooth
 # Streaming (_parse_ism_formats_and_subtitles: <c r="N"> expanded once per
-# QualityLevel) spends from the same budget.
+# QualityLevel) and an HLS media playlist (HlsFD: one fragment per segment
+# line) spend from the same budget.
 _MAX_MPD_SEGMENTS = 1_000_000
 _MPD_SENTINEL = "_fwb_mpd_bounded"
 # Each Representation also becomes its own format (periods merge only when
 # every field but the fragments matches), and yt-dlp's parse + format pass
 # cost grows faster than linearly in their number: 20 000 one-segment
 # representations take ~20 s of CPU, a 64 MiB manifest hours. A 12 h stream
-# split into 720 ad periods of ten representations each is 7 200.
+# split into 720 ad periods of ten representations each is 7 200. A Smooth
+# Streaming QualityLevel is a variant too, from the same budget.
 _MAX_MPD_REPRESENTATIONS = 20_000
 
 
@@ -562,6 +564,12 @@ def _too_many_segments():
     return ExtractorError(
         f"the stream lists too many segments (more than {_MAX_MPD_SEGMENTS})",
         expected=True)
+
+
+def _too_many_variants(cap: int):
+    from yt_dlp.utils import ExtractorError
+    return ExtractorError(
+        f"the stream lists too many variants (more than {cap})", expected=True)
 
 
 def _number(value, kind=float):
@@ -649,10 +657,7 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
             for representation in adaptation.findall(q("Representation")):
                 representations += 1
                 if representations > _MAX_MPD_REPRESENTATIONS:
-                    from yt_dlp.utils import ExtractorError
-                    raise ExtractorError(
-                        "the stream lists too many variants (more than "
-                        f"{_MAX_MPD_REPRESENTATIONS})", expected=True)
+                    raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
                 info = _mpd_segment_info(representation, set_info, q)
                 n, seconds = _representation_segments(info, period_duration)
                 count += n
@@ -694,7 +699,7 @@ def _refuse_oversized_ism(ism_doc) -> None:
     from yt_dlp.utils import int_or_none
     if ism_doc.get("IsLive") == "TRUE":
         return  # yt-dlp returns no formats for it, before any expansion
-    count = 0
+    count = variants = 0
     for stream in ism_doc.findall("StreamIndex"):
         if stream.get("Type") not in ("video", "audio", "text"):
             continue
@@ -702,10 +707,16 @@ def _refuse_oversized_ism(ism_doc) -> None:
         # over-count far below the cap, and a yt-dlp that learns the codec
         # stays bounded.
         tracks = len(stream.findall("QualityLevel"))
+        # Each level is a format (or subtitle track) even with no chunk, and
+        # yt-dlp re-walks the stream's chunks for every one of them.
+        variants += tracks
+        if variants > _MAX_MPD_REPRESENTATIONS:
+            raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
         if not tracks:
             continue
-        # yt-dlp: range(int_or_none(r) or 1) per chunk, so r <= -1 builds none.
-        per_track = sum(max(int_or_none(c.get("r")) or 1, 0)
+        # yt-dlp: range(int_or_none(r) or 1) per chunk, so r <= -1 builds no
+        # fragment, but the chunk is still read once per level: it costs one.
+        per_track = sum(max(int_or_none(c.get("r")) or 1, 1)
                         for c in stream.findall("c"))
         count += tracks * per_track
         if count > _MAX_MPD_SEGMENTS:
@@ -742,8 +753,15 @@ def _ism_expansion_is_bounded() -> bool:
 # Real masters list tens of variants, a few hundred with many audio and
 # subtitle renditions; at the cap the format pass stays under a second.
 # A media playlist (it carries #EXT-X-TARGETDURATION) is returned whole as a
-# single format and is not counted.
+# single format and is not counted here; HlsFD's expansion of its segments is
+# (see _bound_hls_fragments).
 _MAX_M3U8_FORMATS = 2_000
+# yt-dlp also splits a master into one str per line, twice, before it looks
+# at any of them, so a master of nothing but comments lists no format yet
+# costs ~0.1 s and ~50 MB per million lines (64 MiB of "#a" lines: ~6 s and
+# over a gigabyte). A master at the format cap is two lines per variant plus
+# a few tags, far below this.
+_MAX_M3U8_MASTER_LINES = 200_000
 _M3U8_SENTINEL = "_fwb_m3u8_bounded"
 # One match per line yt-dlp turns into a format, with lines split where
 # str.splitlines() splits: an EXT-X-MEDIA rendition, a STREAM-INF carrying a
@@ -757,10 +775,20 @@ _M3U8_FORMAT_LINE = re.compile(
     rf"|[^\s#]|[^\S{_M3U8_BREAKS}]+\S)")
 
 
+def _line_breaks(doc: str) -> int:
+    """How many lines str.splitlines() would end in `doc`, counted in C."""
+    return (sum(doc.count(b) for b in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+            - doc.count("\r\n"))
+
+
 def _refuse_oversized_m3u8(m3u8_doc) -> None:
     from yt_dlp.utils import ExtractorError
     if not isinstance(m3u8_doc, str) or "#EXT-X-TARGETDURATION" in m3u8_doc:
         return
+    if _line_breaks(m3u8_doc) > _MAX_M3U8_MASTER_LINES:
+        raise ExtractorError(
+            "the playlist has too many lines (more than "
+            f"{_MAX_M3U8_MASTER_LINES})", expected=True)
     for count, _match in enumerate(_M3U8_FORMAT_LINE.finditer(m3u8_doc), 1):
         if count > _MAX_M3U8_FORMATS:
             raise ExtractorError(
@@ -790,6 +818,53 @@ def _m3u8_formats_are_bounded() -> bool:
                    _M3U8_SENTINEL, False)
 
 
+# HLS media playlist, in the download child: HlsFD.real_download turns every
+# segment line into a fragment dict (and splits the playlist into lines twice
+# first) before it fetches anything, so the 64 MiB body bound admits ~33 M
+# fragments, ~12 GB. It hands the whole playlist to can_download before
+# either pass, which is where the segments are counted, against the DASH
+# budget: one per line HlsFD keeps as a fragment (stripped, not blank, not a
+# "#" tag) and one per #EXT-X-MAP initialization segment. That over-counts a
+# playlist whose ad or discontinuity filter skips some, never under-counts.
+_HLS_SENTINEL = "_fwb_hls_bounded"
+_HLS_FRAGMENT_LINE = re.compile(
+    rf"(?<![^{_M3U8_BREAKS}])[^\S{_M3U8_BREAKS}]*(?:[^\s#]|#EXT-X-MAP)")
+
+
+def _refuse_oversized_hls_media(manifest) -> None:
+    # A playlist with no more lines than the cap cannot list more fragments:
+    # every real one pays only the C-level line count.
+    if not isinstance(manifest, str) or _line_breaks(manifest) < _MAX_MPD_SEGMENTS:
+        return
+    for count, _match in enumerate(_HLS_FRAGMENT_LINE.finditer(manifest), 1):
+        if count > _MAX_MPD_SEGMENTS:
+            raise _too_many_segments()
+
+
+def _bounded_hls_can_download(original):
+    def can_download(cls, manifest, *args, **kwargs):
+        _refuse_oversized_hls_media(manifest)
+        return original(cls, manifest, *args, **kwargs)
+    setattr(can_download, _HLS_SENTINEL, True)
+    return can_download
+
+
+def _bound_hls_fragments() -> None:
+    from yt_dlp.downloader.hls import HlsFD
+    current = vars(HlsFD).get("can_download")
+    original = getattr(current, "__func__", None)
+    # Only HlsFD's own classmethod is wrapped: anything else leaves
+    # is_installed() failing closed, as with DASH.
+    if (isinstance(current, classmethod) and callable(original)
+            and not getattr(original, _HLS_SENTINEL, False)):
+        HlsFD.can_download = classmethod(_bounded_hls_can_download(original))
+
+
+def _hls_fragments_are_bounded() -> bool:
+    from yt_dlp.downloader.hls import HlsFD
+    return getattr(getattr(HlsFD, "can_download", None), _HLS_SENTINEL, False)
+
+
 def install() -> None:
     """Register the guard and retire the handlers it supersedes.
 
@@ -809,6 +884,7 @@ def install() -> None:
     _bound_mpd_expansion()
     _bound_ism_expansion()
     _bound_m3u8_formats()
+    _bound_hls_fragments()
 
 
 def _prefer_guard(rh, request):
@@ -820,8 +896,9 @@ def is_installed() -> bool:
     """True when the guard is the only request handler registered (an
     allowlist: an unknown handler key fails closed), no downloader can hand
     a fetch to an external program, a DASH or Smooth Streaming manifest's
-    segments are counted before yt-dlp expands them and an HLS master's
-    variants before it builds their formats."""
+    segments are counted before yt-dlp expands them, an HLS master's
+    variants and lines before it builds their formats and an HLS media
+    playlist's segments before HlsFD expands them."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
             and set(_REQUEST_HANDLERS) == {GUARD_RH_KEY}
@@ -829,7 +906,8 @@ def is_installed() -> bool:
                     for cls in _refusing_fd_classes())
             and _mpd_expansion_is_bounded()
             and _ism_expansion_is_bounded()
-            and _m3u8_formats_are_bounded())
+            and _m3u8_formats_are_bounded()
+            and _hls_fragments_are_bounded())
 
 
 install()

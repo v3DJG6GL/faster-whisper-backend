@@ -1371,6 +1371,38 @@ def test_guard_is_not_installed_without_the_ism_bound(monkeypatch):
     assert guard.is_installed()
 
 
+@pytest.mark.parametrize("over", [
+    lambda cap: _ism_audio("", levels=cap + 1),
+    lambda cap: _ism_audio('<c t="0" d="1"/>', levels=cap + 1),
+    lambda cap: (_ism_audio('<c t="0" d="1"/>', levels=cap // 2 + 1)
+                 + _ism_audio('<c t="0" d="1"/>', levels=cap // 2, kind="text")),
+], ids=["no-chunk", "one-chunk", "audio+text"])
+def test_guard_refuses_an_ism_manifest_listing_too_many_variants(monkeypatch, over):
+    """Every QualityLevel is a format (or subtitle track) of its own, chunks
+    or not, and yt-dlp re-walks the stream's chunks for each one: a manifest
+    of one-chunk levels stays under the segment budget yet costs seconds per
+    thousand. They are counted across StreamIndexes, like DASH variants."""
+    cap = 40
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_REPRESENTATIONS", cap)
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_ism(_ism(over(cap)))
+    fmts, _subs = _parse_ism(_ism(_ism_audio('<c t="0" d="1"/>', levels=cap)))
+    assert len(fmts) == cap
+
+
+def test_guard_charges_an_ism_chunk_that_builds_no_fragment(monkeypatch):
+    """A <c r="-1"> expands to nothing, but yt-dlp still reads it once for
+    every QualityLevel of its stream: levels x chunks is the work, so each
+    chunk costs at least one per level."""
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    empty = '<c t="0" d="1" r="-1"/>'
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_ism(_ism(_ism_audio(empty * (cap // 10 + 1), levels=10)))
+    fmts, _subs = _parse_ism(_ism(_ism_audio(empty * (cap // 10), levels=10)))
+    assert len(fmts) == 10 and all(f["fragments"] == [] for f in fmts)
+
+
 # ---- HLS: a master playlist becomes one format per variant URI line (and
 # per EXT-X-MEDIA rendition), and every format is then sorted, selected and
 # sanitized in pure Python — ~0.5 ms each. The guard counts them before the
@@ -1449,3 +1481,156 @@ def test_guard_is_not_installed_without_the_hls_bound(monkeypatch):
         guard.install()  # nothing to bound: still fails closed
         assert not guard.is_installed()
     assert guard.is_installed()
+
+
+@pytest.mark.parametrize("brk", ["\n", "\r", "\r\n", " "],
+                         ids=["lf", "cr", "crlf", "u2028"])
+def test_guard_refuses_an_hls_master_of_too_many_lines(monkeypatch, brk):
+    """yt-dlp splits a master into one str per line, twice, before it looks
+    at a single one: 64 MiB of comment lines lists no format at all yet costs
+    seconds and over a gigabyte. Lines are counted where str.splitlines()
+    splits, a CRLF once."""
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_M3U8_MASTER_LINES", cap)
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many lines"):
+        _parse_m3u8("#EXTM3U" + brk + ("#a" + brk) * cap)
+    assert _parse_m3u8("#EXTM3U" + brk + ("#a" + brk) * (cap - 1)) == ([], {})
+
+
+def test_guard_refuses_a_large_comment_only_hls_master_quickly():
+    import time
+    guard = _registered_guard()
+    # Far above a master at the format cap (two lines per variant plus a
+    # few tags), so no playlist the format bound admits is refused here.
+    assert guard["_MAX_M3U8_MASTER_LINES"] >= 50 * guard["_MAX_M3U8_FORMATS"]
+    doc = "#EXTM3U\n" + "#a\n" * (5 * 1024 * 1024 // 3)
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many lines"):
+        _parse_m3u8(doc)
+    assert time.monotonic() - t0 < 1.0
+
+
+# ---- HLS media playlists: the download child's HlsFD turns every segment
+# line into a fragment dict before it fetches any, bounded only by the 64 MiB
+# body cap (~33 M lines, ~12 GB). The guard counts them, against the DASH
+# segment budget, when HlsFD checks the manifest it is about to expand.
+
+def _hls_download(monkeypatch, tmp_path, doc):
+    """HlsFD.real_download on `doc` with the fragment fetch stubbed out:
+    the fragment counts it would have fetched, or the refusal."""
+    udl.guard_self_check(force=True)
+    built = []
+    monkeypatch.setattr(
+        hls.HlsFD, "download_and_append_fragments",
+        lambda self, ctx, fragments, info_dict, **kw: built.append(len(fragments)) or True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        fd = hls.HlsFD(ydl, ydl.params)
+        fd.real_download(str(tmp_path / "media.mp4"), {
+            "url": "https://public.example/a.m3u8", "id": "x", "ext": "mp4",
+            "http_headers": {}, "hls_media_playlist_data": doc})
+    return built
+
+
+_HLS_HEAD = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n"
+_HLS_MAP = '#EXT-X-MAP:URI="init.mp4"\n'
+
+
+@pytest.mark.parametrize("make", [
+    lambda n: _HLS_HEAD + "a\n" * n,
+    lambda n: _HLS_HEAD + _HLS_MAP + "a\n" * (n - 1),  # the init segment too
+    lambda n: _HLS_HEAD + " \ta\n" * n,  # HlsFD strips each line first
+    lambda n: _HLS_HEAD.replace("\n", "\r") + "a\r" * n,
+    lambda n: _HLS_HEAD + "a " * n,
+], ids=["bare", "map", "indented", "cr", "u2028"])
+def test_guard_refuses_an_hls_media_playlist_listing_too_many_segments(
+        monkeypatch, tmp_path, make):
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    built = []
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        built = _hls_download(monkeypatch, tmp_path, make(cap + 1))
+    assert built == []
+
+
+def test_guard_downloads_an_ordinary_hls_media_playlist_unchanged(
+        monkeypatch, tmp_path):
+    """Comments and blank lines are no fragments; right at the cap every
+    segment is still built."""
+    assert _registered_guard()["_MAX_MPD_SEGMENTS"] >= 86_400  # 24 h at 1 s
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    doc = (_HLS_HEAD + _HLS_MAP + "#EXTINF:1,\n a.ts\n\n # note\n" * (cap - 1)
+           + "#EXT-X-ENDLIST\n")
+    assert _hls_download(monkeypatch, tmp_path, doc) == [cap]
+
+
+def test_guard_is_not_installed_without_the_hls_fragment_bound(monkeypatch):
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(hls.HlsFD, "can_download",
+                  classmethod(lambda cls, manifest, info_dict, allow=False: True))
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(hls.HlsFD, "can_download")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+def test_probe_prunes_a_request_handler_registered_by_plugin_loading(
+        tmp_path, monkeypatch):
+    """YoutubeDL() loads yt-dlp's default plugin dirs (every sys.path entry,
+    the user's config dir) in-process, and a RequestHandler a plugin
+    registers there would sit behind the guard and take whatever the guard
+    declines. The probe must build its director from the guard alone, as the
+    download child (--no-plugin-dirs) does."""
+    from yt_dlp.networking.common import _REQUEST_HANDLERS
+    plugin = tmp_path / "yt_dlp_plugins" / "extractor"
+    plugin.mkdir(parents=True)
+    (plugin / "fwb_test_stray.py").write_text(
+        "from yt_dlp.networking._urllib import UrllibRH\n"
+        "from yt_dlp.networking.common import register_rh\n\n\n"
+        "@register_rh\n"
+        "class FwbTestStrayRH(UrllibRH):\n"
+        "    RH_NAME = 'fwb-test-stray'\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(yt_dlp.globals.all_plugins_loaded, "value", False)
+    seen = {}
+
+    def _extract_info(self, url, download=False, **kw):
+        seen["handlers"] = sorted(
+            h.RH_NAME for h in self._request_director.handlers.values())
+        return {"title": "t", "extractor_key": "Youtube"}
+
+    async def _policy(url, *, deadline=None):
+        return "Youtube"
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "extract_info", _extract_info)
+    monkeypatch.setattr(udl, "check_url_policy", _policy)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    try:
+        _run(udl.probe("https://example.com/watch?v=x", timeout=10.0))
+    finally:
+        _REQUEST_HANDLERS.pop("FwbTestStray", None)
+        for name in [n for n in sys.modules if n.endswith(".fwb_test_stray")]:
+            sys.modules.pop(name)
+    assert seen["handlers"] == ["fwb-guarded-urllib"]
+
+
+def test_probe_fails_closed_when_plugin_loading_leaves_the_guard_broken(
+        monkeypatch):
+    udl.guard_self_check(force=True)
+    monkeypatch.setattr(udl._guard_module, "is_installed", lambda: False)
+    called = []
+
+    async def _policy(url, *, deadline=None):
+        return "Youtube"
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "extract_info",
+                        lambda self, *a, **kw: called.append(a))
+    monkeypatch.setattr(udl, "check_url_policy", _policy)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    with pytest.raises(udl.UrlDownloadError,
+                       match="link downloads are unavailable on this server"):
+        _run(udl.probe("https://example.com/watch?v=x", timeout=10.0))
+    assert called == []

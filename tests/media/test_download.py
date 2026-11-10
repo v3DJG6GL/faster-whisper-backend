@@ -17,6 +17,7 @@ import socket
 import sys
 import threading
 import time
+import types
 import urllib.error
 
 import pytest
@@ -429,6 +430,10 @@ def _stand_in_yt_dlp(monkeypatch, matched, info):
     fake.YoutubeDL = _FakeYDL
     monkeypatch.setitem(sys.modules, "yt_dlp", fake)
     monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
+    # probe() re-installs the guard after YoutubeDL() loads plugins; the
+    # stand-in loads none.
+    monkeypatch.setattr(udl, "_guard_module", types.SimpleNamespace(
+        install=lambda: None, is_installed=lambda: True))
     monkeypatch.setattr(udl, "match_extractor", lambda u: matched)
     monkeypatch.setattr(udl, "_direct_media_probe_sync",
                         lambda u, timeout, **kw: True)

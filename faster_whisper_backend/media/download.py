@@ -1264,6 +1264,17 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
                 observe(cutoff.add, deadline=cutoff.deadline)
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
+                    # YoutubeDL() has just loaded yt-dlp's default plugin
+                    # dirs, and a RequestHandler a plugin registers there
+                    # would sit behind the guard and take whatever it
+                    # declines. The director is built on the first request,
+                    # so re-pruning here keeps such a handler out of it (the
+                    # download child never loads those dirs at all).
+                    _guard_module.install()
+                    if not _guard_module.is_installed():
+                        raise RuntimeError(
+                            f"{GUARD_UNAVAILABLE_MARKER}: the guard did not "
+                            "survive yt-dlp's plugin loading")
                     return ydl.sanitize_info(
                         ydl.extract_info(url, download=False))
             finally:
