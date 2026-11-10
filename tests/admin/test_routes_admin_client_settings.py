@@ -224,6 +224,21 @@ def test_import_non_finite_float_422(client, make_user_key):
     assert got["version"] == 1 and got["blob"] == {"n": 1}
 
 
+def test_import_over_deep_blob_422_and_nothing_stored(client, make_user_key):
+    """The import force-writes past the /v1 PUT route: an over-deep blob it
+    stored made every later GET of the account a 500 (pydantic's response
+    serializer stops at ~255 levels), so the store refuses it for both."""
+    uid, key = make_user_key("deep", is_admin=True)
+    _seed(client, {"n": 1}, headers=bearer(key))
+    blob = {"leaf": [1]}
+    for _ in range(client_settings_store._MAX_BLOB_DEPTH - 1):  # cap + 1 levels
+        blob = {"k": blob}
+    r = _import(client, uid, key, blob)
+    assert r.status_code == 422
+    got = client.get(_V1, headers=bearer(key)).json()
+    assert got["version"] == 1 and got["blob"] == {"n": 1}
+
+
 def test_import_malformed_422(client, make_user_key):
     uid, key = make_user_key("mal", is_admin=True)
     base = f"{_API}/users/{uid}/client-settings/import"

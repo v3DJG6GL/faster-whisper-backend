@@ -262,6 +262,13 @@ def test_parse_numbered_extra_or_repeated_index_returns_none():
     assert translation._parse_numbered("1. a\n1. b\n2. c", 2) is None
 
 
+def test_parse_numbered_overlong_index_returns_none():
+    """A reply line with an index past CPython's int-string digit limit
+    raised ValueError out of the batch loop (a 500) instead of counting as
+    a mismatch the caller halves and retries."""
+    assert translation._parse_numbered("1. a\n" + "9" * 4301 + ". b", 2) is None
+
+
 def test_parse_numbered_wrapped_item_returns_none():
     """An item wrapped over two lines kept 1..n: the unnumbered second line
     was skipped as chatter and the cut first half passed as the whole

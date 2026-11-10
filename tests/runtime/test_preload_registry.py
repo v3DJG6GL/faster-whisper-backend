@@ -455,6 +455,38 @@ def test_plan_cap_evicts_the_plan_closest_to_expiry(monkeypatch):
     assert "ff" * 4 in preload._plans
 
 
+def test_plan_cap_flood_evicts_the_flooders_own_plan(monkeypatch):
+    """Fresh plan_ids from one caller dropped the globally-oldest plan, so
+    eight POSTs pushed another user's live job plan out as "registry full"
+    (its stage-ahead warming silently stopped)."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    preload.register_plan("alice", [("diarization", "p/a")], plan_id="aa" * 4)
+    preload._plans["aa" * 4].expires_mono = 0.0
+    for i in range(preload._MAX_PLANS):
+        preload.register_plan("mallory", [("diarization", f"p/{i}")],
+                              plan_id=f"{i:08x}")
+    assert len(preload._plans) == preload._MAX_PLANS
+    assert "aa" * 4 in preload._plans
+    assert "00000000" not in preload._plans
+
+
+def test_plan_cap_falls_back_to_the_global_oldest_for_a_light_caller(
+        monkeypatch):
+    """A caller holding fewer than _OWN_PLAN_EVICT_AT plans still gets its
+    slot by dropping the plan closest to expiry, whoever owns it."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    for i in range(preload._MAX_PLANS):
+        preload.register_plan(f"u{i}", [("diarization", f"p/{i}")],
+                              plan_id=f"{i:08x}")
+    preload._plans["00000005"].expires_mono = 0.0
+    preload.register_plan("u0", [("diarization", "p/new")], plan_id="ff" * 4)
+    assert len(preload._plans) == preload._MAX_PLANS
+    assert "00000005" not in preload._plans
+    assert "00000000" in preload._plans and "ff" * 4 in preload._plans
+
+
 def test_queue_cap_defers_rather_than_growing(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (True, None))

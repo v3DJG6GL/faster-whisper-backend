@@ -82,6 +82,11 @@ _MAX_QUEUE = 8
 # allows, with headroom. A repeat POST merges into the plan, so without this
 # a fixed plan_id fed fresh ids each time would grow the list without bound.
 _MAX_PLAN_ENTRIES = 8
+# A legitimate client holds one or two plans (a dictation/viewer plan plus a
+# job plan). A caller already holding this many pays for its own new plan
+# with its own oldest one when the registry is full, so fresh plan_ids from
+# one key cannot push other users' live plans out.
+_OWN_PLAN_EVICT_AT = 2
 
 _lock = threading.Lock()
 _plans: "dict[str, Plan]" = {}
@@ -602,8 +607,11 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
         if plan is None:
             if len(_plans) >= _MAX_PLANS:
                 # Drop the plan closest to expiry rather than refusing: the
-                # newest intent is the one a job is about to act on.
-                oldest = min(_plans, key=lambda k: _plans[k].expires_mono)
+                # newest intent is the one a job is about to act on. Taken
+                # from the caller's own plans once it holds several.
+                own = [k for k, p in _plans.items() if p.user_id == (user_id or "")]
+                pool = own if len(own) >= _OWN_PLAN_EVICT_AT else list(_plans)
+                oldest = min(pool, key=lambda k: _plans[k].expires_mono)
                 _drop_plan_locked(oldest, "registry full")
             plan = Plan(plan_id=pid, user_id=user_id or "", entries=list(kept),
                         stages=[_FAMILY_STAGE.get(f, 99) for f, _ in kept],

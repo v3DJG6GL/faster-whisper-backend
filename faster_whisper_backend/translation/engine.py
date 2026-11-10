@@ -1418,6 +1418,10 @@ def _parse_numbered(reply: str, n: int) -> "list[str] | None":
                 return None
             after_item = False
             continue
+        # No batch holds a million items; a longer digit run is garbage,
+        # and past 4300 digits int() raises instead of reporting a mismatch.
+        if len(m.group(1)) > 6:
+            return None
         idx = int(m.group(1))
         if not 1 <= idx <= n or idx in found:
             return None

@@ -42,9 +42,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import Field, ValidationError
+from pydantic_core import to_json
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
@@ -967,7 +968,7 @@ async def get_reapply_rules_status(
 async def get_recent(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
+) -> Response:
     """Newest-first slice of the durable recent-transcriptions store.
     The /stream endpoint replays the same slice on connect; /recent
     additionally supports the "Load older" pagination cursor.
@@ -1018,25 +1019,46 @@ async def _recent_page(
     limit: int,
     query: str | None,
     user_id_filter: str | None,
-) -> dict[str, Any]:
+) -> Response:
     """Shared body of GET /recent and POST /recent/search — identical scoping
     and pagination, the two differ only in where the search term travels.
 
     Off the loop: a search is an unindexable LIKE '%needle%' over two TEXT
     columns capped at 50 000 chars each, so SQLite scans every retained row.
     Measured ~30 ms per search at the shipped RECENT_TRANSCRIPTIONS_MAX of 500,
-    unthrottled, and .env.example documents 0 = unbounded."""
-    traces = await asyncio.to_thread(
+    unthrottled, and .env.example documents 0 = unbounded. The body is
+    rendered in the same thread (see _render_recent_page)."""
+    return await asyncio.to_thread(
+        _render_recent_page,
         functools.partial(
             recent_transcriptions_store.list_recent,
             before_ts=before_ts if before_ts > 0 else None,
             limit=limit,
             user_id_filter=user_id_filter,
             query=query or None,
-        )
+        ),
+        limit,
     )
+
+
+def _render_recent_page(fetch: Any, limit: int) -> Response:
+    """{recent, next_before_ts} as finished JSON bytes. A page of full rows
+    runs to ~64 MB, and returning the dict made FastAPI validate + dump all
+    of it in one call on the loop; one call per row here lets the GIL move
+    between rows. pydantic_core.to_json is the serializer that dump used, so
+    the bytes are the same (non-ASCII unescaped, a non-finite float in a
+    stored stage timing as null, where json.dumps would emit an Infinity no
+    JSON.parse accepts)."""
+    traces = fetch()
     next_before = traces[-1]["created_ts"] if len(traces) >= limit else None
-    return {"recent": traces, "next_before_ts": next_before}
+    # inf_nan_mode: to_json's own default is the bare constants; "null" is
+    # the default of the response serializer this replaces.
+    rows = b",".join(to_json(t, inf_nan_mode="null") for t in traces)
+    tail = to_json(next_before, inf_nan_mode="null")
+    return Response(
+        b'{"recent":[' + rows + b'],"next_before_ts":' + tail + b"}",
+        media_type="application/json",
+    )
 
 
 class RecentSearchIn(web_common.StrictIn):
@@ -1052,7 +1074,7 @@ class RecentSearchIn(web_common.StrictIn):
 async def post_recent_search(
     payload: RecentSearchIn,
     user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
+) -> Response:
     """Same slice as GET /recent, with the free-text filter supplied in the
     BODY. A POST purely to keep dictation words out of every access log and
     out of browser history — the scoping, bounds and response shape are the

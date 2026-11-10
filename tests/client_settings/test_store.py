@@ -100,6 +100,20 @@ def test_lone_surrogate_raises_invalid_blob(store):
     assert store.get("u1") is None
 
 
+def test_over_deep_blob_raises_for_put_and_force_put(store, monkeypatch):
+    """The depth cap lives in the store, so the admin import (force_put)
+    refuses an over-deep blob too, not only the /v1 PUT; an array counts
+    as a level like an object does."""
+    monkeypatch.setattr(store, "_MAX_BLOB_DEPTH", 3)
+    store.put("u1", {"a": [{"b": 1}]}, 0)            # exactly the cap
+    with pytest.raises(store.BlobTooDeep):
+        store.put("u1", {"a": [{"b": [1]}]}, 1)
+    with pytest.raises(store.BlobTooDeep):
+        store.force_put("u1", {"a": {"b": {"c": {}}}})
+    assert store.get("u1")["blob"] == {"a": [{"b": 1}]}  # nothing clobbered
+    assert issubclass(store.BlobTooDeep, store.InvalidBlob)
+
+
 def test_log_bytes_is_utf8_size(store, caplog):
     """The `bytes=` INFO field must be the stored UTF-8 size (what the cap
     and list_meta measure), not a character count."""

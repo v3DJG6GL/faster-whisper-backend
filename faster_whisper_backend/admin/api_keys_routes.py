@@ -510,6 +510,13 @@ async def import_client_settings_api(
         )
     except client_settings_store.StoreUnavailable as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
+    except client_settings_store.BlobTooDeep:
+        # Before `except InvalidBlob` — BlobTooDeep subclasses it.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "settings blob nested deeper than "
+            f"{client_settings_store._MAX_BLOB_DEPTH} levels",
+        )
     except client_settings_store.InvalidBlob:
         # Before `except ValueError` — InvalidBlob subclasses it.
         raise HTTPException(

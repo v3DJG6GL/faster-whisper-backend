@@ -141,7 +141,7 @@ def test_over_deep_blob_422_and_nothing_stored(client, monkeypatch):
     """GET renders through pydantic's serializer, which 500s from ~255
     levels: a stored over-deep blob would make every later pull of the
     account a bare 500 until the row is replaced, so PUT refuses it."""
-    monkeypatch.setattr(routes, "_MAX_BLOB_DEPTH", 8)
+    monkeypatch.setattr(store, "_MAX_BLOB_DEPTH", 8)
     r = _put(client, {"a": _nested(8)}, 0)  # cap + 1
     assert r.status_code == 422
     assert "nested deeper than 8" in r.json()["detail"]
@@ -151,7 +151,7 @@ def test_over_deep_blob_422_and_nothing_stored(client, monkeypatch):
 
 
 def test_blob_at_depth_cap_round_trips(client, monkeypatch):
-    monkeypatch.setattr(routes, "_MAX_BLOB_DEPTH", 8)
+    monkeypatch.setattr(store, "_MAX_BLOB_DEPTH", 8)
     blob = {"theme": "dark", "nest": _nested(7)}  # cap
     assert _put(client, blob, 0).status_code == 200
     r = client.get(_URL)

@@ -63,6 +63,12 @@ class InvalidBlob(ValueError):
     Routes map this to 422. Subclasses ValueError so `except ValueError`
     (the 413 path) must come AFTER `except InvalidBlob`."""
 
+
+class BlobTooDeep(InvalidBlob):
+    """The blob nests deeper than _MAX_BLOB_DEPTH. An InvalidBlob, so every
+    caller that maps InvalidBlob to 422 refuses it; the /v1 PUT route
+    catches it first for its more specific message."""
+
 # Size caps — applied server-side before insert. The blob is opaque JSON, so
 # an over-cap payload is REJECTED (ValueError → route maps to 413), never
 # truncated: cutting JSON mid-document would hand every other device a
@@ -75,6 +81,14 @@ class InvalidBlob(ValueError):
 # The device label is informational metadata → truncation is harmless.
 _CAP_BLOB = 4 * 1024 * 1024 - 4096
 _CAP_DEVICE = 200
+
+# Deepest nesting a stored blob may have (the blob object itself is level 1).
+# GET renders through pydantic's response serializer, which 500s from about
+# 255 levels while json.dumps here accepts them, so without this cap one
+# over-deep write (a /v1 PUT or an admin import) breaks every later pull of
+# that account. The desktop client's serde_json stops at 128 levels of the
+# whole response anyway; its real blob is a handful of levels deep.
+_MAX_BLOB_DEPTH = 64
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS client_settings (
@@ -215,10 +229,18 @@ def list_meta() -> list[dict[str, Any]]:
 def _serialize(blob: Any, device: str | None) -> tuple[str, int, str | None]:
     """Shared put()/force_put() validation: (blob_json, utf-8 size, device).
 
-    Raises InvalidBlob for a non-finite float or a lone surrogate (in the
-    blob or the device label — UnicodeEncodeError is a ValueError too, and
-    would otherwise surface as the 413 "too large"), ValueError past
-    _CAP_BLOB."""
+    Raises BlobTooDeep past _MAX_BLOB_DEPTH, InvalidBlob for a non-finite
+    float or a lone surrogate (in the blob or the device label —
+    UnicodeEncodeError is a ValueError too, and would otherwise surface as
+    the 413 "too large"), ValueError past _CAP_BLOB."""
+    stack: list[tuple[Any, int]] = (
+        [(blob, 1)] if isinstance(blob, (dict, list)) else [])
+    while stack:
+        node, depth = stack.pop()
+        if depth > _MAX_BLOB_DEPTH:
+            raise BlobTooDeep(f"blob nested deeper than {_MAX_BLOB_DEPTH} levels")
+        children = node.values() if isinstance(node, dict) else node
+        stack.extend((c, depth + 1) for c in children if isinstance(c, (dict, list)))
     try:
         blob_json = json.dumps(
             blob, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
@@ -254,7 +276,7 @@ def put(
 
     Raises ValueError if the serialized blob exceeds _CAP_BLOB, InvalidBlob
     (a ValueError subclass) if it holds a non-finite float or a lone
-    surrogate.
+    surrogate, BlobTooDeep (an InvalidBlob) past _MAX_BLOB_DEPTH.
     Force-push needs no special flag: send the version just fetched and
     the CAS matches unless someone else wrote in between — which is
     exactly the conflict the versioning exists to catch.
@@ -310,8 +332,9 @@ def force_put(
     sees a newer server copy: the imported settings propagate through
     the devices' normal merge path with no device-side changes.
 
-    Raises InvalidBlob for a non-finite float (NaN/Infinity) or a lone
-    surrogate, and ValueError if the serialized blob exceeds _CAP_BLOB
+    Raises InvalidBlob for a non-finite float (NaN/Infinity), a lone
+    surrogate or nesting past _MAX_BLOB_DEPTH (BlobTooDeep), and ValueError
+    if the serialized blob exceeds _CAP_BLOB
     (the route maps them to 422 and 413, same as put()). InvalidBlob
     subclasses ValueError, so callers must catch it first."""
     blob_json, blob_bytes, dev = _serialize(blob, device)

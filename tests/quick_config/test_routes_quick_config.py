@@ -239,6 +239,57 @@ def test_recent_get_no_longer_filters_by_query_string(client):
     assert [t["request_id"] for t in r.json()["recent"]] == ["q2", "q1"]
 
 
+def test_recent_body_rendered_off_loop_unchanged(client, monkeypatch):
+    """/recent and /recent/search render their (up to ~64 MB) body row by row
+    in the worker thread and return a finished Response: FastAPI's response
+    serializer, which ran validate + dump of the whole page on the loop,
+    never runs. The bytes are the ones that serializer produced — non-ASCII
+    unescaped, a non-finite float in a step as null, compact."""
+    from typing import Any
+
+    import fastapi.routing
+    from pydantic import TypeAdapter
+
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    base = time.time() + 1000.0
+    recent_transcriptions_store.record_trace(
+        request_id="r1", model="m", raw="gruesse", final="Grüße 😀 – ok",
+        steps=[["s", "a", "b"]], language="de", created_ts=base + 1)
+    # A stage timing dict is stored with allow_nan, so it can hold Infinity.
+    recent_transcriptions_store.record_timing(
+        request_id="r1", model="m", audio_s=1.5, processing_s=0.25,
+        status="ok", words=2, stages=[{"name": "s", "ms": float("inf"), "x": 0.1}],
+        created_ts=base + 1)
+    recent_transcriptions_store.record_trace(
+        request_id="r2", model="m", raw="b", final="b", created_ts=base + 2)
+
+    def expected(limit, query=None):
+        traces = recent_transcriptions_store.list_recent(limit=limit, query=query)
+        nb = traces[-1]["created_ts"] if len(traces) >= limit else None
+        return TypeAdapter(dict[str, Any]).dump_json(
+            {"recent": traces, "next_before_ts": nb})
+
+    def _no_serializer(*a, **kw):
+        raise AssertionError("response serializer ran on the loop")
+
+    monkeypatch.setattr(fastapi.routing, "serialize_response", _no_serializer)
+    for r, want in (
+        (client.get("/quick-config/recent"), expected(100)),
+        (client.get("/quick-config/recent", params={"limit": 1}), expected(1)),
+        (client.post("/quick-config/recent/search", json={"q": "grüße"}),
+         expected(100, "grüße")),
+        (client.post("/quick-config/recent/search", json={"q": "zzznope"}),
+         expected(100, "zzznope")),
+    ):
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/json"
+        assert r.content == want
+    body = client.get("/quick-config/recent").content
+    assert "Grüße 😀".encode() in body and b'"ms":null' in body
+    assert client.get("/quick-config/recent", params={"limit": 1}).json()[
+        "next_before_ts"] is not None
+
+
 def test_reapply_rules_status(client):
     r = client.get("/quick-config/reapply-rules/status")
     assert r.status_code == 200
