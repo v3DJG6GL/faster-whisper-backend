@@ -642,14 +642,21 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
 # blamed always matches what the formatting actually runs.
 
 @functools.lru_cache(maxsize=64)
-def _holdback_spec(gen: int, exclude: "frozenset[str]", include: "frozenset[str]",
-                   language: "str | None") -> "_seam_holdback.HoldSpec":
+def _holdback_spec(gen: int, sel: "tuple[int, ...]") -> "_seam_holdback.HoldSpec":
     # `gen` only keys the cache: a rebuild_caches() bumps _RULES_GEN, so a
-    # spec built from an older rule set is never served again.
+    # spec built from an older rule set is never served again. `sel` holds
+    # the _COMPILED_RULES indices of the callback:map rows the caller's
+    # scoping and language run. Keying on those rows rather than on
+    # (exclude, include, language) lets every caller that runs the same rows
+    # share one spec: a spec on a large map takes long to build and holds
+    # tens of MB, and a client controls its handshake language. A rebuild
+    # between the caller's selection and this build can shift the indices;
+    # such a spec lands under the stale gen, and the row checks keep it from
+    # reading a non-map row.
+    rules = _COMPILED_RULES
     return _seam_holdback.build_spec(
-        rule.map_lookup for rule in _COMPILED_RULES
-        if rule.type == "callback:map" and rule.map_lookup
-        and _rule_runs(rule, exclude, include, language))
+        rules[i].map_lookup for i in sel
+        if i < len(rules) and rules[i].type == "callback:map" and rules[i].map_lookup)
 
 
 def holdback_start(raw: str, *, model_name: "str | None" = None, ident=None,
@@ -659,7 +666,16 @@ def holdback_start(raw: str, *, model_name: "str | None" = None, ident=None,
     words the active dictation maps would still join with the next utterance.
     See pipeline/seam_holdback.py."""
     exclude, include = _scoping(model_name, ident)
-    spec = _holdback_spec(_RULES_GEN, frozenset(exclude), frozenset(include), language)
+    # Read the gen BEFORE the rules: rebuild_caches rebinds _COMPILED_RULES
+    # first and bumps _RULES_GEN after, so a rebuild in between can at worst
+    # file a newer rule set's spec under a gen nobody looks up again — never
+    # old-rule indices under the live gen.
+    gen = _RULES_GEN
+    rules = _COMPILED_RULES
+    sel = tuple(i for i, rule in enumerate(rules)
+                if rule.type == "callback:map" and rule.map_lookup
+                and _rule_runs(rule, exclude, include, language))
+    spec = _holdback_spec(gen, sel)
     return _seam_holdback.held_start(raw, spec)
 
 
