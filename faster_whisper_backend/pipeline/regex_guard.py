@@ -633,10 +633,21 @@ def _nested_repetition(pat: str) -> bool:
     A pattern whose fixed counts unroll one branch past _UNROLL_ATOMS atoms
     (``_branch_atoms``) is refused: the overlap test's cost grows with the
     square of a branch's atoms, and no real rule comes near.
+
+    Nesting deeper than _MAX_NESTING is refused the same way, but only for a
+    pattern sre compiles: `"(" * 512` is no repetition at all, and the
+    caller's compile reports it as the invalid regex it is.
     """
     try:
         return _nested_repetition_scan(pat)
     except _TooWide:
+        return True
+    except _TooDeep:
+        import re
+        try:
+            re.compile(pat)
+        except (re.error, RecursionError, OverflowError, ValueError):
+            return False
         return True
 
 
@@ -721,7 +732,7 @@ def _nested_repetition_scan(pat: str) -> bool:
                 # cost, so past this its walk would grow with the cube of
                 # the nesting. No real rule comes near (the deepest shipped
                 # or historical one nests 3); refusing is the safe side.
-                return True
+                raise _TooDeep
             stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic,
                           "lookaround": lookaround, "conditional": conditional,
                           "open": i, "pending": []})
@@ -983,6 +994,10 @@ _UNROLL_ATOMS = 512
 
 class _TooWide(Exception):
     """A branch unrolled past _UNROLL_ATOMS atoms (see _branch_atoms)."""
+
+
+class _TooDeep(Exception):
+    """Groups nested past _MAX_NESTING (see _nested_repetition)."""
 
 
 def _top_level_alt(body: str) -> bool:
