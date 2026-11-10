@@ -1,10 +1,14 @@
 """The factory tighten-german-quote-close entry is linear on a run of „
-openings with no closing “, with the same output as before.
+openings with no closing “ and on a long space run after one „, with the
+same output as before.
 
 Its quoted text could run past a later „, so from every „ the scan went on
 to the end of the line looking for a “. A whole transcript is one line, so a
 repeated dictated "Anführungszeichen unten" (or Whisper looping on it) took
-quadratic time on /transcribe (10000 items: 10 s).
+quadratic time on /transcribe (10000 items: 10 s). The lazy quoted text also
+grew one character at a time through a space run, trying the closing run at
+each step, so a single „ before a hallucinated "* * *" loop was quadratic too
+(40000 items: 2.6 s).
 """
 
 import random
@@ -33,10 +37,18 @@ def test_repeated_dictated_openings_are_fast(app_module):
     assert out.count("„") == 5000
 
 
+def test_a_single_dictated_opening_before_a_symbol_loop_is_fast(app_module):
+    app_module.cfg.PIPELINE_RULES = _factory_rules()
+    pl_engine.rebuild_caches()
+    out = _fast_postprocess("Anführungszeichen unten Hallo" + " *" * 40000 + " Ende")
+    assert out == "„Hallo Ende"
+
+
 def test_a_run_of_unclosed_openings_is_fast():
     e = _entry(_factory_rules(), _LABEL)
     for text in ("„Hallo " * 20000, "„ x " * 20000, "„Hallo " * 20000 + " “",
-                 "„a „ \t" * 10000 + "b"):
+                 "„a „ \t" * 10000 + "b", "„Hallo" + " " * 40000 + "x",
+                 "„" + " \t" * 20000 + "x"):
         t0 = time.perf_counter()
         re.sub(e["pattern"], e["replacement"], text)
         assert time.perf_counter() - t0 < 0.5, repr(text[:12])
@@ -55,18 +67,28 @@ _SENTENCES = (
 def test_the_output_is_unchanged():
     _assert_same_output_as_old(_LABEL, _SENTENCES)
     e = _entry(_factory_rules(), _LABEL)
-    old = renames.UPGRADED_RULE_ENTRIES[_LABEL][0]
-    new, old_re = re.compile(e["pattern"]), re.compile(old[0])
+    new = re.compile(e["pattern"])
+    olds = [(re.compile(p), r) for p, r in (
+        renames.UPGRADED_RULE_ENTRIES[_LABEL][0], *renames.EARLIER_RULE_ENTRIES[_LABEL])]
     rnd = random.Random(0)
     alphabet = "„“  \ta\nx"
     for _ in range(20000):
         s = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 16)))
-        assert new.sub(e["replacement"], s) == old_re.sub(old[1], s), repr(s)
+        got = new.sub(e["replacement"], s)
+        for old_re, old_rep in olds:
+            assert got == old_re.sub(old_rep, s), repr(s)
 
 
 def test_a_stored_copy_of_the_old_entry_is_upgraded_once():
     _assert_upgrades_to_factory_once(
         _factory_rules_with_entry(_LABEL, renames.UPGRADED_RULE_ENTRIES[_LABEL][0]),
+        [f"digit-and-whitespace-tidy/{_LABEL}"])
+
+
+def test_a_stored_copy_of_the_original_entry_is_upgraded_once():
+    """A copy saved before the quoted text stopped at the next „."""
+    _assert_upgrades_to_factory_once(
+        _factory_rules_with_entry(_LABEL, ("(„[^“\\n]*?)[ \\t]+“", "\\1“")),
         [f"digit-and-whitespace-tidy/{_LABEL}"])
 
 

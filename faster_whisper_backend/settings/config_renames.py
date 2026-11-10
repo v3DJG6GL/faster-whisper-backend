@@ -128,15 +128,17 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('"[ \\t]*([^"]*?)[ \\t]*("|\\Z)', '"\\1\\2'),
         ('"[ \\t]*((?:[^"]*?[^" \\t])?)[ \\t]*("|\\Z)', '"\\1\\2'),
     ),
-    # The quoted text could run past a later „, so from every „ the scan went
-    # on to the end of the line looking for a “. A whole transcript is one
-    # line, so a repeated dictated "Anführungszeichen unten" (or Whisper
-    # looping on it) took quadratic time on /transcribe (10000 items: 10 s).
-    # The quoted text now stops at the next „; the output is the same (a
-    # match from that later „ removes the same spaces).
+    # The lazy quoted text grew one character at a time through a space run
+    # and tried the closing run at every step, so one dictated „ before a
+    # hallucinated "* * * *" loop (a space run once strip-stray-symbols
+    # deleted the symbols) took quadratic time on /transcribe (40000 items:
+    # 2.6 s). The quoted text now ends only on a non-space, so a space run is
+    # tried once, from the character before it; the output is the same (a
+    # quote that holds only spaces still empties). It also stops at the next
+    # „ (EARLIER_RULE_ENTRIES), so a run of openings with no “ stays linear.
     "tighten-german-quote-close": (
-        ('(„[^“\\n]*?)[ \\t]+“', '\\1“'),
         ('(„[^“„\\n]*?)[ \\t]+“', '\\1“'),
+        ('(„(?:[^“„\\n]*?[^“„\\n \\t])?)[ \\t]+“', '\\1“'),
     ),
     # The old pattern also fired right after a digit, so "vom 3.-10 Oktober"
     # became "vom 310 Oktober" ("12.-14.03." → "1214.03.", "2,-5 mg" →
@@ -253,6 +255,13 @@ EARLIER_RULE_ENTRIES: dict[str, tuple[tuple[str, str], ...]] = {
     # twice.
     "tighten-quote-spacing": (
         ('"[ \\t]*([^"\\n]+?)[ \\t]*"', '"\\1"'),
+    ),
+    # Up to 81f5d981 the quoted text could run past a later „, so from every
+    # „ the scan went on to the end of the line looking for a “: a repeated
+    # dictated "Anführungszeichen unten" took quadratic time (10000 items:
+    # 10 s).
+    "tighten-german-quote-close": (
+        ('(„[^“\\n]*?)[ \\t]+“', '\\1“'),
     ),
     # c4fefe2..00fd42f: the sentence-start group `[.!?…]\s*` consumed the
     # previous sentence's terminator, so every second sentence got no opening
