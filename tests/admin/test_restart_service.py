@@ -422,3 +422,12 @@ def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(fake_tm
     assert (fake_tmp / "urlmedia-live.m4a").exists()
     assert (fake_tmp / "whisperup-live.wav").exists()
     assert (fake_tmp / "tmpabc123.wav").exists()
+
+
+def test_reclaim_sweeps_an_orphaned_private_separator_dir(fake_tmp):
+    old = fake_tmp / "fwb-bgm-dead"
+    old.mkdir()
+    (old / "vocals-x.wav").write_bytes(b"x")
+    _backdate(old)
+    restart_service.reclaim_hard_restart_orphans()
+    assert not old.exists()

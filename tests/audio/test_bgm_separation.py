@@ -522,3 +522,74 @@ def test_a_zombie_separation_makes_the_singleton_busy(monkeypatch):
         bgm_separation._separate_mutex.release()
     assert loads == []
     assert bgm_separation._separator is held
+
+
+def _stub_separator_module(monkeypatch, cls):
+    pkg = types.ModuleType("audio_separator")
+    sub = types.ModuleType("audio_separator.separator")
+    sub.Separator = cls
+    monkeypatch.setitem(sys.modules, "audio_separator", pkg)
+    monkeypatch.setitem(sys.modules, "audio_separator.separator", sub)
+    monkeypatch.setattr(bgm_separation, "_shims_installed", True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_vocals_stem_lands_in_a_private_dir_owner_only(monkeypatch, tmp_path):
+    """The speech-only stem of a caller's upload must not be written into the
+    shared temp dir at the umask mode."""
+    seen = {}
+
+    class _Separator:
+        def __init__(self, **kw):
+            seen.update(kw)
+            self.output_dir = kw["output_dir"]
+
+        def load_model(self, model_filename=None):
+            pass
+
+        def separate(self, path, custom_output_names=None):
+            name = custom_output_names["Vocals"] + ".wav"
+            with open(os.path.join(self.output_dir, name), "wb") as f:
+                f.write(b"RIFF")
+            return [name]
+
+    _stub_separator_module(monkeypatch, _Separator)
+    monkeypatch.setattr(bgm_separation.cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(bgm_separation, "_out_dir", None)
+    monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
+    sep = bgm_separation._load_blocking("Foo.onnx", "cpu")
+    out_dir = seen["output_dir"]
+    assert os.path.dirname(out_dir) == str(tmp_path)
+    assert os.path.basename(out_dir).startswith("fwb-bgm-")
+    assert os.stat(out_dir).st_mode & 0o777 == 0o700
+    old = os.umask(0o022)
+    try:
+        out = asyncio.run(bgm_separation._separate_with(
+            sep, "in.wav", progress_cb=None, cancel_check=None))
+    finally:
+        os.umask(old)
+    assert os.path.dirname(out) == out_dir
+    assert os.stat(out).st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership")
+def test_shared_tempdir_model_dir_must_be_private(monkeypatch, tmp_path):
+    """DOWNLOAD_ROOT empty: the model dir is a fixed name in the shared temp
+    dir, and a pre-created, world-writable one is refused before the
+    separator (which would load a planted model file) is built."""
+    class _Separator:
+        def __init__(self, **kw):
+            raise AssertionError("must not be constructed")
+
+    _stub_separator_module(monkeypatch, _Separator)
+    monkeypatch.setattr(bgm_separation.cfg, "DOWNLOAD_ROOT", "", raising=False)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    planted = tmp_path / "audio-separator"
+    planted.mkdir()
+    planted.chmod(0o777)
+    with pytest.raises(bgm_separation.BgmSeparationError, match="not private"):
+        bgm_separation._load_blocking("Foo.onnx", "cpu")
+    planted.rmdir()
+    bgm_separation._check_private_model_dir(str(planted))
+    assert planted.stat().st_mode & 0o777 == 0o700

@@ -323,6 +323,47 @@ def model_file_dir() -> str:
     return os.path.join(models_dir, "audio-separator")
 
 
+# Process-private (0700, mkdtemp) directory the separator writes its vocals
+# stems into. The shared system temp dir would leave the speech-only stem of a
+# caller's upload readable by any local account while it is written (libsndfile
+# creates it 0644 under the usual umask). Recreated if a tmp cleaner removed it;
+# a hard restart's leftovers are swept by restart_service ("fwb-bgm-").
+_out_dir: "str | None" = None
+
+
+def _output_dir() -> str:
+    global _out_dir
+    d = _out_dir
+    if d is None or not os.path.isdir(d):
+        d = tempfile.mkdtemp(prefix="fwb-bgm-")
+        _out_dir = d
+    return d
+
+
+def _check_private_model_dir(file_dir: str) -> None:
+    """With DOWNLOAD_ROOT empty the model dir is a FIXED name in the shared
+    temp dir, so whoever creates it first owns it — and audio-separator loads
+    a model file it finds there without re-downloading. Refuse a dir this
+    process does not own or that others can write; create it 0700 otherwise.
+    POSIX only (Windows has no getuid; its temp dir is per-user)."""
+    if (getattr(cfg, "DOWNLOAD_ROOT", None) or "").strip() or not hasattr(os, "getuid"):
+        return
+    try:
+        st = os.lstat(file_dir)
+    except FileNotFoundError:
+        os.makedirs(file_dir, mode=0o700, exist_ok=True)
+        st = os.lstat(file_dir)
+    import stat as _stat
+    if (_stat.S_ISLNK(st.st_mode) or not _stat.S_ISDIR(st.st_mode)
+            or st.st_uid != os.getuid() or st.st_mode & 0o022):
+        logger.error("[bgm] refusing model directory %s: not a private "
+                     "directory of this server's user (set "
+                     "WHISPER_DOWNLOAD_ROOT)", file_dir)
+        raise BgmSeparationError(
+            "music-separation model directory is not private to this server; "
+            "set WHISPER_DOWNLOAD_ROOT")
+
+
 def _load_blocking(model_filename: str, device: str):
     try:
         from audio_separator.separator import Separator
@@ -353,11 +394,12 @@ def _load_blocking(model_filename: str, device: str):
     except Exception:  # noqa: BLE001 — tuning only
         pass
     file_dir = model_file_dir()
+    _check_private_model_dir(file_dir)
     try:
         sep = Separator(
             log_level=logging.WARNING,
             model_file_dir=file_dir,
-            output_dir=tempfile.gettempdir(),
+            output_dir=_output_dir(),
             output_format="WAV",
             output_single_stem="Vocals",
             # Write stems with soundfile directly instead of the pydub
@@ -743,6 +785,11 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
                 if handoff["abandoned"]:
                     raise BgmCancelled()
                 _progress_tls.load_t0 = time.perf_counter()
+                out_dir = getattr(sep, "output_dir", None)
+                if isinstance(out_dir, str) and out_dir:
+                    # A tmp cleaner may have removed the private dir while
+                    # the separator stayed resident.
+                    os.makedirs(out_dir, mode=0o700, exist_ok=True)
                 logger.info("[bgm] loading audio for separation")
                 outputs = sep.separate(
                     path, custom_output_names={"Vocals": out_name})
@@ -755,9 +802,11 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
             raise RuntimeError("separator returned no output files")
         out = outputs[0]
         if not os.path.isabs(out):
-            out = os.path.join(tempfile.gettempdir(), out)
+            out = os.path.join(getattr(sep, "output_dir", None)
+                               or tempfile.gettempdir(), out)
         if not os.path.exists(out):
             raise RuntimeError(f"separator output missing: {out}")
+        store_common.secure_file(out)
         with handoff_lock:
             if not handoff["abandoned"]:
                 handoff["out"] = out
@@ -899,7 +948,11 @@ def _reset_for_tests() -> None:
     """Test-only: drop the separator singleton and its job leases; a leaked
     separator/lease would change what a later eviction or cache-hit test
     observes."""
-    global _separator, _separator_key, _loading_key
+    global _separator, _separator_key, _loading_key, _out_dir
+    if _out_dir is not None:
+        import shutil
+        shutil.rmtree(_out_dir, ignore_errors=True)
+    _out_dir = None
     _separator = None
     _separator_key = None
     _loading_key = None

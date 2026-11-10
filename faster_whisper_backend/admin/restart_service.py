@@ -171,7 +171,8 @@ def reclaim_hard_restart_orphans() -> None:
     ASGI shutdown, so in-flight requests leak their `urldl-` job dirs,
     `urlmedia-` pipeline copies (url_media_store.make_pipeline_copy),
     `whisperup-` upload spools, `sepsrc-`/`vocals-` separation WAVs,
-    `fwb-pkg-` subtitle-package workdirs and /captures `preview_merge_`
+    `fwb-pkg-` subtitle-package workdirs, `fwb-bgm-` separator output dirs
+    and /captures `preview_merge_`
     WAVs (plus merge_wavs' `.tmp` sibling) with no finally to reclaim them —
     url_media_store.startup_reset() wipes only URL_MEDIA_DIR (a same-fs
     `urlmedia-` copy is a hardlink whose retained name that reset already
@@ -187,13 +188,13 @@ def reclaim_hard_restart_orphans() -> None:
     for name in names:
         if not name.startswith(("urldl-", "urlmedia-", "whisperup-",
                                 "sepsrc-", "vocals-", "fwb-pkg-",
-                                "preview_merge_")):
+                                "fwb-bgm-", "preview_merge_")):
             continue
         path = os.path.join(tmp, name)
         try:
             if os.path.islink(path) or now - os.path.getmtime(path) < 60.0:
                 continue
-            if name.startswith(("urldl-", "fwb-pkg-")) and os.path.isdir(path):
+            if name.startswith(("urldl-", "fwb-pkg-", "fwb-bgm-")) and os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
             elif os.path.isfile(path):
                 os.unlink(path)
