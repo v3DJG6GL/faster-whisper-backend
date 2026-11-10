@@ -60,7 +60,11 @@ def _disk_usage_reporting(monkeypatch, free=None, exc=None):
 
 def _available_ram(monkeypatch, available=None, exc=None):
     """psutil.virtual_memory() reporting `available` bytes (or raising
-    `exc`); every other field stays real for the stats sampler."""
+    `exc`); every other field stays real for the stats sampler. The upload
+    decode's own RAM ceiling reads the same figure and would refuse these
+    clips outright; it is lifted here (tests/audio/test_decode_bounded.py
+    covers it) so the separator's cap is what these tests see."""
+    from faster_whisper_backend import main as _main
     real = psutil.virtual_memory
 
     def _vm():
@@ -68,6 +72,7 @@ def _available_ram(monkeypatch, available=None, exc=None):
             raise exc
         return real()._replace(available=available)
     monkeypatch.setattr(psutil, "virtual_memory", _vm)
+    monkeypatch.setattr(_main, "_upload_decode_cap_s", lambda: None)
 
 
 def _record_budget(monkeypatch, *, over_budget=False, exc=RuntimeError):

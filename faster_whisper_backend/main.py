@@ -1430,6 +1430,28 @@ def _sep_bytes_per_s(rate: int, channels: int) -> float:
             * max(1.0, rate / 48000))
 
 
+# Peak bytes per second of upload audio while it is decoded to 16 kHz: the
+# s16 buffer (BytesIO growth included), the float32 copy and its /32768
+# temporary measured 10.3 B per sample on a 30-min Opus file; 12 leaves room
+# for the lead-pad concatenate. Half of available RAM per decode keeps the two
+# shipped inference slots from taking all of it. Whisper's feature step needs
+# more again for speech it keeps, so any file this refuses would have run
+# the server out of memory anyway unless it is nearly all silence.
+_DECODE_BYTES_PER_S = 16000 * 12
+_DECODE_RAM_DIVISOR = 2
+
+
+def _upload_decode_cap_s() -> "float | None":
+    """Most seconds of audio one upload may decode to, from the RAM free
+    right now; None (no ceiling: fail open) when it cannot be read."""
+    try:
+        import psutil
+        free = int(psutil.virtual_memory().available)
+    except Exception:  # noqa: BLE001 — fail open
+        return None
+    return free / _DECODE_RAM_DIVISOR / _DECODE_BYTES_PER_S
+
+
 def _sep_ram_cap() -> "int | None":
     """Most bytes of 44.1 kHz stereo s16 audio the separator may take on, or
     None (no cap: fail open) when available RAM cannot be read."""
@@ -2038,11 +2060,11 @@ async def transcribe(
                             "retain_media: the server could not stage the "
                             "upload for the media store — not retained")
 
-            # The decoders below never go through transcode._open_audio's
-            # guard: faster-whisper's decode_audio (the lead-pad pre-decode
-            # and model.transcribe) opens the path with no protocol whitelist
-            # or format check, so an ffconcat / HLS / SDP playlist upload (an
-            # extensionless one included) would read a sibling local file.
+            # Not every decoder below goes through transcode._open_audio's
+            # guard: pyannote and the separator's loaders open the path with
+            # no protocol whitelist or format check, so an ffconcat / HLS /
+            # SDP playlist upload (an extensionless one included) would read
+            # a sibling local file.
             # One refusal here, before any stage, covers every later consumer
             # (and a file with no audio stream, which they cannot decode).
             try:
@@ -2803,45 +2825,56 @@ async def transcribe(
                         # far is the complete output.
                         pass
                     return _out
-                # The semaphore slot is held from here: the lead-pad decode and
-                # transcribe()'s eager audio decode + Silero VAD pass run before
-                # _collect, so they get their own stage instead of "waiting".
+                # The semaphore slot is held from here: the upload decode and
+                # transcribe()'s Silero VAD pass run before _collect, so they
+                # get their own stage instead of "waiting".
                 _ps(stage="analyzing", progress=None,
                     position=None, last_text=None, step=None,
                     model=None, device=None, compute=None)
-                # One origin for both branches, taken BEFORE the lead-pad
-                # pre-decode, so the "vad" row bills decode + pad + Silero
-                # as its own detail claims (a padded ndarray input skips
-                # transcribe()'s decode; without this the decode cost slid
-                # into the "transcribing" row).
+                # One origin for both branches, taken BEFORE the decode, so
+                # the "vad" row bills decode + pad + Silero as its own detail
+                # claims (transcribe() gets an ndarray and decodes nothing;
+                # without this the decode cost slid into the "transcribing"
+                # row).
                 _pre = time.perf_counter()
-                _audio = None
-                if _pad_ms > 0:
-                    try:
-                        import numpy as _np
-                        from faster_whisper.audio import decode_audio as _fw_decode
-                        _audio = _np.concatenate([
-                            _np.zeros(_pad_ms * 16, dtype="float32"),  # 16 samples/ms @ 16 kHz
-                            _fw_decode(_path, sampling_rate=16000),
-                        ])
-                    except Exception as _pad_err:
-                        logger.warning(
-                            "[lead-pad] pre-decode failed, transcribing unpadded: %s",
-                            _pad_err)
-                        _audio = None
+                # The handler decodes the upload itself (what transcribe()
+                # would do with a path, sample for sample) so the decode runs
+                # under a ceiling: only the byte size was capped before, and
+                # a 1 MB file of compressed silence decodes to gigabytes.
+                try:
+                    _audio = _transcode.decode_16k_bounded(
+                        _path, max_seconds=_upload_decode_cap_s())
+                except _transcode.DecodeTooLong:
+                    raise
+                except Exception as _dec_err:
+                    # transcribe() runs the same steps on the path and meets
+                    # the same error at the same frame, so handing it the
+                    # path decodes nothing past what was counted here; it
+                    # raises the decoder's own error for the undecodable arm.
+                    logger.warning(
+                        "[decode] upload decode failed, handing transcribe() "
+                        "the path: %s", _log_safe(str(_dec_err)))
+                    _audio = None
+                if _audio is not None and _pad_ms > 0:
+                    import numpy as _np
+                    _audio = _np.concatenate([
+                        _np.zeros(_pad_ms * 16, dtype="float32"),  # 16 samples/ms @ 16 kHz
+                        _audio,
+                    ])
                 # Decode trace (windows / rungs / tokens) for the receipt:
                 # the lazy generator is consumed inside the capture, that is
                 # where every window after the first is decoded.
                 with _decode_trace.capture(_kw, skip_residual=_skip,
                                            token_cap_per_s=_cap) as _trace:
-                    if _audio is not None:
+                    if _audio is not None and _pad_ms > 0:
                         _segs, _info = _model.transcribe(_audio, **_kw)
                         _t["pre_secs"] = time.perf_counter() - _pre
                         _out = _collect(_segs, _info, _pad_ms / 1000.0)
                         _t["trace"] = _decode_trace.finish(_trace, _out, _info)
                         return (*_shift_to_original_timeline(
                             _out, _info, _pad_ms / 1000.0), True)
-                    _segs, _info = _model.transcribe(_path, **_kw)
+                    _segs, _info = _model.transcribe(
+                        _path if _audio is None else _audio, **_kw)
                     _t["pre_secs"] = time.perf_counter() - _pre
                     _out = _collect(_segs, _info)
                     _t["trace"] = _decode_trace.finish(_trace, _out, _info)
@@ -3730,6 +3763,17 @@ async def transcribe(
                 _exc = HTTPException(
                     status_code=400,
                     detail="the file could not be decoded as audio")
+                raise _exc
+            if isinstance(e, _transcode.DecodeTooLong):
+                # The caller's input, like the 400 above: a 413 with the
+                # reason, not a 500 a client would retry.
+                logger.warning("Transcription input refused: %s", e)
+                _error_class, _error_stage = metrics.classify_error(
+                    e, status="error", stage=_cur_stage)
+                _exc = HTTPException(
+                    status_code=413,
+                    detail="the audio is too long to decode in this "
+                           "server's free memory")
                 raise _exc
             # Log the raw exception, but return a GENERIC detail: str(e) can
             # carry model-dir / temp-file paths (av/ffmpeg decode, model load),

@@ -12,8 +12,9 @@ and layout are per-caller:
   consumes; anything else it would re-decode/resample itself, slowly.
 
 decode_pieces_16k / decode_span_16k read short 16 kHz float pieces straight
-into memory for a link's language check; all open the source through
-_open_audio. refuse_multi_input applies the same demuxer refusal to a path
+into memory for a link's language check, and decode_16k_bounded reads the
+whole upload for Whisper under a duration ceiling; all open the source
+through _open_audio. refuse_multi_input applies the same demuxer refusal to a path
 headed for a decoder that does not (faster-whisper, pyannote).
 """
 from __future__ import annotations
@@ -32,6 +33,10 @@ _PCM_BITS = {"pcm_u8": 8, "pcm_s8": 8, "pcm_alaw": 8, "pcm_mulaw": 8,
              "pcm_s24be": 24, "pcm_s32le": 32, "pcm_s32be": 32,
              "pcm_f32le": 32, "pcm_f32be": 32, "pcm_s64le": 64,
              "pcm_f64le": 64, "pcm_f64be": 64}
+
+
+class DecodeTooLong(Exception):
+    """decode_16k_bounded's input ran past its `max_seconds` ceiling."""
 
 
 class TranscodeBudgetExceeded(RuntimeError):
@@ -190,6 +195,82 @@ def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
         return True
     finally:
         container.close()
+
+
+def _fw_valid_frames(frames):
+    """faster_whisper.audio._ignore_invalid_frames, verbatim: an
+    InvalidDataError ends PyAV's decode generator, so the decode stops at the
+    first invalid packet (unlike _decoded_frames, which skips it)."""
+    iterator = iter(frames)
+    while True:
+        try:
+            yield next(iterator)
+        except StopIteration:
+            break
+        except _av().error.InvalidDataError:
+            continue
+
+
+def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
+    """faster_whisper.audio._group_frames plus the duration ceiling. Each
+    frame is charged its own length as it leaves the decoder, BEFORE the
+    group reaches the resampler: one 500 000-sample group of a stream that
+    declares a 1 Hz rate would resample to ~10^10 samples in a single call."""
+    fifo = _av().audio.fifo.AudioFifo()
+    seconds = 0.0
+    for frame in frames:
+        if max_seconds is not None and frame.sample_rate:
+            seconds += frame.samples / frame.sample_rate
+            if seconds > max_seconds:
+                raise DecodeTooLong(
+                    f"audio runs past {max_seconds:.0f} s of decoded input")
+        frame.pts = None  # Ignore timestamp check.
+        fifo.write(frame)
+        if fifo.samples >= num_samples:
+            yield fifo.read()
+    if fifo.samples > 0:
+        yield fifo.read()
+
+
+def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
+    """faster-whisper's decode_audio(src_path, sampling_rate=16000), sample
+    for sample, with a ceiling: DecodeTooLong once the input decoded so far
+    runs past `max_seconds` (None: no ceiling), so a small, highly compressed
+    upload is refused before it materialises as gigabytes of float32. Opens
+    through _open_audio (file protocol only, playlists refused) and decodes
+    its first audio stream, the one decode_audio's audio=0 picks.
+
+    The steps mirror faster_whisper/audio.py 1.2.1 (s16 mono resampler,
+    500 000-sample groups, flush, s16 -> float32 / 32768);
+    tests/audio/test_decode_bounded.py compares the two on every format the
+    server takes, so a faster-whisper upgrade that changes them shows up."""
+    import gc
+    import io
+    import itertools
+
+    import numpy as np
+
+    av = _av()
+    resampler = av.audio.resampler.AudioResampler(
+        format="s16", layout="mono", rate=16000)
+    raw_buffer = io.BytesIO()
+    dtype = None
+    container, stream = _open_audio(src_path)
+    try:
+        frames = _fw_valid_frames(container.decode(stream))
+        frames = _fw_bounded_groups(frames, 500000, max_seconds)
+        for group in itertools.chain(frames, [None]):
+            for frame in resampler.resample(group):
+                array = frame.to_ndarray()
+                dtype = array.dtype
+                raw_buffer.write(array)
+    finally:
+        container.close()
+    # As in decode_audio: resampler objects are only freed by a collection.
+    del resampler
+    gc.collect()
+    audio = np.frombuffer(raw_buffer.getbuffer(), dtype=dtype)
+    return audio.astype(np.float32) / 32768.0
 
 
 def refuse_multi_input(path: str) -> None:

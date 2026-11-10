@@ -78,10 +78,13 @@ def test_live_progress_and_plan_use_the_original_timeline(
             if t.get("position") is not None] == [pytest.approx(0.9)]
 
 
-def test_pad_zero_passes_path_through(client, app_module, fake_model):
+def test_pad_zero_hands_the_unpadded_decode(client, app_module, fake_model):
+    # The handler decodes every upload itself (under its RAM ceiling); with
+    # no pad transcribe() gets exactly that decode, nothing prepended.
     app_module.cfg.LEADING_SILENCE_PAD_MS = 0
     _post_ok(client, _wav_bytes(seconds=1.0))
-    assert isinstance(fake_model.last_audio, str)
+    assert isinstance(fake_model.last_audio, np.ndarray)
+    assert fake_model.last_audio.shape == (16000,)
 
 
 def test_undecodable_upload_falls_back_to_path(client, app_module, fake_model):
