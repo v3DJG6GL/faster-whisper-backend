@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import re
@@ -475,8 +476,10 @@ async def export_client_settings_api(uid: str) -> Response:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no synced settings stored")
     name = user["username"] if user else "open-mode"
     name = _FILENAME_SAFE.sub("-", name).strip("-") or "user"
+    body = await asyncio.to_thread(functools.partial(
+        json.dumps, row["blob"], ensure_ascii=False, indent=2))
     return Response(
-        json.dumps(row["blob"], ensure_ascii=False, indent=2),
+        body,
         media_type="application/json",
         headers={
             "Content-Disposition":

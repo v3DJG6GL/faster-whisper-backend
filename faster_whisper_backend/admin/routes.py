@@ -477,7 +477,9 @@ async def get_factory_rules() -> dict[str, Any]:
     which returns the EFFECTIVE rules (config.json overlaid by config.local.json).
     """
     try:
-        rules = config_store.load_factory_rules()
+        # File read + model_validate re-compiles up to 200 rules' patterns:
+        # off the loop, like the other config reads on this router.
+        rules = await asyncio.to_thread(config_store.load_factory_rules)
     except RuntimeError as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(e))
     return {"PIPELINE_RULES": pl_apply.canon_rules(rules)}

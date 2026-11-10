@@ -287,3 +287,19 @@ def test_old_path_logged_once(client, app_module, monkeypatch, caplog):
     lines = [r for r in caplog.records
              if "Deprecated path /v1/client-settings" in r.getMessage()]
     assert len(lines) == 1
+
+
+def test_put_answers_are_rendered_off_the_event_loop(client, monkeypatch):
+    # Both answers carry the whole stored blob (up to ~4 MiB); the 409 costs
+    # the caller nothing, so neither may serialise it on the loop.
+    from tests.conftest import on_event_loop
+    seen = []
+    real = routes.JSONResponse
+
+    def _spy(*a, **k):
+        seen.append(on_event_loop())
+        return real(*a, **k)
+    monkeypatch.setattr(routes, "JSONResponse", _spy)
+    assert _put(client, {"n": 1}, 0).status_code == 200
+    assert _put(client, {"n": 2}, 0).status_code == 409
+    assert seen == [False, False]

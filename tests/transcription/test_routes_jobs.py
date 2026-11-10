@@ -477,3 +477,19 @@ def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module)
     js.finish(job_id=_PID, state="done", ttl_s=3600, result={"text": "hallo"})
     media_video._jobs_attach_video_sync(_PID, {"state": "failed", "error": "x"})
     assert js.get_result(_PID) == {"text": "hallo"}
+
+
+def test_result_is_rendered_off_the_event_loop(client, monkeypatch):
+    # A stored result can be megabytes and is re-fetchable for the job's TTL.
+    from faster_whisper_backend.transcription import jobs_routes
+    from tests.conftest import on_event_loop
+    seen = []
+    real = jobs_routes._JSONResponse
+
+    def _spy(*a, **k):
+        seen.append(on_event_loop())
+        return real(*a, **k)
+    _finished_with(client, {"text": "hallo"})
+    monkeypatch.setattr(jobs_routes, "_JSONResponse", _spy)
+    assert client.get(f"/v1/jobs/{_PID}/result").json() == {"text": "hallo"}
+    assert seen == [False]

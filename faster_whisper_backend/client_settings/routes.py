@@ -33,6 +33,7 @@ only sizes/versions, and this module logs nothing about the payload.
 from __future__ import annotations
 
 import asyncio
+import functools
 
 from typing import Any
 
@@ -174,12 +175,18 @@ async def put_client_settings(
             status.HTTP_413_CONTENT_TOO_LARGE,
             "client settings blob too large",
         )
+    # JSONResponse serialises its body in __init__, and both answers carry the
+    # whole stored blob (up to ~4 MiB, ~66 ms): build them off the loop like
+    # the depth walk and the store write above. The 409 costs the caller
+    # nothing, so it is the one a flood would use.
     if not ok:
-        return JSONResponse(
+        return await asyncio.to_thread(functools.partial(
+            JSONResponse,
             status_code=status.HTTP_409_CONFLICT,
             content={**_state_body(row), "detail": "version conflict"},
-        )
-    return JSONResponse(status_code=status.HTTP_200_OK, content=_state_body(row))
+        ))
+    return await asyncio.to_thread(functools.partial(
+        JSONResponse, status_code=status.HTTP_200_OK, content=_state_body(row)))
 
 
 @router.delete("/synced-client-settings")

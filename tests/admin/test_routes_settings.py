@@ -279,6 +279,19 @@ def test_get_factory_rules(client):
     assert isinstance(r.json()["PIPELINE_RULES"], list)
 
 
+def test_get_factory_rules_reads_off_the_event_loop(client, monkeypatch):
+    from tests.conftest import on_event_loop
+    seen = []
+    real = config_store.load_factory_rules
+
+    def _spy(*a, **k):
+        seen.append(on_event_loop())
+        return real(*a, **k)
+    monkeypatch.setattr(config_store, "load_factory_rules", _spy)
+    assert client.get("/settings/factory-rules").status_code == 200
+    assert seen == [False]
+
+
 def test_post_factory_rules_non_list_400(client):
     r = client.post("/settings/factory-rules", json={"PIPELINE_RULES": "not-a-list"})
     assert r.status_code == 400

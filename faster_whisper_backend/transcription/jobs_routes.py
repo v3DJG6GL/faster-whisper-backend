@@ -4,6 +4,7 @@ routes for a run posted with a ``progress_id`` and GET/DELETE /v1/jobs*
 transcription/progress.py.
 """
 import asyncio
+import functools
 import logging
 import time
 
@@ -210,7 +211,11 @@ async def job_result(job_id: str, request: Request,
     if isinstance(payload, dict):
         payload = _scrub_media_refs(
             payload, user_id=user.get("user_id"), run_open=run_open)
-    return _JSONResponse(payload, headers={"Cache-Control": "no-store"})
+    # A result can be megabytes (a 3 h verbose_json with words: ~6 MB, ~70 ms
+    # to serialise) and is re-fetchable for the job's whole TTL: render it off
+    # the loop. The scrub above stays on the loop (media registry).
+    return await asyncio.to_thread(functools.partial(
+        _JSONResponse, payload, headers={"Cache-Control": "no-store"}))
 
 
 @router.delete("/v1/jobs/{job_id}")
