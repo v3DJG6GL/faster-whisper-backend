@@ -1723,3 +1723,17 @@ def test_validate_keeps_small_lookbehind_capture(pattern, repl):
 ])
 def test_lookbehind_ref_charge(pattern, repl, charge):
     assert g._lookbehind_ref_charge(pattern, repl) == charge
+
+
+def test_probe_child_ignores_pythonpath_and_the_script_dir(tmp_path, monkeypatch):
+    # The child is stdlib-only and runs isolated (-I): a module on PYTHONPATH
+    # (or beside regex_guard.py) named like a stdlib one is never imported
+    # into it, and the child still answers.
+    marker = tmp_path / "shadow-ran"
+    (tmp_path / "json.py").write_text(
+        f"open({str(marker)!r}, 'w').close()\nraise SystemExit(3)\n")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    # Refused only by the child's chained probe: the verdict proves it ran.
+    with pytest.raises(ValueError, match="e1"):
+        g.validate(_CHAIN_ONLY, timeout=1.5)
+    assert not marker.exists()

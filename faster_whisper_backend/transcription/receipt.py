@@ -869,7 +869,11 @@ def _format_request_block(
         # Steps that did not rewrite the text (EXCLUDED for this model, globally
         # disabled, no-op) count as "unchanged" — the same split the
         # /quick-config and /reports viewers apply to this trace.
-        changed = sum(1 for _, before, after in steps if before != after)
+        # The engine keeps a long step text cut (pipeline.engine._trace_row),
+        # with a `changed` flag for a step whose edit lies past the cut.
+        changed = sum(1 for _, before, after in steps
+                      if before != after or getattr(before, "changed", False)
+                      or getattr(after, "changed", False))
         unchanged = len(steps) - changed
         plural = "s" if changed != 1 else ""
         header = f"  PIPELINE  ({changed} step{plural} changed text"
@@ -897,11 +901,15 @@ def _format_request_block(
 
 def _step_text(s: str) -> str:
     """repr() of one pipeline step's text, cut at the store's raw-text cap
-    with a marker naming how much was dropped."""
+    with a marker naming how much was dropped. A text the engine already cut
+    carries its uncut length as `full_len`."""
     cap = recent_transcriptions_store._CAP_RAW
-    if not isinstance(s, str) or len(s) <= cap:
+    if not isinstance(s, str):
         return repr(s)
-    return repr(s[:cap]) + f" …[+{len(s) - cap} chars]"
+    n = getattr(s, "full_len", len(s))
+    if n <= cap:
+        return repr(s)
+    return repr(s[:cap]) + f" …[+{n - cap} chars]"
 
 
 def _failed_stage(name: str, t0: float, model: "str | None",

@@ -37,12 +37,12 @@ accepted residual risk for a rule surface that is user-editable by design.
 
 Two roles, one file:
   * parent  ->  ``regex_guard.validate(checks)`` (imported from the package)
-  * child   ->  this file run as a script, ``[sys.executable, _SELF]`` (reads a
-                JSON list of ``[pattern, replacement]`` pairs on stdin, writes a
-                JSON verdict on stdout). Keep it stdlib-only: the child runs
-                outside the package with this file's directory
-                (faster_whisper_backend/pipeline/) as sys.path[0], so no
-                sibling module there may shadow a stdlib name.
+  * child   ->  this file run as a script, ``[sys.executable, "-I", _SELF]``
+                (reads a JSON list of ``[pattern, replacement]`` pairs on stdin,
+                writes a JSON verdict on stdout). Keep it stdlib-only: the
+                child runs outside the package in isolated mode, so neither
+                this file's directory nor PYTHONPATH / user site-packages is
+                on its sys.path and nothing else is importable.
 """
 from __future__ import annotations
 
@@ -2102,7 +2102,9 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     payload = json.dumps([[c[1], c[2]] for c in checks])
     try:
         proc = subprocess.run(
-            [sys.executable, _SELF],
+            # -I: no PYTHONPATH, user site or script dir on the child's
+            # sys.path, so nothing outside the stdlib is importable into it.
+            [sys.executable, "-I", _SELF],
             input=payload, capture_output=True, text=True, timeout=left,
         )
     except subprocess.TimeoutExpired as exc:

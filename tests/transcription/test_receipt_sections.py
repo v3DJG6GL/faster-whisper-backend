@@ -512,3 +512,22 @@ def test_receipt_renders_only_the_last_steps(app_module):
     assert "    … 7 earlier steps omitted" in block
     assert "▸ #6\n" not in block and "▸ #7\n" in block
     assert block.count("    ▸ #") == rts._CAP_STEPS_ROWS
+
+
+def test_receipt_clipped_trace_text_renders_identically(app_module):
+    # The engine keeps a step text cut at the store cap, with its uncut length
+    # and whether the step changed the text. Steps whose edit lies past the
+    # cut (and one that cuts the text back to exactly the cap) render the same
+    # marker and "changed" count as from the uncut strings.
+    from faster_whisper_backend.pipeline import engine as pl_engine
+
+    before = "a" * 60_000
+    rows = [("#1 tail", before, "a" * 55_000 + "b" * 5_000),
+            ("#2 cut", before, before[:50_000]),
+            ("#3 skip", before, before)]
+    cut = [pl_engine._trace_row(*row) for row in rows]
+    assert all(len(t) <= 50_000 for row in cut for t in row[1:])
+    block = _block(app_module, steps=cut)
+    assert block == _block(app_module, steps=rows)
+    assert "…[+10000 chars]" in block
+    assert "PIPELINE  (2 steps changed text, 1 unchanged)" in block

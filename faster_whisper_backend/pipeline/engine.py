@@ -100,6 +100,11 @@ _TERMINAL_CARD_NO: int = 0
 # KB, so 4 M chars only ever trips on a rule set that expands its own input
 # (the pipeline runs on admin-editable regexes).
 _POSTPROCESS_MAX_CHARS = 4_000_000
+# Longest step text the trace keeps. Every consumer cuts a step's text at this
+# length (receipt._step_text and the recent-transcriptions / reports stores'
+# _CAP_RAW), so a longer copy is never read, while a card of a few hundred
+# expanding steps would otherwise hold one multi-MB string per step.
+_TRACE_TEXT_MAX = 50_000
 # Most passes a repeating rule gets per transcript (see the schema constant).
 _REPEAT_MAX_PASSES = settings_schema.RULE_REPEAT_MAX_PASSES
 
@@ -365,6 +370,33 @@ def _callback_growth(rtype: "str | None", map_lookup: "dict[str, str] | None") -
     return None
 
 
+class _ClippedText(str):
+    """A trace step text cut at _TRACE_TEXT_MAX. `full_len` is the uncut
+    length and `changed` whether the step changed the text, which the cut
+    texts of a step that edits past the cut no longer show. str() / repr() /
+    json.dumps() give the same output as for the plain cut string."""
+    full_len: int
+    changed: bool
+
+
+def _trace_text(s: str, changed: bool) -> str:
+    """`s` as the trace keeps it: unchanged up to _TRACE_TEXT_MAX chars, else
+    a _ClippedText of its first _TRACE_TEXT_MAX chars."""
+    if len(s) <= _TRACE_TEXT_MAX:
+        return s
+    clipped = _ClippedText(s[:_TRACE_TEXT_MAX])
+    clipped.full_len = len(s)
+    clipped.changed = changed
+    return clipped
+
+
+def _trace_row(label: str, before: str, after: str) -> tuple:
+    """One `(label, before, after)` trace row, its texts cut by _trace_text;
+    whether the step changed the text is decided on the uncut strings."""
+    changed = before != after
+    return (label, _trace_text(before, changed), _trace_text(after, changed))
+
+
 class _PastBound(Exception):
     pass
 
@@ -469,7 +501,8 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
     each rule that changes the text, is skipped, or is force-included appends
     `(label_with_ordinal, before, after)` so the per-request log block can
-    render a diff view.
+    render a diff view; each text is kept to _TRACE_TEXT_MAX chars
+    (_trace_row).
 
     Per-model scoping (precedence top-down):
       1. PIPELINE_RULES_EXCLUDE — force-DISABLE for this model (highest priority).
@@ -522,7 +555,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                             why = f"SKIPPED lang:{language} ∉ {sorted(rule.languages)}"
                         else:
                             why = "SKIPPED globally disabled"
-                        trace.append((f"{ordinal} {label} [{why}]", text, text))
+                        trace.append(_trace_row(f"{ordinal} {label} [{why}]", text, text))
                     continue
                 forced_in = rule.name in include
                 before = text
@@ -535,8 +568,9 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                         "[pipeline] output would exceed %d chars at rule %r — it and "
                         "the remaining rules skipped", _POSTPROCESS_MAX_CHARS, rule.name)
                     if trace is not None:
-                        trace.append((f"{ordinal} {label} [OUTPUT BOUND — not applied]",
-                                      before, before))
+                        trace.append(_trace_row(
+                            f"{ordinal} {label} [OUTPUT BOUND — not applied]",
+                            before, before))
                     capped = True
                     break
                 text = out
@@ -546,12 +580,11 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                     # global state. Always emit (on its first pass) even when
                     # before == after, to make the override path visible.
                     if forced_in and not rule.enabled and (pass_no == 1 or before != text):
-                        trace.append(
-                            (f"{ordinal} {label} [FORCED on for {model_name}]",
-                             before, text)
-                        )
+                        trace.append(_trace_row(
+                            f"{ordinal} {label} [FORCED on for {model_name}]",
+                            before, text))
                     elif before != text:
-                        trace.append((f"{ordinal} {label}", before, text))
+                        trace.append(_trace_row(f"{ordinal} {label}", before, text))
                 # Absolute output bound. Rules whose replacement template
                 # expands what it matches compose: each one feeds the next, so
                 # a handful of them can multiply a short transcript into
@@ -571,15 +604,14 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     term_ordinal = _rule_ordinal(_TERMINAL_CARD_NO)
     if _TERMINAL_NAME in exclude:
         if trace is not None:
-            trace.append(
-                (f"{term_ordinal} {_TERMINAL_LABEL} [EXCLUDED for {model_name}]",
-                 text, text)
-            )
+            trace.append(_trace_row(
+                f"{term_ordinal} {_TERMINAL_LABEL} [EXCLUDED for {model_name}]",
+                text, text))
     else:
         before_trim = text
         text = text.lstrip(" \t\r").rstrip(" \t\r")
         if trace is not None and before_trim != text:
-            trace.append((f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text))
+            trace.append(_trace_row(f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text))
     return text
 
 
