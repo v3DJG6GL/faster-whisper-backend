@@ -88,18 +88,25 @@ def _client_id_warnings(warnings: "list[str]", ids: "list") -> "list[str]":
     """Rewrite positional 1-based segment references in translation warnings
     to the CLIENT-supplied segment ids (a group span expands to the member
     ids, which need not be sequential)."""
-    def _wid(v) -> str:
-        s = str(v)
-        return s if len(s) <= _WARN_ID_MAX else s[:_WARN_ID_MAX] + "…"
+    # Each target's fallback names the same segment again, and an id may be
+    # a multi-MB JSON container: str() each one once per request.
+    _memo: "dict[int, str]" = {}
+
+    def _wid(i: int) -> str:
+        s = _memo.get(i)
+        if s is None:
+            s = str(ids[i])
+            s = _memo[i] = (s if len(s) <= _WARN_ID_MAX
+                            else s[:_WARN_ID_MAX] + "…")
+        return s
 
     def _sub(m: "re.Match") -> str:
         if m.group(3) is not None:
             i = int(m.group(3)) - 1
-            return f"segment {_wid(ids[i])}" if 0 <= i < len(ids) else m.group(0)
+            return f"segment {_wid(i)}" if 0 <= i < len(ids) else m.group(0)
         a, b = int(m.group(1)) - 1, int(m.group(2)) - 1
         if 0 <= a <= b < len(ids):
-            return "segments " + ", ".join(_wid(ids[j])
-                                           for j in range(a, b + 1))
+            return "segments " + ", ".join(_wid(j) for j in range(a, b + 1))
         return m.group(0)
     return [_TR_SEG_WARN_RE.sub(_sub, w) for w in warnings]
 
@@ -601,6 +608,13 @@ async def translate_text(request: Request,
             else:
                 _mark_ready()
                 per_seg, warnings, meta = await _run_translation()
+            # Off the loop (the rewrite str()s client ids, which are not
+            # counted against the character cap), and still inside this
+            # try: a disconnect landing on the await is recorded by the
+            # `finally`, whereas past it the job row would stay `running`.
+            _warn_out = (await asyncio.to_thread(_client_id_warnings,
+                                                 warnings, ids)
+                         if warnings else [])
             _receipt_claimed_below = True
         except _tr.TranslationCancelled:
             raise tx_progress._ClientCancelled() from None
@@ -797,7 +811,7 @@ async def translate_text(request: Request,
         "translation": {"model": meta.get("model"), "targets": targets,
                         "source": meta.get("source"), "mode": meta.get("mode")},
         "plan": _rplan.snapshot()["plan"],
-        "warnings": _client_id_warnings(warnings, ids) + [
+        "warnings": _warn_out + [
             f"{name} is locked on this server — your value was ignored"
             for name in _ignored if name
         ],

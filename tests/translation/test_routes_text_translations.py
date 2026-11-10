@@ -162,6 +162,64 @@ def test_warning_ids_are_clipped(client, app_module, monkeypatch):
     assert [s["id"] for s in body["segments"]] == [long_x, long_y]
 
 
+def test_warning_id_rewrite_runs_off_the_loop(client, app_module, monkeypatch):
+    """The id rewrite str()s every referenced id, and an id may be a
+    multi-MB JSON container: it runs in a worker thread, not on the event
+    loop, and its text is unchanged."""
+    _enable(app_module, monkeypatch)
+
+    async def _fake(segments, targets, **kwargs):
+        per_seg = [{t: seg["text"] for t in targets} for seg in segments]
+        return per_seg, [
+            "segment 1 (en): kept original — translation failed (length ratio)",
+            "segments 1-2 (fr): kept original — translation failed (empty output)",
+        ], {"model": "org/d:Q4", "source": "de", "mode": "fluent",
+            "kept": {0: ["en"], 1: ["fr"]}}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    on_loop: "list[bool]" = []
+    real = tr_routes._client_id_warnings
+
+    def _spy(warnings, ids):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real(warnings, ids)
+    monkeypatch.setattr(tr_routes, "_client_id_warnings", _spy)
+
+    big = [[] for _ in range(50_000)]   # ~200 KB of "[], " once str()'d
+    r = _post_ok(client, segments=[{"id": big, "text": "eins"},
+                                   {"id": 9, "text": "zwei"}],
+                 targets=["en", "fr"], source="de")
+    assert on_loop == [False]
+    clip = str(big)[:64] + "…"
+    assert r.json()["warnings"] == [
+        f"segment {clip} (en): kept original — translation failed (length ratio)",
+        f"segments {clip}, 9 (fr): kept original — translation failed (empty output)",
+    ]
+
+
+def test_warning_rewrite_stringifies_each_id_once():
+    """Every target's fallback names the same segment again: each id is
+    str()'d once per request, not once per reference."""
+    calls = []
+
+    class _Id:
+        def __str__(self):
+            calls.append(1)
+            return "z" * 100
+
+    ids = [_Id(), 5]
+    out = tr_routes._client_id_warnings(
+        ["segment 1 (en): kept original"] * 8
+        + ["segments 1-2 (fr): kept original"], ids)
+    assert len(calls) == 1
+    assert out[0] == "segment " + "z" * 64 + "… (en): kept original"
+    assert out[-1] == "segments " + "z" * 64 + "…, 5 (fr): kept original"
+
+
 def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
     _enable_stubbed(app_module, monkeypatch)
     r = _post_ok(client, segments=[{"text": "a"}, {"text": "b"}])
