@@ -1017,7 +1017,10 @@ def _f4m_fragments_are_bounded() -> bool:
 # element tree or of lists and dicts, seconds of CPU on the probe thread. The
 # elements (start tags) and the JSON arrays and objects are counted in C
 # first, and so are the attributes (every one needs an `=`, so their count
-# can only overcount), against twice the element cap. expat builds an
+# can only overcount), against twice the element cap. JSON scalars cost an
+# object each just the same, and every array item and object member after
+# the first needs a `,`, so those are charged against twice the container
+# cap too (commas inside strings only overcount). expat builds an
 # internal entity's markup once per reference, where no count of the raw text
 # sees it, so a document that declares entities is refused outright; none of
 # the manifest formats yt-dlp parses declares any. With entities refused, a
@@ -1101,10 +1104,13 @@ def _etree_parses_are_bounded() -> bool:
                     for _module, fn in _etree_bindings()))
 
 
-def _json_containers(doc) -> int:
+def _json_oversized(doc) -> bool:
     if isinstance(doc, str):
-        return doc.count("[") + doc.count("{")
-    return doc.count(b"[") + doc.count(b"{")
+        containers, commas = doc.count("[") + doc.count("{"), doc.count(",")
+    else:
+        containers, commas = doc.count(b"[") + doc.count(b"{"), doc.count(b",")
+    return (containers > _MAX_JSON_CONTAINERS
+            or containers + commas > 2 * _MAX_JSON_CONTAINERS)
 
 
 def _bounded_parse_json(original):
@@ -1113,7 +1119,7 @@ def _bounded_parse_json(original):
     def _parse_json(self, json_string, *args, **kwargs):
         if (isinstance(json_string, (str, bytes, bytearray))
                 and len(json_string) > _MAX_JSON_CONTAINERS
-                and _json_containers(json_string) > _MAX_JSON_CONTAINERS):
+                and _json_oversized(json_string)):
             # Refused as yt-dlp refuses JSON it cannot parse: fatal raises,
             # otherwise a warning (unless errnote is False) and None.
             from yt_dlp.utils import ExtractorError
@@ -1122,7 +1128,7 @@ def _bounded_parse_json(original):
             fatal = call.arguments.get("fatal", True)
             errnote = call.arguments.get("errnote")
             video_id = call.arguments.get("video_id")
-            error = ValueError("the JSON holds too many arrays and objects "
+            error = ValueError("the JSON holds too many arrays, objects or items "
                                f"(more than {_MAX_JSON_CONTAINERS})")
             errnote = "Failed to parse JSON" if errnote is None else errnote
             if fatal:

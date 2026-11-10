@@ -2009,7 +2009,7 @@ def test_guard_counts_json_containers_before_parsing(monkeypatch):
     # The refusal follows _parse_json's own contract for JSON it cannot
     # parse: fatal raises, otherwise the same warning (none for
     # errnote=False) and None.
-    why = f"the JSON holds too many arrays and objects (more than {cap})"
+    why = f"the JSON holds too many arrays, objects or items (more than {cap})"
     for args, kwargs, note in (
             ((), {"fatal": False}, "Failed to parse JSON"),
             ((None, False, "boom"), {}, "boom"),
@@ -2022,6 +2022,36 @@ def test_guard_counts_json_containers_before_parsing(monkeypatch):
         assert len(warnings) == (1 if note else 0)
     assert _parse_json(at_cap)[0] == [[]] * (cap - 2) + [{}]
     assert _parse_json(at_cap.encode(), fatal=False)[0] == [[]] * (cap - 2) + [{}]
+
+
+def test_guard_counts_json_scalars_before_parsing(monkeypatch):
+    # A flat array of scalars is one container, yet every item costs a
+    # Python object: the items (a ',' each after the first) are charged
+    # against twice the container cap.
+    cap = 1000
+    monkeypatch.setitem(_registered_guard(), "_MAX_JSON_CONTAINERS", cap)
+    over = "[" + ",".join(["-9"] * (2 * cap + 2)) + "]"  # 1 + 2*cap + 1
+    at_cap = "[" + ",".join(["-9"] * 2 * cap) + "]"      # 1 + 2*cap - 1
+    members = "{" + ",".join(f'"a{i}":1' for i in range(2 * cap + 1)) + "}"
+    for doc in (over, over.encode(), members, members.encode()):
+        err, _warnings = _parse_json(doc)
+        assert isinstance(err, yt_dlp.utils.ExtractorError)
+        assert "Failed to parse JSON" in str(err) and "too many" in str(err)
+    assert _parse_json(at_cap)[0] == [-9] * 2 * cap
+    assert _parse_json(at_cap.encode(), fatal=False)[0] == [-9] * 2 * cap
+
+
+def test_guard_still_parses_a_page_sized_json_document():
+    # A page answer of a few MB with nested objects (the shape of
+    # ytInitialData) stays far below both ceilings.
+    item = ('{"videoRenderer":{"videoId":"abcdefghijk","title":{"runs":'
+            '[{"text":"some title, with a comma"}]},"lengthText":"3:14",'
+            '"thumbnails":[{"url":"https://i.example/x.jpg","width":120}]}}')
+    doc = '{"contents":[' + ",".join([item] * 20_000) + "]}"
+    assert len(doc) > 3_000_000
+    out, warnings = _parse_json(doc)
+    assert not isinstance(out, Exception) and warnings == []
+    assert len(out["contents"]) == 20_000
 
 
 def test_guard_is_not_installed_without_the_json_bound(monkeypatch):
