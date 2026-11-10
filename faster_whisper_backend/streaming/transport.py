@@ -34,6 +34,13 @@ _MAX_DECODE_RATIO = 1024
 # arrive before any audio, and an encoder may open with long near-silence, so
 # a stream's first stretch must never trip the ratio on its own.
 _DECODE_HEADROOM_S = 120.0
+# Ceiling on any single allocation inside ffmpeg. The output ratio above only
+# sees PCM once ffmpeg writes it, but a FLAC block declaring a 1 Hz rate is
+# resampled to 16 kHz as ONE frame: an 8 KB stream allocates gigabytes before
+# a byte reaches stdout. Real streams (65535-sample FLAC blocks at 48 kHz
+# stereo, Opus, MP3, AAC) never come near it; a bomb frame fails to decode
+# and the child stays at its baseline size.
+_MAX_FFMPEG_ALLOC = 64 * 1024 * 1024
 
 
 class RawPcmTransport:
@@ -86,6 +93,7 @@ class FfmpegTransport:
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
             audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+            "-max_alloc", str(_MAX_FFMPEG_ALLOC),
             # Restrict the input demuxer to the stdin pipe only. The client's
             # container bytes are self-contained (WebM/Opus/Ogg/mp4/…), so a
             # crafted playlist/concat/ffconcat input must not be able to coax

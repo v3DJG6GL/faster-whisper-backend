@@ -9,6 +9,7 @@ import asyncio
 import logging
 import struct
 import subprocess
+import sys
 
 import pytest
 
@@ -223,6 +224,70 @@ def test_ffmpeg_transport_stops_a_decode_amplification_bomb():
 
     assert asyncio.run(run())
     assert total <= len(wav) * 1024 + 120 * 16000 * 2
+
+
+def _tiny_rate_flac() -> bytes:
+    """A FLAC of 1 Hz noise in maximal 65535-sample blocks: one block
+    resamples to ~1e9 samples at 16 kHz in a single frame. Noise keeps the
+    blocks verbatim (~128 KiB each), past ffmpeg's ~64 KiB input probe, so it
+    decodes while stdin stays open as it does in a live session."""
+    try:
+        r = subprocess.run(
+            [ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+             "-f", "s16le", "-ar", "1", "-ac", "1", "-i", "pipe:0",
+             "-c:a", "flac", "-frame_size", "65535", "-f", "flac", "pipe:1"],
+            input=bytes(range(7, 256, 7)) * 7282, capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.skip("ffmpeg unavailable")
+    if r.returncode != 0 or not r.stdout:
+        pytest.skip("ffmpeg flac encode unavailable")
+    return r.stdout
+
+
+def _peak_rss_kib(pid: int) -> int:
+    with open(f"/proc/{pid}/status") as fh:
+        for line in fh:
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1])
+    return 0
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_ffmpeg_transport_bounds_a_one_frame_allocation_bomb():
+    """The output ratio never fires on a 1 Hz FLAC: ffmpeg allocates the whole
+    resampled frame (~2 GB) before writing a byte — at the latest when the
+    session ends and aclose() hands it EOF to flush. The per-allocation
+    ceiling refuses that frame, so the child stays small and decodes nothing."""
+    flac = _tiny_rate_flac()
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        await t.feed(flac)
+        pid = t._proc.pid
+        peak = 0
+
+        async def sample():
+            nonlocal peak
+            while True:
+                try:
+                    peak = max(peak, _peak_rss_kib(pid))
+                except OSError:
+                    return    # ffmpeg exited
+                await asyncio.sleep(0.02)
+
+        sampler = asyncio.create_task(sample())
+        await t.aclose()      # EOF: ffmpeg flushes the buffered block
+        sampler.cancel()
+        return peak
+
+    assert asyncio.run(run()) < 512 * 1024
+    assert total == 0
 
 
 def test_stream_route_accepts_webm_via_ffmpeg(client, energy_vad):
