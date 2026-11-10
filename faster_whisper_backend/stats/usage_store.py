@@ -651,6 +651,22 @@ def record_usage(
                 squat = (stub_run and owner["kind"] == "dictation"
                          and float(owner["created_ts"])
                          >= created_ts - p - wt - 60)
+                if (owner is not None and owner["user_id"] != uid and not squat
+                        and k in KINDS and k != "dictation"):
+                    # Someone else's session already holds this run's id
+                    # (a dictation or text request that named it first).
+                    # Clients mint hex ids only (_PROGRESS_ID_RE,
+                    # Outcome.job_id), so '~' opens a namespace no other
+                    # identity can claim: the run keeps its own job and
+                    # stage rows there, and a re-post of the same batch
+                    # accumulates on it as usual.
+                    jid = f"{jid}~{uid}"[:128]
+                    owner = conn.execute(
+                        "SELECT user_id, kind, utterances, created_ts, reported_ts,"
+                        " activation, delivery, translation, app_id"
+                        " FROM usage_jobs WHERE job_id = ?", (jid,)
+                    ).fetchone()
+                    stub_run = squat = False
                 if owner is not None and owner["user_id"] != uid and not squat:
                     # Client-minted ids can collide across users in
                     # theory: count the work, never merge it into

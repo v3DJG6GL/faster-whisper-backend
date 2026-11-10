@@ -414,8 +414,9 @@ def test_foreign_stub_stage_rows_stay_out_of_the_run_that_takes_it_over(us):
 
 
 def test_foreign_dictation_rows_are_never_merged(us):
-    """Dictation-vs-dictation collisions (a foreign stub or a foreign
-    session with utterances) still count the work without a job row."""
+    """Collisions with a foreign dictation stub or session never merge into
+    it: a dictation still counts its work without a job row, a file run
+    keeps a job of its own under its derived id."""
     _outcome(us, "s" * 32, user_id="mallory")
     _rec(us, user_id="alice", audio_s=5.0, words=20, kind="dictation",
          job_id="s" * 32)
@@ -428,8 +429,34 @@ def test_foreign_dictation_rows_are_never_merged(us):
         " ORDER BY job_id").fetchall()
     assert [tuple(r) for r in rows] == [
         ("s" * 32, "mallory", "dictation", 0),
-        ("t" * 32, "mallory", "dictation", 1)]
+        ("t" * 32, "mallory", "dictation", 1),
+        ("t" * 32 + "~alice", "alice", "file", 1)]
     assert _doc(us, user_id="mallory", days=1)["dictation"]["sessions"] == 2
+
+
+@pytest.mark.parametrize("first_kind", ["dictation", "text"])
+def test_foreign_session_under_the_id_does_not_drop_a_file_run(us, first_kind):
+    """Bob's dictation session or text request that named Alice's batch id
+    first keeps its row; Alice's file run keeps its own job and stage rows
+    under an id derived from hers, which no client-minted (hex) id can
+    claim."""
+    jid = "e" * 32
+    _rec(us, user_id="bob", audio_s=1.0, words=2, kind=first_kind, job_id=jid)
+    _rec(us, user_id="alice", audio_s=100.0, words=500, kind="file",
+         job_id=jid, stages=[{"name": "transcribing", "secs": 3.0}])
+    rows = us._require_conn().execute(
+        "SELECT job_id, user_id, kind, utterances, words FROM usage_jobs"
+        " ORDER BY job_id").fetchall()
+    assert [tuple(r) for r in rows] == [
+        (jid, "bob", first_kind, 1, 2),
+        (f"{jid}~alice", "alice", "file", 1, 500)]
+    stage = _row(us, "SELECT job_id, stage FROM usage_job_stages")
+    assert tuple(stage) == (f"{jid}~alice", "transcribing")
+    # A re-post of the same batch by Alice accumulates on her derived row.
+    _rec(us, user_id="alice", audio_s=1.0, words=5, kind="file", job_id=jid)
+    assert _row(us, "SELECT utterances, words FROM usage_jobs"
+                    f" WHERE job_id = '{jid}~alice'")[:] == (2, 505)
+    assert _doc(us, user_id="alice", days=1)["total"]["file"]["sessions"] == 1
 
 
 def _stub_at(us, monkeypatch, jid, ts, **kw):
@@ -442,17 +469,21 @@ def _stub_at(us, monkeypatch, jid, ts, **kw):
 def test_foreign_stub_older_than_the_run_is_left_to_its_owner(us, monkeypatch):
     """Only a stub that appeared while the run was under way can be a squat
     on its id. Bob's own dictation outcome stub from before Alice's run
-    started stays his: his session keeps counting and Alice's run records
-    without a job row, as any foreign collision does."""
+    started stays his: his session keeps counting and Alice's run keeps its
+    job and stage rows under its derived id."""
     jid = "d" * 32
     _stub_at(us, monkeypatch, jid, time.time() - 600, user_id="bob", app_id="vim")
     _rec(us, user_id="alice", audio_s=100.0, words=500, kind="file",
          job_id=jid, processing_s=30.0, wait_s=5.0,
          stages=[{"name": "transcribing", "secs": 3.0}])
     job = _row(us, "SELECT user_id, kind, utterances, app_id, reported_ts IS NOT NULL"
-                   " FROM usage_jobs")
+                   f" FROM usage_jobs WHERE job_id = '{jid}'")
     assert tuple(job) == ("bob", "dictation", 0, "vim", 1)
-    assert _row(us, "SELECT COUNT(*) FROM usage_job_stages")[0] == 0
+    mine = _row(us, "SELECT user_id, kind, utterances FROM usage_jobs"
+                    f" WHERE job_id = '{jid}~alice'")
+    assert tuple(mine) == ("alice", "file", 1)
+    stage = _row(us, "SELECT job_id, stage FROM usage_job_stages")
+    assert tuple(stage) == (f"{jid}~alice", "transcribing")
     assert _row(us, "SELECT SUM(sessions) FROM usage_dictation_hourly")[0] == 1
     assert _row(us, "SELECT SUM(sessions) FROM usage_app_hourly")[0] == 1
     assert _doc(us, user_id="alice", days=1)["total"]["file"]["sessions"] == 1
