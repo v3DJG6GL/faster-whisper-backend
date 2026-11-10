@@ -37,6 +37,6 @@ def transcode_raises(monkeypatch, exc):
     """Replace the synchronous audio_transcode.transcode_to_wav with one that
     raises `exc`. Keeps the real signature: the route's fallback arm would
     swallow the TypeError of a stale one."""
-    def _raises(src, dst, *, rate=44100, layout="stereo"):
+    def _raises(src, dst, *, rate=44100, layout="stereo", max_bytes=None):
         raise exc
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _raises)

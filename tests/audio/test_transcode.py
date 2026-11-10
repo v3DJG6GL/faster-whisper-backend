@@ -390,3 +390,29 @@ def test_transcode_survives_a_mid_stream_format_change(tmp_path):
 def test_decode_span_survives_a_mid_stream_format_change(tmp_path):
     src = _concat_mp3(tmp_path)
     assert len(audio_transcode.decode_span_16k(src, 1.0, 2.0)) == 2 * RATE
+
+
+def test_transcode_to_wav_max_bytes_aborts_and_unlinks(tmp_path):
+    """A budget the output would pass aborts mid-decode (the BGM path hands
+    in the free space of the temp dir) and leaves no partial WAV behind."""
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=16000, nchannels=1,
+                         dur_s=10.0)
+    dst = str(tmp_path / "out.wav")
+    with pytest.raises(RuntimeError, match="budget"):
+        audio_transcode.transcode_to_wav(src, dst, rate=44100,
+                                         layout="stereo", max_bytes=100_000)
+    assert not os.path.exists(dst)
+
+
+def test_transcode_to_wav_max_bytes_none_or_roomy_is_unchanged(tmp_path):
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=16000, nchannels=1,
+                         dur_s=2.0)
+    plain = str(tmp_path / "plain.wav")
+    n = audio_transcode.transcode_to_wav(src, plain, rate=44100,
+                                         layout="stereo")
+    for budget in (None, n):
+        dst = str(tmp_path / f"out-{budget}.wav")
+        assert audio_transcode.transcode_to_wav(
+            src, dst, rate=44100, layout="stereo", max_bytes=budget) == n
+        with open(dst, "rb") as a, open(plain, "rb") as b:
+            assert a.read() == b.read()

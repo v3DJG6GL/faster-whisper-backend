@@ -218,10 +218,16 @@ def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:
 
 
 def transcode_to_wav(src_path: str, dst_path: str, *,
-                     rate: int, layout: str) -> int:
+                     rate: int, layout: str,
+                     max_bytes: "int | None" = None) -> int:
     """Decode anything PyAV understands, resample to `rate`/`layout`, write
     a RIFF/WAVE file at dst_path. Returns bytes written. On any failure
-    the destination is best-effort unlinked."""
+    the destination is best-effort unlinked.
+
+    `max_bytes` bounds the PCM written: a few hundred KB of low-bitrate
+    Opus/MP3 expands several hundred times into 44.1 kHz stereo, so a
+    caller writing to a shared temp dir passes its free space and the
+    transcode aborts (RuntimeError) before it fills the disk."""
     av = _av()
     in_container = None
     out_container = None
@@ -233,9 +239,15 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
         out_stream.layout = layout
         out_stream.format = _OUT_FORMAT
 
+        written = 0
         for resampled in _resampled(
                 _decoded_frames(in_container, in_stream),
                 format=_OUT_FORMAT, layout=layout, rate=rate):
+            # s16: two bytes per sample per channel.
+            written += resampled.samples * len(resampled.layout.channels) * 2
+            if max_bytes is not None and written > max_bytes:
+                raise RuntimeError(
+                    "transcode output exceeds the free-space budget")
             for packet in out_stream.encode(resampled):
                 out_container.mux(packet)
 

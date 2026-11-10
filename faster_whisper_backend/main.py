@@ -826,6 +826,31 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.media import video as media_video
 
 
+@app.middleware("http")
+async def _upload_preauth_mw(request: Request, call_next):
+    """Refuse an upload from a caller with no valid credential before its
+    body is parsed. The upload routes take File()/Form() params, and FastAPI
+    runs `await request.form()` BEFORE solve_dependencies, so their
+    Depends(get_current_user) would fire only after Starlette had spooled
+    every file part to TMPDIR (up to MAX_REQUEST_BYTES) and held every text
+    field in RAM — for anyone who can reach the port.
+
+    Registered first, so it is the innermost middleware: the CSRF/origin
+    guard and the body cap still answer first, exactly as before, and this
+    one only moves the route's own 401 ahead of the form parse. Same core
+    (`_resolve_user`) and the same response as the dependency, which stays
+    in place as the authoritative check; on unsafe methods the CSRF guard
+    has already stashed the session lookup, so a cookie is not looked up
+    twice."""
+    if (request.method == "POST"
+            and request.url.path in _MULTIPART_UPLOAD_PATHS):
+        rec = await asyncio.to_thread(
+            _auth._resolve_user, request, _auth.bearer_credentials(request))
+        if rec is None:
+            return await _http_exception_handler(request, _auth._UNAUTH)
+    return await call_next(request)
+
+
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 # Paths that issue a session and therefore can't carry a CSRF token yet.
 # Exempt from the TOKEN check only — the origin check still applies (these
@@ -1248,6 +1273,15 @@ def _shift_to_original_timeline(segments, info, pad_s: float):
     if dav is not None:
         info.duration_after_vad = min(orig_dur, float(dav))
     return segments, info
+
+
+def _render_json_response(content: dict) -> JSONResponse:
+    """The response FastAPI builds from a dict a field-less route returns
+    (jsonable_encoder, then JSONResponse), as a plain call so the handler
+    can run it in a worker thread: a long verbose_json with word timestamps
+    is megabytes, and both steps run on the loop otherwise."""
+    from fastapi.encoders import jsonable_encoder
+    return JSONResponse(jsonable_encoder(content))
 
 
 # Read granularity for the uploaded part. 1 MiB matches Starlette's own
@@ -2338,9 +2372,24 @@ async def transcribe(
                                 os.close(_tfd)
                                 _tc0 = time.perf_counter()
                                 _ps(step="preparing")
+                                # Low-bitrate audio expands several hundred
+                                # times into this WAV, ahead of the inference
+                                # slot: bound it by the temp dir's free space
+                                # minus a margin for the other writers there.
+                                # Over budget takes the fallback below, like
+                                # ENOSPC. Fails open when free space can't be
+                                # queried.
+                                try:
+                                    _sep_budget = max(0, (await asyncio.to_thread(
+                                        shutil.disk_usage,
+                                        os.path.dirname(_sep_wav))).free
+                                        - 1_000_000_000)
+                                except OSError:
+                                    _sep_budget = None
                                 await asyncio.to_thread(
                                     _transcode.transcode_to_wav, tmp_path,
-                                    _sep_wav, rate=44100, layout="stereo")
+                                    _sep_wav, rate=44100, layout="stereo",
+                                    max_bytes=_sep_budget)
                                 logger.info(
                                     "[bgm] input .%s → 44.1 kHz WAV for "
                                     "separation in %.1fs (%.1f MB)",
@@ -3239,9 +3288,11 @@ async def transcribe(
                 # and the output wrappers (a dictation prefix/suffix) stay
                 # out. Transcript only, like `text`: translate_to tracks have
                 # no slot in a single-language subtitle file.
-                _doc = _subtitles.render([
+                # In a worker thread: one pipeline walk per cue adds up to a
+                # frozen loop on a long run (2 700 segments for 3 h of audio).
+                _doc = await asyncio.to_thread(lambda: _subtitles.render([
                     (seg["start"], seg["end"], _postprocess(seg["text"]))
-                    for seg in segments_list], response_format)
+                    for seg in segments_list], response_format))
                 _response_payload = _doc
                 # text/plain like OpenAI's srt / vtt answers, and like `text`:
                 # the jobs result route serves a stored str the same way.
@@ -3360,7 +3411,7 @@ async def transcribe(
                     response["source_media_expires_at"] = (
                         url_media_store.expires_at_unix(_source_media_id))
                 _response_payload = response
-                return response
+                return await asyncio.to_thread(_render_json_response, response)
 
             # Default `json` shape. Additive keys only (OpenAI-compat callers
             # ignore them, exactly like source_media_id below): a caller that
@@ -3388,7 +3439,7 @@ async def transcribe(
                 response["source_media_expires_at"] = (
                     url_media_store.expires_at_unix(_source_media_id))
             _response_payload = response
-            return response
+            return await asyncio.to_thread(_render_json_response, response)
 
         except tx_progress._ClientCancelled:
             # The client asked (via the cancel endpoint) to abort. Not an

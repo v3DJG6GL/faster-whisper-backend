@@ -109,7 +109,7 @@ def test_separation_row_keeps_transcode_detail_when_transcode_ran(
         client, app_module, monkeypatch):
     _stub_separate(app_module, monkeypatch)
 
-    def _fake_transcode(src, dst, *, rate=44100, layout="stereo"):
+    def _fake_transcode(src, dst, *, rate=44100, layout="stereo", max_bytes=None):
         with open(dst, "wb") as f:
             f.write(b"RIFFtcWAVE")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _fake_transcode)
