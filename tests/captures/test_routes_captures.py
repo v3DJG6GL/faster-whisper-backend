@@ -553,6 +553,57 @@ def test_preview_merge_audio_removes_its_temp_file(
     assert not os.path.exists(written[0])
 
 
+def test_preview_merge_audio_caps_previews_in_flight_per_identity(
+        client, make_user_key, monkeypatch):
+    """A preview's temp WAV lives until its download ends: a client that
+    never reads would otherwise pin preview after preview in the temp dir.
+    The slot is held for the response's whole life and given back once the
+    file is gone, and on a failed merge."""
+    from faster_whisper_backend.captures import merge as audio_merge
+
+    uid, root_key = make_user_key("root", is_admin=True)
+
+    monkeypatch.setattr(
+        captures_routes, "_validate_merge_payload",
+        lambda ids, silence_ms, user: ([], "root", ["/nonexistent.wav"], 0))
+    written = []
+    held_while_sent = []
+
+    def _fake_merge(paths, dst, **kw):
+        written.append(dst)
+        _write_silent_wav(dst, 16)
+        return {"duration_ms": 1}
+    monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
+    limiter = captures_routes._preview_inflight
+    real_call = captures_routes._TempFileResponse.__call__
+
+    async def _sending(self, scope, receive, send):
+        held_while_sent.append(limiter._counts.get(uid, 0))
+        await real_call(self, scope, receive, send)
+    monkeypatch.setattr(captures_routes._TempFileResponse, "__call__", _sending)
+
+    cap = captures_routes._PREVIEW_MAX_INFLIGHT_PER_USER
+    for _ in range(cap):
+        assert limiter.acquire(uid)
+    r = _post_members(client, root_key, "samples/preview-audio", ["prevcap00001"])
+    assert r.status_code == 429
+    assert r.json()["error"]["type"] == "rate_limit_exceeded"
+    assert written == []
+    limiter.release(uid)
+    r = _post_members(client, root_key, "samples/preview-audio", ["prevcap00001"])
+    assert r.status_code == 200
+    assert held_while_sent == [cap]
+    assert limiter._counts.get(uid) == cap - 1
+    assert not os.path.exists(written[0])
+
+    def _bad_merge(paths, dst, **kw):
+        raise ValueError("members disagree on the sample rate")
+    monkeypatch.setattr(audio_merge, "merge_wavs", _bad_merge)
+    r = _post_members(client, root_key, "samples/preview-audio", ["prevcap00001"])
+    assert r.status_code == 400
+    assert limiter._counts.get(uid) == cap - 1
+
+
 @pytest.mark.parametrize("range_header, code", [
     (None, 200), ("bytes=0-3", 206), ("bytes=99999-", 416), ("bytes=abc", 400)])
 def test_temp_file_response_unlinks_on_every_range_answer(

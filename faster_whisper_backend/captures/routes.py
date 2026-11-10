@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import Any, Literal
 
@@ -94,6 +94,18 @@ _audio_rate = rate_limit.FixedWindow(
     default_max=240,
     message="Too many audio requests ({limit}/min) — retry in "
             "{retry_after}s.",
+)
+# Merge previews per identity whose temp WAV is still alive: the file lives
+# until its download ends, so a client that never reads would otherwise pin
+# preview after preview in the temp dir. A reviewer auditions one at a time.
+# A module constant, not a setting: cfg has no such field, so the limiter's
+# config lookup always falls back to it.
+_PREVIEW_MAX_INFLIGHT_PER_USER = 8
+_preview_inflight = rate_limit.InFlight(
+    config_field="CAPTURES_PREVIEW_MAX_INFLIGHT_PER_USER",
+    default_max=_PREVIEW_MAX_INFLIGHT_PER_USER,
+    message="you already have {limit} merge previews loading — "
+            "wait for one to finish",
 )
 
 
@@ -1467,13 +1479,25 @@ class _TempFileResponse(FileResponse):
     Starlette runs `background` only after a normal body send: its Range
     branches (400 malformed, 416 unsatisfiable) return before it, and a
     client disconnect mid-stream raises past it — either way a `background`
-    unlink would leave the merged PHI WAV in the temp dir for good."""
+    unlink would leave the merged PHI WAV in the temp dir for good.
+    `on_close` runs once after the unlink: the identity's preview slot
+    covers the file's whole life, download included."""
+
+    def __init__(self, *args, on_close: "Callable[[], None] | None" = None,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_close = on_close
 
     async def __call__(self, scope, receive, send):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            store_common.unlink_quietly(self.path)
+            try:
+                store_common.unlink_quietly(self.path)
+            finally:
+                if self._on_close is not None:
+                    cb, self._on_close = self._on_close, None
+                    cb()
 
 
 @router.post(
@@ -1492,41 +1516,53 @@ async def preview_merge_audio_api(
     Used by the /captures Auto-propose merges modal + the manual merge-
     modal to let users preview the merged audio before committing."""
 
-    _audio_rate.hit(rate_limit.identity_key(user, request))
+    _key = rate_limit.identity_key(user, request)
+    _audio_rate.hit(_key)
 
     _captures, _owner, member_paths, _total_audio_ms = (
         await _validate_merge_off_loop(payload.member_ids, user)
     )
 
-    # mkstemp + close so FileResponse can stream the closed file.
-    fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
-    os.close(fd)
+    _took_slot = _preview_inflight.acquire(_key)
+    handed_off = False
     try:
-        # Off the loop: a VAD pass per member plus the WAV write with fsync.
-        await asyncio.to_thread(
-            functools.partial(
-                audio_merge.merge_wavs,
-                member_paths, tmp_path, gap_ms=capture_samples._global_silence_ms(),
-                trim=bool(getattr(
-                    cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
-                edge_pad_ms=capture_samples._global_edge_ms(),
-                max_internal_gap_ms=capture_samples._global_silence_ms(),
+        # mkstemp + close so FileResponse can stream the closed file.
+        fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
+        os.close(fd)
+        try:
+            # Off the loop: a VAD pass per member plus the WAV write with fsync.
+            await asyncio.to_thread(
+                functools.partial(
+                    audio_merge.merge_wavs,
+                    member_paths, tmp_path, gap_ms=capture_samples._global_silence_ms(),
+                    trim=bool(getattr(
+                        cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
+                    edge_pad_ms=capture_samples._global_edge_ms(),
+                    max_internal_gap_ms=capture_samples._global_silence_ms(),
+                )
             )
-        )
-    except Exception as e:
-        store_common.unlink_quietly(tmp_path)
-        if isinstance(e, ValueError):  # incl. audio_merge.WavFormatError
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-        raise
+        except Exception as e:
+            store_common.unlink_quietly(tmp_path)
+            if isinstance(e, ValueError):  # incl. audio_merge.WavFormatError
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+            raise
 
-    return _TempFileResponse(
-        path=tmp_path,
-        media_type="audio/wav",
-        filename="preview.wav",
-        # Merged dictation audio: FileResponse alone emits only ETag/Last-Modified,
-        # which makes the body heuristically cacheable by a shared cache.
-        headers={"Cache-Control": "no-store"},
-    )
+        # Starlette always awaits the returned response, so its close hook
+        # releases the slot however the body send ends.
+        resp = _TempFileResponse(
+            path=tmp_path,
+            media_type="audio/wav",
+            filename="preview.wav",
+            # Merged dictation audio: FileResponse alone emits only ETag/Last-Modified,
+            # which makes the body heuristically cacheable by a shared cache.
+            headers={"Cache-Control": "no-store"},
+            on_close=(lambda: _preview_inflight.release(_key)) if _took_slot else None,
+        )
+        handed_off = True
+        return resp
+    finally:
+        if _took_slot and not handed_off:
+            _preview_inflight.release(_key)
 
 
 @router.post(
