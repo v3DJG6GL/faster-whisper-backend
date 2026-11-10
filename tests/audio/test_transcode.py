@@ -501,3 +501,79 @@ def test_is_pcm_wav_or_flac_reads_the_bytes_not_the_name(tmp_path):
         for pkt in [*st.encode(fr), *st.encode(None)]:
             out.mux(pkt)
     assert audio_transcode.is_pcm_wav_or_flac(mp3_in_wav) is False
+
+
+def _riff_chunks(data):
+    """{chunk id: offset of its 8-byte header} of a RIFF/WAVE body."""
+    import struct
+    chunks, pos = {}, 12
+    while pos + 8 <= len(data):
+        cid, size = bytes(data[pos:pos + 4]), struct.unpack_from("<I", data, pos + 4)[0]
+        chunks.setdefault(cid, pos)
+        if cid == b"data":
+            break
+        pos += 8 + size + (size & 1)
+    return chunks
+
+
+def _forge_wav_length(path, out_path):
+    """`path` with a data size far past the end of the file and a byte rate
+    1000 times its own: FFmpeg then times the file by the byte rate, at a
+    thousandth of what libsndfile reads (it counts the real samples)."""
+    import struct
+    data = bytearray(open(path, "rb").read())
+    chunks = _riff_chunks(data)
+    byte_rate_at = chunks[b"fmt "] + 8 + 8
+    struct.pack_into("<I", data, byte_rate_at,
+                     struct.unpack_from("<I", data, byte_rate_at)[0] * 1000)
+    struct.pack_into("<I", data, chunks[b"data"] + 4, 0xFFFFFFF0)
+    with open(out_path, "wb") as f:
+        f.write(data)
+    return out_path
+
+
+def _av_wav(path, codec, fmt, layout, *, rate=22050, seconds=1.0):
+    with av.open(path, "w", format="wav") as out:
+        st = out.add_stream(codec, rate=rate)
+        st.layout = layout
+        ch = len(st.layout.channels)
+        n = int(rate * seconds)
+        dtype = {"s16": np.int16, "s32": np.int32, "flt": np.float32,
+                 "dbl": np.float64, "u8": np.uint8}[fmt.rstrip("p")]
+        arr = np.zeros((1, n * ch), dtype=dtype)
+        if fmt == "u8":
+            arr += 128
+        fr = av.AudioFrame.from_ndarray(arr, format=fmt, layout=layout)
+        fr.sample_rate = rate
+        for pkt in [*st.encode(fr), *st.encode(None)]:
+            out.mux(pkt)
+    return path
+
+
+@pytest.mark.parametrize("codec,fmt,layout", [
+    ("pcm_s16le", "s16", "mono"),
+    ("pcm_s24le", "s32", "stereo"),
+    ("pcm_s32le", "s32", "2.1"),
+    ("pcm_f32le", "flt", "2.1"),
+    ("pcm_f64le", "dbl", "stereo"),
+    ("pcm_u8", "u8", "2.1"),
+    ("pcm_alaw", "s16", "mono"),
+    ("pcm_mulaw", "s16", "stereo"),
+])
+def test_is_pcm_wav_or_flac_keeps_an_honest_pcm_wav(tmp_path, codec, fmt, layout):
+    src = _av_wav(str(tmp_path / f"{codec}.wav"), codec, fmt, layout)
+    assert audio_transcode.is_pcm_wav_or_flac(src) is True
+
+
+def test_is_pcm_wav_or_flac_refuses_a_forged_byte_rate(tmp_path):
+    """A PCM WAV whose data size overruns the file and whose byte rate is
+    forged is timed by that byte rate (a thousandth of its samples here),
+    while the separator's libsndfile reads every sample: its header does
+    not bound the decode, so it is not trusted as a native PCM WAV."""
+    honest = _write_src_wav(str(tmp_path / "honest.wav"), rate=RATE,
+                            nchannels=1, dur_s=1.0)
+    assert audio_transcode.is_pcm_wav_or_flac(honest) is True
+    forged = _forge_wav_length(honest, str(tmp_path / "forged.wav"))
+    assert audio_transcode.declared_shape(forged)[0] < 0.01
+    assert audio_transcode.is_pcm_wav_or_flac(forged) is False
+

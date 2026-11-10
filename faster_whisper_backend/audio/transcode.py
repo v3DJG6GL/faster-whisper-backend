@@ -26,6 +26,13 @@ from faster_whisper_backend.core import store_common
 _OUT_FORMAT = "s16"
 _OUT_CODEC = "pcm_s16le"     # WAV's native uncompressed codec
 
+# Bits per sample of each PCM codec a WAV carries, for its byte-rate check.
+_PCM_BITS = {"pcm_u8": 8, "pcm_s8": 8, "pcm_alaw": 8, "pcm_mulaw": 8,
+             "pcm_s16le": 16, "pcm_s16be": 16, "pcm_s24le": 24,
+             "pcm_s24be": 24, "pcm_s32le": 32, "pcm_s32be": 32,
+             "pcm_f32le": 32, "pcm_f32be": 32, "pcm_s64le": 64,
+             "pcm_f64le": 64, "pcm_f64be": 64}
+
 
 class TranscodeBudgetExceeded(RuntimeError):
     """transcode_to_wav's output passed its `max_bytes` budget. A
@@ -93,14 +100,21 @@ def is_pcm_wav_or_flac(src_path: str) -> bool:
     """Whether `src_path` IS a PCM WAV or a FLAC — container and codec as the
     demuxer reads the bytes, whatever the file is named. Only for those does
     declared_shape's duration bound what a decoder reads: an MP3 or ADPCM
-    stream inside a WAV is timed from a byte rate the uploader wrote. Raises
-    what _open_audio raises."""
+    stream inside a WAV is timed from a byte rate the uploader wrote. A PCM
+    WAV counts only when its byte rate is its sample shape (rate x channels
+    x bits): FFmpeg times a WAV whose data size overruns the file by that
+    byte rate, while libsndfile reads every sample there is. An unknown
+    pcm_* codec fails closed. Raises what _open_audio raises."""
     container, stream = _open_audio(src_path)
     try:
         fmt = getattr(container.format, "name", None) or ""
         codec = getattr(stream.codec_context, "name", None) or ""
-        return ((fmt == "wav" and codec.startswith("pcm_"))
-                or (fmt == "flac" and codec == "flac"))
+        if fmt == "wav":
+            bits = _PCM_BITS.get(codec)
+            rate, ch = stream.rate or 0, stream.channels or 0
+            return (bits is not None and rate > 0 and ch > 0
+                    and stream.codec_context.bit_rate == rate * ch * bits)
+        return fmt == "flac" and codec == "flac"
     finally:
         container.close()
 
