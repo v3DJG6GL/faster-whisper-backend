@@ -1675,3 +1675,43 @@ def test_lookahead_group_refs(pattern, repl, hit):
 def test_validate_refuses_a_lookahead_capture_reference_in_process():
     with pytest.raises(ValueError, match="lookahead"):
         g.validate([("t", r"(?=(n.*))", "\\1")])
+
+
+@pytest.mark.parametrize("pattern,repl", [
+    (r"(?<=([^.!?]{30}))", "\\1" * 10),
+    (r"(?<=(.{200}))n", "\\1" * 10),
+    (r"(?<=(.{5000}))", "\\1" * 10),
+    (r"(?<=([a-z ]{50}n))", "\\1" * 10),
+    (r"(?<=(?P<x>\w{40}))(?=n)", "\\g<x>" * 10),
+])
+def test_validate_refuses_a_lookbehind_capture_amplifier(pattern, repl):
+    """A lookbehind matches zero characters yet its group holds up to the
+    lookbehind's width, so each reference re-inserts that many characters
+    before the match at every position: `(?<=([^.!?]{30}))` with ten `\\1`
+    grows a punctuated transcript about 200x per entry, and the analytic bound
+    charged each reference one character."""
+    with pytest.raises(ValueError, match="lookbehind"):
+        g.validate([("t", pattern, repl)])
+
+
+@pytest.mark.parametrize("pattern,repl", [
+    (r"(?<=(\d))\s", "\\1"),
+    (r"(?<=\d)(\d{3})", ".\\1"),
+    (r"(?<=(\d))(?<=(\d))x", "\\1\\2"),
+])
+def test_validate_keeps_small_lookbehind_capture(pattern, repl):
+    g.validate([("t", pattern, repl)])
+
+
+@pytest.mark.parametrize("pattern,repl,charge", [
+    (r"(?<=(\d))\s", "\\1", 1),
+    (r"(?<=(.{200}))n", "\\1" * 10, 2000),
+    (r"(?<=((a)bc))", "\\1\\2", 4),
+    (r"(?<=(?P<x>ab))", "\\g<x>\\g<1>", 4),
+    (r"(?<=(ab))", "\\\\1", 0),          # an escaped backslash, not a reference
+    (r"(ab)(?<=(b))", "\\1", 0),           # the group outside the lookbehind
+    (r"(?<!(ab))x", "\\1", 0),             # a negative lookbehind never captures
+    ("(", "\\1", 0),                      # unparsable: the compile step reports it
+])
+def test_lookbehind_ref_charge(pattern, repl, charge):
+    assert g._lookbehind_ref_charge(pattern, repl) == charge

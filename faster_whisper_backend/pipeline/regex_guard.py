@@ -492,7 +492,8 @@ def _lookahead_group_refs(pattern: str, repl: str) -> bool:
     consumed. A group inside a lookahead breaks that: `(?=(n.*))` matches the
     empty string at every "n" yet captures the whole rest of the transcript, so
     `\1` re-inserts it at every position (quadratic output from one short
-    rule). Lookbehinds are fixed-width and bounded, and a group inside a
+    rule). A group inside a lookbehind is bounded by the lookbehind's fixed
+    width, which _lookbehind_ref_charge charges instead, and a group inside a
     negative lookahead is never set on a match, so only positive lookaheads
     count. Parse-only (no matching), so it cannot hang."""
     if not pattern or not repl or "\\" not in repl:
@@ -525,6 +526,13 @@ def _lookahead_group_refs(pattern: str, repl: str) -> bool:
     _walk(parsed, False)
     if not inside:
         return False
+    return any(gid in inside for gid in _repl_group_refs(parsed, repl))
+
+
+def _repl_group_refs(parsed, repl: str):
+    """Each group number ``repl`` references (`\\N`, `\\g<N>`, `\\g<name>`)
+    in the parsed pattern, once per reference; the whole match (group 0) is
+    left out."""
     import re
 
     names = getattr(parsed.state, "groupdict", {}) or {}
@@ -532,14 +540,64 @@ def _lookahead_group_refs(pattern: str, repl: str) -> bool:
     # is not a reference.
     for m in re.finditer(r"\\(?:(\d{1,2})|g<([^>]*)>|.)", repl, re.S):
         num, ref = m.group(1), m.group(2)
-        if num is not None and not num.startswith("0") and int(num) in inside:
-            return True
+        if num is not None and not num.startswith("0"):
+            yield int(num)
         if ref is not None:
             ref = ref.strip()
             gid = int(ref) if ref.isdigit() else names.get(ref)
-            if gid and gid in inside:
-                return True
-    return False
+            if gid:
+                yield gid
+
+
+def _lookbehind_ref_charge(pattern: str, repl: str) -> int:
+    """Characters ``repl``'s references to lookbehind captures can copy per match.
+
+    A positive lookbehind matches zero characters, yet a group inside it holds
+    up to the lookbehind's fixed width: `(?<=([^.!?]{30}))` with ten `\\1`
+    re-inserts the 30 characters before EVERY position ten times. The analytic
+    growth bound charges each reference the pattern's shortest match, which is
+    one character here, so the copy has to be charged at the group's widest
+    instead. Parse-only (no matching), so it cannot hang; 0 when the pattern
+    does not parse (the compile step reports it)."""
+    if not pattern or not repl or "\\" not in repl:
+        return 0
+    try:
+        parser = _sre_modules()[0]
+        parsed = parser.parse(pattern)
+    except Exception:  # noqa: BLE001 - the compile step reports a bad pattern
+        return 0
+    sub_t = parser.SubPattern
+    widths: "dict[int, int]" = {}
+
+    def _any(x, lb: bool) -> None:
+        if isinstance(x, sub_t):
+            _walk(x, lb)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                _any(y, lb)
+
+    def _walk(sp, lb: bool) -> None:
+        for op, av in sp:
+            name = str(op)
+            if name == "ASSERT" and av[0] == -1:
+                _any(av[1], True)
+                continue
+            if name == "SUBPATTERN" and lb and av[0] is not None:
+                widths[av[0]] = av[3].getwidth()[1]
+            _any(av, lb)
+
+    _walk(parsed, False)
+    if not widths:
+        return 0
+    return sum(widths.get(gid, 0) for gid in _repl_group_refs(parsed, repl))
+
+
+def _min_width(pattern: str) -> int:
+    """The shortest string ``pattern`` can match, 0 when it does not parse."""
+    try:
+        return _sre_modules()[0].parse(pattern).getwidth()[0]
+    except Exception:  # noqa: BLE001 - width analysis is best effort
+        return 0
 
 
 def _nested_repetition(pat: str) -> bool:
@@ -2013,6 +2071,15 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
                 "group captured inside a lookahead `(?=(...))`, which copies "
                 "text beyond the match — it can repeat the rest of the "
                 "transcript at every position. Capture outside the lookahead."
+            )
+        if _repl and (_lookbehind_ref_charge(pattern, _repl)
+                      > max(_MAX_GROWTH * max(_min_width(pattern), 1),
+                            _MIN_ABS_GROWTH)):
+            raise ValueError(
+                f"{where}: regex test failed: the replacement references a "
+                "group captured inside a lookbehind `(?<=(...))`, which copies "
+                "text before the match — it can repeat that text at every "
+                "position. Capture outside the lookbehind."
             )
         if spent + time.perf_counter() - t0 > budget:
             raise _slow_compile(where, budget)
