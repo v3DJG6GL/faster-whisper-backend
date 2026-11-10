@@ -293,6 +293,25 @@ def test_deeply_nested_body_gets_422_not_500(client):
     assert err["loc"][:2] == ["body", "outcomes"] and "input" not in err
 
 
+def test_validation_422_is_encoded_off_the_event_loop(client, monkeypatch):
+    # A 4 MiB body of the wrong shape is echoed whole as error.input; walking
+    # it (~1 s) runs on a worker thread, not the event loop.
+    import fastapi.encoders
+
+    from tests.conftest import on_event_loop
+    seen = []
+    real = fastapi.encoders.jsonable_encoder
+
+    def _spy(obj, *a, **kw):
+        seen.append(on_event_loop())
+        return real(obj, *a, **kw)
+    monkeypatch.setattr(fastapi.encoders, "jsonable_encoder", _spy)
+    r = client.post("/v1/usage/outcome", json={"outcomes": 5})
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["loc"] == ["body", "outcomes"]
+    assert seen and not any(seen)
+
+
 def test_http_exception_quoting_a_lone_surrogate_keeps_its_status(client, app_module,
                                                                   monkeypatch):
     # The model gate's 400 quotes the JSON body's raw "model"; a lone UTF-16

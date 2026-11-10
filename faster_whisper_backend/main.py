@@ -1297,9 +1297,15 @@ def _encodable_json_response(content, status_code: int, headers=None):
 @app.exception_handler(RequestValidationError)
 async def _request_validation_handler(request: Request, exc: RequestValidationError):
     """FastAPI's own 422 body, kept encodable: it echoes each offending value
-    back as error.input (see _encodable_json_response)."""
+    back as error.input (see _encodable_json_response). Built in a worker
+    thread: a 4 MiB body of the wrong shape is echoed whole, and encoding it
+    takes ~1 s."""
+    return await asyncio.to_thread(_validation_422, exc.errors())
+
+
+def _validation_422(errors):
+    """The 422 response for `errors` (see _request_validation_handler)."""
     from fastapi.encoders import jsonable_encoder
-    errors = exc.errors()
     try:
         detail = jsonable_encoder(errors)
     except RecursionError:
