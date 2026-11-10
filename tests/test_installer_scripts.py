@@ -362,6 +362,22 @@ def test_egress_nft_snippets_leave_the_hosts_ipv6_alone():
         assert not any(r.startswith("ip6 daddr") for r in rules), name
 
 
+def test_egress_nft_snippets_also_hook_input():
+    # A connection from the container to an address the host itself owns
+    # (the bridge gateway, the host's LAN IP) is delivered locally through
+    # the input hook and never reaches forward, so a forward-only snippet
+    # leaves sshd or a database on the host reachable from the container.
+    # The input chain must be scoped to the service subnet like the
+    # forward one and drop what is not a reply.
+    for name, text in _nft_snippets().items():
+        rules = [ln.split("#", 1)[0].strip() for ln in text.splitlines()]
+        assert "type filter hook input priority filter; policy accept;" \
+            in rules, name
+        assert rules.count("ip  saddr != 172.31.9.0/24 return") >= 2, name
+        assert rules.count("ct  state established,related return") >= 2, name
+        assert "drop" in rules, name
+
+
 def test_compose_files_carry_the_db_layout_upgrade_note():
     # The default SQLite paths moved from /data to /data/db; pre-existing
     # volumes need the migration note or upgrades silently orphan their state.

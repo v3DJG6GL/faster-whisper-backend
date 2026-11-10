@@ -480,12 +480,25 @@ table inet whisper {
     ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8,
                 169.254.0.0/16, 100.64.0.0/10, 0.0.0.0/8 } drop
   }
+  chain to_host {
+    type filter hook input priority filter; policy accept;
+    # A connection to an address the host itself owns (the bridge gateway,
+    # the host's LAN IP) is delivered locally and never reaches `forward`.
+    meta nfproto != ipv4 return
+    ip  saddr != 172.31.9.0/24 return
+    ct  state established,related return
+    # A DNS resolver running on the host (drop this line if yours lives
+    # elsewhere). An outbound proxy on the host needs its port here too.
+    meta l4proto { tcp, udp } th dport 53 accept
+    # sshd, databases, admin UIs on the host.
+    drop
+  }
 }
 ```
 
 If you enable IPv6 on the service network, replace the `meta nfproto` line with an `ip6 saddr != <service v6 prefix> return` beside the IPv4 one and add `ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop`.
 
-Only connections the container opens are filtered; host-local clients and Docker's embedded DNS never cross the `forward` hook. Adjust `172.31.9.0/24` (the subnet the compose files' commented `networks:` blocks pin) to the compose network's subnet, and drop the `172.16.0.0/12` line only if that subnet overlaps it (it does for Docker's defaults — give the service its own network with an explicit subnet outside the ranges you deny). The commented block in `docker-compose.yml` shows the same idea. On a bare-metal install, the equivalent is an `output` chain matched on the service user (`meta skuid whisper`).
+Only connections the container opens are filtered; host-local clients and Docker's embedded DNS never cross the `forward` hook. A connection the container opens to an address the host itself owns (the bridge gateway `172.31.9.1`, the host's LAN IP) is delivered locally through the `input` hook and never reaches `forward`, so the `egress` chain alone would leave sshd or a database on the host reachable from the container — the `to_host` chain denies those new connections. Its port-53 line keeps a DNS resolver running on the host itself reachable (Docker's embedded DNS forwards upstream queries from the container's namespace); drop it if your resolver lives elsewhere. If your outbound proxy runs on the host, add `tcp dport <proxy port> accept` before the `drop`. Adjust `172.31.9.0/24` (the subnet the compose files' commented `networks:` blocks pin) to the compose network's subnet, and drop the `172.16.0.0/12` line only if that subnet overlaps it (it does for Docker's defaults — give the service its own network with an explicit subnet outside the ranges you deny). The commented block in `docker-compose.yml` shows the same idea. On a bare-metal install, the equivalent is an `output` chain matched on the service user (`meta skuid whisper`).
 
 ### Server jobs
 

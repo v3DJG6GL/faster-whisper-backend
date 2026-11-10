@@ -133,9 +133,17 @@ services:
     #                   127.0.0.0/8, 169.254.0.0/16, 100.64.0.0/10,
     #                   0.0.0.0/8 } drop
     #     }
+    #     chain to_host {
+    #       type filter hook input priority filter; policy accept;
+    #       meta nfproto != ipv4 return                # the subnet is v4-only
+    #       ip  saddr != 172.31.9.0/24 return          # only this service
+    #       ct  state established,related return       # replies to inbound
+    #       meta l4proto { tcp, udp } th dport 53 accept  # a resolver on the host
+    #       drop                                       # sshd, DBs, admin UIs
+    #     }
     #   }
     #
-    # The `meta nfproto` and `ip saddr != … return` lines scope the chain to
+    # The `meta nfproto` and `ip saddr != … return` lines scope each chain to
     # this service's subnet: an `ip` match never matches IPv6, so without
     # the first one every forwarded IPv6 packet on the host (other
     # containers, VMs) would fall through to the drops. An IPv6-enabled
@@ -146,7 +154,14 @@ services:
     # published port — without it those replies match the RFC1918 drop and
     # LAN access dies),
     # so only connections the container opens are filtered. Host-local
-    # clients and Docker's embedded DNS never cross FORWARD at all. The
+    # clients and Docker's embedded DNS never cross FORWARD at all. A
+    # connection the container opens to an address the host itself owns
+    # (the bridge gateway 172.31.9.1, the host's LAN IP) is delivered
+    # locally through INPUT and never reaches FORWARD either, so the
+    # `to_host` chain refuses those (sshd, a database on the host). Its
+    # port-53 line keeps a DNS resolver running on the host reachable —
+    # drop it if yours lives elsewhere; an outbound proxy running on the
+    # host needs a `tcp dport <proxy port> accept` before the drop. The
     # subnet below sits inside 172.16/12 — adjust both to your network.
     # networks:
     #   whisper-egress:
