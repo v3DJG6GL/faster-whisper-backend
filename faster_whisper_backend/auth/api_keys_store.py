@@ -489,34 +489,36 @@ def revoke_user(user_id: str) -> None:
     now = time.time()
     conn = _require_conn()
     with _lock:
-        row = conn.execute(
-            "SELECT is_admin, EXISTS(SELECT 1 FROM api_keys"
-            " WHERE user_id = ? AND revoked_ts IS NULL) AS has_key"
-            " FROM users WHERE id = ? AND revoked_ts IS NULL",
-            (user_id, user_id),
-        ).fetchone()
-        # A keyless admin's revoke cascades no keys, so it can't change
-        # is_locked_down — guarding it would block every admin-user revoke
-        # in open mode, even with a second admin user present.
-        if row and int(row["is_admin"]) == 1 and int(row["has_key"]) == 1:
-            # Count admin KEYS, not users: is_locked_down follows keys, so a
-            # remaining keyless admin user would still leave the server OPEN.
-            # Excludes the keys about to be cascade-revoked.
-            row2 = conn.execute(
-                "SELECT COUNT(*) FROM api_keys k"
-                " JOIN users u ON u.id = k.user_id"
-                " WHERE k.user_id != ? AND k.revoked_ts IS NULL"
-                " AND u.revoked_ts IS NULL AND u.is_admin = 1",
-                (user_id,),
-            ).fetchone()
-            if int(row2[0]) == 0:
-                raise LastAdminError(
-                    "refusing to revoke the last admin user"
-                )
-        # One transaction (the connection is autocommit): a failing second
-        # UPDATE would leave the user revoked — hidden from list_users, so no
-        # UI retry — while their keys stay active and keep authenticating.
+        # One write transaction from the guard to the cascade (the connection
+        # is autocommit): with SERVER_WORKERS > 1 a sibling worker's revoke of
+        # the other admin key is waited for and counted, never raced past;
+        # and a failing second UPDATE can't leave the user revoked — hidden
+        # from list_users, so no UI retry — while their keys keep working.
         with store_common.transaction(conn, "BEGIN IMMEDIATE"):
+            row = conn.execute(
+                "SELECT is_admin, EXISTS(SELECT 1 FROM api_keys"
+                " WHERE user_id = ? AND revoked_ts IS NULL) AS has_key"
+                " FROM users WHERE id = ? AND revoked_ts IS NULL",
+                (user_id, user_id),
+            ).fetchone()
+            # A keyless admin's revoke cascades no keys, so it can't change
+            # is_locked_down — guarding it would block every admin-user revoke
+            # in open mode, even with a second admin user present.
+            if row and int(row["is_admin"]) == 1 and int(row["has_key"]) == 1:
+                # Count admin KEYS, not users: is_locked_down follows keys, so
+                # a remaining keyless admin user would still leave the server
+                # OPEN. Excludes the keys about to be cascade-revoked.
+                row2 = conn.execute(
+                    "SELECT COUNT(*) FROM api_keys k"
+                    " JOIN users u ON u.id = k.user_id"
+                    " WHERE k.user_id != ? AND k.revoked_ts IS NULL"
+                    " AND u.revoked_ts IS NULL AND u.is_admin = 1",
+                    (user_id,),
+                ).fetchone()
+                if int(row2[0]) == 0:
+                    raise LastAdminError(
+                        "refusing to revoke the last admin user"
+                    )
             conn.execute(
                 "UPDATE users SET revoked_ts = ? WHERE id = ? AND revoked_ts IS NULL",
                 (now, user_id),
@@ -655,27 +657,31 @@ def revoke_key(key_id: str) -> None:
     now = time.time()
     conn = _require_conn()
     with _lock:
-        row = conn.execute(
-            "SELECT u.is_admin FROM api_keys k JOIN users u ON u.id = k.user_id"
-            " WHERE k.id = ? AND k.revoked_ts IS NULL AND u.revoked_ts IS NULL",
-            (key_id,),
-        ).fetchone()
-        if row and int(row["is_admin"]) == 1:
-            row2 = conn.execute(
-                "SELECT COUNT(*) FROM api_keys k JOIN users u ON u.id = k.user_id"
-                " WHERE k.id != ? AND k.revoked_ts IS NULL"
-                " AND u.revoked_ts IS NULL AND u.is_admin = 1",
+        # Guard and revoke in one write transaction (the connection is
+        # autocommit): with SERVER_WORKERS > 1 a sibling worker's revoke of
+        # the other admin key is waited for and counted, never raced past.
+        with store_common.transaction(conn, "BEGIN IMMEDIATE"):
+            row = conn.execute(
+                "SELECT u.is_admin FROM api_keys k JOIN users u ON u.id = k.user_id"
+                " WHERE k.id = ? AND k.revoked_ts IS NULL AND u.revoked_ts IS NULL",
                 (key_id,),
             ).fetchone()
-            if int(row2[0]) == 0:
-                raise LastAdminError(
-                    "refusing to revoke the last active admin key"
-                )
-        conn.execute(
-            "UPDATE api_keys SET revoked_ts = ?"
-            " WHERE id = ? AND revoked_ts IS NULL",
-            (now, key_id),
-        )
+            if row and int(row["is_admin"]) == 1:
+                row2 = conn.execute(
+                    "SELECT COUNT(*) FROM api_keys k JOIN users u ON u.id = k.user_id"
+                    " WHERE k.id != ? AND k.revoked_ts IS NULL"
+                    " AND u.revoked_ts IS NULL AND u.is_admin = 1",
+                    (key_id,),
+                ).fetchone()
+                if int(row2[0]) == 0:
+                    raise LastAdminError(
+                        "refusing to revoke the last active admin key"
+                    )
+            conn.execute(
+                "UPDATE api_keys SET revoked_ts = ?"
+                " WHERE id = ? AND revoked_ts IS NULL",
+                (now, key_id),
+            )
         _rebuild_index_locked()
     settings_version.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] key revoked kid=%s", key_id[:8])

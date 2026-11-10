@@ -408,6 +408,61 @@ def test_concurrent_revoke_of_two_admin_keys_keeps_one(ak, root_uid):
     assert ak.is_locked_down() is True
 
 
+def _sibling_revokes_then_commits(ak, sql, params):
+    """A second worker's connection takes the write lock, revokes an admin
+    key with `sql`, and commits only after a short delay, so the store's
+    revoke starts while the sibling's write is still pending."""
+    db_path = ak._require_conn().execute("PRAGMA database_list").fetchone()["file"]
+    sibling = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
+    sibling.execute("BEGIN IMMEDIATE")
+    sibling.execute(sql, params)
+    started = threading.Event()
+
+    def _commit_later():
+        started.wait(5)
+        threading.Event().wait(0.3)
+        sibling.execute("COMMIT")
+        sibling.close()
+
+    t = threading.Thread(target=_commit_later)
+    t.start()
+    return started, t
+
+
+def test_revoke_key_guard_sees_a_sibling_workers_pending_revoke(ak, root_uid):
+    """The last-admin check and the revoke run in one write transaction, so
+    a second worker's revoke of the other admin key is waited for and
+    counted instead of both passing a count==2 check."""
+    _, r1 = ak.create_key(root_uid)
+    _, r2 = ak.create_key(root_uid)
+    started, t = _sibling_revokes_then_commits(
+        ak, "UPDATE api_keys SET revoked_ts = 1 WHERE id = ?", (r2["id"],))
+    try:
+        started.set()
+        with pytest.raises(ak.LastAdminError):
+            ak.revoke_key(r1["id"])
+    finally:
+        t.join()
+    assert ak.get_key(r1["id"])["revoked_ts"] is None
+    assert ak.is_locked_down() is True
+
+
+def test_revoke_user_guard_sees_a_sibling_workers_pending_revoke(ak, root_uid):
+    _, mine = ak.create_key(root_uid)
+    other = ak.create_user("other", is_admin=True)
+    _, theirs = ak.create_key(other)
+    started, t = _sibling_revokes_then_commits(
+        ak, "UPDATE api_keys SET revoked_ts = 1 WHERE id = ?", (theirs["id"],))
+    try:
+        started.set()
+        with pytest.raises(ak.LastAdminError):
+            ak.revoke_user(root_uid)
+    finally:
+        t.join()
+    assert ak.get_user(root_uid)["revoked_ts"] is None
+    assert ak.get_key(mine["id"])["revoked_ts"] is None
+
+
 def test_set_permissions_validates_page_and_scope(ak, uid):
     with pytest.raises(ValueError):
         ak.set_user_permissions(uid, {"pages": {"nosuchpage": "all"}})
