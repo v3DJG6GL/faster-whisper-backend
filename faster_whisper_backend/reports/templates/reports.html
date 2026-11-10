@@ -387,18 +387,35 @@
   // tab — every open report renders eagerly on load. Past this budget,
   // show the two texts plainly instead so the card still triages.
   var DIFF_CELL_BUDGET = 2e6;
+  // render() rebuilds every card on each load, filter change and search
+  // keystroke, so many at-cap reports would still freeze the tab for
+  // seconds per render. One render() spends at most this many cells in
+  // total (render() resets _diffSpent); later cards show the plain view.
+  // Diffs are memoized by content, so a re-render recomputes nothing and
+  // a cached diff costs nothing against the budget; load() drops the memo
+  // when a new snapshot lands so it only holds the current reports.
+  var DIFF_PAGE_BUDGET = 2e7;
+  var _diffSpent = 0;
+  var _diffCache = new Map();
 
   function renderDiff(beforeStr, afterStr) {
-    var a = tokenizeForDiff(beforeStr || '');
-    var b = tokenizeForDiff(afterStr || '');
-    if (a.length * b.length > DIFF_CELL_BUDGET) {
-      var plain = _el('div', 'rc-diff ws-region');
-      plain.appendChild(_el('span', 'diff-del', beforeStr || ''));
-      plain.appendChild(_el('span', 'diff-eq', '\n'));
-      plain.appendChild(_el('span', 'diff-ins', afterStr || ''));
-      return plain;
+    var key = (beforeStr || '') + '\u0000' + (afterStr || '');
+    var ops = _diffCache.get(key);
+    if (!ops) {
+      var a = tokenizeForDiff(beforeStr || '');
+      var b = tokenizeForDiff(afterStr || '');
+      var cells = a.length * b.length;
+      if (cells > DIFF_CELL_BUDGET || _diffSpent + cells > DIFF_PAGE_BUDGET) {
+        var plain = _el('div', 'rc-diff ws-region');
+        plain.appendChild(_el('span', 'diff-del', beforeStr || ''));
+        plain.appendChild(_el('span', 'diff-eq', '\n'));
+        plain.appendChild(_el('span', 'diff-ins', afterStr || ''));
+        return plain;
+      }
+      _diffSpent += cells;
+      ops = lcsDiff(a, b);
+      _diffCache.set(key, ops);
     }
-    var ops = lcsDiff(a, b);
     var div = _el('div', 'rc-diff ws-region');
     ops.forEach(function(op) {
       div.appendChild(_el('span', 'diff-' + op[0], op[1]));
@@ -808,6 +825,7 @@
     var rows = applyFilters(_allReports);
     var list = document.getElementById('list');
     list.innerHTML = '';
+    _diffSpent = 0;
     if (rows.length === 0) {
       var empty = _el('div', 'empty-state');
       if (_allReports.length === 0) {
@@ -831,6 +849,7 @@
       var j = await api('GET', '/reports/api/list');
       if (seq !== _loadSeq) return;     // a newer load() owns the page
       _loadLanded++;
+      _diffCache.clear();
       _allReports = j.reports || [];
       _counts = j.counts || { open: 0, resolved: 0, dismissed: 0 };
       _truncated = !!j.truncated;
