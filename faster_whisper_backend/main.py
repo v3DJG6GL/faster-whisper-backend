@@ -178,6 +178,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Dep
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from python_multipart.multipart import parse_options_header
 
 # Auth dep used by /v1/audio/transcriptions and /translations. In open mode
 # (no admin key in DB) it returns the synthetic admin — but only to callers on
@@ -954,6 +955,40 @@ _MULTIPART_UPLOAD_PATHS = frozenset({
     "/v1/audio/transcriptions",
     "/v1/audio/translations",
 })
+# Parts one multipart upload may carry. FastAPI parses the form with
+# Starlette's defaults before the handler runs (1000 text fields of up to
+# 1 MiB held as str, 1000 file parts spooled in RAM up to 1 MiB each), so
+# under MAX_REQUEST_BYTES the part count, not the byte cap, bounds the RAM a
+# request pins: 256 parts is at most ~256 MiB. The routes declare 30
+# File()/Form() params, plus the repeatable timestamp_granularities (two
+# values, two spellings): ~35 parts at most, far below the cap.
+_MAX_UPLOAD_PARTS = 256
+
+
+class _MultipartDelimiterCounter:
+    """Counts `CRLF--<boundary>` delimiters on a multipart stream fed chunk by
+    chunk. RFC 2046 keeps the delimiter out of part content and the parser
+    starts a part only after one, so the count bounds the parts parsed: N
+    parts take N opening delimiters plus the closing one. The stream is
+    counted as if it began with CRLF, so the opening `--<boundary>` (which
+    the parser accepts after any leading CR/LF) counts too."""
+
+    def __init__(self, boundary: bytes):
+        self._delim = b"\r\n--" + boundary
+        # One byte short of a delimiter: no whole match fits inside it, so
+        # a match found across the seam was never counted before.
+        self._carry = len(self._delim) - 1
+        self._tail = b"\r\n"
+        self.count = 0
+
+    def feed(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        # Matches inside the chunk, plus the ones straddling the previous
+        # chunk's tail — without copying the (possibly MiB-sized) chunk.
+        self.count += chunk.count(self._delim)
+        self.count += (self._tail + chunk[:self._carry]).count(self._delim)
+        self._tail = (self._tail + chunk[-self._carry:])[-self._carry:]
 
 
 def _media_package_max_body_bytes() -> int:
@@ -1033,12 +1068,32 @@ async def _max_body_mw(request: Request, call_next):
     # of letting it accumulate.
     _received = 0
     _orig_receive = request.receive
+    # An upload's part count is held to _MAX_UPLOAD_PARTS the same way. No
+    # boundary: Starlette refuses the form itself, so there is nothing to count.
+    _parts = None
+    if (request.url.path in _MULTIPART_UPLOAD_PATHS
+            and _ctype == "multipart/form-data"):
+        _boundary = parse_options_header(
+            request.headers.get("content-type", ""))[1].get(b"boundary")
+        if _boundary is not None:
+            _parts = _MultipartDelimiterCounter(_boundary)
 
     async def _counting_receive():
         nonlocal _received
         message = await _orig_receive()
         if message.get("type") == "http.request":
-            _received += len(message.get("body", b"") or b"")
+            _body = message.get("body", b"") or b""
+            _received += len(_body)
+            if _parts is not None:
+                _parts.feed(_body)
+                if _parts.count > _MAX_UPLOAD_PARTS + 1:
+                    logger.warning(
+                        "Aborting %s %s: multipart body exceeded %d parts",
+                        request.method, _log_safe(request.url.path),
+                        _MAX_UPLOAD_PARTS,
+                    )
+                    request.scope.setdefault("state", {})["body_cap_hit"] = True
+                    return {"type": "http.disconnect"}
             if _received > max_body:
                 logger.warning(
                     "Aborting %s %s: request body exceeded the effective cap "
