@@ -189,7 +189,8 @@ def _js_json(v: Any) -> str:
         keys = sorted(v, key=lambda k: k.encode("utf-16-be", "surrogatepass"))
         idx = sorted((k for k in keys if _JS_INDEX_KEY.fullmatch(k)
                       and int(k) < 2 ** 32 - 1), key=int)
-        keys = idx + [k for k in keys if k not in idx]
+        idx_set = set(idx)
+        keys = idx + [k for k in keys if k not in idx_set]
         return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + _js_json(v[k])
                               for k in keys) + "}"
     if isinstance(v, list):

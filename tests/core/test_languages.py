@@ -132,3 +132,21 @@ def test_language_codes_limit_bounds_a_huge_csv():
     t0 = time.perf_counter()
     assert len(languages.language_codes(csv)) == 10_000
     assert time.perf_counter() - t0 < 2.0
+
+
+def test_language_codes_limit_bounds_duplicates_and_blanks(monkeypatch):
+    """`limit` caps the raw entries walked too, so a 1 MiB field of one code
+    repeated, or of bare commas, stops early like one of distinct codes."""
+    calls = []
+    real = languages._normalise_code
+
+    def _counting(code):
+        calls.append(1)
+        return real(code)
+
+    monkeypatch.setattr(languages, "_normalise_code", _counting)
+    assert languages.language_codes("de," * 350_000, limit=64) == ["de"]
+    assert len(calls) <= 256
+    calls.clear()
+    assert languages.language_codes("," * (1 << 20), limit=64) == []
+    assert len(calls) <= 256

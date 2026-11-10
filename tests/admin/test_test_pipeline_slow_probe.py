@@ -439,3 +439,29 @@ def test_a_slow_entry_after_a_screened_one_does_not_hide_the_screen_verdict(clie
     assert step["not_run"] is True
     assert step["error"].startswith("nested repetition")
     assert "killable probe" not in step["error"]
+
+
+@pytest.fixture
+def crashing_probe(monkeypatch):
+    """The probe child dies (as an OOM kill would) when it reaches a unit
+    whose pattern is "CRASHME"."""
+    line = "        c = re.compile(u[2])\n"
+    assert line in admin_routes._PROBE_SRC
+    monkeypatch.setattr(admin_routes, "_PROBE_SRC", admin_routes._PROBE_SRC.replace(
+        line, line + "        if u[2] == 'CRASHME': import os; os._exit(137)\n"))
+
+
+def test_a_probe_child_killed_mid_walk_fails_closed(crashing_probe):
+    # The unit it died in and every later one were never cleared.
+    marks, slow, stop = admin_routes._probe_chain(
+        "aaaa", [["mark", 0], ["sub", 0, "a", "b"], ["sub", 0, "CRASHME", "x"],
+                 ["sub", 0, "c", "d"]])
+    assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), 2)
+
+
+def test_an_entry_a_probe_child_died_in_is_not_run_here(client, crashing_probe):
+    step = list_step(client, [{"pattern": "a", "replacement": "b"},
+                              {"pattern": "CRASHME", "replacement": "x"},
+                              {"pattern": "c", "replacement": "d"}])
+    assert step.get("not_run") is True
+    assert "may be harmless" in step["error"]

@@ -220,10 +220,13 @@ def language_codes(csv: "str | None", limit: "int | None" = None) -> "list[str]"
     ones, normalised so "DE" is "de", "fr-ca" the same target as "fr-CA" and
     "iw" / "deu" the same as "he" / "de"; malformed entries drop silently.
     `limit` stops the walk once that many codes are collected — a per-request
-    csv can carry a 1 MiB form field."""
+    csv can carry a 1 MiB form field — and caps the raw entries walked at
+    4*limit, so duplicates and malformed entries stop it too."""
     out: "list[str]" = []
     seen: "set[str]" = set()
-    for code in (csv or "").split(","):
+    raw = csv or ""
+    parts = raw.split(",") if limit is None else raw.split(",", 4 * limit)[:4 * limit]
+    for code in parts:
         if limit is not None and len(out) >= limit:
             break
         code = _normalise_code(code)

@@ -85,6 +85,29 @@ def test_the_rule_hash_matches_a_known_editor_value():
 _JS_KNOWN_HASH = "1cb72f88d12faf"
 
 
+def test_js_json_orders_index_keys_like_json_stringify():
+    v = {"b": 1, "0": 2, "10": 3, "2": 4, "a": {"1": [1, {"z": 1, "y": 2}]},
+         "4294967295": 1, "01": 2}
+    assert cs._js_json(v) == ('{"0":2,"2":4,"10":3,"01":2,"4294967295":1,'
+                              '"a":{"1":[1,{"y":2,"z":1}]},"b":1}')
+
+
+def test_js_json_of_a_large_digit_key_map_is_linear():
+    """A callback:map may hold thousands of digit keys (a number dictionary):
+    hashing it on every save must not cost a scan of the index keys per key."""
+    import time
+
+    m = {str(i): "x" for i in range(20_000)}
+    m.update({f"0{i}": "y" for i in range(500)})
+    t0 = time.perf_counter()
+    got = cs._js_json(m)
+    assert time.perf_counter() - t0 < 0.4
+    keys = sorted(m, key=lambda k: k.encode("utf-16-be", "surrogatepass"))
+    idx = sorted((k for k in keys if cs._JS_INDEX_KEY.fullmatch(k)), key=int)
+    rest = [k for k in keys if k not in set(idx)]
+    assert got == "{" + ",".join(f'"{k}":"{m[k]}"' for k in idx + rest) + "}"
+
+
 @needs_node
 def test_the_rule_hash_is_the_editors():
     """Every factory rule, plus key orders JSON.stringify writes its own way

@@ -882,6 +882,13 @@ def _probe_chain(text: str, units: list[list[Any]],
                 timeout=timeout)
             if budget is not None and "wall" in budget:
                 budget["wall"] -= time.monotonic() - t0
+            if p.returncode != 0:
+                # Killed (an OOM kill) or crashed mid-walk: the unit it was
+                # in and every later one were never cleared, so they must
+                # not run in the server either.
+                got = _culprit(p.stderr)
+                idx = got[0] if got is not None and 0 <= got[0] < len(units) else 0
+                return _done(*_further(_marks(p.stdout), idx))
             return _done(_marks(p.stdout), None)
         except subprocess.TimeoutExpired as exc:
             if budget is not None and "wall" in budget:

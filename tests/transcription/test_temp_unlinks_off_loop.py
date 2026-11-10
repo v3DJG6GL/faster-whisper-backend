@@ -107,3 +107,36 @@ def test_a_failed_separation_still_removes_every_temp_file(
     assert unlinks.get("sepsrc") == [False]
     assert unlinks.get("whisperup") == [False]
     assert _gone(unlinks)
+
+
+def test_the_diarization_input_copy_is_removed_off_the_loop(
+        client, app_module, fake_model, monkeypatch):
+    from faster_whisper_backend.audio import diarization
+
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
+                        raising=False)
+    handed = []
+
+    async def _fake(path, **kw):
+        handed.append(path)
+        return [(0.0, 1.0, "SPEAKER_00")]
+    monkeypatch.setattr(diarization, "diarize", _fake)
+
+    def _transcode(src, dst, *, rate, layout, max_bytes=None):
+        with open(dst, "wb") as f:
+            f.write(b"RIFF16kWAVE")
+        return 11
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _transcode)
+    on_loop = {}
+    real = store_common.unlink_quietly
+
+    def _spy(path):
+        if path:
+            on_loop.setdefault(path, []).append(on_event_loop())
+        return real(path)
+    monkeypatch.setattr(store_common, "unlink_quietly", _spy)
+    post_verbose_ok(client, diarize="true")
+    [diar_wav] = handed
+    assert os.path.basename(diar_wav).startswith("whisperup-diar-")
+    assert on_loop[diar_wav] == [False]
+    assert not os.path.exists(diar_wav)

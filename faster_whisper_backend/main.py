@@ -3041,7 +3041,7 @@ async def transcribe(
                                     cancel_check=lambda: tx_progress._cancel_requested(_pid),
                                 )
                         finally:
-                            store_common.unlink_quietly(_diar_wav)
+                            await _unlink_off_loop(_diar_wav)
                         # Pure-Python O(segments × turns) — off the loop so a
                         # long file doesn't stall every other request.
                         speakers_list = await asyncio.to_thread(
