@@ -629,7 +629,19 @@ def _nested_repetition(pat: str) -> bool:
     Under IGNORECASE (``(?i)``, or over-approximating, any scoped ``(?i:...)``)
     branches that differ only in case match the same input, so the overlap
     test compares them case-insensitively: `(?i)(?:äh|Äh)+` is `(a|a)+`.
+
+    A pattern whose fixed counts unroll one branch past _UNROLL_ATOMS atoms
+    (``_branch_atoms``) is refused: the overlap test's cost grows with the
+    square of a branch's atoms, and no real rule comes near.
     """
+    try:
+        return _nested_repetition_scan(pat)
+    except _TooWide:
+        return True
+
+
+def _nested_repetition_scan(pat: str) -> bool:
+    """The scan ``_nested_repetition`` describes."""
     icase = _ignorecase(pat)
     pat = _strip_comments(_strip_verbose(pat))
     n = len(pat)
@@ -704,6 +716,12 @@ def _nested_repetition(pat: str) -> bool:
                         i = close + 1 if close != -1 else n
                         continue
                     j = min(cand) + 1
+            if len(stack) > _MAX_NESTING:
+                # _branch_atoms reads a plain `(?:...)` wrapper at no depth
+                # cost, so past this its walk would grow with the cube of
+                # the nesting. No real rule comes near (the deepest shipped
+                # or historical one nests 3); refusing is the safe side.
+                return True
             stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic,
                           "lookaround": lookaround, "conditional": conditional,
                           "open": i, "pending": []})
@@ -937,7 +955,10 @@ def _matches_empty(body: str, depth: int = 0, branches: int = 1) -> bool:
         if body[start] == "[":
             empty = False
         elif group is not None:
-            empty = depth >= 4 or _matches_empty(group, depth + 1)
+            # A plain wrapper costs no depth, as in _branch_atoms: counted,
+            # five of them made `(?:(?:(?:(?:(?:– ?)))))` "can match empty".
+            plain = j == k and not _top_level_alt(group)
+            empty = depth >= 4 or _matches_empty(group, depth + (0 if plain else 1))
         elif char is not None:
             empty = False
     return branches - empty <= 0
@@ -946,6 +967,32 @@ def _matches_empty(body: str, depth: int = 0, branches: int = 1) -> bool:
 # Zero-width items consume nothing, so they sit between two atoms without
 # separating them: `n?\bn` is `n?n`.
 _ZERO_WIDTH = ("^", "$", "\\b", "\\B", "\\A", "\\Z", "(?=", "(?!", "(?<=", "(?<!")
+
+
+# Deepest group nesting _nested_repetition reads (see there).
+_MAX_NESTING = 16
+
+# Copies of a fixed-count group `(...){k}` _branch_atoms reads (see there).
+_UNROLL_MAX = 8
+
+# Most atoms one branch may read as once fixed counts are unrolled. Without
+# them a branch reads at most one atom per character of its body, and a rule
+# is at most 512 characters long.
+_UNROLL_ATOMS = 512
+
+
+class _TooWide(Exception):
+    """A branch unrolled past _UNROLL_ATOMS atoms (see _branch_atoms)."""
+
+
+def _top_level_alt(body: str) -> bool:
+    """True if the group body ``body`` has a `|` outside any nested group."""
+    k = 0
+    while k < len(body):
+        if body[k] == "|":
+            return True
+        k = _next_atom(body, k)[2]
+    return False
 
 
 def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, object, object] | None]]":
@@ -982,8 +1029,40 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
             # An atomic group is read like `(?:...)`: atomicity only takes
             # backtracking away, so reading through it refuses more, never
             # less. As a pin, a no-op `(?>)` hid `(?: ?-|–(?>) ?)+#`.
-            inner = None if depth >= 4 else _branch_atoms(group, depth + 1)
+            # An un-quantified single-branch wrapper (`(?:(?:– ?))`) matches
+            # exactly as its items do in place, so it costs no nesting depth:
+            # four of them hid the ` ?` of `(?: ?-|(?:(?:(?:(?:– ?)))))+#`.
+            # _nested_repetition refuses nesting past _MAX_NESTING, so this
+            # recursion stays shallow.
+            plain = not q and not _top_level_alt(group)
+            inner = None if depth >= 4 else _branch_atoms(group, depth + (0 if plain else 1))
             pinned = inner is not None and None in (a for b in inner for a in b)
+            fixed = re.fullmatch(r"\{0*([1-9][0-9]*)(?:,0*\1)?\}\??", q)
+            if inner is not None and fixed and int(fixed.group(1)) >= 2:
+                # `(?:na ){2}` is read as its copies: one copy is parsed and
+                # repeated, each repeat with its own tail/alt identities, as
+                # if it were parsed again. As one pin it hid
+                # `(?:(?:(?:na ){2}(?:na )?)?(?:na )?)+#`, whose spelled-out
+                # twin is refused. Past _UNROLL_MAX copies the rest are left
+                # out: every pair of atoms the overlap test compares already
+                # occurs in two adjacent copies, and a shorter branch only
+                # ever overlaps more. Nested counts multiply the copies, so
+                # a branch past _UNROLL_ATOMS atoms is refused outright.
+                one = _branch_atoms("(?:" + group + ")", depth + 1)
+                if len(one) != 1:
+                    branches[-1].append(None)
+                    continue
+                for _ in range(min(int(fixed.group(1)), _UNROLL_MAX)):
+                    fresh: "dict[int, object]" = {}
+                    branches[-1].extend(
+                        None if a is None else
+                        (a[0], a[1],
+                         a[2] and fresh.setdefault(id(a[2]), object()),
+                         a[3] and fresh.setdefault(id(a[3]), object()))
+                        for a in one[0])
+                if len(branches[-1]) > max(_UNROLL_ATOMS, n):
+                    raise _TooWide
+                continue
             if pinned and len(inner) == 1 and not q:
                 # `(?:–(?:x){2} ?)` matches exactly as its items do in
                 # place; as one pin it would hide the trailing ` ?` of
@@ -1068,6 +1147,8 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                 branches[-1].append(None)
         else:
             branches[-1].append((text, optional, None, None))
+    if any(len(b) > max(_UNROLL_ATOMS, n) for b in branches):
+        raise _TooWide  # wrapped groups' unrolled atoms, added up
     return branches
 
 
@@ -1090,11 +1171,16 @@ def _atom_chars(text: str) -> "set[str]":
     return out | {v for c in out for v in (c.lower(), c.upper()) if len(v) == 1}
 
 
+# One character per common non-Latin-1 script (Greek, Cyrillic, Hebrew,
+# Arabic, Devanagari, Thai, kana, CJK, Hangul, fullwidth, astral).
+_NON_ASCII_CANDS = "éüΩжאعअกあア一日가Ａ\U0001f600"
+
 # Shorthands and negated classes name no member of their own, so every atom
 # is also tried on these: ASCII and Latin-1, plus the Unicode dashes, spaces
 # and digits a transcript or a `\d` / `\s` class can hold.
 _POOL_CHARS = frozenset(
     [chr(x) for x in range(256)]
+    + list(_NON_ASCII_CANDS)
     + list("‐‑‒–—―    "
            "   　  ٠۰०０"))
 
@@ -1109,16 +1195,21 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
         if a:
             pool |= _atom_chars(a[0])
     sets: "list[set[str] | None]" = []
+    # A fixed count `(...){k}` repeats its atoms' texts copy after copy;
+    # one pool scan per text keeps that from scanning the pool k times.
+    known: "dict[str, set[str] | None]" = {}
     for a in atoms:
         if a is None:
             sets.append(None)
             continue
-        try:
-            rx = re.compile(a[0], flags)
-        except re.error:
-            sets.append(None)
-            continue
-        sets.append({c for c in pool if rx.fullmatch(c)})
+        if a[0] not in known:
+            try:
+                rx = re.compile(a[0], flags)
+            except re.error:
+                known[a[0]] = None
+            else:
+                known[a[0]] = {c for c in pool if rx.fullmatch(c)}
+        sets.append(known[a[0]])
     m = len(atoms)
     optional = [x for x in range(m) if sets[x] is not None and atoms[x][1]]
 
@@ -1631,7 +1722,11 @@ def _class_char(body: str, negated: bool) -> "str | None":
     except re.error:
         rx = None
     if rx is not None:
-        for cand in "a1 Zx.":
+        # ASCII first, so the witness of every class that has one is
+        # unchanged; then one character per common script, so a class of
+        # non-ASCII text (`[^\x00-\x7f]`, `[^\x00-䷿]`) is read as an atom
+        # and not as an unreadable pin that _class_runs_overlap skips.
+        for cand in "a1 Zx." + _NON_ASCII_CANDS:
             if rx.match(cand):
                 return cand
         return None

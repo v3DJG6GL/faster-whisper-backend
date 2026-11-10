@@ -19,6 +19,8 @@ growth bound, the reference cap, the shape screens below) refuses a named
 attack shape, never the rules this feature exists to serve.
 """
 
+import time
+
 import pytest
 
 from faster_whisper_backend.pipeline import regex_guard as g
@@ -1978,3 +1980,94 @@ def test_probe_child_ignores_pythonpath_and_the_script_dir(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="e1"):
         g.validate(_CHAIN_ONLY, timeout=1.5)
     assert not marker.exists()
+
+
+# A fixed-count group `(...){k}` reads as its k copies: as one pin it hid the
+# optional copies around it, while the spelled-out twin was already refused.
+@pytest.mark.parametrize("pat", [
+    r"(?:(?:(?:na ){2}(?:na )?)?(?:na )?)+#",
+    r"(?:(?:(?:na ){3}(?:na )?)?(?:na )?)+#",
+    r"(?:(?:(?:na ){9}(?:na )?)?(?:na )?)+#",
+    r"(?:(?:(?:nd){2}(?:nd)?)?(?:nd)?)+#",
+    r"(?:(?:(nd){2}(?:nd)?)?(?:nd)?)+#",
+    r"(?:(?:(?>nd){2}(?:nd)?)?(?:nd)?)+#",
+    r"(?:(?:na na (?:na )?)?(?:na )?)+#",
+])
+def test_pipeline_fixed_count_wrapper_overlap_rejected(pat):
+    assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:[.,](?:\d){3})+",
+    r"(\d{1,3})(?:\.(?:\d){3})+",
+    r"(?:(?:ab){2} ?)+x",
+    r"(?:(?:Komma|,) (?:\d){2})+",
+    r"(?:\b(?:\d){2}\b[.:] ?)+",
+    r"(?:(?:\d{4})-?)+",
+    r"(?:(?:x){2}y)+",
+])
+def test_pipeline_fixed_count_ordinary_rules_accepted(pat):
+    assert not g._nested_repetition(pat), pat
+    g.validate([("r", pat, "")])
+
+
+# An un-quantified single-branch wrapper costs no nesting depth: counted,
+# four or more of them hid the mandatory middle of the alternation.
+@pytest.mark.parametrize("pat", [
+    "(?: ?-|" + "(?:" * 3 + "– ?" + ")" * 3 + ")+#",
+    "(?: ?-|" + "(?:" * 4 + "– ?" + ")" * 4 + ")+#",
+    "(?: ?-|" + "(?:" * 5 + "– ?" + ")" * 5 + ")+#",
+    "(?: ?-|" + "(?:" * 6 + "– ?" + ")" * 6 + ")+#",
+    "(?: ?-|" + "(?:" * 11 + "– ?" + ")" * 11 + ")+#",
+    "(?: ?-|–(?:(?:(?:(?: ?)))))+#",
+    "(?: ?-|(?:(?:(?:(?:– ?){1}){1}){1}){1})+#",
+    "(?: ?-|(?>(?>(?>(?>(?>– ?))))))+#",
+    "(?: ?-|((((– ?)))))+#",
+])
+def test_pipeline_plain_wrapper_depth_rejected(pat):
+    assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+def test_pipeline_deep_nesting_refused_cheaply():
+    pat = "(?:" + "(?:" * 120 + "a?b" + ")" * 121 + "+"
+    t0 = time.monotonic()
+    assert g._nested_repetition(pat)
+    assert time.monotonic() - t0 < 0.1
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+
+def test_pipeline_nested_fixed_counts_refused_cheaply():
+    # Nested fixed counts multiply into thousands of atoms per branch, and
+    # the overlap test's cost grows with their square: read in full, 486
+    # characters of them held the screen for seconds.
+    pat = "(?:" + "(?:(?:(?:x?(?:a|b)){9}){9}){9}" * 15 + ")+#"
+    t0 = time.monotonic()
+    assert g._nested_repetition(pat)
+    assert time.monotonic() - t0 < 0.5
+
+# A negated class with no ASCII member (`[^\x00-\x7f]`) is read through a
+# non-ASCII witness, not as an unreadable pin the overlap test skips.
+@pytest.mark.parametrize("pat", [
+    r"(?:[^\x00-\x7f]|\w)+#",
+    "(?:[^\\x00-䷿]|\\w)+#",
+    "(?:[^\\x00-䷿]x|\\wx)+#",
+])
+def test_pipeline_non_ascii_negated_class_overlap_rejected(pat):
+    assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:[^\x00-\x7f]x|\dy)+#",
+    r"(?:[^\x00-\U0010fffe]|\w)+#",
+])
+def test_pipeline_non_ascii_negated_class_disjoint_accepted(pat):
+    assert not g._nested_repetition(pat), pat
+    g.validate([("r", pat, "")])
