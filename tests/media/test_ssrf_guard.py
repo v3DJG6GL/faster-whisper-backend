@@ -1251,3 +1251,186 @@ def test_guard_is_not_installed_without_the_mpd_bound(monkeypatch):
         guard.install()  # nothing to bound: still fails closed
         assert not guard.is_installed()
     assert guard.is_installed()
+
+
+def test_guard_counts_segments_under_a_root_yt_dlp_does_not_namespace(monkeypatch):
+    """yt-dlp takes the namespace only from a root named MPD (any case) and
+    otherwise looks for unqualified Period elements — _extract_mpd_periods
+    hands it whatever XML root the URL served. The count must look where the
+    expansion looks, or a namespaced <x:Root> expands uncounted."""
+    cap = 50
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    body = _adaptation(_template(timescale="1", duration="1"))
+    for root in ("x:Root", "x:MPDX", "x:Period"):
+        xml = (f'<?xml version="1.0"?><{root} xmlns:x="urn:x" '
+               f'mediaPresentationDuration="PT{cap + 1}S">{body}</{root}>')
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+            _parse_mpd(xml)
+    # A lower-case mpd root is still yt-dlp's namespaced case.
+    xml = (f'<?xml version="1.0"?><mpd xmlns="{_MPD_NS}" '
+           f'mediaPresentationDuration="PT{cap + 1}S">{body}</mpd>')
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_mpd(xml)
+
+
+# ---- Smooth Streaming: yt-dlp expands every <c r="N"> into N fragment dicts
+# for each QualityLevel of the stream, in process and with no cap. The guard
+# counts them against the DASH budget before the expansion.
+
+def _ism(streams, *, live=False):
+    flag = ' IsLive="TRUE"' if live else ""
+    return ('<?xml version="1.0"?><SmoothStreamingMedia MajorVersion="2" '
+            f'MinorVersion="0" Duration="72000000000" TimeScale="10000000"{flag}>'
+            f'{streams}</SmoothStreamingMedia>')
+
+
+def _ism_audio(chunks, *, levels=1, kind="audio"):
+    return (f'<StreamIndex Type="{kind}" Name="audio" Language="eng" '
+            'Url="QualityLevels({bitrate})/Fragments(audio={start time})">'
+            + "".join(f'<QualityLevel Index="{i}" Bitrate="{128000 + i}" '
+                      'FourCC="AACL" SamplingRate="48000" Channels="2" '
+                      'BitsPerSample="16" PacketSize="4" AudioTag="255" '
+                      'CodecPrivateData="1190"/>' for i in range(levels))
+            + chunks + "</StreamIndex>")
+
+
+def _parse_ism(xml):
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        return ie._parse_ism_formats_and_subtitles(
+            compat_etree_fromstring(xml.encode()), "http://cdn.example/x.ism/Manifest")
+
+
+@pytest.mark.parametrize("xml", [
+    # One chunk repeated ten billion times.
+    _ism(_ism_audio('<c t="0" d="20000000" r="10000000000"/>')),
+    # The repeat is expanded once per QualityLevel: 4 x 300 000.
+    _ism(_ism_audio('<c t="0" d="20000000" r="300000"/>', levels=4)),
+], ids=["r=1e10", "4x300000"])
+def test_guard_refuses_an_ism_manifest_listing_too_many_fragments(xml):
+    import time
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        _parse_ism(xml)
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_guard_parses_an_ordinary_ism_manifest_unchanged(monkeypatch):
+    """A 2 h VOD at 2 s chunks over two qualities expands exactly as yt-dlp
+    does on its own; right at the cap still parses, one past it is refused."""
+    fmts, _subs = _parse_ism(_ism(_ism_audio(
+        '<c t="0" d="20000000" r="3599"/><c d="20000000"/>', levels=2)))
+    assert len(fmts) == 2
+    assert all(len(f["fragments"]) == 3600 for f in fmts)
+    # A live manifest is left to yt-dlp, which returns nothing for it.
+    assert _parse_ism(_ism(_ism_audio('<c t="0" d="1" r="10000000000"/>'),
+                           live=True)) == ([], {})
+    cap = 30_000
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_SEGMENTS", cap)
+    fmts, _subs = _parse_ism(_ism(_ism_audio(
+        f'<c t="0" d="1" r="{cap // 3}"/>', levels=3)))
+    assert sum(len(f["fragments"]) for f in fmts) == cap
+    for over in (_ism_audio(f'<c t="0" d="1" r="{cap // 3}"/><c d="1"/>', levels=3),
+                 _ism_audio(f'<c t="0" d="1" r="{cap}"/>')
+                 + _ism_audio('<c t="0" d="1"/>', kind="text")):
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+            _parse_ism(_ism(over))
+
+
+def test_guard_is_not_installed_without_the_ism_bound(monkeypatch):
+    from yt_dlp.extractor.common import InfoExtractor
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(InfoExtractor, "_parse_ism_formats_and_subtitles",
+                  lambda self, *a, **kw: ([], {}))
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(InfoExtractor, "_parse_ism_formats_and_subtitles")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+# ---- HLS: a master playlist becomes one format per variant URI line (and
+# per EXT-X-MEDIA rendition), and every format is then sorted, selected and
+# sanitized in pure Python — ~0.5 ms each. The guard counts them before the
+# parse.
+
+def _parse_m3u8(doc):
+    from yt_dlp.extractor.common import InfoExtractor
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        return ie._parse_m3u8_formats_and_subtitles(
+            doc, "http://cdn.example/master.m3u8", ext="mp4")
+
+
+def _hls_cap():
+    return _registered_guard()["_MAX_M3U8_FORMATS"]
+
+
+_AUDIO_MEDIA = '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="n{i}",URI="a{i}.m3u8"'
+
+
+@pytest.mark.parametrize("make", [
+    lambda n: "#EXTM3U\n" + "u\n" * n,  # a bare URI line is a variant too
+    lambda n: "#EXTM3U\n" + "#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n" * n,
+    lambda n: "#EXTM3U\n" + "".join(_AUDIO_MEDIA.format(i=i) + "\n" for i in range(n)),
+    lambda n: ("#EXTM3U\n" + "".join(_AUDIO_MEDIA.format(i=i) + "\n" for i in range(n // 2))
+               + "v.m3u8\n" * (n - n // 2)),
+    # PROGRESSIVE-URI adds a second (http) format per variant.
+    lambda n: "#EXTM3U\n" + ('#EXT-X-STREAM-INF:BANDWIDTH=1,PROGRESSIVE-URI="p.mp4"\n'
+                             "v.m3u8\n") * (n // 2 + 1),
+    # Every line break str.splitlines() honours, as yt-dlp splits.
+    lambda n: "#EXTM3U\r" + "u\r" * n,
+    lambda n: "#EXTM3U\u2028" + "u\u2028" * n,
+], ids=["bare", "stream-inf", "media", "mixed", "progressive", "cr", "u2028"])
+def test_guard_refuses_an_hls_master_listing_too_many_formats(make):
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_m3u8(make(_hls_cap() + 1))
+
+
+def test_guard_parses_an_ordinary_hls_master_unchanged():
+    master = ("#EXTM3U\n"
+              '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="en",LANGUAGE="en",'
+              'DEFAULT=YES,URI="en.m3u8"\n'
+              '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="sub",NAME="de",LANGUAGE="de",'
+              'URI="de.m3u8"\n'
+              + "".join(f'#EXT-X-STREAM-INF:BANDWIDTH={b}000,RESOLUTION={w}x{h},'
+                        'CODECS="avc1.4d401f,mp4a.40.2",AUDIO="aud"\n'
+                        f"v{h}.m3u8\n"
+                        for b, w, h in ((800, 640, 360), (2400, 1280, 720),
+                                        (5000, 1920, 1080))))
+    fmts, subs = _parse_m3u8(master)
+    assert [f["url"].rsplit("/", 1)[1] for f in fmts] == [
+        "en.m3u8", "v360.m3u8", "v720.m3u8", "v1080.m3u8"]
+    assert list(subs) == ["de"]
+    cap = _hls_cap()
+    assert cap >= 1000
+    assert len(_parse_m3u8("#EXTM3U\n# comment\n\n" + "u\n" * cap)[0]) == cap
+    # A media playlist is returned whole as one format, however many
+    # segments it lists.
+    media = ("#EXTM3U\n#EXT-X-TARGETDURATION:2\n"
+             + "#EXTINF:2,\ns.ts\n" * (cap * 3) + "#EXT-X-ENDLIST\n")
+    assert len(_parse_m3u8(media)[0]) == 1
+
+
+def test_guard_is_not_installed_without_the_hls_bound(monkeypatch):
+    from yt_dlp.extractor.common import InfoExtractor
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(InfoExtractor, "_parse_m3u8_formats_and_subtitles",
+                  lambda self, *a, **kw: ([], {}))
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(InfoExtractor, "_parse_m3u8_formats_and_subtitles")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()

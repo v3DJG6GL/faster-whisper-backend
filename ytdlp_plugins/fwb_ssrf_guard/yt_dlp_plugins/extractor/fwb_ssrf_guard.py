@@ -61,6 +61,7 @@ import http.client
 import importlib.util
 import math
 import os
+import re
 import socket
 import sys
 import threading
@@ -543,7 +544,9 @@ def _refuse_external_downloaders() -> None:
 # The manifest's segments are counted, across every representation, before
 # the expansion. A 4 h stream at 2 s segments is 7 200 per representation, a
 # 12 h one with ten representations 216 000; the cap (~260 MB of fragment
-# dicts at most) leaves long multi-quality VODs well inside it.
+# dicts at most) leaves long multi-quality VODs well inside it. Smooth
+# Streaming (_parse_ism_formats_and_subtitles: <c r="N"> expanded once per
+# QualityLevel) spends from the same budget.
 _MAX_MPD_SEGMENTS = 1_000_000
 _MPD_SENTINEL = "_fwb_mpd_bounded"
 
@@ -621,8 +624,11 @@ def _representation_segments(info: dict, period_duration):
 
 def _refuse_oversized_mpd(mpd_doc) -> None:
     from yt_dlp.utils import parse_duration
-    tag = getattr(mpd_doc, "tag", "") or ""
-    ns = tag[1:tag.index("}")] if tag.startswith("{") and "}" in tag else ""
+    # yt-dlp's own derivation: only a root named MPD (any case) lends its
+    # namespace; under any other root it expands unqualified Periods, so
+    # that is where the count has to look too.
+    match = re.match(r"(?i)^{([^}]+)?}MPD$", getattr(mpd_doc, "tag", "") or "")
+    ns = (match.group(1) or "") if match else ""
 
     def q(name):
         return f"{{{ns}}}{name}" if ns else name
@@ -669,6 +675,109 @@ def _mpd_expansion_is_bounded() -> bool:
                    _MPD_SENTINEL, False)
 
 
+_ISM_SENTINEL = "_fwb_ism_bounded"
+
+
+def _refuse_oversized_ism(ism_doc) -> None:
+    from yt_dlp.utils import int_or_none
+    if ism_doc.get("IsLive") == "TRUE":
+        return  # yt-dlp returns no formats for it, before any expansion
+    count = 0
+    for stream in ism_doc.findall("StreamIndex"):
+        if stream.get("Type") not in ("video", "audio", "text"):
+            continue
+        # Every QualityLevel counts, also one whose codec yt-dlp skips: an
+        # over-count far below the cap, and a yt-dlp that learns the codec
+        # stays bounded.
+        tracks = len(stream.findall("QualityLevel"))
+        if not tracks:
+            continue
+        # yt-dlp: range(int_or_none(r) or 1) per chunk, so r <= -1 builds none.
+        per_track = sum(max(int_or_none(c.get("r")) or 1, 0)
+                        for c in stream.findall("c"))
+        count += tracks * per_track
+        if count > _MAX_MPD_SEGMENTS:
+            raise _too_many_segments()
+
+
+def _bounded_ism(original):
+    def _parse_ism_formats_and_subtitles(self, ism_doc, *args, **kwargs):
+        _refuse_oversized_ism(ism_doc)
+        return original(self, ism_doc, *args, **kwargs)
+    setattr(_parse_ism_formats_and_subtitles, _ISM_SENTINEL, True)
+    return _parse_ism_formats_and_subtitles
+
+
+def _bound_ism_expansion() -> None:
+    from yt_dlp.extractor.common import InfoExtractor
+    current = getattr(InfoExtractor, "_parse_ism_formats_and_subtitles", None)
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _ISM_SENTINEL, False):
+        InfoExtractor._parse_ism_formats_and_subtitles = _bounded_ism(current)
+
+
+def _ism_expansion_is_bounded() -> bool:
+    from yt_dlp.extractor.common import InfoExtractor
+    return getattr(getattr(InfoExtractor, "_parse_ism_formats_and_subtitles", None),
+                   _ISM_SENTINEL, False)
+
+
+# HLS: _parse_m3u8_formats_and_subtitles turns a master playlist into one
+# format per URI line (two with PROGRESSIVE-URI) and one per EXT-X-MEDIA
+# rendition, and YoutubeDL then sorts, selects and sanitizes every one of them
+# in pure Python at ~0.5 ms a format: a 200 kB playlist of 100 000 bare URI
+# lines cost 52 s of CPU and 360 MB, and the 64 MiB body bound admits ~30 M.
+# Real masters list tens of variants, a few hundred with many audio and
+# subtitle renditions; at the cap the format pass stays under a second.
+# A media playlist (it carries #EXT-X-TARGETDURATION) is returned whole as a
+# single format and is not counted.
+_MAX_M3U8_FORMATS = 2_000
+_M3U8_SENTINEL = "_fwb_m3u8_bounded"
+# One match per line yt-dlp turns into a format, with lines split where
+# str.splitlines() splits: an EXT-X-MEDIA rendition, a STREAM-INF carrying a
+# PROGRESSIVE-URI, and any line that is neither blank nor starts with "#"
+# (leading whitespace included). Matching in C keeps a playlist of comments
+# from costing a Python step per line.
+_M3U8_BREAKS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+_M3U8_FORMAT_LINE = re.compile(
+    rf"(?<![^{_M3U8_BREAKS}])(?:#EXT-X-MEDIA:"
+    rf"|#EXT-X-STREAM-INF:[^{_M3U8_BREAKS}]*?PROGRESSIVE-URI"
+    rf"|[^\s#]|[^\S{_M3U8_BREAKS}]+\S)")
+
+
+def _refuse_oversized_m3u8(m3u8_doc) -> None:
+    from yt_dlp.utils import ExtractorError
+    if not isinstance(m3u8_doc, str) or "#EXT-X-TARGETDURATION" in m3u8_doc:
+        return
+    for count, _match in enumerate(_M3U8_FORMAT_LINE.finditer(m3u8_doc), 1):
+        if count > _MAX_M3U8_FORMATS:
+            raise ExtractorError(
+                f"the stream lists too many variants (more than {_MAX_M3U8_FORMATS})",
+                expected=True)
+
+
+def _bounded_m3u8(original):
+    def _parse_m3u8_formats_and_subtitles(self, m3u8_doc, *args, **kwargs):
+        _refuse_oversized_m3u8(m3u8_doc)
+        return original(self, m3u8_doc, *args, **kwargs)
+    setattr(_parse_m3u8_formats_and_subtitles, _M3U8_SENTINEL, True)
+    return _parse_m3u8_formats_and_subtitles
+
+
+def _bound_m3u8_formats() -> None:
+    from yt_dlp.extractor.common import InfoExtractor
+    current = getattr(InfoExtractor, "_parse_m3u8_formats_and_subtitles", None)
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _M3U8_SENTINEL, False):
+        InfoExtractor._parse_m3u8_formats_and_subtitles = _bounded_m3u8(current)
+
+
+def _m3u8_formats_are_bounded() -> bool:
+    from yt_dlp.extractor.common import InfoExtractor
+    return getattr(getattr(InfoExtractor, "_parse_m3u8_formats_and_subtitles", None),
+                   _M3U8_SENTINEL, False)
+
+
 def install() -> None:
     """Register the guard and retire the handlers it supersedes.
 
@@ -686,6 +795,8 @@ def install() -> None:
         _REQUEST_HANDLERS.pop(key, None)
     _refuse_external_downloaders()
     _bound_mpd_expansion()
+    _bound_ism_expansion()
+    _bound_m3u8_formats()
 
 
 def _prefer_guard(rh, request):
@@ -696,14 +807,17 @@ def _prefer_guard(rh, request):
 def is_installed() -> bool:
     """True when the guard is the only request handler registered (an
     allowlist: an unknown handler key fails closed), no downloader can hand
-    a fetch to an external program and a DASH manifest's segments are
-    counted before yt-dlp expands them."""
+    a fetch to an external program, a DASH or Smooth Streaming manifest's
+    segments are counted before yt-dlp expands them and an HLS master's
+    variants before it builds their formats."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
             and set(_REQUEST_HANDLERS) == {GUARD_RH_KEY}
             and all(getattr(cls.real_download, _FD_SENTINEL, False)
                     for cls in _refusing_fd_classes())
-            and _mpd_expansion_is_bounded())
+            and _mpd_expansion_is_bounded()
+            and _ism_expansion_is_bounded()
+            and _m3u8_formats_are_bounded())
 
 
 install()
