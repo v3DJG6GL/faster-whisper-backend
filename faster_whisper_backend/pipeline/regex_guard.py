@@ -832,7 +832,9 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
     `(?:a|aa)`) as one class-like atom per position. The positions past its
     shortest run come all or none with the run they belong to, so they never
     split against each other: `(?:Komma|,)` is not `[K,]` with two loose `m?`
-    that take each other's `m`. Any other group, a possessive or variable
+    that take each other's `m`. An alternation that can match empty
+    (`(?:j?|b)`) pins nothing and is read as one optional atom that takes
+    any character its branches name. Any other group, a possessive or variable
     quantifier or an atom that cannot be read stands as a pin — those are
     left to the rest of the screen. The match is one compiled atom against
     one character, so it is safe in-process; DOTALL over-approximates, as in
@@ -959,6 +961,15 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                         branches[-1].append(("(?:" + "|".join(alts) + ")",
                                              optional or p >= low,
                                              tail if p >= low else None, alt))
+                elif _matches_empty(group):
+                    # `(?:j?|b)` can take nothing at all, so it never pins a
+                    # repetition: read it as one optional atom that can take
+                    # any character its branches name. A pin here hid the
+                    # outer `j?` trading with the inner one in
+                    # `(?:j?(?:j?|b))+#`.
+                    names = dict.fromkeys(a[0] for b in inner for a in b)
+                    if names:
+                        branches[-1].append(("(?:" + "|".join(names) + ")", True, None, None))
                 else:
                     branches[-1].append(None)
             else:
@@ -1096,6 +1107,67 @@ def _fold_case(branch: str) -> str:
     return "".join(out)
 
 
+def _group_bodies(pat: str) -> "tuple[dict[int, str], dict[str, str]]":
+    """Source text of every capturing group of ``pat``, by number and by
+    name. Escapes and character classes are skipped as the screen skips
+    them; the condition of a ``(?(1)yes|no)`` group is not a group."""
+    import re
+    num: "dict[int, str]" = {}
+    name: "dict[str, str]" = {}
+    stack: "list[tuple[int, str | None, int] | None]" = []
+    i, n, k = 0, len(pat), 0
+    while i < n:
+        past = _past_opaque(pat, i)
+        if past > i:
+            i = past
+            continue
+        c = pat[i]
+        if c == "(":
+            m = re.match(r"\(\?P?<(\w+)>", pat[i:])
+            if m:
+                k += 1
+                stack.append((k, m.group(1), i + m.end()))
+                i += m.end()
+                continue
+            if pat.startswith("(?(", i):
+                stack.append(None)
+                close = pat.find(")", i + 3)
+                i = n if close == -1 else close + 1
+                continue
+            if pat.startswith("(?", i):
+                stack.append(None)
+            else:
+                k += 1
+                stack.append((k, None, i + 1))
+        elif c == ")" and stack:
+            top = stack.pop()
+            if top:
+                num[top[0]] = pat[top[2]:i]
+                if top[1]:
+                    name[top[1]] = pat[top[2]:i]
+        i += 1
+    return num, name
+
+
+def _resolve_backref(branch: str, bodies: "tuple[dict[int, str], dict[str, str]]") -> "str | None":
+    """``branch`` with each backreference (``\\1``, ``(?P=name)``) replaced by
+    the text of the group it names, so `(a)(?:a|\\1)+` compares `a` with `a`.
+    None — refuse: more, never less — when a reference names no group in
+    ``bodies`` (see _group_bodies)."""
+    import re
+    num, name = bodies
+    missing = []
+
+    def sub(m) -> str:
+        body = num.get(int(m.group(2))) if m.group(2) else name.get(m.group(3))
+        if body is None:
+            missing.append(m.group(0))
+            return m.group(0)
+        return m.group(1) + "(?:" + body + ")"
+    out = re.sub(r"((?<!\\)(?:\\\\)*)(?:\\([1-9][0-9]?)|\(\?P=(\w+)\))", sub, branch)
+    return None if missing else _strip_outer_group(out)
+
+
 def _spans_overlap(pat: str, spans: "list[tuple[int, int]]", icase: bool = False) -> bool:
     """True if two of the alternation branches ``pat[a:b]`` in ``spans`` can
     match the same start of the input — the shape that lets one run of input
@@ -1109,8 +1181,18 @@ def _spans_overlap(pat: str, spans: "list[tuple[int, int]]", icase: bool = False
 
     ``icase``: the pattern matches case-insensitively somewhere, so branches
     that differ only in case (``äh`` / ``Äh``) are the same branch.
+
+    A backreference branch matches whatever its group matched, so it is
+    compared as that group's text: `(?:(ja )|\\1)+#` is `(?:ja |ja )+#`.
     """
+    import re
     stripped = [_strip_outer_group(pat[a:b]) for a, b in spans]
+    if len(stripped) > 1 and any(re.search(r"\\[1-9]|\(\?P=", b) for b in stripped):
+        bodies = _group_bodies(pat)
+        resolved = [_resolve_backref(b, bodies) for b in stripped]
+        if None in resolved:
+            return True
+        stripped = resolved
     folded = [_fold_case(x) for x in stripped] if icase else stripped
     if len(set(folded)) < len(folded):
         return True

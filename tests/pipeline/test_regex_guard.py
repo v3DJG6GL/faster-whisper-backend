@@ -1258,6 +1258,72 @@ def test_lookaround_inside_an_overlapping_alternation_is_still_rejected(pat):
         g.validate([("r", pat, "")])
 
 
+@pytest.mark.parametrize("pat", [
+    r"(?:j?(?:j?|b))+#",
+    r"(?:(?:ja )?(?:(?:ja )?|b))+#",
+    r"Q+|(?:j?(?:j?|b))+#",
+    r"(?:(?:j?|b)j?)+#",
+    r"(?:j?(?:jj?|b))+#",
+])
+def test_empty_matchable_alternation_trades_with_outer_optional(pat):
+    """`(?:j?|b)` can match nothing, so it never pins a repetition: its
+    `j?` trades with the outer `j?`, and each repetition takes "ja " two
+    ways. Read as a pin, `(?:(?:ja )?(?:(?:ja )?|b))+#` passed the screen
+    and the timed probes, then took seconds on 18 dictated "ja " and twice
+    that per extra one."""
+    assert g._nested_repetition(pat)
+
+
+def test_empty_matchable_alternation_attack_is_refused_on_save():
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", r"(?:(?:ja )?(?:(?:ja )?|b))+#", "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:x?(?:y?|z) )+",
+    r"(?:(?:,? ?bitte|danke) )+",
+    r"(?:(?:z\.? ?B\.?|d\.? ?h\.?) )+",
+    r"(?:(?:,|;)?(?: ?|-)x)+",
+    r"(?:(?: ?/|-) ?\d)+",
+    r"(?:(?: ?,|;) ?x)+",
+])
+def test_empty_matchable_alternation_without_a_shared_character_passes(pat):
+    assert not g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:(a)|\1)+#",
+    r"(?:(?P<x>a)|(?P=x))+#",
+    r"(a)(?:a|\1)+#",
+    r"(\w)(?:\w|\1)+#",
+    r"(?:(ja )|\1)+#",
+    r"(ja )(?:ja |\1)+#",
+])
+def test_backref_branch_compared_as_its_group(pat):
+    """A backreference branch matches the text of the group it names, so
+    `(?:(ja )|\\1)+#` is `(?:ja |ja )+#`: re.sub took 1.5 s on 24 "ja " and
+    doubled per extra one, yet the screen read `\\1` as unrelated text."""
+    assert g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [r"(?:(ja )|\1)+#", r"(ja )(?:ja |\1)+#"])
+def test_backref_branch_attack_is_refused_on_save(pat):
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(a)(?:b|\1)+",
+    r"(ja )(?:nein |\1)+#",
+    r"(?:(ja )|x\1)+#",
+    r"\b(\w+)(?: \1\b)+",
+    r"(\w+) \1",
+    r"(?P<n>a)((?P=n)|b)+",
+])
+def test_backref_branch_disjoint_from_its_siblings_passes(pat):
+    assert not g._nested_repetition(pat)
+
+
 def test_negated_class_member_does_not_steer_the_run_off_its_character():
     """A negated class's members were read as literals the rule matches, so
     `[^1\\D]` swapped the `\\d` run to `2`, which the class DOES match: the
