@@ -83,7 +83,7 @@ def test_separate_transcodes_non_libsndfile_container(
     calls, made = _stub_separate(monkeypatch)
     transcoded = []
 
-    def _fake_transcode(src, dst, *, rate, layout):
+    def _fake_transcode(src, dst, *, rate, layout, **_kw):
         transcoded.append((src, dst, rate, layout))
         with open(dst, "wb") as f:
             f.write(b"RIFF44kWAVE")
@@ -593,3 +593,91 @@ def test_shared_tempdir_model_dir_must_be_private(monkeypatch, tmp_path):
     planted.rmdir()
     bgm_separation._check_private_model_dir(str(planted))
     assert planted.stat().st_mode & 0o777 == 0o700
+
+
+def _planted_dir(tmp_path, kind):
+    """A dir under a name the server would reuse, but not private to it: a
+    0777 dir, or a symlink to a dir someone else picked."""
+    if kind == "world-writable":
+        d = tmp_path / "fwb-bgm-planted"
+        d.mkdir()
+        d.chmod(0o777)
+        return str(d)
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o700)
+    link = tmp_path / "fwb-bgm-link"
+    link.symlink_to(target)
+    return str(link)
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership")
+@pytest.mark.parametrize("kind", ["world-writable", "symlink"])
+def test_output_dir_replaces_a_dir_that_is_not_private(monkeypatch, tmp_path, kind):
+    """A tmp cleaner can drop the private stem dir while the process lives on,
+    and a local account can then re-create the same name first."""
+    planted = _planted_dir(tmp_path, kind)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(bgm_separation, "_out_dir", planted)
+    d = bgm_separation._output_dir()
+    assert d != planted
+    assert os.path.basename(d).startswith("fwb-bgm-")
+    assert not os.path.islink(d)
+    assert os.stat(d).st_mode & 0o777 == 0o700
+    assert bgm_separation._output_dir() == d
+
+
+class _RecordingSep:
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        self.model_instance = types.SimpleNamespace(output_dir=output_dir)
+        self.calls = []
+
+    def separate(self, path, custom_output_names=None):
+        # audio-separator writes through the model instance's own copy.
+        d = self.model_instance.output_dir
+        self.calls.append(d)
+        name = custom_output_names["Vocals"] + ".wav"
+        with open(os.path.join(d, name), "wb") as f:
+            f.write(b"RIFF")
+        return [name]
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership")
+@pytest.mark.parametrize("kind", ["world-writable", "symlink"])
+def test_run_never_writes_into_a_resident_output_dir_that_is_not_private(monkeypatch, tmp_path, kind):
+    """The resident separator's stem dir re-appeared under someone else's
+    control: the stem goes to a fresh private dir instead, never into it."""
+    planted = _planted_dir(tmp_path, kind)
+    sep = _RecordingSep(planted)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(bgm_separation, "_out_dir", planted)
+    monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
+    out = asyncio.run(bgm_separation._separate_with(
+        sep, "in.wav", progress_cb=None, cancel_check=None))
+    fresh = os.path.dirname(out)
+    assert sep.calls == [fresh]
+    assert os.path.realpath(fresh) != os.path.realpath(planted)
+    assert os.stat(fresh).st_mode & 0o777 == 0o700
+    assert sep.model_instance.output_dir == fresh
+    assert os.listdir(planted) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership")
+def test_run_mints_a_fresh_private_dir_when_the_old_one_is_gone(monkeypatch, tmp_path):
+    """A removed stem dir is replaced by a fresh mkdtemp, not re-created
+    under its old (already published) name, and the resident separator —
+    including the model instance that does the writing — is pointed at it."""
+    gone = str(tmp_path / "fwb-bgm-gone")
+    sep = _RecordingSep(gone)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(bgm_separation, "_out_dir", gone)
+    monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
+    out = asyncio.run(bgm_separation._separate_with(
+        sep, "in.wav", progress_cb=None, cancel_check=None))
+    assert not os.path.lexists(gone)
+    fresh = os.path.dirname(out)
+    assert fresh != gone and os.path.basename(fresh).startswith("fwb-bgm-")
+    assert os.stat(fresh).st_mode & 0o777 == 0o700
+    assert sep.output_dir == fresh
+    assert sep.model_instance.output_dir == fresh
+    assert bgm_separation._out_dir == fresh

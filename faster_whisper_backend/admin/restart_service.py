@@ -185,12 +185,20 @@ def reclaim_hard_restart_orphans() -> None:
     except OSError:
         return
     now = time.time()
+    # The sweep runs after the extras preload, which may already have minted
+    # this process's separator output dir; it stays empty (mtime frozen at
+    # creation) through a slow first-start model download, so the age guard
+    # alone would let the sweep remove it and free its published name.
+    from faster_whisper_backend.audio import bgm_separation
+    own_bgm_dir = bgm_separation._out_dir
     for name in names:
         if not name.startswith(("urldl-", "urlmedia-", "whisperup-",
                                 "sepsrc-", "vocals-", "fwb-pkg-",
                                 "fwb-bgm-", "preview_merge_")):
             continue
         path = os.path.join(tmp, name)
+        if own_bgm_dir and os.path.normpath(path) == os.path.normpath(own_bgm_dir):
+            continue
         try:
             if os.path.islink(path) or now - os.path.getmtime(path) < 60.0:
                 continue

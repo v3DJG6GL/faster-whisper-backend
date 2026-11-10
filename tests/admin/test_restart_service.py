@@ -431,3 +431,20 @@ def test_reclaim_sweeps_an_orphaned_private_separator_dir(fake_tmp):
     _backdate(old)
     restart_service.reclaim_hard_restart_orphans()
     assert not old.exists()
+
+
+def test_reclaim_spares_this_process_live_separator_dir(fake_tmp, monkeypatch):
+    """The sweep runs after the extras preload, and a slow first-start model
+    download leaves the separator's empty stem dir older than the age guard:
+    removing it would hand its published name to whoever re-creates it
+    first. A foreign orphan is still reclaimed."""
+    from faster_whisper_backend.audio import bgm_separation
+    live = fake_tmp / "fwb-bgm-live"
+    dead = fake_tmp / "fwb-bgm-dead"
+    for d in (live, dead):
+        d.mkdir()
+        _backdate(d)
+    monkeypatch.setattr(bgm_separation, "_out_dir", str(live))
+    restart_service.reclaim_hard_restart_orphans()
+    assert live.exists()
+    assert not dead.exists()

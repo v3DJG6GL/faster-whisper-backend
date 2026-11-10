@@ -326,18 +326,57 @@ def model_file_dir() -> str:
 # Process-private (0700, mkdtemp) directory the separator writes its vocals
 # stems into. The shared system temp dir would leave the speech-only stem of a
 # caller's upload readable by any local account while it is written (libsndfile
-# creates it 0644 under the usual umask). Recreated if a tmp cleaner removed it;
-# a hard restart's leftovers are swept by restart_service ("fwb-bgm-").
+# creates it 0644 under the usual umask). A fresh one is minted if a tmp cleaner
+# removed it — never re-created by name, since the name is listed in the shared
+# temp dir and a local account may have claimed it in the meantime; a hard
+# restart's leftovers are swept by restart_service ("fwb-bgm-").
 _out_dir: "str | None" = None
+
+
+def _is_private_dir(path: str) -> bool:
+    """A real directory (not a symlink) owned by this process's user that no
+    one else can enter. POSIX only (Windows has no getuid; its temp dir is
+    per-user), where a plain isdir is the whole check."""
+    if not hasattr(os, "getuid"):
+        return os.path.isdir(path)
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    import stat as _stat
+    return (_stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+            and not st.st_mode & 0o077)
 
 
 def _output_dir() -> str:
     global _out_dir
     d = _out_dir
-    if d is None or not os.path.isdir(d):
+    if d is None or not _is_private_dir(d):
         d = tempfile.mkdtemp(prefix="fwb-bgm-")
         _out_dir = d
     return d
+
+
+def _ensure_private_output_dir(sep, out_dir: str) -> None:
+    """Called under _separate_mutex right before a separation. A dir that is
+    missing (a tmp cleaner removed it while the separator stayed resident) or
+    no longer private (someone claimed its published name in the meantime) is
+    never written into: the separator is pointed at a fresh private one."""
+    if not hasattr(os, "getuid"):
+        os.makedirs(out_dir, mode=0o700, exist_ok=True)
+        return
+    if _is_private_dir(out_dir):
+        return
+    if os.path.lexists(out_dir):
+        logger.warning("[bgm] separation output directory is not private any "
+                       "more; switching to a fresh one")
+    fresh = _output_dir()
+    sep.output_dir = fresh
+    # audio-separator's model instance keeps its own copy of output_dir
+    # (taken at load_model) and is what actually writes the stem.
+    inst = getattr(sep, "model_instance", None)
+    if inst is not None and hasattr(inst, "output_dir"):
+        inst.output_dir = fresh
 
 
 def _check_private_model_dir(file_dir: str) -> None:
@@ -787,9 +826,7 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
                 _progress_tls.load_t0 = time.perf_counter()
                 out_dir = getattr(sep, "output_dir", None)
                 if isinstance(out_dir, str) and out_dir:
-                    # A tmp cleaner may have removed the private dir while
-                    # the separator stayed resident.
-                    os.makedirs(out_dir, mode=0o700, exist_ok=True)
+                    _ensure_private_output_dir(sep, out_dir)
                 logger.info("[bgm] loading audio for separation")
                 outputs = sep.separate(
                     path, custom_output_names={"Vocals": out_name})
