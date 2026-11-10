@@ -7,6 +7,7 @@ if ffmpeg (or its libopus encoder) is unavailable.
 
 import asyncio
 import logging
+import struct
 import subprocess
 
 import pytest
@@ -184,6 +185,44 @@ def test_ffmpeg_transport_reader_join_timeout_still_returns(monkeypatch):
         return t._proc.killed, t._reader.cancelled()
 
     assert asyncio.run(run()) == (True, True)
+
+
+def _tiny_rate_wav(data_bytes: int, sample_rate: int = 1) -> bytes:
+    """A pcm_u8 mono WAV at a near-zero sample rate: each byte of it resamples
+    to 32 000 bytes of 16 kHz PCM at 1 Hz."""
+    fmt = struct.pack("<HHIIHH", 1, 1, sample_rate, sample_rate, 1, 8)
+    body = (b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+            + b"data" + struct.pack("<I", data_bytes) + b"\x80" * data_bytes)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+def test_ffmpeg_transport_stops_a_decode_amplification_bomb():
+    """A 128 KiB WAV at 1 Hz decodes to 4 GB of 16 kHz PCM. Output far beyond
+    what any real codec yields per input byte must kill the decoder (dead →
+    the route's decoder_failed close) instead of feeding the session. The
+    input is above the ~64 KiB ffmpeg buffers before it decodes anything
+    while stdin stays open."""
+    wav = _tiny_rate_wav(128 * 1024)
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        await t.feed(wav)
+        for _ in range(100):
+            if t.dead:
+                break
+            await asyncio.sleep(0.05)
+        dead = t.dead
+        await t.aclose()
+        return dead
+
+    assert asyncio.run(run())
+    assert total <= len(wav) * 1024 + 120 * 16000 * 2
 
 
 def test_stream_route_accepts_webm_via_ffmpeg(client, energy_vad):

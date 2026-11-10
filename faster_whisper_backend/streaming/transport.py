@@ -25,6 +25,16 @@ ENCODED_FORMATS = {
     "webm", "ogg", "ogg_opus", "opus", "wav", "mp4", "m4a", "mp3", "flac", "aac",
 }
 
+# Ceiling on decoded PCM bytes per container byte. Real codecs at 16 kHz mono
+# stay far below it (Opus 6 kbps ≈ 43x, MP3 ≈ 8x, FLAC digital silence ≈ 800x),
+# while a container declaring a near-zero sample rate (a 1 Hz WAV resamples at
+# 32 000x) would otherwise turn a single frame into gigabytes of PCM.
+_MAX_DECODE_RATIO = 1024
+# Output allowed on top of the ratio, in seconds of PCM: container headers
+# arrive before any audio, and an encoder may open with long near-silence, so
+# a stream's first stretch must never trip the ratio on its own.
+_DECODE_HEADROOM_S = 120.0
+
 
 class RawPcmTransport:
     """Pass-through: the client already sends 16 kHz mono s16le PCM."""
@@ -63,6 +73,8 @@ class FfmpegTransport:
         self._closed = False
         self._reader_dead = False
         self._dead_logged = False
+        self._in_bytes = 0
+        self._out_bytes = 0
 
     @property
     def dead(self) -> bool:
@@ -96,6 +108,18 @@ class FfmpegTransport:
                 chunk = await self._proc.stdout.read(self._read_size)
                 if not chunk:
                     break
+                self._out_bytes += len(chunk)
+                if self._out_bytes > self._max_out_bytes():
+                    # Treated as a dead decoder: the kill also breaks a feed()
+                    # parked in stdin.drain(), and the route ends the session.
+                    logger.warning("[ffmpeg-transport] decoded output exceeds %dx the "
+                                   "input (%d -> %d bytes); stopping the decoder",
+                                   _MAX_DECODE_RATIO, self._in_bytes, self._out_bytes)
+                    try:
+                        self._proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    break
                 await self._sink(chunk)
         # A cancel is NOT swallowed: aclose() awaits this task through
         # wait_for, which hands an outer cancel (server shutdown) on to it —
@@ -104,6 +128,10 @@ class FfmpegTransport:
             logger.warning("[ffmpeg-transport] reader error: %s", exc)
         finally:
             self._reader_dead = True
+
+    def _max_out_bytes(self) -> int:
+        return (self._in_bytes * _MAX_DECODE_RATIO
+                + int(_DECODE_HEADROOM_S * self._sr * 2))
 
     async def feed(self, data: bytes) -> None:
         if self._proc is None or self._proc.stdin is None or self._closed:
@@ -117,6 +145,7 @@ class FfmpegTransport:
                 logger.warning("[ffmpeg-transport] ffmpeg exited; discarding audio "
                                "for the rest of this session")
             return
+        self._in_bytes += len(data)
         try:
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
