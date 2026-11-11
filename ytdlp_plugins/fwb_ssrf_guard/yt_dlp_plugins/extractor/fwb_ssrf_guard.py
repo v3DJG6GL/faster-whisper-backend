@@ -506,7 +506,12 @@ class GuardedUrllibRH(_urllib.UrllibRH):
     def _send(self, request):
         self._refuse_foreign_proxy(request)
         _check_url(request.url)  # hop 0 — redirects are gated above
-        return super()._send(request)
+        response = super()._send(request)
+        # HlsFD joins every segment line onto the URL its playlist ended at
+        # after redirects, which only the response knows (see
+        # _refuse_oversized_hls_media).
+        _DIALS.tls.response_url_len = len(getattr(response, "url", None) or "")
+        return response
 
     def _refuse_foreign_proxy(self, request):
         """Only the operator's proxies (self.proxies: 'proxy' param / env)
@@ -767,7 +772,12 @@ def _representation_attr(representation, adaptation, name):
     return adaptation.get(name)
 
 
-def _refuse_oversized_mpd(mpd_doc) -> None:
+def _refuse_oversized_mpd(mpd_doc, mpd_base_len: int = 0) -> None:
+    """`mpd_base_len`: the length of the manifest's own (post-redirect) base
+    URL, which yt-dlp prepends afresh to each representation's relative base
+    URL (the redirect hop can make it ~64 KB). It is charged for every
+    representation, also one whose chain ends at an absolute BaseURL: an
+    over-count of a few hundred bytes each."""
     from yt_dlp.utils import parse_duration
     # yt-dlp's own derivation: only a root named MPD (any case) lends its
     # namespace; under any other root it expands unqualified Periods, so
@@ -803,7 +813,7 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
                 count += n
                 if count > _MAX_MPD_SEGMENTS:
                     raise _too_many_segments()
-                url_bytes += set_base + base_url(representation)
+                url_bytes += mpd_base_len + set_base + base_url(representation)
                 url_bytes += _representation_url_bytes(
                     info, n,
                     _representation_attr(representation, adaptation, "id"),
@@ -819,7 +829,12 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
 
 def _bounded_mpd_periods(original):
     def _parse_mpd_periods(self, mpd_doc, *args, **kwargs):
-        _refuse_oversized_mpd(mpd_doc)
+        # yt-dlp's signature: (mpd_doc, mpd_id=None, mpd_base_url='', ...).
+        mpd_base_url = (args[1] if len(args) > 1
+                        else kwargs.get("mpd_base_url"))
+        # +1: the "/" yt-dlp appends to a base that lacks one.
+        _refuse_oversized_mpd(
+            mpd_doc, len(mpd_base_url) + 1 if isinstance(mpd_base_url, str) else 0)
         return original(self, mpd_doc, *args, **kwargs)
     setattr(_parse_mpd_periods, _MPD_SENTINEL, True)
     return _parse_mpd_periods
@@ -998,19 +1013,55 @@ _HLS_FRAGMENT_LINE = re.compile(
     rf"(?<![^{_M3U8_BREAKS}])[^\S{_M3U8_BREAKS}]*(?:[^\s#]|#EXT-X-MAP)")
 
 
-def _refuse_oversized_hls_media(manifest) -> None:
+# HlsFD also builds each fragment's address as urljoin(playlist URL, line)
+# before it fetches anything, and the URL of the key an #EXT-X-KEY line names
+# likewise (the fragments after it keep that key's dict), so one 2-byte line
+# costs the playlist URL's length: up to ~64 KB through a redirect, more when
+# a master's variant line names it. Those addresses must fit what the
+# extraction left of DASH's budget (_MAX_FRAGMENT_URL_BYTES); a 12 h playlist
+# of 21 600 segments with a 300-byte URL costs ~6.5 MB.
+_HLS_URL_LINE = re.compile(
+    rf"(?<![^{_M3U8_BREAKS}])[^\S{_M3U8_BREAKS}]*"
+    r"(?:[^\s#]|#EXT-X-MAP|#EXT-X-KEY)")
+
+
+def _refuse_oversized_hls_media(manifest, url_len: int = 0) -> None:
+    """`url_len`: the length of the URL HlsFD joins the playlist's lines
+    onto."""
+    if not isinstance(manifest, str):
+        return
+    breaks = _line_breaks(manifest)
     # A playlist with no more lines than the cap cannot list more fragments:
     # every real one pays only the C-level line count.
-    if not isinstance(manifest, str) or _line_breaks(manifest) < _MAX_MPD_SEGMENTS:
+    if breaks >= _MAX_MPD_SEGMENTS:
+        for count, _match in enumerate(_HLS_FRAGMENT_LINE.finditer(manifest), 1):
+            if count > _MAX_MPD_SEGMENTS:
+                raise _too_many_segments()
+    # Checked against what the extraction has spent, never spent itself:
+    # HlsFD drops its fragment list once the download ends, and a merged
+    # video + audio download runs it twice. Every line joined is the cheap
+    # upper bound; only past the budget are the joined lines counted, in C
+    # (subn's copy is never larger than the playlist itself).
+    spent = getattr(_DIALS.tls, "url_bytes", 0) + len(manifest)
+    if spent + (breaks + 1) * url_len <= _MAX_FRAGMENT_URL_BYTES:
         return
-    for count, _match in enumerate(_HLS_FRAGMENT_LINE.finditer(manifest), 1):
-        if count > _MAX_MPD_SEGMENTS:
-            raise _too_many_segments()
+    if spent + _HLS_URL_LINE.subn("", manifest)[1] * url_len > _MAX_FRAGMENT_URL_BYTES:
+        raise _too_much_url()
 
 
 def _bounded_hls_can_download(original):
     def can_download(cls, manifest, *args, **kwargs):
-        _refuse_oversized_hls_media(manifest)
+        # HlsFD joins onto info_dict['url'] for a playlist it was handed
+        # (hls_media_playlist_data), else onto the URL its own fetch, just
+        # before this call, ended at.
+        info_dict = args[0] if args else kwargs.get("info_dict")
+        if not isinstance(info_dict, dict):
+            info_dict = {}
+        url = info_dict.get("url")
+        url_len = len(url) if isinstance(url, str) else 0
+        if not info_dict.get("hls_media_playlist_data"):
+            url_len = max(url_len, getattr(_DIALS.tls, "response_url_len", 0))
+        _refuse_oversized_hls_media(manifest, url_len)
         return original(cls, manifest, *args, **kwargs)
     setattr(can_download, _HLS_SENTINEL, True)
     return can_download

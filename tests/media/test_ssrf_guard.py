@@ -1480,6 +1480,50 @@ def test_guard_charges_fragment_url_bytes_across_manifests(monkeypatch):
     assert len(_parse_ism(sixty)[0][0]["fragments"]) == 60
 
 
+def _parse_mpd_at(xml, base, *, positional):
+    """_parse_mpd with the manifest's own base URL `base`, handed over the way
+    _extract_mpd_formats does (positionally) or as a keyword."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    udl.guard_self_check(force=True)
+    doc = compat_etree_fromstring(xml.encode())
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        if positional:
+            return ie._merge_mpd_periods(
+                ie._parse_mpd_periods(doc, None, base, base + "m.mpd"))
+        return ie._parse_mpd_formats_and_subtitles(
+            doc, mpd_base_url=base, mpd_url=base + "m.mpd")
+
+
+@pytest.mark.parametrize("positional", [True, False], ids=["positional", "keyword"])
+def test_guard_charges_the_manifest_url_for_each_representation(
+        monkeypatch, positional):
+    """yt-dlp prepends the manifest's own post-redirect URL (a Location of up
+    to ~64 KB) to every representation's relative BaseURL: 300 bare
+    representations under a 10 KB URL ask for 3 MB of base URLs."""
+    guard = _registered_guard()
+    xml = _mpd(_adaptation("<BaseURL>a</BaseURL>", reps=300))
+    with monkeypatch.context() as m:
+        m.setitem(guard, "_MAX_FRAGMENT_URL_BYTES", 1_000_000)
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+            _parse_mpd_at(xml, "http://cdn.example/" + "p" * 10_000 + "/",
+                          positional=positional)
+        # A real CDN URL leaves the same manifest as yt-dlp builds it.
+        fmts, _subs = _parse_mpd_at(xml, "http://cdn.example/vod/",
+                                    positional=positional)
+        assert len(fmts) == 300
+        assert fmts[0]["url"] == "http://cdn.example/vod/a"
+    # The real budget: 20 000 representations under a 2 KB signed URL fit.
+    _reset_budget()
+    from yt_dlp.utils import compat_etree_fromstring
+    big = _mpd("<Period>" + ('<AdaptationSet mimeType="audio/mp4">'
+                             + '<Representation bandwidth="1"/>' * 1000
+                             + "</AdaptationSet>") * 20 + "</Period>")
+    guard["_refuse_oversized_mpd"](compat_etree_fromstring(big.encode()), 2049)
+    assert guard["_DIALS"].tls.url_bytes < guard["_MAX_FRAGMENT_URL_BYTES"]
+
+
 def test_guard_is_not_installed_without_the_ism_bound(monkeypatch):
     from yt_dlp.extractor.common import InfoExtractor
     guard = _inproc_guard()
@@ -1640,19 +1684,22 @@ def test_guard_refuses_a_large_comment_only_hls_master_quickly():
 # body cap (~33 M lines, ~12 GB). The guard counts them, against the DASH
 # segment budget, when HlsFD checks the manifest it is about to expand.
 
-def _hls_download(monkeypatch, tmp_path, doc):
-    """HlsFD.real_download on `doc` with the fragment fetch stubbed out:
-    the fragment counts it would have fetched, or the refusal."""
+def _hls_download(monkeypatch, tmp_path, doc, *,
+                  url="https://public.example/a.m3u8", params=None):
+    """HlsFD.real_download on `doc` (None: HlsFD fetches `url` itself) with
+    the fragment fetch stubbed out: the fragment counts it would have
+    fetched, or the refusal."""
     udl.guard_self_check(force=True)
     built = []
     monkeypatch.setattr(
         hls.HlsFD, "download_and_append_fragments",
         lambda self, ctx, fragments, info_dict, **kw: built.append(len(fragments)) or True)
-    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+    info = {"url": url, "id": "x", "ext": "mp4", "http_headers": {}}
+    if doc is not None:
+        info["hls_media_playlist_data"] = doc
+    with yt_dlp.YoutubeDL({"quiet": True, **(params or {})}) as ydl:
         fd = hls.HlsFD(ydl, ydl.params)
-        fd.real_download(str(tmp_path / "media.mp4"), {
-            "url": "https://public.example/a.m3u8", "id": "x", "ext": "mp4",
-            "http_headers": {}, "hls_media_playlist_data": doc})
+        fd.real_download(str(tmp_path / "media.mp4"), info)
     return built
 
 
@@ -1687,6 +1734,83 @@ def test_guard_downloads_an_ordinary_hls_media_playlist_unchanged(
     doc = (_HLS_HEAD + _HLS_MAP + "#EXTINF:1,\n a.ts\n\n # note\n" * (cap - 1)
            + "#EXT-X-ENDLIST\n")
     assert _hls_download(monkeypatch, tmp_path, doc) == [cap]
+
+
+# HlsFD joins every segment line (and every #EXT-X-KEY URI) onto the
+# playlist's own URL before it fetches anything, so a 2-byte line costs that
+# URL's length: ~64 KB through a redirect, more from a master's variant line.
+
+_LONG_HLS_URL = "https://public.example/" + "p" * 10_000 + "/a.m3u8"
+
+
+@pytest.mark.parametrize("doc", [
+    _HLS_HEAD + "s\n" * 200,
+    # 60 segments alone fit; the key URI joined before each one does not.
+    _HLS_HEAD + '#EXT-X-KEY:METHOD=AES-128,URI="k"\ns\n' * 60,
+], ids=["segments", "keys"])
+def test_guard_refuses_hls_segment_addresses_past_the_url_budget(
+        monkeypatch, tmp_path, doc):
+    monkeypatch.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 1_000_000)
+    built = []
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        built = _hls_download(monkeypatch, tmp_path, doc, url=_LONG_HLS_URL)
+    assert built == []
+
+
+def test_guard_downloads_hls_playlists_under_the_url_budget_unchanged(
+        monkeypatch, tmp_path):
+    """A 12 h VOD at 2 s segments under a 300-byte signed URL takes the
+    line-count fast path; a playlist whose every line joined would not fit
+    but whose segments do is counted, and still built."""
+    url = "https://cdn.example/vod/" + "q" * 270 + "/a.m3u8"
+    vod = _HLS_HEAD + "#EXTINF:2,\nseg.ts\n" * 21_600 + "#EXT-X-ENDLIST\n"
+    assert _hls_download(monkeypatch, tmp_path, vod, url=url) == [21_600]
+    monkeypatch.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 1_000_000)
+    doc = _HLS_HEAD + "#EXTINF:1,\n#a\n\ns\n" * 90 + "#EXT-X-ENDLIST\n"
+    assert _hls_download(monkeypatch, tmp_path, doc, url=_LONG_HLS_URL) == [90]
+
+
+class _RedirectedPlaylist(_QuietHandler):
+    """A short playlist URL that redirects to a 20 KB one serving 100
+    segment lines (fetched through the operator proxy)."""
+
+    long_path = "/" + "r" * 20_000 + "/a.m3u8"
+
+    def do_GET(self):
+        if not self.path.endswith(type(self).long_path):
+            self.send_response(302)
+            self.send_header("Location",
+                             f"http://{_PUBLIC_LITERAL}{type(self).long_path}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = (_HLS_HEAD + "s\n" * 100).encode()
+        self._ok_headers("application/vnd.apple.mpegurl", len(body))
+        self.wfile.write(body)
+
+
+def test_guard_charges_hls_lines_against_the_redirected_playlist_url(
+        monkeypatch, tmp_path):
+    """HlsFD joins onto the URL its own fetch ended at, which only the
+    response knows: the 2 MB of addresses are refused though the info dict
+    names a short URL."""
+    for var in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(var.upper(), raising=False)
+    monkeypatch.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 1_000_000)
+    srv = _serve(_RedirectedPlaylist, "127.0.0.1")
+    with _stopping(srv):
+        proxy = {"proxy": f"http://127.0.0.1:{srv.server_port}"}
+        short = f"http://{_PUBLIC_LITERAL}/a.m3u8"
+        built = []
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+            built = _hls_download(monkeypatch, tmp_path, None, url=short,
+                                  params=proxy)
+        assert built == []
+        # The same playlist behind an ordinary redirect is built.
+        monkeypatch.setattr(_RedirectedPlaylist, "long_path", "/vod/a.m3u8")
+        assert _hls_download(monkeypatch, tmp_path, None, url=short,
+                             params=proxy) == [100]
 
 
 def test_guard_is_not_installed_without_the_hls_fragment_bound(monkeypatch):
