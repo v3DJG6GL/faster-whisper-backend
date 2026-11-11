@@ -220,6 +220,37 @@ def test_package_nonzero_exit_never_echoes_stderr_and_classifies_srt(monkeypatch
         assert not isinstance(ei.value, pk.SubtitleParseError), line
 
 
+def test_package_failure_log_names_neither_the_source_nor_the_workdir(
+        monkeypatch, tmp_path, caplog):
+    """ffmpeg names the absolute source path (the retained media id) and the
+    workdir files when an open fails; the logged tail carries placeholders,
+    the classification still reads the raw tail."""
+    src = str(tmp_path / "0123abcdef.mkv")
+    _patch_argv(monkeypatch, (
+        "import sys\n"
+        f"sys.stderr.write('Error opening input file {src}.\\n')\n"
+        "sys.stderr.write('could not write __OUT__\\n')\n"
+        "sys.exit(1)\n"))
+    with caplog.at_level("WARNING", logger=pk.logger.name):
+        with pytest.raises(pk.PackageError) as ei:
+            _run(pk.package(src, [], container="mkv", default_track=None,
+                            timeout=10))
+    assert str(ei.value) == "packaging failed"
+    assert "[package] ffmpeg exited 1" in caplog.text
+    assert "<source>" in caplog.text and "<workdir>" in caplog.text
+    for secret in (str(tmp_path), "0123abcdef", "fwb-pkg-"):
+        assert secret not in caplog.text, secret
+    # With a track, a line naming the source still blames the source.
+    _patch_argv(monkeypatch, (
+        "import sys\n"
+        f"sys.stderr.write('{src}: Invalid data found when processing input')\n"
+        "sys.exit(1)\n"))
+    with pytest.raises(pk.PackageError) as ei:
+        _run(pk.package(src, _tracks(), container="mkv", default_track=None,
+                        timeout=10))
+    assert not isinstance(ei.value, pk.SubtitleParseError)
+
+
 def test_package_stderr_is_held_as_a_bounded_tail(monkeypatch):
     """A crafted source makes ffmpeg print a line per bad cluster for the
     whole run: only the classified tail may stay in the server process."""

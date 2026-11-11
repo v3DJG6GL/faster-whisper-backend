@@ -411,8 +411,14 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
             raise
         tail = bytes(err).decode("utf-8", "replace")
         if proc.returncode != 0:
+            # ffmpeg names the absolute source (the retained media id) and
+            # the workdir files on any open failure; the log gets
+            # placeholders, the classification below the raw tail.
+            shown = tail.replace(workdir, "<workdir>")
+            if src:
+                shown = shown.replace(src, "<source>")
             logger.warning("[package] ffmpeg exited %s: %s", proc.returncode,
-                           log_safe(tail, keep_end=True))
+                           log_safe(shown, keep_end=True))
             m = _SRT_HINT_RE.search(tail)
             # The bare marker only points at a subtitle when there IS one and
             # the line does not name the source (input #0, or its file name)

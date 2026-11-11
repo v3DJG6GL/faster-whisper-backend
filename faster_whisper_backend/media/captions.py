@@ -35,6 +35,11 @@ _CHUNK = 1 << 20
 # prevention bytes. A marker found closer than this to the end of the buffer
 # waits for the next chunk.
 _TAIL = 2 + 3 * 31 + 48
+# A real file has one cc_data() block per frame (3 h at 60 fps ≈ 650 k); a
+# crafted one packs a marker every few bytes and costs seconds of CPU per
+# hundred MiB. Past this many blocks the scan stops and the captions stay
+# (18 h at 60 fps).
+_MAX_BLOCKS = 4_000_000
 
 
 @dataclasses.dataclass
@@ -42,6 +47,7 @@ class A53Scan:
     blocks: int = 0          # cc_data() blocks seen
     pairs: int = 0           # valid byte pairs
     content_pairs: int = 0   # pairs carrying anything but padding
+    capped: bool = False     # stopped at _MAX_BLOCKS: the rest is unread
 
     @property
     def present(self) -> bool:
@@ -49,7 +55,7 @@ class A53Scan:
 
     @property
     def empty(self) -> bool:
-        return self.present and self.content_pairs == 0
+        return self.present and not self.capped and self.content_pairs == 0
 
 
 def _unescape(b: bytes) -> bytes:
@@ -98,6 +104,9 @@ def scan_a53(chunks, scan: "A53Scan | None" = None, *, stop_on_content: bool = T
             _scan_block(_unescape(buf[j + len(_GA94): j + len(_GA94) + _TAIL]), scan)
             if stop_on_content and scan.content_pairs:
                 return scan
+            if scan.blocks >= _MAX_BLOCKS:
+                scan.capped = True
+                return scan
             i = j + len(_GA94)
         # Keep only what may still hold an unfinished block.
         keep = len(_GA94) + _TAIL
@@ -108,6 +117,9 @@ def scan_a53(chunks, scan: "A53Scan | None" = None, *, stop_on_content: bool = T
     i = 0
     while (j := buf.find(_GA94, i)) >= 0:
         _scan_block(_unescape(buf[j + len(_GA94):]), scan)
+        if scan.blocks >= _MAX_BLOCKS:
+            scan.capped = True
+            break
         i = j + len(_GA94)
     return scan
 
@@ -116,8 +128,9 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
                             cancel: "threading.Event | None" = None,
                             format_name: "str | None" = None) -> bool:
     """True only when the H.264 video carries A/53 captions and none of them
-    holds text. Any doubt (no ffmpeg, a read error, the time limit, real
-    caption bytes, `cancel` set) answers False: the captions are kept.
+    holds text. Any doubt (no ffmpeg, a read error, the time limit, the
+    block cap, real caption bytes, `cancel` set) answers False: the captions
+    are kept.
 
     `cancel` is how an async caller that was cancelled stops the scan: its
     to_thread await is abandoned, but this thread and its ffmpeg child would
@@ -189,11 +202,11 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
         proc.stdout.close()
     if scan.content_pairs:
         return False
-    if state["timed_out"] or rc != 0:
+    if state["timed_out"] or rc != 0 or scan.capped:
         # The extension only: the path tail is the retained media id plus the
         # store directory, and media ids are never logged.
-        logger.info("[captions] scan inconclusive (rc=%s, timed out=%s) for a .%s source",
-                    rc, state["timed_out"],
+        logger.info("[captions] scan inconclusive (rc=%s, timed out=%s, "
+                    "capped=%s) for a .%s source", rc, state["timed_out"], scan.capped,
                     log_safe(os.path.splitext(src)[1].lstrip(".") or "?"))
         return False
     if scan.present:

@@ -227,6 +227,46 @@ def test_package_keeps_real_captions_end_to_end(tmp_path):
         assert _ga94_count(out) >= 5
 
 
+def test_scan_stops_at_the_block_cap(monkeypatch):
+    """A crafted stream packs a marker every few bytes: the scan stops at
+    _MAX_BLOCKS, and a capped scan is never "empty" (the captions stay)."""
+    monkeypatch.setattr(cc, "_MAX_BLOCKS", 10)
+    s = cc.scan_a53([_sei(PAD) * 50])
+    assert s.capped and s.blocks == 10 and not s.empty
+    # Content past the cap is never read; the answer still keeps the tracks.
+    s = cc.scan_a53([_sei(PAD) * 20 + _sei(HI)])
+    assert s.capped and s.content_pairs == 0 and not s.empty
+    # The end-of-stream pass (a buffer shorter than one block's window)
+    # honours the cap too.
+    monkeypatch.setattr(cc, "_MAX_BLOCKS", 1)
+    s = cc.scan_a53([_sei(PAD) + _sei(PAD)])
+    assert s.capped and s.blocks == 1 and not s.empty
+    monkeypatch.undo()
+    s = cc.scan_a53([_sei(PAD) * 50])
+    assert not s.capped and s.blocks == 50 and s.empty
+
+
+def test_capped_scan_keeps_the_captions(tmp_path, monkeypatch, caplog):
+    # ffmpeg exits 0 after the whole (short) stream: the cap is hit in the
+    # end-of-stream pass, so only the explicit check answers False.
+    data = tmp_path / "es.h264"
+    data.write_bytes(_sei(PAD) + _sei(PAD))
+    _fake_ffmpeg(tmp_path, monkeypatch, f"cat '{data}'")
+    assert cc.embedded_captions_empty("/m/x.mkv", timeout=10) is True
+    monkeypatch.setattr(cc, "_MAX_BLOCKS", 1)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        assert cc.embedded_captions_empty("/m/x.mkv", timeout=10) is False
+    assert any("scan inconclusive" in r.getMessage() for r in caplog.records)
+
+
+def test_generated_clip_past_the_block_cap_keeps_the_captions(tmp_path,
+                                                              monkeypatch):
+    src = _video_with(tmp_path, _sei(PAD, PAD))
+    assert _ga94_count(src) >= 5
+    monkeypatch.setattr(cc, "_MAX_BLOCKS", 2)
+    assert cc.embedded_captions_empty(src) is False
+
+
 def test_inconclusive_scan_log_never_names_the_path(tmp_path, monkeypatch, caplog):
     # The path tail is the retained media id plus the store directory; media
     # ids are never logged.
