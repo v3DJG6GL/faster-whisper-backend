@@ -433,17 +433,67 @@ def test_alignment_keys_are_computed_once_per_distinct_word(monkeypatch):
             budget.left -= len(out)
         return out
     monkeypatch.setattr(pl_engine, "_postprocess_text", fake)
-    real_key = capture_samples._align_key
+    # A post form's key is cut from its _word_span; _align_key keys the rest.
     long_calls: list[int] = []
 
-    def counting_key(s):
-        if len(s or "") > 1000:
-            long_calls.append(len(s))
-        return real_key(s)
-    monkeypatch.setattr(capture_samples, "_align_key", counting_key)
+    def counting(real):
+        def wrapped(s):
+            if len(s or "") > 1000:
+                long_calls.append(len(s))
+            return real(s)
+        return wrapped
+    for name in ("_align_key", "_word_span"):
+        monkeypatch.setattr(capture_samples, name, counting(getattr(capture_samples, name)))
     out = capture_samples._align_words_to_final(_words(*[" ja"] * 200), "ja")
     assert len(out) == 200
     assert len(long_calls) <= 3
+
+
+def test_glued_runs_do_not_rebuild_an_expanded_first_word(monkeypatch):
+    # One spaced word a rule expands, each occurrence followed by a different
+    # glued word: every run is distinct, and its key must not walk or copy
+    # the expansion again.
+    import time
+    import tracemalloc
+
+    def fake(text, *a, budget=None, **kw):
+        if text != " ja":
+            return text
+        out = "." * max(0, budget.left - 2) + "x"
+        budget.left -= len(out)
+        return out
+    monkeypatch.setattr(pl_engine, "_postprocess_text", fake)
+    raw = [w for i in range(1000) for w in (" ja", chr(0x4e00 + i))]
+    tracemalloc.start()
+    try:
+        t0 = time.process_time()
+        out = capture_samples._align_words_to_final(_words(*raw), "y")
+        took = time.process_time() - t0
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert len(out) == len(raw)
+    assert took < 1.5
+    assert peak < 64 * 1024 * 1024
+
+
+def test_unspaced_split_cells_are_one_budget_for_all_gaps(monkeypatch):
+    # Many small unspaced gaps around a word a rule expands: past the call's
+    # cell budget the gaps take the token-count split instead.
+    _install_word_map(monkeypatch, {"中": "中" * 100})
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_CELLS", 250)
+    calls: list[int] = []
+    real = capture_samples._split_unspaced
+
+    def spy(texts, toks):
+        calls.append(1)
+        return real(texts, toks)
+    monkeypatch.setattr(capture_samples, "_split_unspaced", spy)
+    raw = [w for i in range(10) for w in (" 中", f" a{i}")]
+    final = " ".join(t for i in range(10) for t in ("中", f"a{i}"))
+    out = capture_samples._align_words_to_final(_words(*raw), final)
+    assert len(calls) == 2
+    assert _join(out) == final
 
 
 def test_word_walks_keep_every_word_under_a_real_rule(app_module):
