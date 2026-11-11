@@ -666,7 +666,11 @@ def _digits(value: int) -> int:
 # Smooth Streaming's times, durations, timescales and bitrates and DASH's
 # S@t/@d/@r, @timescale and @startNumber are 64-bit at most: 20 digits.
 # yt-dlp parses them and does big-integer arithmetic and a str() per fragment
-# on what it builds from them, ~1 ms a fragment at 4 000 digits.
+# on what it builds from them, ~1 ms a fragment at 4 000 digits. DASH's
+# @bandwidth goes into every fragment's address through $Bandwidth$; a
+# Representation's @width / @height / @audioSamplingRate and a QualityLevel's
+# sizes, sample rate, channels, bit depth and NAL length field are int()-ed once
+# per format, a cost on top of the variant cap. No real one comes near 20.
 _MAX_NUMBER_CHARS = 20
 
 
@@ -830,6 +834,9 @@ def _refuse_oversized_mpd(mpd_doc, mpd_base_len: int = 0) -> None:
                 if representations > _MAX_MPD_REPRESENTATIONS:
                     raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
                 info = _mpd_segment_info(representation, set_info, q)
+                for name in ("bandwidth", "width", "height", "audioSamplingRate"):
+                    _refuse_long_number(
+                        _representation_attr(representation, adaptation, name))
                 n, seconds = _representation_segments(info, period_duration)
                 count += n
                 if count > _MAX_MPD_SEGMENTS:
@@ -907,7 +914,10 @@ def _refuse_oversized_ism(ism_doc, ism_base_len: int = 0) -> None:
         if not tracks:
             continue
         for level in stream.findall("QualityLevel"):
-            _refuse_long_number(level.get("Bitrate"))
+            for name in ("Bitrate", "MaxWidth", "Width", "MaxHeight", "Height",
+                         "SamplingRate", "Channels", "BitsPerSample",
+                         "NALUnitLengthField"):
+                _refuse_long_number(level.get(name))
         chunks = stream.findall("c")
         for c in chunks:
             for name in ("t", "d", "r"):
@@ -1310,18 +1320,43 @@ def _bounded_build_fragments_list(original):
     return build_fragments_list
 
 
+# Before that count exists, F4mFD's read_bootstrap_info (also looked up at
+# call time, for a fetched and for an inline base64 bootstrap) builds one dict
+# per afrt entry (16 bytes at least) and one tuple per asrt run (8 bytes) from
+# uint32 counts: tens of MB of bootstrap cost about 1 GB. Capping the bytes
+# bounds both tables before they are built. Live bootstraps are hundreds of
+# bytes; a 12 h VOD with an afrt entry per 4 s fragment is ~173 KB.
+_MAX_F4M_BOOTSTRAP_BYTES = 2 * 1024 * 1024
+_F4M_BOOTSTRAP_SENTINEL = "_fwb_f4m_bootstrap_bounded"
+
+
+def _bounded_read_bootstrap_info(original):
+    def read_bootstrap_info(bootstrap_bytes):
+        if (isinstance(bootstrap_bytes, (bytes, bytearray, memoryview))
+                and memoryview(bootstrap_bytes).nbytes > _MAX_F4M_BOOTSTRAP_BYTES):
+            raise _too_many_segments()
+        return original(bootstrap_bytes)
+    setattr(read_bootstrap_info, _F4M_BOOTSTRAP_SENTINEL, True)
+    return read_bootstrap_info
+
+
 def _bound_f4m_fragments() -> None:
     from yt_dlp.downloader import f4m
     current = getattr(f4m, "build_fragments_list", None)
     # As with DASH: nothing to wrap leaves is_installed() failing closed.
     if callable(current) and not getattr(current, _F4M_FRAGMENTS_SENTINEL, False):
         f4m.build_fragments_list = _bounded_build_fragments_list(current)
+    current = getattr(f4m, "read_bootstrap_info", None)
+    if callable(current) and not getattr(current, _F4M_BOOTSTRAP_SENTINEL, False):
+        f4m.read_bootstrap_info = _bounded_read_bootstrap_info(current)
 
 
 def _f4m_fragments_are_bounded() -> bool:
     from yt_dlp.downloader import f4m
-    return getattr(getattr(f4m, "build_fragments_list", None),
-                   _F4M_FRAGMENTS_SENTINEL, False)
+    return (getattr(getattr(f4m, "build_fragments_list", None),
+                    _F4M_FRAGMENTS_SENTINEL, False)
+            and getattr(getattr(f4m, "read_bootstrap_info", None),
+                        _F4M_BOOTSTRAP_SENTINEL, False))
 
 
 # SMIL: _parse_smil_formats_and_subtitles (GenericIE sends any page whose XML
@@ -1760,7 +1795,7 @@ def is_installed() -> bool:
     variants and lines before it builds their formats, an HLS media
     playlist's segments before HlsFD expands them, an HDS manifest's nodes
     and nested manifests before it builds their formats, an HDS bootstrap's
-    fragments before F4mFD expands them, a SMIL document's srcs, addresses
+    bytes before F4mFD parses it and its fragments before F4mFD expands them, a SMIL document's srcs, addresses
     and nested manifests before it builds their formats, the formats of one
     extraction before each format pass, an XML document's elements and
     a JSON document's arrays and objects before either is parsed, and every

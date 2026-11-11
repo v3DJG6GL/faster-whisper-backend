@@ -33,6 +33,7 @@ import gzip
 import http.server
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -1450,6 +1451,14 @@ def _ism_numbers(t="0", d="1", r="2", bitrate="128000", url=_PLAIN_ISM_URL):
     return _ism(_ism_url(url, f'<c t="{t}" d="{d}" r="{r}"/>', bitrate=bitrate))
 
 
+def _ism_level_number(name, value=_BIG):
+    """_ism_numbers() with the QualityLevel's `name` set to `value`."""
+    xml = _ism_numbers()
+    if f' {name}="' in xml:
+        return re.sub(rf' {name}="[^"]*"', f' {name}="{value}"', xml)
+    return xml.replace("<QualityLevel ", f'<QualityLevel {name}="{value}" ')
+
+
 @pytest.mark.parametrize("parse,xml", [
     (_parse_ism, _ism_numbers().replace('Duration="72000000000"', f'Duration="{_BIG}"')),
     (_parse_ism, _ism_numbers().replace('TimeScale="10000000"', f'TimeScale="{_BIG}"')),
@@ -1463,15 +1472,45 @@ def _ism_numbers(t="0", d="1", r="2", bitrate="128000", url=_PLAIN_ISM_URL):
     (_parse_mpd, _timeline(r="-" + "9" * 24)),
     (_parse_mpd, _timeline(timescale=_BIG)),
     (_parse_mpd, _timeline(start=_BIG)),
+    (_parse_mpd, _timeline().replace('bandwidth="1"', f'bandwidth="{_BIG}"')),
+    (_parse_mpd, _timeline().replace('bandwidth="1"', f'bandwidth="1" width="{_BIG}"')),
+    (_parse_mpd, _timeline().replace('bandwidth="1"', f'bandwidth="1" height="{_BIG}"')),
+    (_parse_mpd, _timeline().replace(
+        'bandwidth="1"', f'bandwidth="1" audioSamplingRate="{_BIG}"')),
+    # yt-dlp overlays the Representation on its AdaptationSet's attributes.
+    (_parse_mpd, _timeline().replace("<AdaptationSet ", f'<AdaptationSet bandwidth="{_BIG}" ')
+     .replace(' bandwidth="1"', "")),
+    (_parse_mpd, _timeline().replace("<AdaptationSet ", f'<AdaptationSet height="{_BIG}" ')),
+    *((_parse_ism, _ism_level_number(name))
+      for name in ("MaxWidth", "Width", "MaxHeight", "Height", "SamplingRate",
+                   "Channels", "BitsPerSample", "NALUnitLengthField")),
 ], ids=["ism-duration", "ism-timescale", "ism-stream-timescale", "ism-t", "ism-d",
         "ism-r", "ism-bitrate", "mpd-t", "mpd-d", "mpd-r", "mpd-timescale",
-        "mpd-start-number"])
+        "mpd-start-number", "mpd-bandwidth", "mpd-width", "mpd-height",
+        "mpd-audio-sampling-rate", "mpd-set-bandwidth", "mpd-set-height",
+        "ism-max-width", "ism-width", "ism-max-height", "ism-height",
+        "ism-sampling-rate", "ism-channels", "ism-bits-per-sample",
+        "ism-nal-unit-length-field"])
 def test_guard_refuses_an_overlong_manifest_number(parse, xml):
     """yt-dlp does big-integer arithmetic and a str() per fragment on these
     numbers; past UINT64's 20 digits that costs ~1 ms a fragment at 4 000
     digits, so a short manifest buys minutes of CPU."""
     with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
         parse(xml)
+
+
+def test_guard_refuses_a_long_bandwidth_before_its_per_fragment_expansion():
+    """$Bandwidth$ puts the number into every fragment's address: at 4 000
+    digits, 60 000 fragments cost ~18 s of CPU and ~350 MB before."""
+    import time
+    xml = _mpd(_adaptation(
+        '<SegmentTemplate media="$Bandwidth$" timescale="1"><SegmentTimeline>'
+        '<S t="0" d="1" r="59999"/></SegmentTimeline></SegmentTemplate>'
+    ).replace('bandwidth="1"', 'bandwidth="1' + "0" * 3999 + '"'))
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        _parse_mpd(xml)
+    assert time.monotonic() - t0 < 1.0
 
 
 def test_guard_admits_manifest_numbers_at_uint64_width():
@@ -1482,6 +1521,15 @@ def test_guard_admits_manifest_numbers_at_uint64_width():
     _reset_budget()
     fmts, _subs = _parse_mpd(_timeline(t=top, d=top, timescale=top, start=top))
     assert len(fmts[0]["fragments"]) == 4
+    _reset_budget()
+    fmts, _subs = _parse_mpd(_timeline().replace(
+        'bandwidth="1"',
+        f'bandwidth="{top}" width="3840" height="2160" audioSamplingRate="44100 48000"'))
+    assert (fmts[0]["tbr"], fmts[0]["width"], fmts[0]["height"]) == (
+        int(top) / 1000, 3840, 2160)
+    _reset_budget()
+    fmts, _subs = _parse_ism(_ism_level_number("SamplingRate", top))
+    assert fmts[0]["asr"] == int(top)
 
 
 def test_guard_parses_real_template_widths_unchanged():
@@ -2438,15 +2486,77 @@ def test_guard_is_not_installed_without_the_f4m_fragment_bound(monkeypatch):
     from yt_dlp.downloader import f4m
     guard = _inproc_guard()
     assert guard.is_installed()
-    with monkeypatch.context() as m:
-        m.setattr(f4m, "build_fragments_list", lambda boot_info: [])
-        assert not guard.is_installed()
-    with monkeypatch.context() as m:  # a yt-dlp that renamed the function
-        m.delattr(f4m, "build_fragments_list")
-        assert not guard.is_installed()
-        guard.install()  # nothing to bound: still fails closed
-        assert not guard.is_installed()
+    for name in ("build_fragments_list", "read_bootstrap_info"):
+        with monkeypatch.context() as m:
+            m.setattr(f4m, name, lambda arg: [])
+            assert not guard.is_installed()
+        with monkeypatch.context() as m:  # a yt-dlp that renamed the function
+            m.delattr(f4m, name)
+            assert not guard.is_installed()
+            guard.install()  # nothing to bound: still fails closed
+            assert not guard.is_installed()
     assert guard.is_installed()
+
+
+# ---- HDS bootstrap bytes: FlvReader builds one dict per 16-byte afrt entry
+# and one tuple per 8-byte asrt run from uint32 counts, so a bootstrap of tens
+# of MB costs about 1 GB before build_fragments_list sees a count. Real HDS
+# bootstraps are hundreds of bytes (live) to a few hundred KB (long VOD).
+
+def _abst(entries, *, runs=((1, 1),), live=False):
+    """An HDS bootstrap (abst box) with one asrt of `runs` and one afrt of
+    (first, ts, duration) `entries`."""
+    import struct
+
+    def box(kind, data):
+        return struct.pack("!I", 8 + len(data)) + kind + data
+    asrt = box(b"asrt", b"\0" * 5 + struct.pack("!I", len(runs))
+               + b"".join(struct.pack("!II", *run) for run in runs))
+    afrt = box(b"afrt", b"\0" * 4 + struct.pack("!I", 1000) + b"\0"
+               + struct.pack("!I", len(entries))
+               + b"".join(struct.pack("!IQI", *e) for e in entries))
+    return box(b"abst", b"\0" * 8 + (b"\x20" if live else b"\0")
+               + struct.pack("!I", 1000) + b"\0" * 16 + b"\0\0\0\0\0"
+               + b"\1" + asrt + b"\1" + afrt)
+
+
+def test_guard_refuses_an_oversized_f4m_bootstrap():
+    import time
+    from yt_dlp.downloader import f4m
+    udl.guard_self_check(force=True)
+    # F4mFD looks the function up in its module at call time.
+    assert f4m.F4mFD.real_download.__globals__ is vars(f4m)
+    boot = _abst([(i + 1, i * 4000, 4000) for i in range(140_000)])
+    assert len(boot) > 2 * 1024 * 1024
+    t0 = time.monotonic()
+    for data in (boot, bytearray(boot), memoryview(boot)):
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+            f4m.read_bootstrap_info(data)
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_guard_reads_an_ordinary_f4m_bootstrap_unchanged(monkeypatch):
+    from yt_dlp.downloader import f4m
+    udl.guard_self_check(force=True)
+    boot = _abst([(1, 0, 4000), (2, 4000, 4000), (3, 8000, 4000)],
+                 runs=((1, 3),), live=True)
+    info = f4m.read_bootstrap_info(boot)
+    assert info == f4m.FlvReader(boot).read_bootstrap_info()
+    assert info["live"] is True
+    assert info["segments"] == [{"segment_run": [(1, 3)]}]
+    assert [f["first"] for f in info["fragments"][0]["fragments"]] == [1, 2, 3]
+    # A 12 h VOD at 4 s fragments, one afrt entry each: ~173 KB.
+    vod = _abst([(i + 1, i * 4000, 4000) for i in range(10_800)],
+                runs=((1, 10_800),))
+    info = f4m.read_bootstrap_info(vod)
+    assert len(info["fragments"][0]["fragments"]) == 10_800
+    assert len(f4m.build_fragments_list(info)) == 10_800
+    # Right at the cap still parses; one byte past it is refused.
+    monkeypatch.setitem(f4m.read_bootstrap_info.__globals__,
+                        "_MAX_F4M_BOOTSTRAP_BYTES", len(vod))
+    assert f4m.read_bootstrap_info(vod) == info
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many segments"):
+        f4m.read_bootstrap_info(vod + b"\0")
 
 
 # ---- SMIL: _parse_smil_formats_and_subtitles makes one format per distinct
