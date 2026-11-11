@@ -884,6 +884,13 @@ async def package_media(media_id: str, request: Request,
             raise HTTPException(status_code=422, detail=f"subtitles[{i}] must be an object")
         lang = _require_lang_code(t.get("lang"), f"subtitles[{i}].lang")
         srt = t.get("srt")
+        # UTF-8 bytes are never fewer than characters, so a track whose length
+        # alone is over the cap is refused before the scans below walk it on
+        # the loop; the exact encoded size is still checked after them.
+        if isinstance(srt, str) and len(srt) > _pk.MAX_SRT_BYTES:
+            raise HTTPException(status_code=422,
+                                detail=f"subtitle track {i + 1} is larger than "
+                                       f"{_pk.MAX_SRT_BYTES // (1024 * 1024)} MiB")
         if (not isinstance(srt, str) or "-->" not in srt or "\x00" in srt
                 or _SURROGATE_RE.search(srt)):
             raise HTTPException(status_code=422,

@@ -647,6 +647,25 @@ def test_package_srt_over_the_size_cap_422(client, package_enabled):
     _assert_refused(r, 422, "larger")
 
 
+def test_package_oversize_srt_refused_before_the_surrogate_scan(
+        client, package_enabled, monkeypatch):
+    """A track whose character count alone is over the byte cap is refused
+    before the surrogate scan and the encode walk the whole string on the
+    loop: UTF-8 bytes are never fewer than characters."""
+    calls = []
+
+    class _Recorder:
+        def search(self, s):
+            calls.append(len(s))
+            return None
+    monkeypatch.setattr(media_routes, "_SURROGATE_RE", _Recorder())
+    mid = _upload(client).json()["media_id"]
+    big = "1\n00:00:00,000 --> 00:00:01,000\n" + "x" * (pk.MAX_SRT_BYTES + 1)
+    r = _package(client, mid, {"container": "mkv", "subtitles": [{"lang": "en", "srt": big}]})
+    _assert_refused(r, 422, "larger")
+    assert calls == []
+
+
 def test_package_unknown_id_404_and_disabled_403_and_no_ffmpeg_503(
         client, package_enabled, monkeypatch):
     assert _package(client, _ID, {"container": "mkv"}).status_code == 404
