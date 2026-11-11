@@ -914,6 +914,10 @@ def _optional_only(body: str) -> bool:
     as its atoms (`(?:(?:ab)?)+`, `(?:(?:Komma|,)?)+`) is
     over-approximated and refused."""
     for atoms in _branch_atoms(body):
+        # A possessive item that can be skipped (`\s?+`) reads as an empty
+        # optional atom (see _branch_atoms); it takes no character back,
+        # so it never makes a second split: `(?:,?\s?+)+` is linear.
+        atoms = [a for a in atoms if a is None or a[0]]
         if (len(atoms) >= 2 and None not in atoms and all(a[1] for a in atoms)
                 and any(a[2] is None or a[2] is not b[2]
                         for p, a in enumerate(atoms) for b in atoms[p + 1:])):
@@ -1038,7 +1042,14 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
         # pin it would hide `(?:(?:,?\s?){1})+#` from _optional_only.
         if re.fullmatch(r"\{0*1(?:,0*1)?\}\??", q):
             q = ""
-        if possessive or variable:
+        if possessive and re.fullmatch(r"(?:[?*]|\{0*(?:,[0-9]*)?\})\+", q):
+            # A possessive item that can match empty (`x?+`, `x*+`,
+            # `(?:x|y)?+`, `[^\s\S]?+`) still lets its NEIGHBOURS trade when
+            # it takes nothing. As a pin it hid the ` ?` of
+            # `(?: ?-|– ?x?+)+#`; read as an optional atom that names no
+            # character it is transparent and never gives anything back.
+            branches[-1].append(("", True, None, None))
+        elif possessive or variable:
             branches[-1].append(None)
         elif re.fullmatch(r"\{0*(?:,0*)?\}\??", q):
             continue  # `{0}` matches nothing at all
@@ -1060,12 +1071,15 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
             # group optional, so the class or mixed reading below keeps its
             # edge atoms. Read as "can match empty" it would collapse into
             # one union atom and hide the `– ?` of `(?: ?-|(?:– ?|(?!)))+#`.
+            # A pin in a sibling branch does not stop this: `(?:– ?|(?!)|y++)`
+            # is `(?:– ?|y++)?`, and the mixed reading below keeps its edges.
             loosened = False
-            if inner is not None and len(inner) > 1 and not pinned:
-                rest = [b if len(b) != 1 or not b[0][1] else [(b[0][0], False) + b[0][2:]]
+            if inner is not None and len(inner) > 1:
+                rest = [b if len(b) != 1 or b[0] is None or not b[0][1]
+                        else [(b[0][0], False) + b[0][2:]]
                         for b in inner if b]
                 if (rest and rest != inner
-                        and all(any(not a[1] for a in b) for b in rest)):
+                        and all(any(a is None or not a[1] for a in b) for b in rest)):
                     inner, optional, loosened = rest, True, True
             fixed = re.fullmatch(r"\{0*([1-9][0-9]*)(?:,0*\1)?\}\??", q)
             if inner is not None and fixed and int(fixed.group(1)) >= 2:
@@ -1098,8 +1112,13 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                 # place; as one pin it would hide the trailing ` ?` of
                 # `(?: ?-|(?:–(?:x){2} ?))+#` from _alt_wrap_overlap.
                 branches[-1].extend(inner[0])
+            elif optional and inner is not None and pinned and len(inner) == 1:
+                # `(?:y++)?` can be skipped: as a mandatory pin it hid the
+                # ` ?` of `(?: ?-|– ?(?:y++)?)+#`. Read as an optional atom
+                # that may take any character: more refused, never less.
+                branches[-1].append((".", True, None, None))
             elif (inner is None or (q and not optional)
-                    or pinned and (len(inner) == 1 or _matches_empty(group))):
+                    or pinned and len(inner) == 1):
                 branches[-1].append(None)
             elif len(inner) > 1:
                 # `(?:,|;)` is the class `[,;]`: an alternation of runs of
@@ -1117,7 +1136,7 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                         branches[-1].append(("(?:" + "|".join(alts) + ")",
                                              optional or p >= low,
                                              tail if p >= low else None, alt))
-                elif not loosened and _matches_empty(group):
+                elif not loosened and not pinned and _matches_empty(group):
                     # `(?:j?|b)` can take nothing at all, so it never pins a
                     # repetition: read it as one optional atom that can take
                     # any character its branches name. A pin here hid the
@@ -1174,7 +1193,10 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
         elif char is None:
             if not (text.startswith(_ZERO_WIDTH)
                     or re.fullmatch(r"\(\?[aiLmsux-]*\)", text)):
-                branches[-1].append(None)
+                # An optional item that cannot be read (`\1?`, `[^\s\S]?`) can
+                # be skipped: as a pin it hid the ` ?` before it in
+                # `(?: ?-|– ?\1?)+#`. Read it as an optional any-character atom.
+                branches[-1].append((".", True, None, None) if optional else None)
         else:
             branches[-1].append((text, optional, None, None))
     if any(len(b) > max(_UNROLL_ATOMS, n) for b in branches):
@@ -1423,7 +1445,23 @@ def _spans_overlap(pat: str, spans: "list[tuple[int, int]]", icase: bool = False
         resolved = [_resolve_backref(b, bodies) for b in stripped]
         if None in resolved:
             return True
-        stripped = resolved
+        # A resolved branch that is itself an alternation (`(?:–|\1)` with
+        # `( )`) overlaps whatever one of its own branches overlaps: compared
+        # whole, `–|(?: )` hid the space it shares with ` ?-`.
+        stripped = []
+        for b in resolved:
+            if _top_level_alt(b):
+                parts, k, cut = [], 0, 0
+                while k <= len(b):
+                    if k == len(b) or b[k] == "|":
+                        parts.append(_strip_outer_group(b[cut:k]))
+                        cut = k + 1
+                        k += 1
+                        continue
+                    k = _next_atom(b, k)[2]
+                stripped += parts
+            else:
+                stripped.append(b)
     folded = [_fold_case(x) for x in stripped] if icase else stripped
     if len(set(folded)) < len(folded):
         return True

@@ -2111,3 +2111,41 @@ def test_dead_or_optional_branch_does_not_hide_wrap_overlap(pat):
 def test_dead_or_optional_branch_linear_rules_accepted(pat):
     assert not g._nested_repetition(pat), pat
     g.validate([("r", pat, "")])
+
+
+# A possessive item that can take nothing (`x?+`, `x*+`, `(?:x)?+`,
+# `[^\s\S]?+`), an optional or empty-capable backref (`\1?`, `\1` to `(x?)`),
+# a pinned sibling branch (`y++` next to `(?!)`) and a backref that resolves
+# to an alternation (`(?:–|\1)` with `( )`) are each still skippable or
+# shared: read as a pin they hid the ` ?` that overlaps ` ?-` across the
+# wrap, and `– -` runs backtracked exponentially.
+@pytest.mark.parametrize("pat", [
+    r"(?: ?-|(?:– ?|x?+))+#", r"(?: ?-|(?:– ?|x*+))+#", r"(?: ?-|(?:– ?|x{0}+))+#",
+    r"(?: ?-|(?:– ?|x{0,1}+))+#", r"(?: ?-|(?:– ?|(?:x)?+))+#",
+    r"(?: ?-|(?:– ?|(?:x|y)?+))+#", r"(?: ?-|(?:– ?|\s*+))+#",
+    r"(?: ?-|(?:– ?|[^\s\S]?+))+#", r"(x)?(?: ?-|(?:– ?|(?(1)y?+)))+#",
+    r"(?: ?-|(?:– ?|(?!)|y++))+#", r"(?: ?-|(?:– ?|x?|y++))+#",
+    r"(?: ?-|(?:– ?|[^\s\S]?))+#", r"(?: ?-|(?:– ?|(?:[^\s\S])?))+#", r"(?: ?-|– ?|[^\s\S]?)+#",
+    r"(q)?(?: ?-|(?:– ?|\1?))+#", r"(x?)(?: ?-|(?:– ?|\1))+#",
+    r"(?P<e>x?)(?: ?-|(?:– ?|(?P=e)))+#", r"(?: ?-|– ?[^\s\S]?)+#", r"(q)?(?: ?-|– ?\1?)+#",
+    r"(?: ?-|– ?x?+)+#", r"(?: ?-|– ?x*+)+#", r"(?: ?-|– ?(?:y++)?)+#",
+    r"(?: ?-|– ?[^\s\S]?+)+#", r"(q)?(?: ?-|– ?\1?+)+#", r"(?: ?-|– ?(?:x|y)?+)+#",
+    r"(?: ?-|– ?(?:y++)?+)+#", r"(?: ?-|– ?[^\s\S]*+)+#", r"(?: ?-|(?:– ?y?+|(?!)))+#",
+    r"( )(?: ?-|(?:–|\1))+#", r"( ?)(?: ?-|(?:– ?|\1))+#", r"(?:(\w)\1?x)+",
+])
+def test_pinned_empty_branch_does_not_hide_wrap_overlap(pat):
+    assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+# A possessive item takes what it can and gives nothing back, so it never
+# makes a second split: these possessive and backref rules are linear.
+@pytest.mark.parametrize("pat", [
+    r"(\d++)\s*Euro", r"(\w)\1?", r"(?:\s*+-\s*+\w)+", r"(?:,?\s?+)+", r"(?:,?\s*+)+",
+    r"(?:n?+n)+#", r"(?:x?+y)+", r"(?:(?:a|b)?+c)+", r"(\d+)(?:,(\d+)|\2?+)? Euro",
+    r"(?:\d++[.,])+\d", r"(\w+)(?: \1)+", r"(?P<w>\w+),? (?P=w)",
+])
+def test_possessive_and_backref_linear_rules_accepted(pat):
+    assert not g._nested_repetition(pat), pat
+    g.validate([("r", pat, "")])
