@@ -24,7 +24,13 @@ WHAT this module installs (import side effect, idempotent — see install()):
     open URLs themselves, outside the RequestHandler registry: HlsFD alone
     delegates an AES-128 manifest to ffmpeg when pycryptodomex is missing, and
     ffmpeg then fetches the key URI and every segment with no address policy.
-    Merging is unaffected (FFmpegMergerPP is a postprocessor on local files).
+    Merging and the fixups still run (FFmpeg postprocessors on local files);
+    and
+  * a format whitelist on every input of every ffmpeg / ffprobe those
+    postprocessors spawn: the file's bytes are the site's (an HLS download
+    is its segments concatenated verbatim), and a file that is really a DASH
+    manifest or an HLS playlist would otherwise open ffmpeg's dash / hls
+    demuxer, which fetches the URLs inside it (see _bound_ffmpeg_inputs).
 
 The handler enforces, with download.py's policy (net_policy — ONE
 definition, see below):
@@ -1286,6 +1292,83 @@ def _json_parses_are_bounded() -> bool:
                    _JSON_SENTINEL, False)
 
 
+# The download child's FFmpeg postprocessors — the fixups yt-dlp runs by
+# default (FixupM3u8 on every HLS download into mp4 / m4a) and a video's
+# merger — spawn ffmpeg and ffprobe on the downloaded file, also to read its
+# codec and format (get_audio_codec, get_metadata_object). Its bytes are the
+# site's, and ffmpeg picks the demuxer from them: a DASH manifest or an HLS
+# playlist opens the dash / hls demuxer, which fetches the URLs it names
+# (ffmpeg 7 does even under -protocol_whitelist file), and concat opens the
+# files it lists. `-format_whitelist` before each input limits ffmpeg to the
+# containers a download yields; one that probes as anything else fails to
+# open, as a file ffmpeg cannot read fails. The CLI cannot set it: yt-dlp's
+# postprocessor args reach real_run_ffmpeg only per postprocessor, and the
+# two probes take none. Every spawn in yt_dlp.postprocessor.ffmpeg goes
+# through that module's own `Popen` name, which is swapped for a subclass
+# that rewrites the argv. FFmpegConcatPP / split / remove-chapters force the
+# concat demuxer and would fail under it; the download never enables them.
+_FFMPEG_FORMAT_WHITELIST = ",".join((
+    "mov,mp4,m4a,3gp,3g2,mj2",       # one demuxer: the ISO BMFF family
+    "matroska,webm",                  # one demuxer: mkv / webm
+    "ogg", "mpegts", "flv", "live_flv",
+    # HLS packed audio, and direct audio links.
+    "mp3", "aac", "ac3", "eac3", "flac", "wav",
+))
+_FFMPEG_SENTINEL = "_fwb_ffmpeg_inputs_bounded"
+# The FFmpegPostProcessor methods that spawn ffmpeg / ffprobe on a file.
+_FFMPEG_SPAWNERS = ("real_run_ffmpeg", "get_audio_codec", "get_metadata_object")
+
+
+def _whitelisted_ffmpeg_argv(args):
+    """`args` with `-format_whitelist` before every ffmpeg input (`-i`), or
+    first of all for ffprobe, whose single input is its last argument."""
+    if not isinstance(args, (list, tuple)) or not args:
+        # Every spawn there is an argv list; anything else cannot be
+        # rewritten and must not run unrestricted.
+        raise ValueError(f"{MARKER}: refusing an ffmpeg command that is not an argv list")
+    flag = ["-format_whitelist", _FFMPEG_FORMAT_WHITELIST]
+    exe, *rest = args
+    if "ffprobe" in os.path.basename(os.fsdecode(exe)).lower():
+        return [exe, *flag, *rest]
+    argv = [exe]
+    for arg in rest:
+        if arg == "-i":
+            argv += flag
+        argv.append(arg)
+    return argv
+
+
+def _whitelisting_popen(base):
+    class Popen(base):
+        def __init__(self, args, *a, **kw):
+            super().__init__(_whitelisted_ffmpeg_argv(args), *a, **kw)
+    setattr(Popen, _FFMPEG_SENTINEL, True)
+    return Popen
+
+
+def _bound_ffmpeg_inputs() -> None:
+    from yt_dlp.postprocessor import ffmpeg
+    current = vars(ffmpeg).get("Popen")
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if isinstance(current, type) and not getattr(current, _FFMPEG_SENTINEL, False):
+        ffmpeg.Popen = _whitelisting_popen(current)
+
+
+def _ffmpeg_inputs_are_bounded() -> bool:
+    from yt_dlp.postprocessor import ffmpeg
+    if not getattr(vars(ffmpeg).get("Popen"), _FFMPEG_SENTINEL, False):
+        return False
+    # A yt-dlp whose spawners stop looking up the module's `Popen` would
+    # bypass the swap: each must still name it, as a global of that module.
+    for name in _FFMPEG_SPAWNERS:
+        fn = getattr(ffmpeg.FFmpegPostProcessor, name, None)
+        code = getattr(fn, "__code__", None)
+        if (code is None or "Popen" not in code.co_names
+                or getattr(fn, "__globals__", None) is not vars(ffmpeg)):
+            return False
+    return True
+
+
 def install() -> None:
     """Register the guard and retire the handlers it supersedes.
 
@@ -1310,6 +1393,7 @@ def install() -> None:
     _bound_f4m_fragments()
     _bound_etree_parses()
     _bound_json_parses()
+    _bound_ffmpeg_inputs()
 
 
 def _prefer_guard(rh, request):
@@ -1325,8 +1409,9 @@ def is_installed() -> bool:
     variants and lines before it builds their formats, an HLS media
     playlist's segments before HlsFD expands them, an HDS manifest's nodes
     and nested manifests before it builds their formats, an HDS bootstrap's
-    fragments before F4mFD expands them, and an XML document's elements and
-    a JSON document's arrays and objects before either is parsed."""
+    fragments before F4mFD expands them, an XML document's elements and
+    a JSON document's arrays and objects before either is parsed, and every
+    ffmpeg / ffprobe a postprocessor spawns carries the format whitelist."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
             and set(_REQUEST_HANDLERS) == {GUARD_RH_KEY}
@@ -1339,7 +1424,8 @@ def is_installed() -> bool:
             and _f4m_formats_are_bounded()
             and _f4m_fragments_are_bounded()
             and _etree_parses_are_bounded()
-            and _json_parses_are_bounded())
+            and _json_parses_are_bounded()
+            and _ffmpeg_inputs_are_bounded())
 
 
 install()

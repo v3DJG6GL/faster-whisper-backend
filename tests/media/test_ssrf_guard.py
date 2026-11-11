@@ -2294,3 +2294,218 @@ def test_probe_fails_closed_when_plugin_loading_leaves_the_guard_broken(
                        match="link downloads are unavailable on this server"):
         _run(udl.probe("https://example.com/watch?v=x", timeout=10.0))
     assert called == []
+
+
+# --- ffmpeg / ffprobe on a downloaded file ----------------------------------
+# yt-dlp's postprocessors spawn ffmpeg / ffprobe on the downloaded file, whose
+# bytes the site chose (an HLS download is its segments concatenated). A file
+# that is really a DASH manifest opens ffmpeg's dash demuxer, which dials the
+# BaseURL: the guard puts -format_whitelist before every input.
+
+def _whitelist_after(argv, at):
+    assert argv[at:at + 2][0] == "-format_whitelist", argv
+    return set(argv[at + 1].split(","))
+
+
+def _captured_ffmpeg_argvs(monkeypatch, tmp_path):
+    """Every argv the ffmpeg postprocessor module spawns, with the spawn
+    refused (OSError) before anything runs."""
+    from yt_dlp.postprocessor import ffmpeg as ffmpeg_pp
+    from yt_dlp.utils import Popen as base_popen
+    _inproc_guard()
+    argvs = []
+
+    def _record(self, args, *a, **kw):
+        argvs.append(list(args))
+        raise OSError("spawn refused by the test")
+    monkeypatch.setattr(base_popen, "__init__", _record)
+    pp = ffmpeg_pp.FFmpegPostProcessor(None)
+    # Pretend both binaries are present; nothing is ever executed.
+    pp._paths = {"ffmpeg": "/opt/ff/ffmpeg-custom", "ffprobe": "/opt/ff/ffprobe"}
+    pp.__dict__.update(basename="ffmpeg", probe_basename="ffprobe",
+                       _version="8.0", _probe_version="8.0", _features={})
+    a, b = tmp_path / "v.mp4", tmp_path / "a.webm"
+    a.write_bytes(b"x")
+    b.write_bytes(b"x")
+    with pytest.raises(OSError):
+        pp.run_ffmpeg_multiple_files([str(a), str(b)], str(tmp_path / "o.mkv"),
+                                     ["-c", "copy", "-map", "0:v:0", "-map", "1:a:0"])
+    with pytest.raises(OSError):
+        pp.get_metadata_object(str(a))
+    assert pp.get_audio_codec(str(a)) is None  # ffprobe -show_streams
+    pp.__dict__["probe_basename"] = None       # no ffprobe: ffmpeg -i
+    assert pp.get_audio_codec(str(a)) is None
+    return argvs
+
+
+def test_guard_whitelists_the_format_of_every_ffmpeg_postprocessor_input(
+        monkeypatch, tmp_path):
+    merge, metadata, codec_probe, codec_ffmpeg = _captured_ffmpeg_argvs(
+        monkeypatch, tmp_path)
+    for argv in (merge, codec_ffmpeg):
+        inputs = [i for i, arg in enumerate(argv) if arg == "-i"]
+        assert inputs, argv
+        assert argv.count("-format_whitelist") == len(inputs)
+        for i in inputs:
+            allowed = _whitelist_after(argv, i - 2)
+    assert len([a for a in merge if a == "-i"]) == 2
+    for argv in (metadata, codec_probe):  # ffprobe: one input, options first
+        assert argv[0] == "/opt/ff/ffprobe"
+        assert _whitelist_after(argv, 1) == allowed
+        assert argv[-1].startswith("file:")
+    assert {"mov", "mp4", "m4a", "matroska", "webm", "ogg", "mpegts", "flv",
+            "mp3", "aac", "flac", "wav"} <= allowed
+    # The demuxers that open other URLs or files never make the list.
+    assert not allowed & {"dash", "hls", "concat", "webm_dash_manifest",
+                          "sdp", "rtsp", "rtp", "image2", "imf", "tee"}
+
+
+def test_guard_is_not_installed_without_the_ffmpeg_input_whitelist(monkeypatch):
+    from yt_dlp.postprocessor import ffmpeg as ffmpeg_pp
+    from yt_dlp.utils import Popen as base_popen
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(ffmpeg_pp, "Popen", base_popen)
+        assert not guard.is_installed()
+    # A yt-dlp whose spawner stops going through the module's Popen.
+    for name in ("real_run_ffmpeg", "get_audio_codec", "get_metadata_object"):
+        with monkeypatch.context() as m:
+            m.setattr(ffmpeg_pp.FFmpegPostProcessor, name,
+                      lambda self, *a, **kw: subprocess.run(a))
+            assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp without the module-level name
+        m.delattr(ffmpeg_pp, "Popen")
+        guard.install()  # nothing to wrap: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+def test_guard_refuses_a_non_argv_ffmpeg_command():
+    guard = _inproc_guard()
+    with pytest.raises(ValueError, match="fwb-ssrf-guard"):
+        guard._whitelisted_ffmpeg_argv("ffmpeg -i file:x")
+
+
+def _ffmpeg_binary(which: str) -> str:
+    if which == "default":
+        from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
+        return ffmpeg_exe()
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415 — optional bundled binary
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        pytest.skip("imageio-ffmpeg binary unavailable")
+
+
+@pytest.mark.parametrize("which", ["default", "imageio"])
+def test_ffmpeg_postprocessors_never_follow_a_downloaded_dash_manifest(
+        which, tmp_path):
+    """ffmpeg 7.0.2 (the imageio-ffmpeg fallback) opens an MPD saved as
+    media.mp4 with its dash demuxer and dials the BaseURL, from the HLS
+    fixup, the merger and the codec probe alike."""
+    from yt_dlp.postprocessor.ffmpeg import (
+        FFmpegFixupM3u8PP, FFmpegMergerPP, FFmpegPostProcessor,
+    )
+    exe = _ffmpeg_binary(which)
+    _inproc_guard()
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)
+    srv.settimeout(0.1)
+    port = srv.getsockname()[1]
+    hits = []
+    stop = threading.Event()
+
+    def accept():
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except (socket.timeout, OSError):
+                continue
+            hits.append(1)
+            conn.close()
+
+    th = threading.Thread(target=accept, daemon=True)
+    th.start()
+    mpd = (
+        '<?xml version="1.0"?>\n'
+        '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" '
+        'mediaPresentationDuration="PT1S" minBufferTime="PT1S" '
+        'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">\n'
+        f'<BaseURL>http://127.0.0.1:{port}/</BaseURL>\n'
+        '<Period><AdaptationSet mimeType="audio/mp4">'
+        '<Representation id="a" bandwidth="64000" codecs="mp4a.40.2">'
+        '<BaseURL>seg.mp4</BaseURL></Representation></AdaptationSet></Period>'
+        '</MPD>\n')
+
+    def fresh(name):
+        path = tmp_path / name
+        path.write_text(mpd, encoding="utf-8")
+        return str(path)
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
+                               "ffmpeg_location": exe}) as ydl:
+            try:
+                FFmpegFixupM3u8PP(ydl).run({"ext": "mp4", "protocol": "m3u8_native",
+                                            "filepath": fresh("media.mp4")})
+            except yt_dlp.utils.PostProcessingError:
+                pass  # the file is not media: failing is the right outcome
+            v, a = fresh("v.mp4"), fresh("a.mp4")
+            with pytest.raises(yt_dlp.utils.PostProcessingError):
+                FFmpegMergerPP(ydl).run({
+                    "filepath": str(tmp_path / "out.mkv"), "ext": "mkv",
+                    "__files_to_merge": [v, a],
+                    "requested_formats": [
+                        {"acodec": "none", "vcodec": "h264", "protocol": "https",
+                         "filepath": v},
+                        {"acodec": "aac", "vcodec": "none",
+                         "protocol": "m3u8_native", "filepath": a}]})
+            assert FFmpegPostProcessor(ydl).get_audio_codec(fresh("c.mp4")) is None
+    finally:
+        stop.set()
+        th.join(timeout=2)
+        srv.close()
+    assert hits == []
+
+
+def _encode(exe, out, *args):
+    r = subprocess.run([exe, "-hide_banner", "-loglevel", "error", "-y", *args,
+                        str(out)], capture_output=True, timeout=60)
+    if r.returncode != 0 or not out.exists():
+        pytest.skip(f"{out.name} encode unavailable")
+
+
+def test_ffmpeg_postprocessors_still_fix_and_merge_a_real_download(tmp_path):
+    """The containers a download yields still open: an HLS download's
+    MPEG-TS saved as mp4 is remuxed, a video and an audio format merge."""
+    from yt_dlp.postprocessor.ffmpeg import (
+        FFmpegFixupM3u8PP, FFmpegMergerPP, FFmpegPostProcessor,
+    )
+    exe = _ffmpeg_binary("default")
+    _inproc_guard()
+    tone = ["-f", "lavfi", "-i", "sine=frequency=440:duration=1"]
+    media = tmp_path / "media.mp4"
+    _encode(exe, media, *tone, "-c:a", "aac", "-f", "mpegts")
+    v, a = tmp_path / "v.mp4", tmp_path / "a.webm"
+    _encode(exe, v, "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+            "-c:v", "mpeg4")
+    _encode(exe, a, *tone, "-c:a", "libopus")
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
+                           "ffmpeg_location": exe}) as ydl:
+        pp = FFmpegPostProcessor(ydl)
+        assert pp.get_audio_codec(str(media)) == "aac"
+        FFmpegFixupM3u8PP(ydl).run({"ext": "mp4", "protocol": "m3u8_native",
+                                    "filepath": str(media)})
+        out = tmp_path / "out.mkv"
+        FFmpegMergerPP(ydl).run({
+            "filepath": str(out), "ext": "mkv",
+            "__files_to_merge": [str(v), str(a)],
+            "requested_formats": [
+                {"acodec": "none", "vcodec": "mpeg4", "protocol": "https",
+                 "filepath": str(v)},
+                {"acodec": "opus", "vcodec": "none", "protocol": "https",
+                 "filepath": str(a)}]})
+        assert pp.get_audio_codec(str(out)) == "opus"
+    assert media.read_bytes()[4:8] == b"ftyp"  # remuxed out of MPEG-TS
+    assert out.read_bytes()[:4] == b"\x1aE\xdf\xa3"  # EBML: Matroska
