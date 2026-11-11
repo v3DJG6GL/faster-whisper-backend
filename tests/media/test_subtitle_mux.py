@@ -651,3 +651,87 @@ def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_with_a_stray_space_or_s
         f"1\n{timing}\nHello\n"
         for timing in ("00:00:00,800 --> 00:00:00, 200", "+00:00:00,800 --> -00:00:00,200",
                        "\v00:00:00,800 --> 00: 00:00,200")))
+
+
+# The probe's demuxer pins the packaging CLI: the ffmpeg binary can pick a
+# demuxer PyAV lacks (dash, imf) for bytes PyAV opened as something else.
+
+def test_probe_streams_refuses_an_ffconcat_before_it_opens_the_sibling(tmp_path):
+    """Refused by the demuxer allowlist at probe time: a missing and a
+    present sibling answer alike (no entry is opened)."""
+    pytest.importorskip("av")
+    (tmp_path / "present.mkv").write_bytes(b"\x1aE\xdf\xa3")
+    for i, name in enumerate(("present.mkv", "absent.mkv")):
+        playlist = tmp_path / f"{i}.mkv"
+        playlist.write_text(f"ffconcat version 1.0\nfile '{name}'\n")
+        with pytest.raises(ValueError, match="unsupported container"):
+            pk.probe_streams(str(playlist))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_probe_streams_records_the_demuxer_name(tmp_path):
+    pytest.importorskip("av")
+    names = {}
+    for ext in ("mp4", "mkv"):
+        src = str(tmp_path / f"src.{ext}")
+        run_ffmpeg(*TESTSRC_1S, "-c:v", "mpeg4", src)
+        names[ext] = pk.probe_streams(src).format_name
+    assert names == {"mp4": "mov,mp4,m4a,3gp,3g2,mj2", "mkv": "matroska,webm"}
+    assert pk.probe_streams(src).as_dict()["format_name"] == "matroska,webm"
+    assert pk.unreadable_streams().format_name is None
+
+
+def test_package_argv_pins_the_probed_demuxer():
+    argv = argv_for(_tracks(), format_name="matroska,webm")
+    src = argv.index("/m/src.mkv")
+    assert argv[src - 5:src + 1] == ["-protocol_whitelist", "file",
+                                     "-format_whitelist", "matroska,webm",
+                                     "-i", "/m/src.mkv"]
+    # Only the source: each SRT input keeps its forced srt demuxer.
+    assert argv.count("-format_whitelist") == 1
+    # Facts cached without the name keep the argv as it was.
+    assert "-format_whitelist" not in argv_for(_tracks())
+
+
+def test_package_forwards_the_probed_demuxer(monkeypatch):
+    seen = []
+
+    def _fake(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        seen.append(kw.get("format_name", "<absent>"))
+        return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'x')"]
+    monkeypatch.setattr(pk, "build_package_argv", _fake)
+    for name in ("mov,mp4,m4a,3gp,3g2,mj2", None):
+        out = _run(pk.package("/x", [], container="mkv", default_track=None,
+                              timeout=30, format_name=name))
+        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+    assert seen == ["mov,mp4,m4a,3gp,3g2,mj2", "<absent>"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+@pytest.mark.parametrize("ext", ["mp4", "mkv", "webm", "mov", "ts", "flv"])
+def test_package_with_the_probed_demuxer_matches_the_unpinned_package(
+        tmp_path, ext):
+    """The pin narrows nothing a real export opens: the probed name is the
+    demuxer the CLI auto-detects, so the output is the same either way."""
+    av = pytest.importorskip("av")
+    src = str(tmp_path / f"src.{ext}")
+    vcodec = ("-c:v", {"webm": "libvpx", "flv": "flv"}.get(ext, "mpeg4"))
+    acodec = ("-c:a", "libopus") if ext == "webm" else ("-c:a", "mp3" if ext == "flv" else "aac")
+    try:
+        run_ffmpeg(*TESTSRC_1S, *SINE_1S, *vcodec, *acodec, "-shortest", src)
+    except subprocess.CalledProcessError:
+        pytest.skip(f"this ffmpeg cannot write a test .{ext}")
+    facts = pk.probe_streams(src)
+    assert facts.format_name
+
+    def _layout(path):
+        with av.open(path) as c:
+            return [(s.type, s.codec_context.name, s.metadata.get("language"))
+                    for s in c.streams]
+    layouts = []
+    for name in (None, facts.format_name):
+        with packaged(src, _tracks(), container="mkv", default_track=0,
+                      timeout=60, format_name=name) as out:
+            layouts.append(_layout(out))
+    assert layouts[0] == layouts[1]
+    assert [t for t, _c, _l in layouts[1]].count("subtitle") == 2

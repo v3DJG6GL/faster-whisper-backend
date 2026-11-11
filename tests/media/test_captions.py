@@ -237,3 +237,42 @@ def test_inconclusive_scan_log_never_names_the_path(tmp_path, monkeypatch, caplo
     msgs = [r.getMessage() for r in caplog.records]
     assert any("scan inconclusive" in m and ".mp4 source" in m for m in msgs)
     assert not any("0123456789abcdef" in m or "/store" in m for m in msgs)
+
+
+def test_caption_scan_argv_pins_the_probed_demuxer(monkeypatch):
+    argvs = []
+
+    def _popen(argv, **k):
+        argvs.append(argv)
+        raise OSError("not run")
+    monkeypatch.setattr(cc.subprocess, "Popen", _popen)
+    assert cc.embedded_captions_empty("/m/x.mp4", timeout=5,
+                                      format_name="mov,mp4,m4a,3gp,3g2,mj2") is False
+    assert cc.embedded_captions_empty("/m/x.mp4", timeout=5) is False
+    pinned, plain = argvs
+    i = pinned.index("/m/x.mp4")
+    assert pinned[i - 5:i + 1] == ["-protocol_whitelist", "file",
+                                   "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2",
+                                   "-i", "/m/x.mp4"]
+    assert "-format_whitelist" not in plain
+
+
+def test_caption_scan_gets_the_probed_demuxer_from_package(monkeypatch):
+    monkeypatch.setattr(pk, "ffmpeg_has_bsf", lambda name: True)
+    seen = []
+    monkeypatch.setattr(cc, "embedded_captions_empty",
+                        lambda *a, **k: seen.append(k.get("format_name")) or False)
+    assert asyncio.run(pk._empty_captions_to_strip(
+        "/m/x.mkv", "h264", 0, 60, format_name="matroska,webm")) is False
+    assert seen == ["matroska,webm"]
+
+
+def test_pinned_scan_of_a_clip_with_empty_captions_still_finds_them(tmp_path):
+    src = _video_with(tmp_path, _sei(PAD, PAD))
+    name = pk.probe_streams(src).format_name
+    assert name == "matroska,webm"
+    assert cc.embedded_captions_empty(src, format_name=name) is True
+    tracks = [pk.SubtitleTrack("en", "English", "1\n00:00:00,000 --> 00:00:00,500\nHi\n")]
+    with packaged(src, tracks, container="mkv", default_track=0, timeout=120,
+                  video_codec="h264", format_name=name) as out:
+        assert _ga94_count(out) == 0

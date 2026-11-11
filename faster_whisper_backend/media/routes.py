@@ -951,7 +951,9 @@ async def package_media(media_id: str, request: Request,
             timeout=float(getattr(cfg, "MEDIA_PACKAGE_TIMEOUT_S", 900)),
             # The real video can sit behind a cover-art stream.
             video_index=int(facts.get("video_index") or 0),
-            video_codec=facts.get("video_codec"))
+            video_codec=facts.get("video_codec"),
+            # The ffmpeg run reads the source only as the probed demuxer.
+            format_name=facts.get("format_name"))
         # Starlette always awaits the returned response, so its close hook
         # releases the slot however the body send ends.
         resp = _PackageResponse(

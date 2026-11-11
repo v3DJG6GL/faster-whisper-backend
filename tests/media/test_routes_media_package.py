@@ -546,6 +546,21 @@ def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatc
     assert seen == [1]
 
 
+def test_package_holds_ffmpeg_to_the_probed_demuxer(client, package_enabled,
+                                                    monkeypatch):
+    seen = record_calls(monkeypatch, pk, "build_package_argv",
+                        lambda *a, **kw: kw.get("format_name"))
+    monkeypatch.setattr(pk, "probe_streams",
+                        lambda p: _streams(format_name="matroska,webm"))
+    mid = _upload(client).json()["media_id"]
+    assert _package(client, mid, {"container": "mkv"}).status_code == 200
+    # Facts without the name (the fixture's default) keep the old argv.
+    monkeypatch.setattr(pk, "probe_streams", lambda p: _streams())
+    mid = _upload(client).json()["media_id"]
+    assert _package(client, mid, {"container": "mkv"}).status_code == 200
+    assert seen == ["matroska,webm", None]
+
+
 def test_package_body_cap_covers_every_limit_compliant_request(
         client, package_enabled, monkeypatch):
     # MAX_TRACKS tracks of MAX_SRT_BYTES each (24 MiB) must reach the

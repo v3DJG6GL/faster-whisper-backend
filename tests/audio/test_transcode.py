@@ -12,6 +12,7 @@ import av
 import numpy as np
 import pytest
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.audio import transcode as audio_transcode
 from tests.conftest import write_wav
 
@@ -189,7 +190,9 @@ def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch
     audio_transcode.transcode_to_wav_16k_mono(src, dst)
     in_opens = [kw for f, kw in opens if f == src]
     assert len(in_opens) == 1
-    assert in_opens[0].get("options") == {"protocol_whitelist": "file"}
+    assert in_opens[0].get("options") == {
+        "protocol_whitelist": "file",
+        "format_whitelist": audio_ffmpeg.single_input_demuxers()}
     assert in_opens[0].get("metadata_errors") == "ignore"
 
 
@@ -271,7 +274,8 @@ def test_decode_pieces_refuses_non_file_protocols(tmp_path, monkeypatch):
 
     audio_transcode.decode_pieces_16k(src, [0.0], 1.0)
     assert [kw.get("options") for f, kw in opens if f == src] == [
-        {"protocol_whitelist": "file"}]
+        {"protocol_whitelist": "file",
+         "format_whitelist": audio_ffmpeg.single_input_demuxers()}]
 
 
 def test_decode_pieces_refuses_an_ffconcat_sibling(tmp_path):
@@ -302,6 +306,52 @@ def test_refuse_multi_input_passes_a_clip_and_leaves_av_errors_to_the_decoder(
     junk = tmp_path / "junk.bin"
     junk.write_bytes(b"not media at all\x00\x01")
     assert audio_transcode.refuse_multi_input(str(junk)) is None
+
+
+def _sibling_states(tmp_path):
+    """ffconcat uploads naming a readable, an absent and (unless root) an
+    unreadable sibling. A playlist demuxer opens its first entry inside
+    av.open, so the error would tell the three apart."""
+    _write_src_wav(str(tmp_path / "present.wav"), rate=RATE, nchannels=1)
+    names = ["present.wav", "absent.wav"]
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        locked = tmp_path / "locked.wav"
+        _write_src_wav(str(locked), rate=RATE, nchannels=1)
+        locked.chmod(0)
+        names.append("locked.wav")
+    out = []
+    for i, name in enumerate(names):
+        p = tmp_path / f"whisperup-{i}"
+        p.write_text(f"ffconcat version 1.0\nfile '{name}'\n")
+        out.append(str(p))
+    return out
+
+
+def test_open_audio_refuses_an_ffconcat_before_it_opens_the_sibling(tmp_path):
+    """The demuxer allowlist refuses the playlist at probe time: the same
+    "unsupported container" whether its entry exists, is missing or cannot
+    be read — no existence oracle, no sibling open."""
+    for playlist in _sibling_states(tmp_path):
+        with pytest.raises(ValueError, match="unsupported container") as ei:
+            audio_transcode.declared_shape(playlist)
+        assert not isinstance(ei.value, av.FFmpegError)
+        with pytest.raises(ValueError, match="unsupported container"):
+            audio_transcode.refuse_multi_input(playlist)
+
+
+def test_open_audio_pins_the_single_input_demuxer_allowlist(tmp_path,
+                                                            monkeypatch):
+    allowed = audio_ffmpeg.single_input_demuxers().split(",")
+    assert {"wav", "mp3", "flac", "ogg", "matroska", "mov", "aac",
+            "mpegts", "flv"} <= set(allowed)
+    assert not audio_ffmpeg.MULTI_INPUT_DEMUXERS & set(allowed)
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
+    opens = _spy_av_open(monkeypatch)
+    audio_transcode.declared_shape(src)
+    audio_transcode.refuse_multi_input(src)
+    assert [kw.get("options") for f, kw in opens if f == src] == [
+        {"protocol_whitelist": "file",
+         "format_whitelist": audio_ffmpeg.single_input_demuxers()}] * 2
 
 
 def _damaged_mp3(path, *, seconds=8):

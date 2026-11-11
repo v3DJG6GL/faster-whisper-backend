@@ -29,6 +29,39 @@ def is_multi_input_format(name: "str | None") -> bool:
 
 
 @functools.lru_cache(maxsize=1)
+def single_input_demuxers() -> str:
+    """PyAV's `format_whitelist` for client-supplied bytes: every input
+    demuxer its libavformat has, minus MULTI_INPUT_DEMUXERS. The refusal by
+    the opened format's name comes too late on its own: a playlist demuxer
+    opens its first entry inside av.open, so a missing and a present sibling
+    already fail differently. libavformat checks this list right after
+    probing, before the demuxer reads its header, and answers EINVAL."""
+    import av  # noqa: PLC0415 — optional dependency; callers import it first
+    names = set()
+    for n in av.formats_available:
+        try:
+            name = av.ContainerFormat(n, "r").name   # muxer-only names raise
+        except ValueError:
+            continue
+        if not is_multi_input_format(name):
+            names.update(name.split(","))
+    return ",".join(sorted(names))
+
+
+def format_whitelist_args(format_name: "str | None") -> "list[str]":
+    """The ffmpeg CLI input options ahead of a client file's `-i`: file
+    protocol only and, given the demuxer PyAV probed the file with (its full
+    comma name, e.g. "matroska,webm"), only that demuxer — the CLI binary
+    can carry demuxers PyAV lacks (dash, imf) whose content probe could win
+    for the same bytes. -format_whitelist keeps the CLI's own detection,
+    unlike -f, and refuses whatever else it would pick."""
+    args = ["-protocol_whitelist", "file"]
+    if format_name:
+        args += ["-format_whitelist", format_name]
+    return args
+
+
+@functools.lru_cache(maxsize=1)
 def ffmpeg_exe() -> str:
     """Prefer a system ffmpeg on PATH (usually newer/faster), else the
     bundled imageio-ffmpeg binary (cross-platform, pulled by

@@ -113,16 +113,19 @@ def scan_a53(chunks, scan: "A53Scan | None" = None, *, stop_on_content: bool = T
 
 
 def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 300.0,
-                            cancel: "threading.Event | None" = None) -> bool:
+                            cancel: "threading.Event | None" = None,
+                            format_name: "str | None" = None) -> bool:
     """True only when the H.264 video carries A/53 captions and none of them
     holds text. Any doubt (no ffmpeg, a read error, the time limit, real
     caption bytes, `cancel` set) answers False: the captions are kept.
 
     `cancel` is how an async caller that was cancelled stops the scan: its
     to_thread await is abandoned, but this thread and its ffmpeg child would
-    otherwise read the whole source for up to `timeout`."""
+    otherwise read the whole source for up to `timeout`. `format_name` holds
+    the read to the demuxer the probe opened `src` with (see
+    subtitle_mux.build_package_argv)."""
     argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-protocol_whitelist", "file", "-i", src,
+            *audio_ffmpeg.format_whitelist_args(format_name), "-i", src,
             "-map", f"0:v:{max(0, int(video_index))}", "-c", "copy",
             "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"]
     t0 = time.monotonic()

@@ -11,8 +11,9 @@ Contract (same stance as media/download.py):
     `-protocol_whitelist file` (no network protocol). The whitelist does not
     stop a playlist-shaped source (ffconcat naming a sibling retained file)
     reading through the file protocol itself: probe_streams refuses those
-    demuxers (audio/ffmpeg.MULTI_INPUT_DEMUXERS), and the route packages
-    nothing the probe called unreadable.
+    demuxers (audio/ffmpeg.MULTI_INPUT_DEMUXERS), the route packages
+    nothing the probe called unreadable, and the ffmpeg reading the source
+    is held to the demuxer the probe opened it with (`-format_whitelist`).
   - Stream copy only: the picture and the sound are never re-encoded.
 """
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import errno
 import logging
 import os
 import re
@@ -71,6 +73,9 @@ class MediaStreams:
     # Position of the picture among the file's VIDEO streams (`0:v:N`) —
     # non-zero when cover art sits in front of the real video.
     video_index: int = 0
+    # The demuxer PyAV opened the file with (its full comma name, e.g.
+    # "mov,mp4,m4a,3gp,3g2,mj2"): the packaging ffmpeg is held to it.
+    format_name: "str | None" = None
 
     def as_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -155,15 +160,25 @@ def probe_streams(path: str) -> MediaStreams:
     ValueError for a demuxer that pulls in other files (an ffconcat upload
     listing another retained video would otherwise probe as that video and
     stream-copy it N times past MEDIA_MAX_BYTES) — the route caches that as
-    unreadable."""
+    unreadable. Those demuxers are off the open's allowlist, so the refusal
+    comes before one opens a single entry."""
     import av  # optional dependency; the route maps ImportError to 503
 
     # metadata_errors="replace": PyAV's default "strict" raises
     # UnicodeDecodeError on a non-UTF-8 tag (an AVI with a cp1252 RIFF INFO
     # title), and the route would cache a playable video as unreadable.
-    with av.open(path, options={"protocol_whitelist": "file"},
-                 metadata_errors="replace") as c:
-        if audio_ffmpeg.is_multi_input_format(getattr(c.format, "name", None)):
+    try:
+        c = av.open(path, options={
+            "protocol_whitelist": "file",
+            "format_whitelist": audio_ffmpeg.single_input_demuxers()},
+            metadata_errors="replace")
+    except av.FFmpegError as e:
+        if getattr(e, "errno", None) == errno.EINVAL:
+            raise ValueError("unsupported container") from e
+        raise
+    with c:
+        format_name = getattr(c.format, "name", None) or None
+        if audio_ffmpeg.is_multi_input_format(format_name):
             raise ValueError("unsupported container")
         videos = [s for s in c.streams if s.type == "video"]
         # A cover-art stream (MJPEG/PNG in an m4a) is not the picture — a
@@ -187,7 +202,8 @@ def probe_streams(path: str) -> MediaStreams:
         ok, reason = mp4_compatibility(vc, name)   # first offender wins
     return MediaStreams(video_codec=vc, audio_codec=ac, width=width, height=height,
                         duration=duration, mp4_ok=ok, mp4_reason=reason,
-                        cover_art_only=cover_only, video_index=video_index)
+                        cover_art_only=cover_only, video_index=video_index,
+                        format_name=format_name)
 
 
 def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleTrack]",
@@ -197,7 +213,8 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
                        audio_lang: "str | None" = None,
                        audio_label: "str | None" = None,
                        video_index: int = 0,
-                       strip_empty_captions: bool = False) -> "list[str]":
+                       strip_empty_captions: bool = False,
+                       format_name: "str | None" = None) -> "list[str]":
     """The exact ffmpeg invocation (separate so tests can pin and swap it).
     `-map 0:v:N` takes ONE video stream only — `video_index` is
     MediaStreams.video_index, so a cover-art stream in front of the real
@@ -216,11 +233,16 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     for a German video); any further audio track keeps its own tags.
     `strip_empty_captions` drops the H.264 SEI units, which takes broadcast
     captions that never carry text (media/captions.py) out of the picture —
-    players otherwise list them as empty "Closed captions 1–4" tracks."""
+    players otherwise list them as empty "Closed captions 1–4" tracks.
+    `format_name` is MediaStreams.format_name: the source may only open as
+    the demuxer PyAV probed it with — the ffmpeg binary has demuxers PyAV
+    lacks (dash, imf) that its own detection could prefer for the same
+    bytes. None (facts cached without it) leaves detection as it is."""
     if container not in CONTAINERS:
         container = "mkv"
     argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-protocol_whitelist", "file", "-i", src]
+            *audio_ffmpeg.format_whitelist_args(format_name),
+            "-i", src]
     for p in srt_paths:
         argv += ["-protocol_whitelist", "file", "-f", "srt", "-i", p]
     argv += ["-map", f"0:v:{max(0, int(video_index))}", "-map", "0:a?"]
@@ -334,7 +356,8 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                   audio_lang: "str | None" = None,
                   audio_label: "str | None" = None,
                   video_index: int = 0,
-                  video_codec: "str | None" = None) -> str:
+                  video_codec: "str | None" = None,
+                  format_name: "str | None" = None) -> str:
     """Mux `tracks` into `src` as soft subtitles; returns the output path
     inside a fresh `fwb-pkg-` workdir the CALLER removes after streaming it.
     Every failure removes the workdir here."""
@@ -343,7 +366,8 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
     workdir = tempfile.mkdtemp(prefix="fwb-pkg-")
     try:
         srt_paths = await asyncio.to_thread(_write_srts, workdir, tracks)
-        strip = await _empty_captions_to_strip(src, video_codec, video_index, timeout)
+        strip = await _empty_captions_to_strip(src, video_codec, video_index, timeout,
+                                               format_name=format_name)
         out = os.path.join(workdir, f"out.{container}")
         argv = build_package_argv(src, srt_paths, tracks, container=container,
                                   original_track=original_track,
@@ -353,7 +377,8 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                                   # swapped-in argv builders keep their shape.
                                   **({"video_index": video_index}
                                      if video_index else {}),
-                                  **({"strip_empty_captions": True} if strip else {}))
+                                  **({"strip_empty_captions": True} if strip else {}),
+                                  **({"format_name": format_name} if format_name else {}))
         t0 = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.DEVNULL,
@@ -411,7 +436,8 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
 
 
 async def _empty_captions_to_strip(src: str, video_codec: "str | None",
-                                   video_index: int, timeout: float) -> bool:
+                                   video_index: int, timeout: float, *,
+                                   format_name: "str | None" = None) -> bool:
     """Whether this H.264 source carries only empty broadcast captions (and
     the server's ffmpeg can drop them). Never fails the package: any doubt
     keeps the captions."""
@@ -429,7 +455,9 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
         return await asyncio.to_thread(_cc.embedded_captions_empty, src,
                                        video_index=video_index,
                                        timeout=min(300.0, max(10.0, timeout / 3)),
-                                       cancel=cancel)
+                                       cancel=cancel,
+                                       **({"format_name": format_name}
+                                          if format_name else {}))
     except asyncio.CancelledError:
         cancel.set()
         raise
