@@ -868,7 +868,9 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
     split against each other: `(?:Komma|,)` is not `[K,]` with two loose `m?`
     that take each other's `m`. An alternation that can match empty
     (`(?:j?|b)`) pins nothing and is read as one optional atom that takes
-    any character its branches name. A mixed alternation whose branches each
+    any character its branches name; a branch that consumes nothing, or is
+    one optional atom, only makes the group optional: `(?:– ?|(?!))` is
+    `(?:– ?)?`. A mixed alternation whose branches each
     hold a mandatory atom (`(?: ?-|–)`) keeps its optional edge atoms,
     position by position, around one middle atom that takes a character only
     if all of some branch's mandatory atoms take it, so an outer ` ?` still
@@ -1052,6 +1054,19 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
             plain = not q and not _top_level_alt(group)
             inner = None if depth >= 4 else _branch_atoms(group, depth + (0 if plain else 1))
             pinned = inner is not None and None in (a for b in inner for a in b)
+            # `(?:A|<nothing>)` is `(?:A)?` and `(?:A|x?)` is `(?:A|x)?`: a
+            # branch that consumes nothing (empty, `(?!)`, `\b`, `(?=x)`) is
+            # dropped and a lone optional atom made mandatory, with the whole
+            # group optional, so the class or mixed reading below keeps its
+            # edge atoms. Read as "can match empty" it would collapse into
+            # one union atom and hide the `– ?` of `(?: ?-|(?:– ?|(?!)))+#`.
+            loosened = False
+            if inner is not None and len(inner) > 1 and not pinned:
+                rest = [b if len(b) != 1 or not b[0][1] else [(b[0][0], False) + b[0][2:]]
+                        for b in inner if b]
+                if (rest and rest != inner
+                        and all(any(not a[1] for a in b) for b in rest)):
+                    inner, optional, loosened = rest, True, True
             fixed = re.fullmatch(r"\{0*([1-9][0-9]*)(?:,0*\1)?\}\??", q)
             if inner is not None and fixed and int(fixed.group(1)) >= 2:
                 # `(?:na ){2}` is read as its copies: one copy is parsed and
@@ -1102,7 +1117,7 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                         branches[-1].append(("(?:" + "|".join(alts) + ")",
                                              optional or p >= low,
                                              tail if p >= low else None, alt))
-                elif _matches_empty(group):
+                elif not loosened and _matches_empty(group):
                     # `(?:j?|b)` can take nothing at all, so it never pins a
                     # repetition: read it as one optional atom that can take
                     # any character its branches name. A pin here hid the

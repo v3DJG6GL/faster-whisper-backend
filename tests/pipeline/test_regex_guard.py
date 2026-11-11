@@ -2084,3 +2084,30 @@ def test_wide_optional_branch_screen_is_fast():
     assert not g._nested_repetition(p)
     assert time.perf_counter() - t0 < 3.0
     g.validate([("r", p, "")])
+
+
+# A branch that consumes nothing (`(?!)`, `\b`, `$`, `(?=x)`) or is one
+# optional atom (`x?`) only makes its alternation optional: `(?:– ?|(?!))`
+# is `(?:– ?)?`. Read as one "can match empty" atom it hid the `– ?` that
+# overlaps ` ?-` across the wrap, and `– -` runs backtracked exponentially.
+@pytest.mark.parametrize("pat", [
+    r"(?: ?-|(?:– ?|(?!)))+#", r"(?: ?-|– ?|\b)+#", r"(?: ?-|(?:– ?|\b\B))+#",
+    r"(?: ?-|(?:– ?|(?<!)))+#", r"(?: ?-|(?:– ?|$))+#", r"(?: ?-|(?:– ?|(?=x)(?!x)))+#",
+    r"(?: ?-|(?:– ?|(?:(?!))))+#", r"(?: ?-|(?:(?:– ?)|(?:(?!))))+#",
+    r"(?: ?-|(?:– ?|(?!)x?))+#", r"(?: ?-|(?:– ?|x?))+#", r"(?: ?-|– ?|x?)+#",
+    r"(?:,|; ?| ?x|(?!))+#",
+])
+def test_dead_or_optional_branch_does_not_hide_wrap_overlap(pat):
+    assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+# "Word, then space or end" shapes are linear and stay accepted.
+@pytest.mark.parametrize("pat", [
+    r"\b(?:Komma|Punkt|$)", r"(?:,(?:\s|\b))+", r"(?:x(?:\s|$))+", r"(?:a(?:b|$))+",
+    r"(?:(?:,|\b) ?x)+", r"(?:(?:–|(?!)) ?x)+", r"(?:b(?:c|d?)e)+", r"(?:(?:ab|c?)d)+#",
+])
+def test_dead_or_optional_branch_linear_rules_accepted(pat):
+    assert not g._nested_repetition(pat), pat
+    g.validate([("r", pat, "")])
