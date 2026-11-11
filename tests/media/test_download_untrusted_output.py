@@ -49,6 +49,31 @@ open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
         _fetch(udl.download_video, tmp_path, max_bytes=10_000)
 
 
+def test_download_video_size_cap_sees_a_real_leg_after_a_negative_forged_count(
+        tmp_path, monkeypatch):
+    # A site-controlled id echoed on stdout can carry a negative count;
+    # counted as a finished leg it would drive the total below zero so the
+    # in-flight size check never fires on the real legs after it.
+    _patch_video_argv(monkeypatch, """
+import os
+print("dl:-9000000000000 NA NA zz", flush=True)
+print("dl:5000 NA NA 137", flush=True)
+print("dl:20000 NA NA 137", flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+""")
+    with pytest.raises(udl.UrlPolicyError, match="size limit"):
+        _fetch(udl.download_video, tmp_path, max_bytes=10_000)
+
+
+def test_progress_line_with_a_negative_count_is_not_progress():
+    # yt-dlp never prints a negative count: the whole line is noise, and a
+    # negative total falls back to the estimate.
+    assert udl._parse_progress_fields("dl:-5 NA NA 137") is None
+    assert udl._parse_progress_fields("dl:5 -9 NA")[:2] == (5, None)
+    assert udl._parse_progress_fields("dl:5 -9 70")[:2] == (5, 70)
+    assert udl._parse_progress_fields("dl:0 0 NA 137") == (0, 0, "137")
+
+
 def test_download_video_two_named_legs_after_the_cap_count_in_full(tmp_path, monkeypatch):
     _patch_video_argv(monkeypatch, f"""
 import os

@@ -1758,9 +1758,12 @@ def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | N
 
     def _num(s: str) -> "int | None":
         try:
-            return int(float(s))
+            n = int(float(s))
         except (ValueError, OverflowError):  # 'NA', noise, 'inf'/1e400
             return None
+        # yt-dlp never prints a negative count; a site-written one (an id
+        # echoed on stdout) would pull the running total below the size cap.
+        return n if n >= 0 else None
 
     downloaded = _num(fields[0])
     total = _num(fields[1])
@@ -2126,7 +2129,7 @@ async def _run_yt_dlp(
         else:
             new_series = cumulative and downloaded < last_downloaded
         if new_series:
-            completed += last_downloaded
+            completed += max(0, last_downloaded)
             if cur_leg is not None:
                 leg_done[cur_leg] = last_downloaded
         if fid is not None:
