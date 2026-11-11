@@ -1256,6 +1256,23 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
     # cannot be read might take anything, so it keeps every atom counted.
     free = {x for x in optional
             if None in sets or any(sets[x] & sets[y] for y in range(m) if apart(x, y))}
+    # Whether two atoms trade a character does not depend on which
+    # character the loop below tries, and the pins it cuts at are the same
+    # for most characters: each pair is tested once and each stretch
+    # between two pins once, not once per character — a 240-atom branch
+    # held a save thread for 13 s re-testing the same pairs.
+    pair: "dict[tuple[int, int], bool]" = {}
+
+    def trades(x: int, y: int) -> bool:
+        key = (x, y) if x < y else (y, x)
+        got = pair.get(key)
+        if got is None:
+            got = pair[key] = bool((atoms[x][1] or atoms[y][1]) and apart(x, y)
+                                   and sets[x] & sets[y])
+        return got
+
+    seen_cuts: "set[tuple[int, ...]]" = set()
+    seen_seg: "set[tuple[int, int]]" = set()
     for c in set().union(*(sets[x] for x in optional)):
         cuts = [x for x in range(m) if sets[x] is None
                 or (not atoms[x][1] and c not in sets[x])]
@@ -1263,12 +1280,17 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
             if sum(c in s for s in sets) >= 2:
                 return True
             continue
+        if tuple(cuts) in seen_cuts:
+            continue
+        seen_cuts.add(tuple(cuts))
         for s, e in zip(cuts, cuts[1:] + [cuts[0] + m]):
+            if (s, e) in seen_seg:
+                continue
+            seen_seg.add((s, e))
             seg = [x % m for x in range(s + 1, e)]
             if sum(x in free for x in seg) < 2:
                 continue
-            if any((atoms[x][1] or atoms[y][1]) and apart(x, y) and sets[x] & sets[y]
-                   for p, x in enumerate(seg) for y in seg[p + 1:]):
+            if any(trades(x, y) for p, x in enumerate(seg) for y in seg[p + 1:]):
                 return True
     return False
 

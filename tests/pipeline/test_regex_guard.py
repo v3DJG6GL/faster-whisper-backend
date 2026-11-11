@@ -2071,3 +2071,16 @@ def test_pipeline_non_ascii_negated_class_overlap_rejected(pat):
 def test_pipeline_non_ascii_negated_class_disjoint_accepted(pat):
     assert not g._nested_repetition(pat), pat
     g.validate([("r", pat, "")])
+
+
+# A branch of 240 optional CJK atoms under 15 wrappers fits the 512-char
+# pattern cap. Its screen re-tested the same atom pairs once per character
+# and once per enclosing group, holding a save thread and the save lock for
+# about 15 s before the budget refused it; it must be screened, not timed out.
+def test_wide_optional_branch_screen_is_fast():
+    p = "(" * 15 + "x+" + "".join(chr(0x4e00 + i) + "?" for i in range(240)) + ")" * 15
+    assert len(p) == 512
+    t0 = time.perf_counter()
+    assert not g._nested_repetition(p)
+    assert time.perf_counter() - t0 < 3.0
+    g.validate([("r", p, "")])
