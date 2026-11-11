@@ -135,7 +135,8 @@ def test_reports_page_notes_draft_survives_a_rerender(client):
     assert "btn.disabled = !changed;" in save
     # A render() during the PATCH: the saved notes reach the live row (a
     # Refresh replaced the objects) and the live card's controls are synced.
-    assert "_allReports.forEach(function(x) { if (x.id === r.id) x.admin_notes = saved; });" in save
+    assert "_allReports.forEach(function(x) {" in save
+    assert "if (x.id === r.id) { x.admin_notes = saved; x._hay = undefined; }" in save
     assert save.index("if (!btn.isConnected)") < save.index("btn.disabled = !changed;")
 
 

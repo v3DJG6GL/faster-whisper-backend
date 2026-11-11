@@ -468,17 +468,22 @@
       if (s !== 'all' && r.status !== s) return false;
       if (m !== 'all' && r.model !== m) return false;
       if (!q) return true;
-      var hay = (
-        (r.raw || '') + ' ' +
-        (r.final || '') + ' ' +
-        (r.intended_text || '') + ' ' +
-        (r.user_comment || '') + ' ' +
-        (r.admin_notes || '') + ' ' +
-        ((r.corrections || []).map(function(c) {
-          return (c.wrong || '') + ' ' + (c.correct || '');
-        }).join(' '))
-      ).toLowerCase();
-      return hay.indexOf(q) !== -1;
+      // Lowercasing every at-cap row on every keystroke freezes the tab, so
+      // each row builds its haystack once. load() brings fresh row objects;
+      // onSaveNotes drops the memo when it rewrites admin_notes.
+      if (r._hay === undefined) {
+        r._hay = (
+          (r.raw || '') + ' ' +
+          (r.final || '') + ' ' +
+          (r.intended_text || '') + ' ' +
+          (r.user_comment || '') + ' ' +
+          (r.admin_notes || '') + ' ' +
+          ((r.corrections || []).map(function(c) {
+            return (c.wrong || '') + ' ' + (c.correct || '');
+          }).join(' '))
+        ).toLowerCase();
+      }
+      return r._hay.indexOf(q) !== -1;
     });
   }
 
@@ -724,10 +729,13 @@
         { admin_notes: ta.value });
       var saved = j.report.admin_notes;
       r.admin_notes = saved;
+      r._hay = undefined;
       // A Refresh while the PATCH was in flight replaced the row objects:
       // carry the saved notes onto the live row too, or the next render
       // shows the old text as if the save was lost.
-      _allReports.forEach(function(x) { if (x.id === r.id) x.admin_notes = saved; });
+      _allReports.forEach(function(x) {
+        if (x.id === r.id) { x.admin_notes = saved; x._hay = undefined; }
+      });
       // Text typed while the PATCH was in flight was not sent: keep it
       // marked unsaved. _drafts holds the latest text even if a re-render
       // replaced `ta` meanwhile.
@@ -881,7 +889,12 @@
 
   document.getElementById('filt-status').addEventListener('change', render);
   document.getElementById('filt-model').addEventListener('change', render);
-  document.getElementById('filt-search').addEventListener('input', render);
+  // A burst of keystrokes renders once, after typing pauses.
+  var _searchT;
+  document.getElementById('filt-search').addEventListener('input', function() {
+    clearTimeout(_searchT);
+    _searchT = setTimeout(render, 150);
+  });
   document.getElementById('btn-refresh').addEventListener('click', load);
   document.getElementById('btn-export').addEventListener('click', onExport);
   document.getElementById('btn-clear').addEventListener('click', onClearAll);
