@@ -518,27 +518,42 @@ def test_decode_span_does_not_hold_the_skipped_audio(tmp_path):
     assert a.base is None or a.base.nbytes <= 2 * RATE * 4
 
 
-def test_decode_span_does_not_resample_the_skipped_audio(tmp_path,
-                                                         monkeypatch):
-    """A skip far into a long, tiny file costs a decode, not a resample: a
-    link's language check takes the skip from a remote playlist, and a
-    few-KB FLAC of hours of silence at an odd rate resamples ~50x slower
-    than it decodes."""
-    rate = 1100
-    src = str(tmp_path / "long.flac")
-    with av.open(src, "w", format="flac") as out:
+def _odd_rate_silent_flac(path, *, layout, seconds, rate=1100):
+    """Silent FLAC at an odd rate in 65535-sample blocks: a few KB for
+    hours of audio, which resamples ~50x slower than it decodes."""
+    with av.open(path, "w", format="flac") as out:
         st = out.add_stream("flac", rate=rate)
-        st.layout = "mono"
+        st.layout = layout
         st.codec_context.options = {"frame_size": "65535"}
-        block = np.zeros((1, rate * 600), dtype=np.int16)
-        for i in range(18):                     # 3 h
-            fr = av.AudioFrame.from_ndarray(block, format="s16",
-                                            layout="mono")
-            fr.sample_rate, fr.pts = rate, i * block.shape[1]
+        channels = 2 if layout == "stereo" else 1
+        n, step = 0, rate * 600
+        while n < seconds * rate:
+            m = min(step, int(seconds * rate) - n)
+            fr = av.AudioFrame.from_ndarray(
+                np.zeros((1, m * channels), dtype=np.int16), format="s16",
+                layout=layout)
+            fr.sample_rate, fr.pts = rate, n
             for pkt in st.encode(fr):
                 out.mux(pkt)
+            n += m
         for pkt in st.encode(None):
             out.mux(pkt)
+    return path
+
+
+def _flac_header_and_frames(path):
+    """(fLaC marker + metadata blocks, the frames after them)."""
+    data = open(path, "rb").read()
+    i = 4
+    while True:
+        last = data[i] & 0x80
+        i += 4 + int.from_bytes(data[i + 1:i + 4], "big")
+        if last:
+            return data[:i], data[i:]
+
+
+def _count_resampled(monkeypatch):
+    """Input samples that reach _resampled, as a list to sum."""
     fed = []
     real = audio_transcode._resampled
 
@@ -550,9 +565,79 @@ def test_decode_span_does_not_resample_the_skipped_audio(tmp_path,
         return real(tally(), **kw)
 
     monkeypatch.setattr(audio_transcode, "_resampled", counting)
+    return fed
+
+
+def test_decode_span_does_not_resample_the_skipped_audio(tmp_path,
+                                                         monkeypatch):
+    """A skip far into a long, tiny file costs a decode, not a resample: a
+    link's language check takes the skip from a remote playlist, and a
+    few-KB FLAC of hours of silence at an odd rate resamples ~50x slower
+    than it decodes."""
+    rate = 1100
+    src = _odd_rate_silent_flac(str(tmp_path / "long.flac"), layout="mono",
+                                seconds=3 * 3600, rate=rate)
+    fed = _count_resampled(monkeypatch)
     a = audio_transcode.decode_span_16k(src, 3 * 3600 - 10.0, 1.0)
     assert a.size == RATE
     assert sum(fed) < 120 * rate
+
+
+def test_decode_span_does_not_resample_a_skip_behind_a_format_change(
+        tmp_path, monkeypatch):
+    """One foreign frame in front of the skip (a stereo FLAC frame spliced
+    before hours of mono ones) ends the drop early: what is left of the
+    skip would be resampled, so past a budget the piece is refused instead
+    (the language check then downloads the whole file)."""
+    rate = 1100
+    mono = _odd_rate_silent_flac(str(tmp_path / "mono.flac"), layout="mono",
+                                 seconds=3 * 3600, rate=rate)
+    stereo = _odd_rate_silent_flac(str(tmp_path / "stereo.flac"),
+                                   layout="stereo", seconds=1, rate=rate)
+    stereo_head, stereo_frames = _flac_header_and_frames(stereo)
+    _mono_head, mono_frames = _flac_header_and_frames(mono)
+    src = tmp_path / "mixed.flac"
+    src.write_bytes(stereo_head + stereo_frames + mono_frames)
+    fed = _count_resampled(monkeypatch)
+    with pytest.raises(ValueError, match="changes format"):
+        audio_transcode.decode_span_16k(str(src), 3 * 3600 - 10.0, 1.0)
+    assert sum(fed) < 120 * rate * 40
+
+
+class _TinyFrame:
+    """Stands in for a decoded av.AudioFrame in _drop_before (weakref-able,
+    so the test can count the live ones)."""
+
+    class format:
+        name, bytes = "s16", 2
+
+    class layout:
+        name, channels = "mono", (None,)
+
+    sample_rate, samples = 1_000_003, 1
+
+
+def test_drop_before_holds_a_bounded_number_of_frames():
+    """While looking for a 16 kHz grid point _drop_before holds a bounded
+    number of frames, not just samples: a decoded frame object costs ~1 KB
+    whatever its size, and a crafted stream of one-sample frames at an odd
+    rate meets no grid point and no 60 s / 64 MiB cap within 24 MiB."""
+    import weakref
+
+    live, peak = weakref.WeakSet(), [0]
+
+    def frames():
+        for _ in range(100_000):
+            peak[0] = max(peak[0], len(live))
+            f = _TinyFrame()
+            live.add(f)
+            yield f
+
+    for f in audio_transcode._drop_before(frames(), 16000 * 1000,
+                                          {"n": 0, "rate": None}):
+        peak[0] = max(peak[0], len(live))
+        del f
+    assert peak[0] <= audio_transcode._SKIP_HOLD_MAX_FRAMES + 2
 
 
 def _read_16k_holding_everything(container, stream, want, *, skip=0):

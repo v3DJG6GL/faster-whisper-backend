@@ -424,11 +424,17 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
 
 # _drop_before keeps every frame that ends within _SKIP_GUARD_S of the cut,
 # so the resampler's filter has settled on real input again by the first
-# kept sample; it holds at most _SKIP_HOLD_MAX_S (or _SKIP_HOLD_MAX_BYTES) of
-# frames while looking for a point on the 16 kHz grid.
+# kept sample; it holds at most _SKIP_HOLD_MAX_S (or _SKIP_HOLD_MAX_BYTES,
+# or _SKIP_HOLD_MAX_FRAMES: a decoded frame object costs ~1 KB whatever its
+# sample count) of frames while looking for a point on the 16 kHz grid.
+# Where dropping stops short of the cut (a format change), the rest of the
+# skip is resampled up to _SKIP_RESAMPLE_MAX of work (input samples x
+# channels x max(1, 16000 / rate)): ~380 s of 44.1 kHz stereo.
 _SKIP_GUARD_S = 1.0
 _SKIP_HOLD_MAX_S = 60.0
 _SKIP_HOLD_MAX_BYTES = 64 << 20
+_SKIP_HOLD_MAX_FRAMES = 16384
+_SKIP_RESAMPLE_MAX = 1 << 25
 
 
 def _drop_before(frames, skip_out: int, state: dict):
@@ -445,8 +451,11 @@ def _drop_before(frames, skip_out: int, state: dict):
     is trimmed to the encoder delay, off every grid point), and dropping
     stops at the first frame whose format, layout or rate differs (the
     resampler restarts there) or that runs past _MAX_FRAME_S (_resampled
-    refuses it). A run that meets no grid point within _SKIP_HOLD_MAX_S or
-    _SKIP_HOLD_MAX_BYTES (only a crafted rate or block size) is dropped
+    refuses it). After a format change the rest of the skip is resampled
+    up to _SKIP_RESAMPLE_MAX of work, past which the piece is refused
+    (ValueError; the language check then downloads the whole file). A run
+    that meets no grid point within _SKIP_HOLD_MAX_S, _SKIP_HOLD_MAX_BYTES
+    or _SKIP_HOLD_MAX_FRAMES (only a crafted rate or block size) is dropped
     off the grid anyway."""
     skip_s = skip_out / 16000
     it = iter(frames)
@@ -458,10 +467,14 @@ def _drop_before(frames, skip_out: int, state: dict):
     seen, held, held_n, held_bytes = first.samples, [], 0, 0
     for f in it:
         r = f.sample_rate
-        if ((f.format.name, f.layout.name, r) != setup or not r
-                or f.samples / r > _MAX_FRAME_S
+        changed = (f.format.name, f.layout.name, r) != setup
+        if (changed or not r or f.samples / r > _MAX_FRAME_S
                 or (seen + held_n + f.samples) / r >= skip_s - _SKIP_GUARD_S):
             yield from held
+            if changed:
+                at = (seen + held_n) / setup[2] if setup[2] else 0.0
+                yield from _charged_until_cut(f, it, at, skip_s)
+                return
             yield f
             yield from it
             return
@@ -470,12 +483,37 @@ def _drop_before(frames, skip_out: int, state: dict):
         held_bytes += f.samples * len(f.layout.channels) * f.format.bytes
         if ((state["n"] + held_n) * 16000 % r == 0
                 or held_n / r > _SKIP_HOLD_MAX_S
-                or held_bytes > _SKIP_HOLD_MAX_BYTES):
+                or held_bytes > _SKIP_HOLD_MAX_BYTES
+                or len(held) >= _SKIP_HOLD_MAX_FRAMES):
             state["n"] += held_n
             state["rate"] = r
             seen += held_n
             held, held_n, held_bytes = [], 0, 0
     yield from held
+
+
+def _charged_until_cut(f, it, at: float, skip_s: float):
+    """`f` and the rest of `it`, for a skip _drop_before stopped dropping
+    `at` seconds in, short of the cut: the frames before _SKIP_GUARD_S
+    ahead of it are resampled only to be discarded, so their resample work
+    is charged and past _SKIP_RESAMPLE_MAX the piece is refused. A frame
+    without a rate or over _MAX_FRAME_S ends the charge: _resampled
+    handles it as before."""
+    work = 0.0
+    while f is not None:
+        r = f.sample_rate
+        if not r or f.samples / r > _MAX_FRAME_S or at >= skip_s - _SKIP_GUARD_S:
+            break
+        work += f.samples * len(f.layout.channels) * max(1.0, 16000 / r)
+        if work > _SKIP_RESAMPLE_MAX:
+            raise ValueError("unsupported audio: the skipped part changes "
+                             "format")
+        at += f.samples / r
+        yield f
+        f = next(it, None)
+    if f is not None:
+        yield f
+        yield from it
 
 
 def _read_16k(container, stream, want: int, *, skip: int = 0,
