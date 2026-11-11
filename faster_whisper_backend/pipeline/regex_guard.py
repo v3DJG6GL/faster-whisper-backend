@@ -915,14 +915,24 @@ def _optional_only(body: str) -> bool:
     over-approximated and refused."""
     for atoms in _branch_atoms(body):
         # A possessive item that can be skipped (`\s?+`) reads as an empty
-        # optional atom (see _branch_atoms); it takes no character back,
-        # so it never makes a second split: `(?:,?\s?+)+` is linear.
-        atoms = [a for a in atoms if a is None or a[0]]
+        # optional atom (see _branch_atoms). At the END of a branch it takes
+        # whatever is there, so it never makes a second split:
+        # `(?:,?\s?+)+` is linear. Anywhere else it is skipped where its
+        # character is absent and its neighbours still trade:
+        # `(?:,?+ ?)+#` reads ", " as one repetition or two.
+        while atoms and atoms[-1] is not None and not atoms[-1][0]:
+            atoms.pop()
         if (len(atoms) >= 2 and None not in atoms and all(a[1] for a in atoms)
                 and any(a[2] is None or a[2] is not b[2]
                         for p, a in enumerate(atoms) for b in atoms[p + 1:])):
             return True
     return False
+
+
+def _min_zero(q: str) -> bool:
+    """True if the quantifier text ``q`` lets the item be skipped."""
+    import re
+    return re.match(r"[?*]|\{0*(?:,|\})", q) is not None
 
 
 def _optional_quantifier(q: str) -> bool:
@@ -999,7 +1009,23 @@ _UNROLL_ATOMS = 512
 
 
 class _TooWide(Exception):
-    """A branch unrolled past _UNROLL_ATOMS atoms (see _branch_atoms)."""
+    """A branch unrolled past _UNROLL_ATOMS atoms, or groups nested past the
+    depth _branch_atoms reads (see there)."""
+
+
+class _Skippable(str):
+    """The empty atom text _branch_atoms gives a possessive item that can
+    match empty: every reader sees ``""``, a character it never names.
+    ``text`` keeps what the item matches when it takes something, for the
+    cross-branch walk (_class_runs_overlap), where the item does take a
+    character the other branch shares: `(?:,?+ |, )+#`."""
+
+    text = "."
+
+
+class _Loop(str):
+    """A variable single-character atom (`,+`, `,*+`) read by the
+    cross-branch walk (_class_runs_overlap) as one atom that may repeat."""
 
 
 class _TooDeep(Exception):
@@ -1016,13 +1042,18 @@ def _top_level_alt(body: str) -> bool:
     return False
 
 
-def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, object, object] | None]]":
+def _branch_atoms(body: str, depth: int = 0,
+                  loops: bool = False) -> "list[list[tuple[str, bool, object, object] | None]]":
     """The top-level branches of ``body``, each as a list of its consuming
     single-character atoms ``(atom text, optional, tail, alt)`` with ``None``
     for an item that is not one (a pin, see ``_optional_overlap``). ``tail``
     is shared by the positions past the shortest run of one alternation, and
     None for every other atom; ``alt`` is shared by every position of one
-    alternation, and None for every other atom."""
+    alternation, and None for every other atom.
+
+    ``loops`` (the cross-branch walk only): a variable or possessive
+    single-character item (`,+`, `,++`, `\\s*+`) is one ``_Loop`` atom,
+    optional when it can match empty, instead of a pin."""
     import re
     branches: "list[list[tuple[str, bool, object, object] | None]]" = [[]]
     i = 0
@@ -1042,13 +1073,21 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
         # pin it would hide `(?:(?:,?\s?){1})+#` from _optional_only.
         if re.fullmatch(r"\{0*1(?:,0*1)?\}\??", q):
             q = ""
-        if possessive and re.fullmatch(r"(?:[?*]|\{0*(?:,[0-9]*)?\})\+", q):
+        if loops and (possessive or variable) and group is None and char is not None:
+            branches[-1].append((_Loop(text), _min_zero(q), None, None))
+        elif possessive and (re.fullmatch(r"(?:[?*]|\{0*(?:,[0-9]*)?\})\+", q)
+                             or group is not None and _matches_empty(group)):
             # A possessive item that can match empty (`x?+`, `x*+`,
             # `(?:x|y)?+`, `[^\s\S]?+`) still lets its NEIGHBOURS trade when
             # it takes nothing. As a pin it hid the ` ?` of
             # `(?: ?-|– ?x?+)+#`; read as an optional atom that names no
             # character it is transparent and never gives anything back.
-            branches[-1].append(("", True, None, None))
+            # What the item is decided by what it can match, not by its
+            # quantifier's spelling: `(?:x?){1}+` takes nothing as `x?+`
+            # does.
+            skip = _Skippable("")
+            skip.text = text if group is None and char is not None else "."
+            branches[-1].append((skip, True, None, None))
         elif possessive or variable:
             branches[-1].append(None)
         elif re.fullmatch(r"\{0*(?:,0*)?\}\??", q):
@@ -1063,7 +1102,13 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
             # _nested_repetition refuses nesting past _MAX_NESTING, so this
             # recursion stays shallow.
             plain = not q and not _top_level_alt(group)
-            inner = None if depth >= 4 else _branch_atoms(group, depth + (0 if plain else 1))
+            # Past four levels of alternation or quantified groups the
+            # branch is not read at all: as a pin it hid the `– ?` of
+            # `(?: ?-|(?:a|(?:b|(?:c|(?:– ?|d)))))+#`. Refused instead, as
+            # _matches_empty reads its cut as "can match empty".
+            if depth >= 4:
+                raise _TooWide
+            inner = _branch_atoms(group, depth + (0 if plain else 1), loops)
             pinned = inner is not None and None in (a for b in inner for a in b)
             # `(?:A|<nothing>)` is `(?:A)?` and `(?:A|x?)` is `(?:A|x)?`: a
             # branch that consumes nothing (empty, `(?!)`, `\b`, `(?=x)`) is
@@ -1092,7 +1137,7 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                 # occurs in two adjacent copies, and a shorter branch only
                 # ever overlaps more. Nested counts multiply the copies, so
                 # a branch past _UNROLL_ATOMS atoms is refused outright.
-                one = _branch_atoms("(?:" + group + ")", depth + 1)
+                one = _branch_atoms("(?:" + group + ")", depth + 1, loops)
                 if len(one) != 1:
                     branches[-1].append(None)
                     continue
@@ -1514,9 +1559,13 @@ def _class_runs_overlap(branches: "list[str]", icase: bool) -> bool:
         return False  # plain words only: the text comparison was exact
     parsed = []
     for b in branches:
-        got = _branch_atoms(b)
-        parsed.append(got[0] if len(got) == 1 and got[0] and None not in got[0]
-                      else None)
+        # A possessive or atomic item matches a subset of what its greedy
+        # twin does, and still takes the character another branch shares:
+        # `,?+` reads as `,?`, `,++` as a repeatable `,` (see _Loop).
+        got = _branch_atoms(b, loops=True)
+        parsed.append([(a[0].text if isinstance(a[0], _Skippable) else a[0],) + a[1:]
+                       for a in got[0]]
+                      if len(got) == 1 and got[0] and None not in got[0] else None)
     texts = {a[0] for atoms in parsed if atoms for a in atoms}
     flags = re.DOTALL | (re.IGNORECASE if icase else 0)
     pool = set(_POOL_CHARS).union(*(_atom_chars(t) for t in texts))
@@ -1539,11 +1588,14 @@ def _class_runs_overlap(branches: "list[str]", icase: bool) -> bool:
                 done[p] = seq[p][1] and done[p + 1]
             runs[x] = (seq, done)
     loose = [x for x in runs
-             if not all(not a[1] and _literal_atom(a[0]) for a in parsed[x])]
+             if not all(not a[1] and _literal_atom(a[0]) and not isinstance(a[0], _Loop)
+                        for a in parsed[x])]
+    loop = {x: [isinstance(a[0], _Loop) for a in parsed[x]] for x in runs}
     if not loose:
         return False
 
-    fixed = {x for x, (seq, _done) in runs.items() if not any(a[1] for a in seq)}
+    fixed = {x for x, (seq, _done) in runs.items()
+             if not any(a[1] for a in seq) and not any(loop[x])}
     steps = 0
 
     def share_start(x: int, y: int) -> bool:
@@ -1569,7 +1621,10 @@ def _class_runs_overlap(branches: "list[str]", icase: bool) -> bool:
             if j < len(sb) and sb[j][1]:
                 todo.append((i, j + 1, took))
             if i < len(sa) and j < len(sb) and not sa[i][0].isdisjoint(sb[j][0]):
-                todo.append((i + 1, j + 1, True))
+                # A repeatable atom may take the next character too.
+                for i2 in (i + 1, i) if loop[x][i] else (i + 1,):
+                    for j2 in (j + 1, j) if loop[y][j] else (j + 1,):
+                        todo.append((i2, j2, True))
         return False
     # Only branches whose first characters meet can overlap, so a long list
     # is paired through those, not all-pairs: the atoms up to the first

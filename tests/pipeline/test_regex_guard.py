@@ -2145,7 +2145,48 @@ def test_pinned_empty_branch_does_not_hide_wrap_overlap(pat):
     r"(\d++)\s*Euro", r"(\w)\1?", r"(?:\s*+-\s*+\w)+", r"(?:,?\s?+)+", r"(?:,?\s*+)+",
     r"(?:n?+n)+#", r"(?:x?+y)+", r"(?:(?:a|b)?+c)+", r"(\d+)(?:,(\d+)|\2?+)? Euro",
     r"(?:\d++[.,])+\d", r"(\w+)(?: \1)+", r"(?P<w>\w+),? (?P=w)",
+    r"(?:,\s?+)+", r"(?:(?:Komma|,)\s?+)+", r"(?:(?:ja|nein){1}+, )+", r"(?:(\d)\.(?:\d?){1}+)+",
+    r"(?:,?+ ?und )+", r"(?:\d?+\.)+", r"(?:\d++|[a-z]++)+", r"(?:(?>\d+) |, )+", r"(?:,++ |; )+",
+    r"(?:x?+ |y )+#", r"(?:\w++ ?)+#", r"(?:a?+b|c)+#", r"(?:\w++\s?+)+#",
+    r"(?:x(?:a|(?:b|(?:c|d))))+",
 ])
 def test_possessive_and_backref_linear_rules_accepted(pat):
     assert not g._nested_repetition(pat), pat
     g.validate([("r", pat, "")])
+
+
+# A possessive item is read by what it can match, not by its quantifier's
+# spelling: `(?:x?){1}+` takes nothing as `x?+` does, and is skippable.
+# Groups nested past the depth the branch reader follows are refused, not
+# read as a pin that hides the overlap below them. Across branches a
+# possessive or atomic item still takes the character the other branch
+# shares (`,?+` against `,`, `,++` against `,,`). And a possessive skippable
+# atom ahead of an optional neighbour lets ", " be one repetition or two.
+# Read the old way, each of these let `– -` / ", " runs backtrack
+# exponentially.
+@pytest.mark.parametrize("pat", [
+    r"(?: ?-|– ?(?:x?){1}+)+#", r"(?: ?-|– ?(?:x?){2}+)+#", r"(?: ?-|– ?(?:x?y?){1,1}+)+#",
+    r"(?: ?-|(?:a|(?:b|(?:c|(?:– ?|d)))))+#", r"(?: ?-|(?:(?:(?:(?:– ?|d)|c)|b)|a))+#",
+    r"(?: ?-|(?:a|(?:b|(?:c|(?:d|– ?)))))+#", r"(?:(?:a|(?:b|(?:c|(?:– ?|d))))| ?-)+#",
+    r"(?:,?+ |, )+#", r"(?:,++ |, )+#", r"(?:,*+ |, )+#", r"(?:,{0,2}+ |, )+#",
+    r"(?:(?>,+) |, )+#", r"(?: ?+-| -)+#", r"(?:,++x|,,x)+#",
+    r"(?:,?+ ?)+#", r"(?: ?+-?)+#", r"(?:[,;]?+\s?)+#", r"(?:,*+ ?)+#", r"(?:(?:,)?+ ?)+#",
+    r"(?:,{0,1}+ ?)+#", r"(?:(?:x?){1}+ ?)+#",
+])
+def test_possessive_empty_capable_or_deep_branch_does_not_hide_overlap(pat):
+    assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+# Refusing past the depth cut keeps the screen cheap: read in full, this
+# 15-deep nest of optional, alternated, counted groups held it for seconds.
+def test_deep_quantified_nest_screen_is_fast():
+    p = "x"
+    for _ in range(15):
+        p = "(?:a?" + p + "b?|c){2}"
+    pat = "(?:" + p + ")+#"
+    assert len(pat) == 202
+    t0 = time.perf_counter()
+    assert g._nested_repetition(pat)
+    assert time.perf_counter() - t0 < 0.5
