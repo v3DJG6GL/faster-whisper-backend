@@ -941,8 +941,22 @@ def _probe_chain(text: str, units: list[list[Any]],
     return _done(*last)
 
 
+def _render_dry_run(steps: list[dict[str, Any]], final: str) -> bytes:
+    """The test-pipeline body, byte for byte what JSONResponse renders for
+    {"steps": steps, "final": final}, dumped one step at a time. Up to
+    _TEST_PIPELINE_MAX_RULES steps each carry the whole before/after text;
+    json's C encoder holds the GIL for one whole dump, so a single dump of
+    the lot stalls the event loop even from a worker thread."""
+    def dump(o: Any) -> bytes:
+        # The arguments of Starlette's JSONResponse.render.
+        return json.dumps(o, ensure_ascii=False, allow_nan=False, indent=None,
+                          separators=(",", ":")).encode("utf-8")
+    return b"".join([b'{"steps":[', b",".join([dump(s) for s in steps]),
+                     b'],"final":', dump(final), b"}"])
+
+
 @router.post("/test-pipeline", dependencies=ADMIN_API_DEPS)
-async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
+async def test_pipeline(payload: dict[str, Any]) -> Response:
     """Dry-run the full pipeline-rules list against a sample. Used by the
     WebUI's per-row live-validation badge AND the inline test panel.
 
@@ -1485,7 +1499,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 "skipped": False, "error": None, "slow": False,
             })
 
-    return JSONResponse({"steps": steps, "final": text})
+    return Response(await asyncio.to_thread(_render_dry_run, steps, text),
+                    media_type="application/json")
 
 
 class _TranslationTestBody(BaseModel):
