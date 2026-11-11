@@ -716,8 +716,8 @@ _TEST_PIPELINE_PROBE_ROUNDS = 3
 _TEST_PIPELINE_PROBE_WALL = 15.0
 # Units: ["mark", rule] prints the sha1 of the text that rule is handed;
 # ["sub", rule, pattern, replacement] is a regex-list entry, applied exactly as
-# the dry run applies it (output bound counted first, a failing entry leaves
-# the text alone); ["match", rule, pattern] is a callback pattern, matched only
+# the dry run applies it (the walk's output bound, `cap` in the input, counted
+# first; a failing entry leaves the text alone); ["match", rule, pattern] is a callback pattern, matched only
 # (its callback's output is unknown here, so the next mark tells the parent
 # whether the walk still sees the real text); ["trim", rule] is the terminal.
 # Before each timed unit the child prints its index and its start, in seconds
@@ -772,7 +772,8 @@ def _text_sha(text: str) -> str:
 
 def _probe_chain(text: str, units: list[list[Any]],
                  skip: dict[int, set[str]] | None = None,
-                 budget: dict[str, Any] | None = None
+                 budget: dict[str, Any] | None = None, *,
+                 cap: int | None = None
                  ) -> tuple[dict[int, str], set[int], int | None] | None:
     """Walk `units` (see _PROBE_SRC) from `text` in a child process killed
     after _TEST_PIPELINE_PROBE_TIMEOUT, so every pattern is timed on the text
@@ -799,7 +800,9 @@ def _probe_chain(text: str, units: list[list[Any]],
     round may still spend, killed or not. A round is cut at what is left of
     either; a cut round's kill blames no unit (the walk stops there, or where
     an earlier round got further, unprobed), and once one is gone the walk
-    stops where it got to."""
+    stops where it got to.
+    `cap`: the output bound of the dry run's walk (pl_engine.output_bound of
+    its sample, not of `text`); None = the absolute _POSTPROCESS_MAX_CHARS."""
     import subprocess
     import sys
     import time
@@ -877,7 +880,8 @@ def _probe_chain(text: str, units: list[list[Any]],
                 input=json.dumps([text, units,
                                   [*((i, sorted(hs)) for i, hs in known.items()),
                                    *((i, None) for i in slow)],
-                                  pl_engine._POSTPROCESS_MAX_CHARS, time.time()]),
+                                  pl_engine._POSTPROCESS_MAX_CHARS if cap is None
+                                  else cap, time.time()]),
                 capture_output=True, text=True,
                 timeout=timeout)
             if budget is not None and "wall" in budget:
@@ -1027,6 +1031,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     if language is not None and not isinstance(language, str):
         return _bad_request("language must be a string or null")
     language = (language or "").strip().lower() or None
+    # Engine parity (pl_engine._postprocess_text): one output bound for the
+    # whole walk, relative to the text it starts with. Every rule, regex-list
+    # entry and repeat pass below is held to it, and so is the probe child.
+    bound = pl_engine.output_bound(len(sample))
 
     def _capped_strings(rule: dict):
         """(label, value, cap) for every string the dry run length-caps, in refusal order."""
@@ -1132,7 +1140,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         res = _probe_chain(text, units,
                            {ui: known_slow[u] for ui, u in owner.items()
                             if u in known_slow},
-                           probe)
+                           probe, cap=bound)
         if res is None:
             probe["on"] = False
             return
@@ -1240,9 +1248,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                 n += 1
                                 size += lit - (m.end() - m.start()) + sum(
                                     m.end(g) - m.start(g) for g in tmpl[1::2])
-                                if size > pl_engine._POSTPROCESS_MAX_CHARS:
+                                if size > bound:
                                     break
-                            if size <= pl_engine._POSTPROCESS_MAX_CHARS:
+                            if size <= bound:
                                 cur = ecre.sub(er, cur)
                         # IndexError: an unknown group name (`\g<nope>`);
                         # TypeError: a non-string replacement in a hand-rolled
@@ -1256,7 +1264,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         # walk stops at the output bound: the step shows the
                         # text from before the entry that would pass it, which
                         # is never built.
-                        if size > pl_engine._POSTPROCESS_MAX_CHARS:
+                        if size > bound:
                             lout["capped"] = True
                             break
                         total += n
@@ -1341,7 +1349,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             # full before the step's length is ever looked at.
             r = replacer(m)
             size[0] += len(r) - (m.end() - m.start())
-            if size[0] > pl_engine._POSTPROCESS_MAX_CHARS:
+            if size[0] > bound:
                 raise _PastBound
             return r
 
@@ -1406,8 +1414,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
             continue
-        # Engine parity: once the text passes pl_engine._POSTPROCESS_MAX_CHARS
-        # the engine skips every remaining rule (the terminal trim still runs).
+        # Engine parity: once the text passes the walk's output bound the
+        # engine skips every remaining rule (the terminal trim still runs).
         # The skipped steps echo no text — repeating a multi-MB buffer per
         # step is what the bound exists to stop.
         if capped and rule.get("type") != "terminal":
@@ -1443,7 +1451,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                    and step["after"] != step["before"]
                    and not (step.get("slow") or step.get("not_run")
                             or step.get("capped"))
-                   and len(step["after"]) <= pl_engine._POSTPROCESS_MAX_CHARS):
+                   and len(step["after"]) <= bound):
                 if time.monotonic() > deadline:
                     step["slow"] = True
                     break
@@ -1460,7 +1468,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         text = step["after"]
         # A rule stops itself before its output passes the bound (and keeps
         # the text it was handed), so its own `capped` flag counts too.
-        if step.get("capped") or len(text) > pl_engine._POSTPROCESS_MAX_CHARS:
+        if step.get("capped") or len(text) > bound:
             step["capped"] = True
             capped = True
         if rule.get("type") == "terminal":

@@ -86,7 +86,7 @@ def test_text_a_callback_changed_is_probed_again_before_the_next_rule(client, sh
 
 
 def test_ordinary_chain_runs_with_one_probe(client, monkeypatch):
-    calls = record_calls(monkeypatch, admin_routes, "_probe_chain", lambda text, *a: text)
+    calls = record_calls(monkeypatch, admin_routes, "_probe_chain", lambda text, *a, **kw: text)
     j = dry_run(client, [_grow(3),
                          upper_rule("foo"),
                          {"name": "t", "type": "terminal"}], " x foo ")
@@ -174,7 +174,7 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch, short_probe):
     # bounds the sum.
     killed = _count_probe_timeouts(monkeypatch)
     budgets = record_calls(monkeypatch, admin_routes, "_probe_chain",
-                           lambda text, units, skip=None, budget=None: budget)
+                           lambda text, units, skip=None, budget=None, **kw: budget)
     rules = []
     for n, c in zip("123456", "bcdefg"):
         rules += [{"name": "m" + n, "type": "callback:map", "enabled": True,

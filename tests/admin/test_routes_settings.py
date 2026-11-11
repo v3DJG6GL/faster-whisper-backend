@@ -479,7 +479,7 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
     # output would pass _POSTPROCESS_MAX_CHARS, and that rule keeps the text
     # it was handed. The dry run does the same, so nothing it builds ever
     # passes the bound.
-    bound = pl_engine._POSTPROCESS_MAX_CHARS
+    bound = pl_engine.output_bound(8192)
     dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
     rules = [list_rule([dbl], name=f"r{i}") for i in range(12)]
     r = client.post("/settings/test-pipeline",
@@ -502,6 +502,43 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
     step = r.json()["steps"][0]
     assert step["capped"] is True
     assert bound // 2 < len(step["after"]) <= bound
+
+
+def test_test_pipeline_bound_is_relative_to_the_sample_as_in_the_engine(
+        client, app_module):
+    # The engine bounds a walk by output_bound of the text it starts with, not
+    # by the absolute _POSTPROCESS_MAX_CHARS: a short sample under a doubling
+    # rule set stops at the same rule in both, and the dry run's final is
+    # what the engine produces. Repeating rules share the walk's one bound.
+    dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
+    rules = [{**list_rule([dbl], name=f"r{i}"), "label": f"r{i}"} for i in range(12)]
+    rep = {**list_rule([{"pattern": "$", "replacement": "b"}], name="rep"),
+           "label": "rep", "repeat": True}
+    for sample, rule_set in (("aaaaaaaa", rules),
+                             ("aaaaaaaa", [*rules[:11], rep, *rules[11:]]),
+                             ("aaaa", [list_rule([dbl] * 14, name="x")])):
+        running = app_module.cfg.PIPELINE_RULES
+        app_module.cfg.PIPELINE_RULES = rule_set
+        try:
+            pl_engine.rebuild_caches()
+            want = pl_engine._postprocess_text(sample)
+        finally:
+            app_module.cfg.PIPELINE_RULES = running
+            pl_engine.rebuild_caches()
+        assert len(want) <= pl_engine.output_bound(len(sample))
+        body = dry_run(client, rule_set, sample)
+        assert body["final"] == want
+        assert any(s.get("capped") for s in body["steps"])
+
+
+def test_test_pipeline_probe_child_stops_at_the_walks_bound():
+    # The killable probe applies regex-list entries as the dry run does, so
+    # it stops where the walk's bound stops the dry run: no later mark.
+    units = [["mark", 0], ["sub", 0, ".+", "\\g<0>\\g<0>"], ["mark", 1]]
+    marks, _slow, stop = admin_routes._probe_chain("aaaa", units, cap=7)
+    assert (list(marks), stop) == ([0], None)
+    marks, _slow, _stop = admin_routes._probe_chain("aaaa", units, cap=8)
+    assert marks[1] == admin_routes._text_sha("aaaaaaaa")
 
 
 def test_test_pipeline_regex_list_skips_bad_entry(client):

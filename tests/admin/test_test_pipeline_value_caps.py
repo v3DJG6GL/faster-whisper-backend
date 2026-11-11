@@ -35,10 +35,16 @@ def test_replacement_at_the_cap_still_runs(client):
     assert step["after"] == "y" * 512
 
 
+def _bound_at(monkeypatch, n):
+    """Make every walk's output bound `n`, whatever the sample's length."""
+    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", n)
+    monkeypatch.setattr(pl_engine, "_POSTPROCESS_FLOOR", n)
+
+
 def test_chained_entries_stop_before_passing_the_output_bound(client, monkeypatch):
     # Entry 1 stays under the bound; entry 2 would multiply that text 512x in
     # one sub. The dry run must stop BEFORE running it, not after.
-    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
+    _bound_at(monkeypatch, 40_000)
     j = dry_run(client, [list_rule([
         {"pattern": "x", "replacement": "x" * 512},
         {"pattern": "x", "replacement": "x" * 512},
@@ -51,7 +57,7 @@ def test_chained_entries_stop_before_passing_the_output_bound(client, monkeypatc
 
 def test_backref_template_counts_its_expansion_against_the_bound(client, monkeypatch):
     # A 510-char template of `\g<0>` copies the whole match 102 times.
-    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
+    _bound_at(monkeypatch, 40_000)
     step = list_step(client, [{"pattern": "(?s).+", "replacement": "\\g<0>" * 4},
                               {"pattern": "(?s).+", "replacement": "\\g<0>" * 102}],
                      sample="a" * 8000)
@@ -60,7 +66,7 @@ def test_backref_template_counts_its_expansion_against_the_bound(client, monkeyp
 
 
 def test_map_rule_stops_before_passing_the_output_bound(client, monkeypatch):
-    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", 40_000)
+    _bound_at(monkeypatch, 40_000)
     j = dry_run(client, [
         list_rule([{"pattern": "a", "replacement": "komma " * 60}]),
         {"name": "m", "type": "callback:map", "enabled": True,
