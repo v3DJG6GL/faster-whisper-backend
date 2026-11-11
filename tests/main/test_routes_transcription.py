@@ -859,3 +859,64 @@ def test_retain_media_staging_failure_says_so(client, app_module, monkeypatch):
     assert any(w.startswith("retain_media:") and "could not stage" in w
                for w in body["warnings"])
     assert calls == []
+
+
+def _cue_walk_peaks(monkeypatch, cues):
+    """Longest text each pipeline walk over one of `cues` built."""
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    peaks: list[int] = []
+    on_cue = [False]
+    real_walk, real_apply = pl_engine._postprocess_text, pl_engine._apply_bounded
+
+    def walk(text, *a, **kw):
+        on_cue[0] = text in cues
+        if on_cue[0]:
+            peaks.append(len(text))
+        return real_walk(text, *a, **kw)
+
+    def apply(rule, text, bound):
+        out = real_apply(rule, text, bound)
+        if out is not None and on_cue[0]:
+            peaks[-1] = max(peaks[-1], len(out))
+        return out
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", walk)
+    monkeypatch.setattr(pl_engine, "_apply_bounded", apply)
+    return peaks
+
+
+def _install_rules(app_module, *cards):
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    from tests.settings._rules_helpers import terminal_rule
+    app_module.cfg.PIPELINE_RULES = [*cards, terminal_rule()]
+    pl_engine.rebuild_caches()
+
+
+def test_srt_cue_walks_share_one_output_budget(client, app_module, fake_model, monkeypatch):
+    # One walk per cue, each under its own 16 K floor, must not build more
+    # together than one walk over all cues may.
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    _install_rules(app_module, {
+        "name": "dbl", "label": "Dbl", "type": "regex-list", "enabled": True,
+        "entries": [{"pattern": "(.)", "replacement": "\\1\\1"}] * 8})
+    cues = [f" satz {i:03d} hier" for i in range(60)]
+    fake_model._segments = [FakeSegment(t, i, i + 1) for i, t in enumerate(cues)]
+    peaks = _cue_walk_peaks(monkeypatch, set(cues))
+    r = _post(client, response_format="srt")
+    assert r.status_code == 200, r.text
+    assert peaks
+    assert sum(peaks) <= pl_engine.output_bound(sum(len(c) for c in cues))
+
+
+def test_srt_cues_keep_their_own_walk_under_a_real_rule(client, app_module, fake_model):
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    _install_rules(app_module, {
+        "name": "sub", "label": "Sub", "type": "regex-list", "enabled": True,
+        "entries": [{"pattern": "Komma", "replacement": ","}]})
+    cues = [f" Hallo Komma Welt {i}" for i in range(300)]
+    fake_model._segments = [FakeSegment(t, i, i + 1) for i, t in enumerate(cues)]
+    r = _post(client, response_format="srt")
+    assert r.status_code == 200, r.text
+    texts = r.text.split("\n\n")
+    assert [t.split("\n")[2] for t in texts if t.strip()] == [
+        pl_engine._postprocess_text(c) for c in cues]

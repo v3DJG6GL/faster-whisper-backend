@@ -3649,8 +3649,14 @@ async def transcribe(
                 # no slot in a single-language subtitle file.
                 # In a worker thread: one pipeline walk per cue adds up to a
                 # frozen loop on a long run (2 700 segments for 3 h of audio).
+                # The cues share one output budget (pl_engine.WalkBudget): an
+                # expanding rule set cannot build the 16 K floor once per cue.
+                _cue_budget = pl_engine.WalkBudget(
+                    sum(len(seg["text"]) for seg in segments_list))
                 _doc = await asyncio.to_thread(lambda: _subtitles.render([
-                    (seg["start"], seg["end"], _postprocess(seg["text"]))
+                    (seg["start"], seg["end"],
+                     seg["text"].strip() if _cue_budget.left <= len(seg["text"])
+                     else _postprocess(seg["text"], budget=_cue_budget))
                     for seg in segments_list], response_format))
                 _response_payload = _doc
                 # text/plain like OpenAI's srt / vtt answers, and like `text`:
