@@ -1351,48 +1351,58 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         except asyncio.TimeoutError:
             raise UrlTimeoutError(_TOO_SLOW_MSG) from None
     _policy_check_extractor(key, info, handoff_is_media=handoff_is_media)
-    xk = str(info.get("extractor_key") or key)
-    size = info.get("filesize_approx") or info.get("filesize")
-    fs = int(size) if size else None
-    ext = str(info["ext"]) if info.get("ext") else None
-    abr = _plausible_abr(info.get("abr"))
-    ladder: "list[dict]" = []
-    if getattr(cfg, "URL_VIDEO_ENABLED", False):
-        from faster_whisper_backend.runtime import stage_rates as _rates
-        # A video rung is only ever fetched to be retained: price it
-        # against what the media store can keep.
-        from faster_whisper_backend.media import media_store as _ms
-        ladder = build_video_ladder(
-            info, max_bytes=_ms.max_retainable_bytes(), extractor=xk,
-            approx_ratio=lambda fam: _rates.lookup(RATIO_STAGE, xk, fam).get("rate"))
-        if ladder:
-            ladder.append({
-                "kind": "audio", "height": None, "ext": ext, "abr": abr,
-                "approx_bytes": fs,
-                "over_cap": fs is not None and fs > _effective_max_bytes(),
-                "label": "audio only" + (f" · {ext}" if ext else "")
-                         + (f" · {int(abr)} kbps" if abr else ""),
-            })
-    from faster_whisper_backend.media import segmented as _seg
-    from faster_whisper_backend.media import subtitles as _subs
-    tracks, sources = _subs.list_tracks(info)
-    return UrlMediaInfo(
-        url=url,
-        extractor_key=xk,
-        title=info.get("title"),
-        duration=_finite_duration(info.get("duration")),
-        uploader=info.get("uploader") or info.get("channel"),
-        filesize_approx=fs,
-        is_live=bool(info.get("is_live")),
-        thumbnail_url=info.get("thumbnail"),
-        ext=ext,
-        abr=abr,
-        video_ladder=ladder,
-        language=_subs.language_of(info),
-        subtitle_tracks=tracks,
-        subtitle_sources=sources,
-        segmented=_seg.source_of(info),
-    )
+
+    # The ladder and the subtitle list walk every format and subtitle key
+    # the site sent (tens of thousands from a crafted manifest or page):
+    # CPU work sized by the site, so it runs on the probe pool, never on
+    # the event loop every live socket shares. _extract has already handed
+    # its worker back, so this cannot wait on a slot it holds itself.
+    def _derive() -> UrlMediaInfo:
+        xk = str(info.get("extractor_key") or key)
+        size = info.get("filesize_approx") or info.get("filesize")
+        fs = int(size) if size else None
+        ext = str(info["ext"]) if info.get("ext") else None
+        abr = _plausible_abr(info.get("abr"))
+        ladder: "list[dict]" = []
+        if getattr(cfg, "URL_VIDEO_ENABLED", False):
+            from faster_whisper_backend.runtime import stage_rates as _rates
+            # A video rung is only ever fetched to be retained: price it
+            # against what the media store can keep.
+            from faster_whisper_backend.media import media_store as _ms
+            ladder = build_video_ladder(
+                info, max_bytes=_ms.max_retainable_bytes(), extractor=xk,
+                approx_ratio=lambda fam: _rates.lookup(RATIO_STAGE, xk, fam).get("rate"))
+            if ladder:
+                ladder.append({
+                    "kind": "audio", "height": None, "ext": ext, "abr": abr,
+                    "approx_bytes": fs,
+                    "over_cap": fs is not None and fs > _effective_max_bytes(),
+                    "label": "audio only" + (f" · {ext}" if ext else "")
+                             + (f" · {int(abr)} kbps" if abr else ""),
+                })
+        from faster_whisper_backend.media import segmented as _seg
+        from faster_whisper_backend.media import subtitles as _subs
+        tracks, sources = _subs.list_tracks(info)
+        return UrlMediaInfo(
+            url=url,
+            extractor_key=xk,
+            title=info.get("title"),
+            duration=_finite_duration(info.get("duration")),
+            uploader=info.get("uploader") or info.get("channel"),
+            filesize_approx=fs,
+            is_live=bool(info.get("is_live")),
+            thumbnail_url=info.get("thumbnail"),
+            ext=ext,
+            abr=abr,
+            video_ladder=ladder,
+            language=_subs.language_of(info),
+            subtitle_tracks=tracks,
+            subtitle_sources=sources,
+            segmented=_seg.source_of(info),
+        )
+
+    return await asyncio.get_running_loop().run_in_executor(
+        _PROBE_POOL, _derive)
 
 
 def _finite_duration(value) -> "float | None":
