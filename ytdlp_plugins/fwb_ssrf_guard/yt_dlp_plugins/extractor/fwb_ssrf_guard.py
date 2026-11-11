@@ -206,6 +206,7 @@ def reset_budget() -> None:
     _DIALS.tls.segments = 0
     _DIALS.tls.variants = 0
     _DIALS.tls.f4m_nested = 0
+    _DIALS.tls.url_bytes = 0
 
 
 def _observe(sock) -> None:
@@ -571,6 +572,26 @@ _MPD_SENTINEL = "_fwb_mpd_bounded"
 # split into 720 ad periods of ten representations each is 7 200. A Smooth
 # Streaming QualityLevel is a variant too, from the same budget.
 _MAX_MPD_REPRESENTATIONS = 20_000
+# yt-dlp builds every fragment's address as a fresh copy of the manifest's
+# template, so its cost is the template's length (with every substitution),
+# not the ~260 bytes the segment cap assumes: a 300-byte MPD asking for
+# `$Number%010000000d$` builds 10 MB per segment, a 1 MB StreamIndex@Url
+# 1 MB per fragment. The addresses one extraction would build are sized
+# arithmetically (never built) and spend from one running total, which a
+# 12 h ten-quality VOD (216 000 x ~200 bytes, ~43 MB) leaves far inside.
+_MAX_FRAGMENT_URL_BYTES = 256 * 1024 * 1024
+# One DASH template after its $RepresentationID$ substitutions: yt-dlp walks
+# it a character at a time and copies it several times per representation
+# even when it expands to no segment. Real templates, signed queries
+# included, stay within a few kilobytes.
+_MAX_TEMPLATE_BYTES = 64 * 1024
+# The width / precision in `$Number%05d$`: real manifests pad to 5..9 digits.
+_MAX_TEMPLATE_WIDTH = 64
+# yt-dlp's two substitutions: `$Number$` -> `%(Number)d` and
+# `$Number%05d$` -> `%(Number)05d` (Time and Bandwidth likewise).
+_TEMPLATE_FIELD = re.compile(r"\$(?:Number|Bandwidth|Time)(?:%([^$]+))?\$")
+_ISM_BITRATE = re.compile(r"{[Bb]itrate}")
+_ISM_START_TIME = re.compile(r"{start[ _]time}")
 
 
 def _too_many_segments():
@@ -586,11 +607,18 @@ def _too_many_variants(cap: int):
         f"the stream lists too many variants (more than {cap})", expected=True)
 
 
-def _charge(segments: int, variants: int) -> None:
-    """Spend a manifest's counts from the budget of the extraction running
-    on this thread. One extraction can parse many manifests into one result
-    (GenericIE parses an MPD per Video.js `src`), so each manifest within
-    its own cap is not enough. A refused manifest spends nothing. probe()
+def _too_much_url():
+    from yt_dlp.utils import ExtractorError
+    return ExtractorError("the stream's segment addresses are too long",
+                          expected=True)
+
+
+def _charge(segments: int, variants: int, url_bytes: int = 0) -> None:
+    """Spend a manifest's counts (and the bytes of the fragment addresses it
+    builds) from the budget of the extraction running on this thread. One
+    extraction can parse many manifests into one result (GenericIE parses an
+    MPD per Video.js `src`), so each manifest within its own cap is not
+    enough. A refused manifest spends nothing. probe()
     resets the budget per extraction (observe_dials); the download child
     extracts once per process."""
     total = getattr(_DIALS.tls, "segments", 0) + segments
@@ -599,8 +627,12 @@ def _charge(segments: int, variants: int) -> None:
     kinds = getattr(_DIALS.tls, "variants", 0) + variants
     if kinds > _MAX_MPD_REPRESENTATIONS:
         raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
+    spent = getattr(_DIALS.tls, "url_bytes", 0) + url_bytes
+    if spent > _MAX_FRAGMENT_URL_BYTES:
+        raise _too_much_url()
     _DIALS.tls.segments = total
     _DIALS.tls.variants = kinds
+    _DIALS.tls.url_bytes = spent
 
 
 def _number(value, kind=float):
@@ -610,6 +642,12 @@ def _number(value, kind=float):
         return kind(value)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _digits(value: int) -> int:
+    """An upper bound on len(str(value)), sign included, without the
+    conversion (Python refuses str() past 4 300 digits anyway)."""
+    return abs(value).bit_length() * 30103 // 100000 + 2
 
 
 def _mpd_segment_info(element, parent: dict, q) -> dict:
@@ -627,6 +665,14 @@ def _mpd_segment_info(element, parent: dict, q) -> dict:
     if entries:
         info["s"] = [(_number(e.get("d"), int) or 0,
                       max(_number(e.get("r", 0), int) or 0, 0)) for e in entries]
+        # The largest $Time$ the timeline can reach: a start, plus every
+        # segment's duration after it.
+        info["s_time"] = (
+            max(abs(_number(e.get("t", 0), int) or 0) for e in entries)
+            + sum(abs(d) * (1 + r) for d, r in info["s"]))
+    start = source.get("startNumber")
+    if start:
+        info["start"] = _number(start, int)
     timescale = source.get("timescale")
     if timescale:
         info["timescale"] = _number(timescale, int)
@@ -637,8 +683,12 @@ def _mpd_segment_info(element, parent: dict, q) -> dict:
         urls = source.findall(q("SegmentURL"))
         if urls:
             info["urls"] = len(urls)
-    elif source.get("media"):
-        info["media"] = True
+    else:
+        # Kept as text: their length is what every fragment address costs.
+        if source.get("media"):
+            info["media"] = source.get("media")
+        if source.get("initialization"):
+            info["initialization"] = source.get("initialization")
     return info
 
 
@@ -667,6 +717,50 @@ def _representation_segments(info: dict, period_duration):
     return 0, None
 
 
+def _template_bytes(template: str, rep_id, value_digits: int) -> int:
+    """The length of one address yt-dlp builds from a DASH template for one
+    representation, each field printing its padded width or `value_digits`
+    characters, whichever is more. Refuses a template that is too long or
+    pads a field too wide."""
+    uses = template.count("$RepresentationID$") if rep_id is not None else 0
+    length = len(template) + uses * (len(rep_id or "") - len("$RepresentationID$"))
+    if length > _MAX_TEMPLATE_BYTES:
+        raise _too_much_url()
+    if uses:  # an @id can complete a field the template only starts
+        template = template.replace("$RepresentationID$", rep_id)
+    for spec in _TEMPLATE_FIELD.findall(template):
+        width = 0
+        for run in re.findall(r"\d+", spec):
+            run = run.lstrip("0")
+            if len(run) > 3 or int(run or 0) > _MAX_TEMPLATE_WIDTH:
+                raise _too_much_url()
+            width = max(width, int(run or 0))
+        length += max(width, value_digits)
+    return length
+
+
+def _representation_url_bytes(info: dict, n: int, rep_id, bandwidth) -> int:
+    """The bytes of the fragment and initialization addresses yt-dlp builds
+    for one representation of `n` segments."""
+    digits = max(_digits(abs(info.get("start") or 1) + n),
+                 _digits(info.get("s_time") or 0), len(bandwidth or ""))
+    spent = 0
+    if info.get("media") and "urls" not in info:
+        # The template is prepared even when it expands to no segment.
+        spent += max(n, 1) * _template_bytes(info["media"], rep_id, digits)
+    if info.get("initialization"):
+        spent += _template_bytes(info["initialization"], rep_id, digits)
+    return spent
+
+
+def _representation_attr(representation, adaptation, name):
+    """yt-dlp reads a Representation's attributes from its AdaptationSet's
+    overlaid with its own."""
+    if name in representation.attrib:
+        return representation.get(name)
+    return adaptation.get(name)
+
+
 def _refuse_oversized_mpd(mpd_doc) -> None:
     from yt_dlp.utils import parse_duration
     # yt-dlp's own derivation: only a root named MPD (any case) lends its
@@ -677,14 +771,23 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
 
     def q(name):
         return f"{{{ns}}}{name}" if ns else name
+
+    # yt-dlp joins each representation's base URL afresh from the BaseURL of
+    # every level above it (stopping at an absolute one; counted whole here).
+    def base_url(element):
+        found = element.find(q("BaseURL"))
+        return len(found.text or "") if found is not None else 0
     mpd_duration = parse_duration(mpd_doc.get("mediaPresentationDuration"))
-    count = representations = 0
+    count = representations = url_bytes = 0
+    mpd_base = base_url(mpd_doc)
     for period in mpd_doc.findall(q("Period")):
         period_duration = (parse_duration(period.get("duration"))
                            or mpd_duration)
         period_info = _mpd_segment_info(period, {"timescale": 1}, q)
+        period_base = mpd_base + base_url(period)
         for adaptation in period.findall(q("AdaptationSet")):
             set_info = _mpd_segment_info(adaptation, period_info, q)
+            set_base = period_base + base_url(adaptation)
             for representation in adaptation.findall(q("Representation")):
                 representations += 1
                 if representations > _MAX_MPD_REPRESENTATIONS:
@@ -694,11 +797,18 @@ def _refuse_oversized_mpd(mpd_doc) -> None:
                 count += n
                 if count > _MAX_MPD_SEGMENTS:
                     raise _too_many_segments()
+                url_bytes += set_base + base_url(representation)
+                url_bytes += _representation_url_bytes(
+                    info, n,
+                    _representation_attr(representation, adaptation, "id"),
+                    _representation_attr(representation, adaptation, "bandwidth"))
+                if url_bytes > _MAX_FRAGMENT_URL_BYTES:
+                    raise _too_much_url()
                 # yt-dlp's own fallback: a period with no length takes the
                 # first expanded representation's, which the next ones use.
                 if not period_duration and n and seconds:
                     period_duration = seconds
-    _charge(count, representations)
+    _charge(count, representations, url_bytes)
 
 
 def _bounded_mpd_periods(original):
@@ -731,7 +841,7 @@ def _refuse_oversized_ism(ism_doc) -> None:
     from yt_dlp.utils import int_or_none
     if ism_doc.get("IsLive") == "TRUE":
         return  # yt-dlp returns no formats for it, before any expansion
-    count = variants = 0
+    count = variants = url_bytes = 0
     for stream in ism_doc.findall("StreamIndex"):
         if stream.get("Type") not in ("video", "audio", "text"):
             continue
@@ -748,12 +858,30 @@ def _refuse_oversized_ism(ism_doc) -> None:
             continue
         # yt-dlp: range(int_or_none(r) or 1) per chunk, so r <= -1 builds no
         # fragment, but the chunk is still read once per level: it costs one.
-        per_track = sum(max(int_or_none(c.get("r")) or 1, 1)
-                        for c in stream.findall("c"))
+        chunks = stream.findall("c")
+        per_track = sum(max(int_or_none(c.get("r")) or 1, 1) for c in chunks)
         count += tracks * per_track
         if count > _MAX_MPD_SEGMENTS:
             raise _too_many_segments()
-    _charge(count, variants)
+        # Each fragment's address is the stream's Url with {bitrate} set to
+        # the level's Bitrate and {start time} to the chunk's time, which
+        # starts at a chunk's @t and grows by each @d (a missing @d is a
+        # quotient: a float, at most 24 characters).
+        pattern = stream.get("Url") or ""
+        bitrates = len(_ISM_BITRATE.findall(pattern))
+        starts = len(_ISM_START_TIME.findall(pattern))
+        time_digits = max(_digits(
+            max((abs(int_or_none(c.get("t")) or 0) for c in chunks), default=0)
+            + sum(abs(int_or_none(c.get("d")) or 0)
+                  * max(int_or_none(c.get("r")) or 1, 1) for c in chunks)), 24)
+        for level in stream.findall("QualityLevel"):
+            length = (len(pattern) + starts * time_digits + bitrates
+                      * max(len(level.get("Bitrate") or "") - len("{bitrate}"), 0))
+            # The level's pattern is built even with no chunk to expand.
+            url_bytes += max(per_track, 1) * length
+            if url_bytes > _MAX_FRAGMENT_URL_BYTES:
+                raise _too_much_url()
+    _charge(count, variants, url_bytes)
 
 
 def _bounded_ism(original):

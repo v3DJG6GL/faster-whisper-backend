@@ -1371,6 +1371,115 @@ def test_guard_parses_an_ordinary_ism_manifest_unchanged(monkeypatch):
             _parse_ism(_ism(over))
 
 
+# ---- Fragment addresses: yt-dlp builds every fragment's URL as a fresh copy
+# of the manifest's template, so a short manifest with a huge format width, a
+# long template or a long value substituted into it asks for gigabytes while
+# its segment count stays tiny. The guard sizes those strings before the
+# expansion, without building them.
+
+def _ism_url(url, chunks, *, bitrate="128000"):
+    return (f'<StreamIndex Type="audio" Name="audio" Language="eng" Url="{url}">'
+            f'<QualityLevel Index="0" Bitrate="{bitrate}" FourCC="AACL" '
+            'SamplingRate="48000" Channels="2" BitsPerSample="16" PacketSize="4" '
+            'AudioTag="255" CodecPrivateData="1190"/>' + chunks + "</StreamIndex>")
+
+
+@pytest.mark.parametrize("parse,xml", [
+    # A 300-byte MPD: fifty segments of ten million characters each.
+    (_parse_mpd, _mpd(_adaptation(
+        '<SegmentTemplate media="x$Number%010000000d$" timescale="1" '
+        'duration="1"/>'), duration="PT50S")),
+    # The same width in @initialization, built once per representation.
+    (_parse_mpd, _mpd(_adaptation(
+        '<SegmentTemplate media="s$Number$.m4s" '
+        'initialization="i$Bandwidth%010000000d$" timescale="1" duration="1"/>',
+        reps=30), duration="PT1S")),
+    # $RepresentationID$ repeated next to a long @id: one 100 MB template.
+    (_parse_mpd, _mpd(
+        '<Period><AdaptationSet mimeType="audio/mp4"><SegmentTemplate media="'
+        + "$RepresentationID$" * 2000 + '$Number$" timescale="1" duration="1"/>'
+        f'<Representation id="{"i" * 50000}" bandwidth="1" codecs="mp4a.40.2"/>'
+        "</AdaptationSet></Period>", duration="PT3S")),
+    # A width spelled across the template and the @id it substitutes.
+    (_parse_mpd, _mpd(
+        '<Period><AdaptationSet mimeType="audio/mp4"><SegmentTemplate '
+        'media="$$RepresentationID$$" timescale="1" duration="1"/>'
+        '<Representation id="Number%010000000d" bandwidth="1" '
+        'codecs="mp4a.40.2"/></AdaptationSet></Period>', duration="PT50S")),
+    # No width at all: a 4 000-digit @startNumber printed a thousand times.
+    (_parse_mpd, _mpd(_adaptation(
+        '<SegmentTemplate media="' + "$Number$" * 1000 + '" timescale="1" '
+        f'duration="1" startNumber="{"9" * 4000}"/>'), duration="PT100S")),
+    # A one-megabyte MPD-level BaseURL joined afresh for each representation.
+    (_parse_mpd, _mpd(f'<BaseURL>{"a" * 1_000_000}</BaseURL>' + _adaptation(
+        "<BaseURL>b</BaseURL>", reps=300))),
+    # A one-megabyte StreamIndex@Url copied for each of 400 fragments.
+    (_parse_ism, _ism(_ism_url("a" * 1_000_000 + "/{start time}",
+                               '<c t="0" d="1" r="400"/>'))),
+    # {bitrate} repeated, each replaced by a 4 001-digit Bitrate.
+    (_parse_ism, _ism(_ism_url("{bitrate}" * 5000 + "/{start time}",
+                               '<c t="0" d="1" r="20"/>',
+                               bitrate="0" * 4000 + "1"))),
+    # {start time} repeated, each replaced by a 4 000-digit chunk time.
+    (_parse_ism, _ism(_ism_url("{start time}" * 1000,
+                               f'<c t="{"9" * 4000}" d="1" r="100"/>'))),
+], ids=["mpd-width", "mpd-init-width", "mpd-representation-id",
+        "mpd-width-across-id", "mpd-start-number", "mpd-base-url", "ism-long-url",
+        "ism-bitrate", "ism-start-time"])
+def test_guard_refuses_absurd_fragment_url_bytes(parse, xml):
+    import time
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        parse(xml)
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_guard_parses_real_template_widths_unchanged():
+    """Real templates (zero-padded widths, a signed query, the
+    representation's own @id) expand exactly as yt-dlp does on its own, and a
+    12 h ten-quality VOD's addresses fit the budget with room to spare."""
+    query = "?" + "&".join(f"k{i}=" + "v" * 20 for i in range(12))
+    assert len(query) >= 280
+    tmpl = ('<SegmentTemplate media="seg-$RepresentationID$-$Number%09d$.m4s'
+            + query.replace("&", "&amp;") + '" initialization='
+            '"init-$RepresentationID$-$Bandwidth%05d$.mp4" timescale="1000" '
+            'duration="2000"/>')
+    fmts, _subs = _parse_mpd(_mpd(_adaptation(tmpl, reps=5)))
+    assert len(fmts) == 5
+    for i, f in enumerate(fmts):
+        frags = f["fragments"]
+        assert len(frags) == 7201  # the initialization segment, then 7 200
+        assert frags[0]["path"] == f"init-r{i}-{i + 1:05d}.mp4"
+        assert frags[1]["path"] == f"seg-r{i}-000000001.m4s{query}"
+        assert frags[-1]["path"] == f"seg-r{i}-000007200.m4s{query}"
+    # 216 000 segments of a ~200-byte address: about 43 MB, sized by the
+    # guard alone (the expansion itself is the at-cap test's business).
+    from yt_dlp.utils import compat_etree_fromstring
+    url = "https://cdn.example/vod/" + "p" * 150 + "/s$Number%05d$.m4s"
+    vod = _mpd(_adaptation(f'<SegmentTemplate media="{url}" timescale="1000" '
+                           'duration="2000"/>', reps=10), duration="PT43200S")
+    guard = _registered_guard()
+    guard["_refuse_oversized_mpd"](compat_etree_fromstring(vod.encode()))
+    assert 0 < guard["_DIALS"].tls.url_bytes < guard["_MAX_FRAGMENT_URL_BYTES"]
+
+
+def test_guard_charges_fragment_url_bytes_across_manifests(monkeypatch):
+    """Like the counts, the address bytes of every manifest one extraction
+    parses come from one budget; a refused manifest spends none of it."""
+    monkeypatch.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 100_000)
+    url = "a" * 990 + "/{start time}"
+    sixty = _ism(_ism_url(url, '<c t="0" d="1" r="60"/>'))
+    assert len(_parse_ism(sixty)[0][0]["fragments"]) == 60
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        _parse_ism(sixty)
+    thirty = _mpd(_adaptation('<SegmentTemplate media="' + "b" * 990
+                              + '$Number$" timescale="1" duration="1"/>'),
+                  duration="PT30S")
+    assert len(_parse_mpd(thirty)[0][0]["fragments"]) == 30
+    _inproc_guard().observe_dials(None)
+    assert len(_parse_ism(sixty)[0][0]["fragments"]) == 60
+
+
 def test_guard_is_not_installed_without_the_ism_bound(monkeypatch):
     from yt_dlp.extractor.common import InfoExtractor
     guard = _inproc_guard()
