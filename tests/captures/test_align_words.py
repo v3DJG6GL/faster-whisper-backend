@@ -424,6 +424,28 @@ def test_word_walks_share_one_output_budget(app_module, monkeypatch):
     assert sum(sizes) <= pl_engine.output_bound(sum(len(w) for w in raw))
 
 
+def test_alignment_keys_are_computed_once_per_distinct_word(monkeypatch):
+    # The walks are bounded per distinct word; the key work after them must be
+    # too, or a word a rule expands costs its expansion once per occurrence.
+    def fake(text, *a, budget=None, **kw):
+        out = "x" + "." * 16000
+        if budget is not None:
+            budget.left -= len(out)
+        return out
+    monkeypatch.setattr(pl_engine, "_postprocess_text", fake)
+    real_key = capture_samples._align_key
+    long_calls: list[int] = []
+
+    def counting_key(s):
+        if len(s or "") > 1000:
+            long_calls.append(len(s))
+        return real_key(s)
+    monkeypatch.setattr(capture_samples, "_align_key", counting_key)
+    out = capture_samples._align_words_to_final(_words(*[" ja"] * 200), "ja")
+    assert len(out) == 200
+    assert len(long_calls) <= 3
+
+
 def test_word_walks_keep_every_word_under_a_real_rule(app_module):
     # A real rule set is far inside the shared budget: every word still gets
     # its own post-processed form.

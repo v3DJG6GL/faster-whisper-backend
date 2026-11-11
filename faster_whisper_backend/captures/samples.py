@@ -513,6 +513,12 @@ def _align_key(s: str) -> str:
     return s[i:j].casefold()
 
 
+# How many chars the unspaced words glued after a spaced word may add to its
+# form before the run is no candidate for the whole-token bonus (see
+# _align_words_to_final). Real glued runs (a zh / ja sentence) stay far under.
+_BONUS_RUN_SLACK = 4096
+
+
 def _align_words_to_final(
     words: list[dict[str, Any]],
     final: str,
@@ -555,6 +561,13 @@ def _align_words_to_final(
     # caller and dominates karaoke-band assembly when /captures expands a
     # group with hundreds of words.
     post_cache: dict[str, str] = {}
+    # The key, token count and spaceless length depend only on the raw word,
+    # so they are worked out once per distinct word too: a rule may expand a
+    # common word far past its size, and the work after the walks would
+    # otherwise repeat that expansion once per occurrence.
+    key_cache: dict[str, str] = {}
+    count_cache: dict[str, int] = {}
+    nows_cache: dict[str, int] = {}
     raw_keys: list[str] = []
     # Each word's walk is bounded relative to the word alone, and that bound's
     # floor dwarfs a word: a rule set that expands its input would build up to
@@ -577,7 +590,13 @@ def _align_words_to_final(
                 except Exception:
                     post_w = raw_w
             post_cache[raw_w] = post_w
-        raw_keys.append(_align_key(post_w) or _align_key(raw_w))
+        key = key_cache.get(raw_w)
+        if key is None:
+            key = key_cache[raw_w] = _align_key(post_w) or _align_key(raw_w)
+            post_toks = (post_w or "").split()
+            count_cache[raw_w] = len(post_toks)
+            nows_cache[raw_w] = sum(map(len, post_toks))
+        raw_keys.append(key)
 
     fin_tokens = (final or "").split()
     fin_keys = [_align_key(t) for t in fin_tokens]
@@ -598,14 +617,24 @@ def _align_words_to_final(
         # as plain LCS.
         big = n + 1
         bonus = [0] * n
+        tok_keys: dict[str, str] = {}
         for i, w in enumerate(src):
             if not (w.get("word") or "")[:1].isspace():
                 continue
             k = i + 1
             while k < n and not (src[k].get("word") or "")[:1].isspace():
                 k += 1
-            tok = "".join(post_cache.get(x.get("word") or "") or "" for x in src[i:k])
-            bonus[i] = 1 if _align_key(tok) == raw_keys[i] else 0
+            parts = [post_cache.get(x.get("word") or "") or "" for x in src[i:k]]
+            # A run whose glued words add more than _BONUS_RUN_SLACK chars to
+            # its first word's form is no whole token of that word in any real
+            # text: no bonus, and its key is never built.
+            if k > i + 1 and sum(map(len, parts)) > len(parts[0]) + _BONUS_RUN_SLACK:
+                continue
+            tok = "".join(parts)
+            tk = tok_keys.get(tok)
+            if tk is None:
+                tk = tok_keys[tok] = _align_key(tok)
+            bonus[i] = 1 if tk == raw_keys[i] else 0
         dp = [[0] * (m + 1) for _ in range(n + 1)]
         for i in range(n - 1, -1, -1):
             for j in range(m - 1, -1, -1):
@@ -630,7 +659,7 @@ def _align_words_to_final(
     # raw words sharing that segment, apportioned by each raw word's isolated
     # post-processed token count, with any remainder to the last one.
     owners: list[list[str]] = [[] for _ in range(n)]
-    exp_count = [len((post_cache.get(w.get("word") or "") or "").split()) for w in src]
+    exp_count = [count_cache[w.get("word") or ""] for w in src]
     anchors = [(idx, matches[idx]) for idx in range(n) if matches[idx] >= 0]
     seg_bounds = [(-1, -1)] + anchors + [(n, m)]
     for t in range(len(seg_bounds) - 1):
@@ -643,7 +672,11 @@ def _align_words_to_final(
             continue
         unmatched = list(range(ri0 + 1, ri1))  # raw words sharing this gap
         split = None
-        if unmatched and any(_NO_SPACE_SCRIPT.search(t) for t in ins):
+        # _split_unspaced's own cell check, made before the gap's texts are
+        # built: past it the split is None either way.
+        if (unmatched and any(_NO_SPACE_SCRIPT.search(t) for t in ins)
+                and sum(nows_cache[src[ri].get("word") or ""] for ri in unmatched)
+                * sum(map(len, ins)) <= _SPLIT_UNSPACED_MAX_CELLS):
             split = _split_unspaced(
                 ["".join((post_cache.get(src[ri].get("word") or "") or "").split())
                  for ri in unmatched], ins)
