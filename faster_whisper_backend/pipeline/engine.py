@@ -136,6 +136,23 @@ def output_bound(n: int) -> int:
     return min(_POSTPROCESS_MAX_CHARS, _POSTPROCESS_FLOOR + _POSTPROCESS_MAX_RATIO * n)
 
 
+class WalkBudget:
+    """One output bound shared by many walks over pieces of one text (one
+    walk per word or per subtitle cue): output_bound of the pieces' total
+    length. Pass the same budget to every piece's _postprocess_text. Each
+    walk is bounded by what is left and charged the longest text it built,
+    not its result, so a rule set that expands and then shrinks back cannot
+    hand every piece the full floor. A walk costs about rules x the longest
+    text it built, so the pieces together cost no more than one walk over
+    the whole text may. `left` (what remains, negative once overspent) is
+    for the caller to skip a piece the budget no longer covers."""
+
+    __slots__ = ("left",)
+
+    def __init__(self, total_len: int) -> None:
+        self.left = output_bound(total_len)
+
+
 def _rule_ordinal(card_no: int, sub_no: "int | None" = None) -> str:
     """Format a pipeline step number to match the /settings/pipeline card
     position: '#P' for a single-compile rule, '#P.S' for a regex-list entry
@@ -582,7 +599,8 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                        extra_excludes: "set[str] | None" = None,
                        ident=None,
                        language: "str | None" = None,
-                       bound: "int | None" = None) -> str:
+                       bound: "int | None" = None,
+                       budget: "WalkBudget | None" = None) -> str:
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
     each rule that changes the text, is skipped, or is force-included appends
     `(label_with_ordinal, before, after)` so the per-request log block can
@@ -592,10 +610,11 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
 
     The output is bounded by output_bound(len(text)): the rule that would
     pass it is not applied (traced "[OUTPUT BOUND — not applied]") and the
-    remaining rules are skipped. `bound` tightens that bound further: a
-    caller walking many pieces of one text separately (one walk per word)
-    passes what is left of the whole text's bound, so the pieces together
-    build no more than one walk over the text would.
+    remaining rules are skipped. `bound` tightens that bound further.
+    `budget` does too, for a caller walking many pieces of one text
+    separately (one walk per word or per cue): every walk gets the same
+    WalkBudget, is bounded by what is left of it and is charged the longest
+    text it built.
 
     Per-model scoping (precedence top-down):
       1. PIPELINE_RULES_EXCLUDE — force-DISABLE for this model (highest priority).
@@ -627,6 +646,12 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     """
     exclude, include = _scoping(model_name, ident, extra_excludes)
     bound = output_bound(len(text)) if bound is None else min(bound, output_bound(len(text)))
+    peak = len(text)
+    if budget is not None:
+        # Charged as the walk grows, so a rule that raises mid-walk leaves
+        # what was built paid for.
+        bound = min(bound, budget.left)
+        budget.left -= peak
     capped = False
     memo = [None, False, None] if trace is not None else None
     for card in _cards(_COMPILED_RULES):
@@ -670,6 +695,9 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                     capped = True
                     break
                 text = out
+                if budget is not None and len(text) > peak:
+                    budget.left -= len(text) - peak
+                    peak = len(text)
                 if trace is not None:
                     # Force-included rule: tag the trace line so the admin sees
                     # the rule ran *because of* the per-model override, not the

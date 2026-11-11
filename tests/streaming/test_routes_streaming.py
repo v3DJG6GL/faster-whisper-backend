@@ -952,3 +952,23 @@ def test_final_decode_starts_from_a_clean_session_wait():
     take = body.index("metrics.take_wait()")
     assert body.index('_require_live_credential()') < take
     assert take < body.index("await _transcribe(")
+
+
+def test_stream_pipeline_walks_run_off_the_loop(client, energy_vad, monkeypatch):
+    # Every walk of a streaming final (the document's and on_final's own,
+    # traced one) grows with the text: on the loop it would freeze every other
+    # request while it runs.
+    from tests.conftest import on_event_loop
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    real = pl_engine._postprocess_text
+    seen: list[tuple[bool, bool]] = []
+
+    def spy(text, *a, **kw):
+        seen.append(("trace" in kw, on_event_loop()))
+        return real(text, *a, **kw)
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", spy)
+    msgs = dictate_session(client)
+    assert any(m["type"] == "final" for m in msgs)
+    assert any(traced for traced, _ in seen) and any(not traced for traced, _ in seen)
+    assert not any(on for _, on in seen)

@@ -831,7 +831,13 @@ class StreamSession:
     async def _emit_update(self, *, flush_hold: bool = False, **kw) -> bool:
         """Compose the next document and emit it (``kw`` → _emit_document).
         Returns whether a ``final`` went out (see _emit_document)."""
-        doc, end = self._compose(flush_hold)
+        # On the session's own worker (see _vad_pool): the pipeline walk over
+        # the open document grows with it and, on the loop, would freeze every
+        # other request at each final. _pump is the sole mutator and awaits
+        # this; a compose orphaned by a cancelled pump finishes on the same
+        # single worker before close()'s own compose starts there.
+        doc, end = await asyncio.get_running_loop().run_in_executor(
+            self._vad_pool, self._compose, flush_hold)
         return await self._emit_document(doc, raw_end=end, **kw)
 
     async def _release_held(self) -> None:

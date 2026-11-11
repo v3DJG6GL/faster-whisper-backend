@@ -559,23 +559,23 @@ def _align_words_to_final(
     # Each word's walk is bounded relative to the word alone, and that bound's
     # floor dwarfs a word: a rule set that expands its input would build up to
     # the floor once per distinct word. The walks share the bound of one walk
-    # over all distinct words instead; a word past it keeps its raw form.
-    budget = pl_engine.output_bound(sum(len(r) for r in {w.get("word") or "" for w in src}))
-    used = 0
+    # over all distinct words instead, each charged the longest text it built
+    # (a card that expands and shrinks back returns about the word); a word
+    # past the budget keeps its raw form.
+    budget = pl_engine.WalkBudget(sum(len(r) for r in {w.get("word") or "" for w in src}))
     for w in src:
         raw_w = w.get("word") or ""
         post_w = post_cache.get(raw_w)
         if post_w is None:
-            if budget - used <= len(raw_w):
+            if budget.left <= len(raw_w):
                 post_w = raw_w
             else:
                 try:
                     post_w = pl_engine._postprocess_text(
                         raw_w, model_name=model_name, ident=ident, language=language,
-                        bound=budget - used)
+                        budget=budget)
                 except Exception:
                     post_w = raw_w
-                used += len(post_w)
             post_cache[raw_w] = post_w
         raw_keys.append(_align_key(post_w) or _align_key(raw_w))
 

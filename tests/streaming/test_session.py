@@ -557,3 +557,25 @@ def test_committed_region_only_grows():
 ])
 def test_seam_join(left, piece, joined):
     assert StreamSession._seam_join(left, piece) == joined
+
+
+def test_document_walk_runs_off_the_loop():
+    # The walk over the open document grows with it: on the loop it would
+    # freeze every other request at each final.
+    from tests.conftest import on_event_loop
+    seen: list[tuple[str, bool]] = []
+
+    def postprocess(raw):
+        seen.append(("format", on_event_loop()))
+        return raw.strip()
+
+    def holdback(raw):
+        seen.append(("hold", on_event_loop()))
+        return len(raw)
+
+    s, msgs = _make_session(postprocess=postprocess, holdback=holdback)
+    grow_and_close(s, " hallo welt", " zweiter satz")
+    assert {k for k, _ in seen} == {"format", "hold"}
+    assert not any(on for _, on in seen)
+    assert [m["committed"] + m["tail"] for m in msgs if m["type"] == "final"][-1] \
+        == "hallo welt zweiter satz"

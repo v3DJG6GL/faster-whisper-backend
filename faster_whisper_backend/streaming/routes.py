@@ -1451,7 +1451,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             kwargs = dec.get("kwargs", {})
 
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
-            final_text = postprocess(raw_text, trace=steps)
+            # In a worker thread, like the session's own compose walk; `steps`
+            # is read only after the await.
+            final_text = await asyncio.to_thread(postprocess, raw_text, trace=steps)
             if info.get("decode_failed"):
                 # The session already logged the failure (type only). Say here
                 # what the text IS, so the row below isn't read as a decode.

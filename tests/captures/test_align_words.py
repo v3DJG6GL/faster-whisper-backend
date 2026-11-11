@@ -373,10 +373,10 @@ _DOUBLING_CARD = {"name": "dbl", "label": "Dbl", "type": "regex-list", "enabled"
                   + [{"pattern": "(.)", "replacement": "\\1"}] * 189}
 
 
-def _install_card(app_module, card):
+def _install_card(app_module, *cards):
     from tests.settings._rules_helpers import terminal_rule
 
-    app_module.cfg.PIPELINE_RULES = [card, terminal_rule()]
+    app_module.cfg.PIPELINE_RULES = [*cards, terminal_rule()]
     pl_engine.rebuild_caches()
 
 
@@ -436,3 +436,41 @@ def test_word_walks_keep_every_word_under_a_real_rule(app_module):
     assert _join(out) == final
     assert [w["word"] for w in out] == ["Hallo", ",", "Welt"] * 200
     assert all(w["raw_word"] == " Komma" for w in out[1::3])
+
+
+# Collapses every run of one char back to one: after _DOUBLING_CARD each word
+# walk builds thousands of chars and returns about the word, so a budget
+# charged only each walk's result never runs down.
+_COLLAPSE_CARD = {"name": "col", "label": "Col", "type": "regex-list", "enabled": True,
+                  "entries": [{"pattern": "(.)\\1+", "replacement": "\\1"}]}
+
+
+def test_word_walks_are_charged_what_they_built(app_module, monkeypatch):
+    # Expand, then shrink back: each walk's result is about its word, but it
+    # built thousands of chars on the way. The shared budget must count those.
+    import time
+
+    _install_card(app_module, _DOUBLING_CARD, _COLLAPSE_CARD)
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    raw = [" w" + letters[i // 26] + letters[i % 26] + "xy" for i in range(100)]
+    peaks: list[int] = []
+    real_walk, real_apply = pl_engine._postprocess_text, pl_engine._apply_bounded
+
+    def walk(text, *a, **kw):
+        peaks.append(len(text))
+        return real_walk(text, *a, **kw)
+
+    def apply(rule, text, bound):
+        out = real_apply(rule, text, bound)
+        if out is not None:
+            peaks[-1] = max(peaks[-1], len(out))
+        return out
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", walk)
+    monkeypatch.setattr(pl_engine, "_apply_bounded", apply)
+    t0 = time.monotonic()
+    out = capture_samples._align_words_to_final(_words(*raw), " ".join(raw))
+    elapsed = time.monotonic() - t0
+    assert len(out) == len(raw)
+    assert sum(peaks) <= pl_engine.output_bound(sum(len(w) for w in raw))
+    assert elapsed < 2
