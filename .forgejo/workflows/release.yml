@@ -204,8 +204,11 @@ jobs:
           git tag "v$new" "$target"
           # Owner PAT in the URL, never in .git/config (see ci.yml's manual
           # checkouts for why the credential stays out of the config).
+          # `-c credential.helper=` empties the helper list, as for ci.yml's
+          # fetches: git approves a URL's credentials into every configured
+          # helper after it authenticates.
           repo_path="${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
-          git push "https://${PUSH_TOKEN}@${repo_path}" "v$new"
+          git -c credential.helper= push "https://${PUSH_TOKEN}@${repo_path}" "v$new"
           echo "tag=v$new" >> "$GITHUB_OUTPUT"
           echo "prev=$latest" >> "$GITHUB_OUTPUT"
 
