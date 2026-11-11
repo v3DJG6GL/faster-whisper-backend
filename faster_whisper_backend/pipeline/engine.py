@@ -105,13 +105,35 @@ _TERMINAL_CARD_NO: int = 0
 # KB, so 4 M chars only ever trips on a rule set that expands its own input
 # (the pipeline runs on admin-editable regexes).
 _POSTPROCESS_MAX_CHARS = 4_000_000
+# The bound a walk actually gets is relative to its input (output_bound): a
+# chain of expanding entries on a card a tagged non-admin may edit can grow a
+# short final to just under the absolute bound, and every later rule then
+# runs on MBs — seconds of CPU per walk, on the event loop for a streaming
+# final. The floor keeps single expansions on a short text applied (a
+# snippet of a few KB, a map value or regex-list replacement per match).
+_POSTPROCESS_FLOOR = 16_384
+_POSTPROCESS_MAX_RATIO = 32
 # Longest step text the trace keeps. Every consumer cuts a step's text at this
 # length (receipt._step_text and the recent-transcriptions / reports stores'
 # _CAP_RAW), so a longer copy is never read, while a card of a few hundred
 # expanding steps would otherwise hold one multi-MB string per step.
 _TRACE_TEXT_MAX = 50_000
+# Most trace rows that keep their texts: the last ones. Every consumer reads
+# the texts of only the last _CAP_STEPS_ROWS rows (receipt, the
+# recent-transcriptions and reports stores) and merely counts the earlier
+# ones, so an earlier row keeps its label and whether it changed the text
+# (_trace_push). A repeating card of a couple hundred changing entries
+# otherwise holds one cut copy per row: over a thousand rows, hundreds of MB.
+_TRACE_MAX_ROWS = 500
 # Most passes a repeating rule gets per transcript (see the schema constant).
 _REPEAT_MAX_PASSES = settings_schema.RULE_REPEAT_MAX_PASSES
+
+
+def output_bound(n: int) -> int:
+    """The output bound of a pipeline walk over an `n`-char text: the floor
+    plus _POSTPROCESS_MAX_RATIO chars per input char, never past
+    _POSTPROCESS_MAX_CHARS. The constants are read at call time."""
+    return min(_POSTPROCESS_MAX_CHARS, _POSTPROCESS_FLOOR + _POSTPROCESS_MAX_RATIO * n)
 
 
 def _rule_ordinal(card_no: int, sub_no: "int | None" = None) -> str:
@@ -431,12 +453,41 @@ def _trace_row(label: str, before: str, after: str,
     return (label, b, b if after is before else _trace_clip(after, changed, memo))
 
 
+def _trace_push(trace: list, row: tuple) -> None:
+    """Append `row` to a _postprocess_text trace, dropping the texts of the
+    row that thereby leaves the last _TRACE_MAX_ROWS. The dropped row keeps
+    its label and, as `changed` on an empty _ClippedText, whether it changed
+    the text: the receipt's changed / unchanged count reads exactly that."""
+    trace.append(row)
+    if len(trace) <= _TRACE_MAX_ROWS:
+        return
+    label, b, a = trace[-_TRACE_MAX_ROWS - 1]
+    changed = bool(b != a or getattr(b, "changed", False)
+                   or getattr(a, "changed", False))
+    gone = _TRACE_GONE[changed]
+    if b is not gone:
+        trace[-_TRACE_MAX_ROWS - 1] = (label, gone, gone)
+
+
+def _gone_text(changed: bool) -> "_ClippedText":
+    t = _ClippedText("")
+    t.full_len = 0
+    t.changed = changed
+    return t
+
+
+# The shared text of a row past the trace window (_trace_push), indexed by
+# `changed`.
+_TRACE_GONE = (_gone_text(False), _gone_text(True))
+
+
 class _PastBound(Exception):
     pass
 
 
-def _apply_bounded(rule: _CompiledRule, text: str) -> "str | None":
-    """_apply_rule, or None when its output would pass _POSTPROCESS_MAX_CHARS.
+def _apply_bounded(rule: _CompiledRule, text: str, bound: int) -> "str | None":
+    """_apply_rule, or None when its output would pass `bound` (output_bound
+    of the walk's input).
 
     The bound is enforced before the result exists: one entry that expands
     every match 60x turns a text just under the bound into hundreds of MB in
@@ -444,7 +495,6 @@ def _apply_bounded(rule: _CompiledRule, text: str) -> "str | None":
     enough that even the rule's worst-case growth stays under the bound goes
     straight to _apply_rule; otherwise the output length is counted match by
     match first (a string template) or as the replacer runs (a callback)."""
-    bound = _POSTPROCESS_MAX_CHARS
     growth = rule.max_growth
     if growth is not None and (len(text) + 1) * growth <= bound:
         return _apply_rule(rule, text)
@@ -536,7 +586,12 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     each rule that changes the text, is skipped, or is force-included appends
     `(label_with_ordinal, before, after)` so the per-request log block can
     render a diff view; each text is kept to _TRACE_TEXT_MAX chars
-    (_trace_row).
+    (_trace_row), and only the last _TRACE_MAX_ROWS rows keep their texts
+    (_trace_push).
+
+    The output is bounded by output_bound(len(text)): the rule that would
+    pass it is not applied (traced "[OUTPUT BOUND — not applied]") and the
+    remaining rules are skipped.
 
     Per-model scoping (precedence top-down):
       1. PIPELINE_RULES_EXCLUDE — force-DISABLE for this model (highest priority).
@@ -567,6 +622,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     wrappers, so per-model exclusion of trim-edges has no effect there.
     """
     exclude, include = _scoping(model_name, ident, extra_excludes)
+    bound = output_bound(len(text))
     capped = False
     memo = [None, False, None] if trace is not None else None
     for card in _cards(_COMPILED_RULES):
@@ -590,20 +646,21 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                             why = f"SKIPPED lang:{language} ∉ {sorted(rule.languages)}"
                         else:
                             why = "SKIPPED globally disabled"
-                        trace.append(_trace_row(f"{ordinal} {label} [{why}]", text, text, memo))
+                        _trace_push(trace, _trace_row(
+                            f"{ordinal} {label} [{why}]", text, text, memo))
                     continue
                 forced_in = rule.name in include
                 before = text
-                out = _apply_bounded(rule, before)
+                out = _apply_bounded(rule, before, bound)
                 if out is None:
                     # This rule would pass the output bound (see below): it
                     # is not applied, and the pipeline stops on the text it
                     # was handed.
                     logger.warning(
                         "[pipeline] output would exceed %d chars at rule %r — it and "
-                        "the remaining rules skipped", _POSTPROCESS_MAX_CHARS, rule.name)
+                        "the remaining rules skipped", bound, rule.name)
                     if trace is not None:
-                        trace.append(_trace_row(
+                        _trace_push(trace, _trace_row(
                             f"{ordinal} {label} [OUTPUT BOUND — not applied]",
                             before, before, memo))
                     capped = True
@@ -615,21 +672,20 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                     # global state. Always emit (on its first pass) even when
                     # before == after, to make the override path visible.
                     if forced_in and not rule.enabled and (pass_no == 1 or before != text):
-                        trace.append(_trace_row(
+                        _trace_push(trace, _trace_row(
                             f"{ordinal} {label} [FORCED on for {model_name}]",
                             before, text, memo))
                     elif before != text:
-                        trace.append(_trace_row(f"{ordinal} {label}", before, text, memo))
-                # Absolute output bound. Rules whose replacement template
-                # expands what it matches compose: each one feeds the next, so
-                # a handful of them can multiply a short transcript into
-                # gigabytes. _apply_bounded refuses the rule that would pass
-                # it; this length check is the backstop. No real transcript
-                # comes near this size.
-                if len(text) > _POSTPROCESS_MAX_CHARS:
+                        _trace_push(trace, _trace_row(f"{ordinal} {label}", before, text, memo))
+                # Output bound. Rules whose replacement template expands what
+                # it matches compose: each one feeds the next, so a handful of
+                # them can multiply a short transcript into gigabytes.
+                # _apply_bounded refuses the rule that would pass it; this
+                # length check is the backstop. No real rule set comes near it.
+                if len(text) > bound:
                     logger.warning(
                         "[pipeline] output exceeded %d chars at rule %r — remaining "
-                        "rules skipped", _POSTPROCESS_MAX_CHARS, rule.name)
+                        "rules skipped", bound, rule.name)
                     capped = True
                     break
             if capped or text == card_in:
@@ -639,14 +695,15 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     term_ordinal = _rule_ordinal(_TERMINAL_CARD_NO)
     if _TERMINAL_NAME in exclude:
         if trace is not None:
-            trace.append(_trace_row(
+            _trace_push(trace, _trace_row(
                 f"{term_ordinal} {_TERMINAL_LABEL} [EXCLUDED for {model_name}]",
                 text, text, memo))
     else:
         before_trim = text
         text = text.lstrip(" \t\r").rstrip(" \t\r")
         if trace is not None and before_trim != text:
-            trace.append(_trace_row(f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text, memo))
+            _trace_push(trace, _trace_row(
+                f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text, memo))
     return text
 
 
@@ -726,10 +783,11 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
     selection as _postprocess_text; edges are compared the way the terminal
     trim leaves them. Warning path only, so no caching — but the same output
     bound as _postprocess_text: the walk stops at the rule that would push
-    either text past _POSTPROCESS_MAX_CHARS (where the pipeline itself
-    stops), so a compounding rule set cannot run on unbounded strings here."""
+    either text past its output_bound (where the pipeline itself stops), so
+    a compounding rule set cannot run on unbounded strings here."""
     exclude, include = _scoping(model_name, ident)
     a, b = prefix_raw, full_raw
+    ba, bb = output_bound(len(prefix_raw)), output_bound(len(full_raw))
 
     def extends(pa: str, pb: str) -> bool:
         return pb.lstrip(" \t\r").startswith(pa.lstrip(" \t\r").rstrip(" \t\r"))
@@ -744,9 +802,8 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
         for _pass in range(_card_passes(card)):
             a_in, b_in = a, b
             for rule in card:
-                na, nb = _apply_bounded(rule, a), _apply_bounded(rule, b)
-                if (na is None or nb is None
-                        or max(len(na), len(nb)) > _POSTPROCESS_MAX_CHARS):
+                na, nb = _apply_bounded(rule, a, ba), _apply_bounded(rule, b, bb)
+                if na is None or nb is None or len(na) > ba or len(nb) > bb:
                     return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label} (output bound hit)"
                 a, b = na, nb
                 now = extends(a, b)

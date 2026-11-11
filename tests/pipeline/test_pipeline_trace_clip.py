@@ -8,6 +8,8 @@ every consumer renders exactly what it rendered from the uncut trace."""
 
 import json
 
+import pytest
+
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.reports import store as reports_store
 from faster_whisper_backend.stats import recent_transcriptions_store as rts
@@ -41,8 +43,15 @@ _SKIPPED_CARD = {"name": "off", "label": "Off", "type": "regex-list", "enabled":
                  "entries": [_entry("q", "Q"), _entry("r", "R")]}
 
 
+def _absolute_bound_only(monkeypatch):
+    # These walks grow a short text past the cut on purpose; the output bound
+    # relative to the input (engine.output_bound) would stop them first.
+    monkeypatch.setattr(pl_engine, "_POSTPROCESS_FLOOR", pl_engine._POSTPROCESS_MAX_CHARS)
+
+
 def _traces(app_module, monkeypatch, text, *cards):
     """(output, uncut trace, cut trace) of one walk over `cards`."""
+    _absolute_bound_only(monkeypatch)
     _set(app_module, *cards)
     with monkeypatch.context() as m:
         m.setattr(pl_engine, "_TRACE_TEXT_MAX", 10 ** 12, raising=False)
@@ -112,6 +121,7 @@ def test_trace_retained_text_is_bounded_by_steps_times_cap(app_module, monkeypat
     # every step's text is ~500 000 chars, ~200 M chars retained uncut.
     card = {"name": "many", "label": "Many", "type": "regex-list", "enabled": True,
             "entries": [_entry("(.)", "\\1" * 10)] * 2 + [_entry("^", "Z")] * 198}
+    _absolute_bound_only(monkeypatch)
     _set(app_module, card)
     text = "a" * 5_000
     trace: list = []
@@ -148,3 +158,58 @@ def test_changing_rows_share_the_cut_copy_they_hand_on(app_module, monkeypatch):
     for (_n1, _b1, a1), (_n2, b2, _a2) in zip(trace, trace[1:]):
         assert a1 is b2
         assert a1.changed is True
+
+
+def test_trace_row_window_matches_every_consumer_window():
+    assert pl_engine._TRACE_MAX_ROWS == rts._CAP_STEPS_ROWS == reports_store._CAP_STEPS_ROWS
+
+
+# A repeating card whose every entry changes the text: 22 rows a pass, 8
+# passes. Each changing row holds its own copy of the text.
+_SWAP_CARD = {"name": "swap", "label": "Swap", "type": "regex-list", "enabled": True,
+              "repeat": True,
+              "entries": [_entry("x", "y"), _entry("y", "x")] * 10 + [_entry(r"\Z", "z")]}
+
+
+@pytest.mark.parametrize("text", [
+    "ab x " * 400,
+    # Edits past the cut: the cut texts of a changing row are equal and only
+    # their `changed` flag says the row changed the text.
+    "a" * 60_000 + " x",
+])
+def test_trace_keeps_text_only_in_the_rows_consumers_read(app_module, monkeypatch, text):
+    # Every consumer reads only the last _CAP_STEPS_ROWS rows' texts and
+    # counts the rows before them (the receipt's changed / unchanged header
+    # and its "N earlier steps omitted" line), so the trace drops the texts
+    # of the earlier rows and keeps their count and changed flag. The window
+    # is shrunk here to keep the rendered blocks small.
+    window = 40
+    for mod, name in ((pl_engine, "_TRACE_MAX_ROWS"), (rts, "_CAP_STEPS_ROWS"),
+                      (reports_store, "_CAP_STEPS_ROWS")):
+        monkeypatch.setattr(mod, name, window, raising=False)
+    _set(app_module, _SWAP_CARD)
+    with monkeypatch.context() as m:
+        m.setattr(pl_engine, "_TRACE_MAX_ROWS", 10 ** 9, raising=False)
+        full: list = []
+        final = pl_engine._postprocess_text(text, model_name="", trace=full)
+    cut: list = []
+    assert pl_engine._postprocess_text(text, model_name="", trace=cut) == final
+    assert len(full) == len(cut) > 2 * window
+    assert [row[0] for row in cut] == [row[0] for row in full]
+    assert sum(len(b) + len(a) for _n, b, a in cut[:-window]) == 0
+    assert cut[-window:] == full[-window:]
+    # main.py appends at most two trailer rows after the walk.
+    trailers = [("output-wrapper", final, final + "!"),
+                ("Trim edges (post-wrapper)", final + "!", final + "!")]
+
+    def block(steps):
+        return tx_receipt._format_request_block(
+            file_label="x.wav", model_name="m", info=FakeInfo(duration=1.0),
+            kwargs={}, seg_diag=[], raw=text, final=final, steps=steps)
+
+    for extra in ([], trailers):
+        c, f = cut + extra, full + extra
+        assert block(c) == block(f)
+        assert rts.cap_trace_fields(text, final, c) == rts.cap_trace_fields(text, final, f)
+        assert reports_store._truncate_steps(c) == reports_store._truncate_steps(f)
+    assert f"{len(full) - window} earlier steps omitted" in block(cut)

@@ -42,7 +42,8 @@ _conn: sqlite3.Connection | None = None
 _CAP_RAW = 50_000
 _CAP_FINAL = 50_000
 _CAP_STEPS_JSON = 200_000
-# Hard row bound on the steps list, applied before the JSON byte cap.
+# Hard row bound on the steps list, applied before the JSON byte cap. Equal to
+# pipeline.engine._TRACE_MAX_ROWS, the rows whose texts the trace keeps.
 _CAP_STEPS_ROWS = 500
 _CAP_INTENDED = 2_000
 _CAP_COMMENT = 4_000

@@ -156,3 +156,65 @@ def test_postprocess_below_bound_is_byte_identical(app_module, monkeypatch):
     for bound in (10_000_000, biggest):
         monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", bound)
         assert pl_engine._postprocess_text(sample, model_name="") == ref
+
+
+_TIMES10 = {"pattern": "(.)", "replacement": "\\1" * 10}
+_SHORT = "hallo welt das ist ein test"
+
+
+def test_output_bound_is_relative_to_the_input(app_module):
+    # Five 10x entries grow a 27-char final to 2.7 M chars: under the absolute
+    # bound, and seconds of CPU per walk on a card a tagged non-admin can
+    # edit. The bound scales with the input, so the entry that would pass it
+    # is not applied and the text from before it is kept.
+    _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
+                      "entries": [_TIMES10] * 5})
+    trace: list = []
+    out = pl_engine._postprocess_text(_SHORT, model_name="", trace=trace)
+    assert out == "".join(c * 100 for c in _SHORT)
+    assert any("OUTPUT BOUND" in step[0] for step in trace)
+    assert len(out) <= pl_engine.output_bound(len(_SHORT))
+
+
+def test_output_bound_scales_up_to_the_absolute_bound():
+    assert pl_engine.output_bound(0) == pl_engine._POSTPROCESS_FLOOR
+    assert (pl_engine.output_bound(1_000)
+            == pl_engine._POSTPROCESS_FLOOR + pl_engine._POSTPROCESS_MAX_RATIO * 1_000)
+    # A long transcript keeps the absolute bound.
+    assert pl_engine.output_bound(10_000_000) == pl_engine._POSTPROCESS_MAX_CHARS
+
+
+def test_output_bound_floor_keeps_snippet_expansions(app_module):
+    # A short dictation that expands one keyword into a few-KB snippet and a
+    # handful of abbreviations into 512-char texts is applied in full.
+    import re
+
+    snippet = "Mit freundlichen Grüßen, Ihr Team. " * 120
+    long_abbr = "y" * 512
+    _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
+                      "entries": [{"pattern": "Signatur", "replacement": snippet},
+                                  {"pattern": r"\babk\b", "replacement": long_abbr}]})
+    text = "bitte abk " * 18 + "Signatur"
+    want = re.sub(r"\babk\b", long_abbr, text.replace("Signatur", snippet)).strip(" \t\r")
+    assert len(want) > 13_000
+    trace: list = []
+    assert pl_engine._postprocess_text(text, model_name="", trace=trace) == want
+    assert not any("OUTPUT BOUND" in step[0] for step in trace)
+
+
+def test_seam_culprit_output_bound_is_relative_to_the_input(app_module, monkeypatch):
+    # The seam diagnosis gives each text the bound _postprocess_text gives it,
+    # so it stops at the same entry instead of growing both to 2.7 M chars.
+    _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
+                      "entries": [_TIMES10] * 5})
+    inputs: list[int] = []
+    real = pl_engine._apply_rule
+
+    def spy(rule, text):
+        inputs.append(len(text))
+        return real(rule, text)
+
+    monkeypatch.setattr(pl_engine, "_apply_rule", spy)
+    got = pl_engine.seam_culprit("hallo welt", _SHORT, model_name="")
+    assert got.startswith("#1.3 ") and got.endswith("(output bound hit)")
+    assert max(inputs) <= pl_engine.output_bound(len(_SHORT))

@@ -52,6 +52,8 @@ _insert_counter = 0
 _CAP_RAW = 50_000
 _CAP_FINAL = 50_000
 _CAP_STEPS_JSON = 200_000
+# pipeline.engine._TRACE_MAX_ROWS keeps the texts of exactly this many rows
+# (tests/pipeline/test_pipeline_trace_clip.py pins the two equal).
 _CAP_STEPS_ROWS = 500
 _CAP_TOKEN_FIELD = 64
 # A model id rejected with a 400 is still recorded verbatim (the error
