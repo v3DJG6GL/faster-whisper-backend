@@ -2055,6 +2055,33 @@ def test_video_ladder_skips_drm_storyboards_rtmp_and_flags_over_cap():
     assert udl.build_video_ladder({}, max_bytes=1) == []
 
 
+def test_ladder_treats_an_absurd_site_bitrate_as_unknown_size():
+    """A manifest's BANDWIDTH is the site's word: 1.5e306 b/s is a 300-digit
+    byte count, and scaled by a learned ratio it overflows to infinity."""
+    hd = {"format_id": "hls-hd", "protocol": "m3u8_native", "vcodec": "avc1",
+          "acodec": "none", "height": 720, "tbr": 1.5e303}
+    for tbr in (1.5e303, 1e308, float("inf"), float("nan")):
+        info = {"duration": 600.0, "formats": [dict(hd, tbr=tbr)]}
+        for ratio in (None, lambda fam: 1.0, lambda fam: 1.6):
+            rung = udl.build_video_ladder(info, max_bytes=10**9,
+                                          approx_ratio=ratio)[0]
+            assert rung["approx_bytes"] is None
+            assert rung["video_bytes"] is None
+            assert rung["tbr_kbps"] is None
+            assert rung["over_cap"] is False
+    for fs in (float("inf"), float("nan"), 1e300, -5):
+        b = udl.build_video_ladder({"ext": "mp4", "filesize": fs},
+                                   max_bytes=10**9)[0]
+        assert b["approx_bytes"] is None
+    # A real size and bitrate stay as they are.
+    hd = dict(hd, tbr=5_000.0)
+    rung = udl.build_video_ladder({"duration": 600.0, "formats": [hd]},
+                                  max_bytes=10**9,
+                                  approx_ratio=lambda fam: 1.6)[0]
+    assert rung["video_bytes"] == int(int(5_000 * 600 * 125) * 1.6)
+    assert rung["tbr_kbps"] == 8_000
+
+
 def test_video_ladder_ranks_premium_first_and_applies_the_learned_ratio():
     """YouTube: the Premium 1080p wins on source_preference even at a lower
     codec rank; its HLS bytes and bitrate are peaks, scaled by the ledger's

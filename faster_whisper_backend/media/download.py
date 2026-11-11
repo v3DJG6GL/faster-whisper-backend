@@ -230,25 +230,38 @@ def mp4_carries(vcodec: "str | None", acodec: "str | None") -> bool:
     return (not a or a == "none") or a.startswith(_MP4_AUDIO)
 
 
+# Sizes and bitrates are the site's word (a manifest's BANDWIDTH, a
+# listed filesize): no real format reaches 2**53 bytes (9 PB), and past it
+# a figure is a 300-digit number or, scaled, infinity.
+_MAX_SANE_BYTES = 2**53
+
+
+def _sane_bytes(x) -> "int | None":
+    """`x` as an int when it is a believable size or rate, else None."""
+    try:
+        n = int(x)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return n if 0 <= n <= _MAX_SANE_BYTES else None
+
+
 def _fmt_bytes(f: dict, duration: "float | None") -> "tuple[int | None, bool]":
     """(bytes, approximate): the site's exact size when it lists one, else
     its own estimate, else bitrate × duration — the last two flagged."""
     fs = f.get("filesize")
     if fs:
-        try:
-            return int(fs), False
-        except (TypeError, ValueError):
-            pass
+        n = _sane_bytes(fs)
+        if n is not None:
+            return n, False
     fsa = f.get("filesize_approx")
     if fsa:
-        try:
-            return int(fsa), True
-        except (TypeError, ValueError):
-            pass
+        n = _sane_bytes(fsa)
+        if n is not None:
+            return n, True
     tbr = f.get("tbr")
     if tbr and duration:
         try:
-            return int(float(tbr) * duration * 125), True
+            return _sane_bytes(float(tbr) * duration * 125), True
         except (TypeError, ValueError):
             return None, True
     return None, True
@@ -427,7 +440,7 @@ def build_video_ladder(info: dict, *, max_bytes: int,
     vcodec = info.get("vcodec")
     if ext in _VIDEO_FILE_EXTS or vcodec not in (None, "none"):
         fs = info.get("filesize") or None
-        b = int(fs) if fs else None
+        b = _sane_bytes(fs) if fs else None
         return [{
             "kind": "video", "height": None, "width": None, "fps": None,
             "hdr": False, "vcodec": str(vcodec) if vcodec else None,
@@ -460,7 +473,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     # its square root).
     vb_raw = vb
     if vb is not None and ratio:
-        vb = int(vb * ratio)
+        vb = _sane_bytes(vb * ratio)
     ab: "int | None" = None
     ab_raw: "int | None" = None
     a_approx = False
@@ -479,7 +492,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
                 r = plausible_ratio(
                     approx_ratio(protocol_family(audio_f.get("protocol"))))
                 if r:
-                    ab = int(ab * r)
+                    ab = _sane_bytes(ab * r)
             except Exception:  # noqa: BLE001
                 pass
     approx = (vb + (ab or 0)) if vb is not None else None
@@ -529,7 +542,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
         # rung's protocol family.
         "raw_approx_bytes": (vb_raw + (ab_raw or 0)) if vb_raw is not None else None,
         "bytes_approx": bool(v_approx or (not has_audio and a_approx)),
-        "tbr_kbps": int(round(tbr)) if tbr else None,
+        "tbr_kbps": _sane_bytes(round(tbr)) if tbr and math.isfinite(tbr) else None,
         # A fragmented stream's bitrate is the manifest's peak, not an
         # average — the learned ratio narrows it, the flag keeps the "≈".
         "bitrate_approx": fam != "https",

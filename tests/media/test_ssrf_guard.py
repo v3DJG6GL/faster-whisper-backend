@@ -2539,6 +2539,17 @@ def test_guard_refuses_a_smil_with_too_many_textstreams():
         lang: [{"url": f"http://cdn.example/{lang}.vtt", "ext": "vtt"}]
         for lang in ("en", "de", "fr")}
 
+
+def test_guard_refuses_a_smil_whose_duplicate_textstreams_would_scan_quadratically():
+    """Every repeated textstream src is a scan of the whole list of distinct
+    ones, so the cap of distinct srcs alone does not bound the dedup."""
+    cap = _hls_cap()
+    distinct = "".join(f'<textstream src="s{i}.vtt"/>' for i in range(cap))
+    copies = f'<textstream src="s{cap - 1}.vtt"/>' * 5_000
+    with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {cap}"):
+        _parse_smil(_smil('<video src="v.mp4"/>' + distinct + copies))
+
+
 def test_guard_bounds_smil_parsed_positionally():
     """MediasetIE overrides the parse and hands every argument to yt-dlp's
     positionally."""

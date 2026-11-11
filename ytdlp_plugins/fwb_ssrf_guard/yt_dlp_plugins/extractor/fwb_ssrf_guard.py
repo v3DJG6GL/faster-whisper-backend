@@ -1312,6 +1312,9 @@ _SMIL_SENTINEL = "_fwb_smil_bounded"
 _SMIL_PATHS = (".//video", ".//audio", ".//media")
 _SMIL_NESTED_EXTS = ("m3u8", "f4m", "mpd")
 _ISM_MANIFEST = re.compile(r"\.ism/[Mm]anifest")
+# The textstream list scan costs ~7 ns a comparison: twice what the format
+# cap of distinct srcs costs on its own stays well under 0.1 s.
+_MAX_SMIL_SUB_SCANS = 2 * _MAX_M3U8_FORMATS ** 2
 
 
 def _refuse_oversized_smil(ie, smil, smil_url, namespace) -> None:
@@ -1335,11 +1338,18 @@ def _refuse_oversized_smil(ie, smil, smil_url, namespace) -> None:
             srcs[src] = None if image else node
             if len(srcs) > _MAX_M3U8_FORMATS:
                 raise _too_many_variants(_MAX_M3U8_FORMATS)
-    # The subtitle parse dedups the textstream srcs with a list: quadratic.
-    subs = set()
+    # The subtitle parse dedups the textstream srcs with a list scan, and a
+    # repeated src scans it again, so what is bounded is the comparisons that
+    # scan makes: at most the distinct srcs seen so far, per textstream.
+    subs, scanned = set(), 0
     for node in smil.findall(ie._xpath_ns(".//textstream", namespace)):
         src = node.get("src")
-        if src and src not in subs:
+        if not src:
+            continue
+        scanned += len(subs)
+        if scanned > _MAX_SMIL_SUB_SCANS:
+            raise _too_many_variants(_MAX_M3U8_FORMATS)
+        if src not in subs:
             subs.add(src)
             if len(subs) > _MAX_M3U8_FORMATS:
                 raise _too_many_variants(_MAX_M3U8_FORMATS)
