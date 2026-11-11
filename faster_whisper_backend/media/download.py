@@ -1401,8 +1401,15 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             segmented=_seg.source_of(info),
         )
 
-    return await asyncio.get_running_loop().run_in_executor(
-        _PROBE_POOL, _derive)
+    # Held to the same deadline as the hops above (a queued slot on a busy
+    # pool counts against it too), with _extract's 1 s floor so a probe
+    # that finished extracting right at its deadline still derives.
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_PROBE_POOL, _derive),
+            max(1.0, deadline - time.monotonic()))
+    except asyncio.TimeoutError:
+        raise UrlTimeoutError(_TOO_SLOW_MSG) from None
 
 
 def _finite_duration(value) -> "float | None":

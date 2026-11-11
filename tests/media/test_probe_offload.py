@@ -69,3 +69,25 @@ def test_probe_derivation_error_still_reaches_the_caller(monkeypatch, probed):
     monkeypatch.setattr(_subs, "list_tracks", boom)
     with pytest.raises(udl.UrlDownloadError, match="odd subtitles"):
         _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+
+
+def test_probe_derive_is_held_to_the_probe_deadline(monkeypatch, probed):
+    """The derivation hop spends from the probe's one deadline like the
+    policy and extraction hops: a derivation that cannot finish in time
+    (a saturated pool, a huge payload) answers with the curated timeout
+    instead of overrunning URL_PREVIEW_TIMEOUT_S."""
+    import time
+
+    release = threading.Event()
+
+    def stuck(info):
+        release.wait(10)
+        return [], {}
+    monkeypatch.setattr(_subs, "list_tracks", stuck)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(udl.UrlTimeoutError, match="too long"):
+            _run(udl.probe("https://example.com/watch?v=x", timeout=1.0))
+    finally:
+        release.set()
+    assert time.monotonic() - t0 < 4.0
