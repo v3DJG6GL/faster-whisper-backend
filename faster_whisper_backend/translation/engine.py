@@ -1364,7 +1364,11 @@ def join_translations(parts: "list[str]", target: "str | None" = None) -> str:
             return "glued"
         return "latin" if han_target and _DIGIT_LATIN_RE.match(c) else ""
 
-    out = ""
+    out: "list[str]" = []
+    # The last non-mark character of the text joined so far, tracked per
+    # piece: rescanning the whole joined text after every quote-ending
+    # piece is quadratic on a long upload.
+    last = ""
     for p in (s.strip() for s in parts):
         if not p:
             continue
@@ -1373,11 +1377,18 @@ def join_translations(parts: "list[str]", target: "str | None" = None) -> str:
             # side decide, or '他说：' | '“' | '走开。”' gets two spaces.
             # Latin | Latin never glues: 'Mü' | 'ller' is a cut word no
             # script rule can tell from two words.
-            kinds = {_kind(c) for c in (out.rstrip(_JOIN_MARKS)[-1:],
-                                        p.lstrip(_JOIN_MARKS)[:1]) if c}
-            out += "" if "glued" in kinds and "" not in kinds else " "
-        out += p
-    return out
+            kinds = {_kind(c) for c in (last, p.lstrip(_JOIN_MARKS)[:1]) if c}
+            sep = "" if "glued" in kinds and "" not in kinds else " "
+            out.append(sep)
+            if sep:
+                # A mark-only piece after this space leaves the space as
+                # what the next piece meets.
+                last = sep
+        out.append(p)
+        tail = p.rstrip(_JOIN_MARKS)
+        if tail:
+            last = tail[-1]
+    return "".join(out)
 
 
 # =============================================================================

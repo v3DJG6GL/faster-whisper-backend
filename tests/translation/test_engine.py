@@ -2722,6 +2722,37 @@ def test_join_translations_mark_only_piece_glues_in_zh():
     assert j(["He said:", "\"", "Go away.\""]) == "He said: \" Go away.\""
 
 
+def test_join_translations_mark_only_piece_exposes_the_space_before_it():
+    # The space put before a mark-only piece is what the next piece meets:
+    # 'é' | '“' keeps a space, so '店' after it sees that space, not 'é'.
+    j = translation.join_translations
+    assert j(["é 店é", "“", "店"], target="zh") == "é 店é “ 店"
+    assert j(["é 店é", " “ ", "店"], target="zh") == "é 店é “ 店"
+    assert j(["我们去", "“", "店"], target="zh") == "我们去“店"
+    assert j(["我们去", "“", "”", "", "Paris"]) == "我们去“” Paris"
+
+
+def test_join_translations_is_linear_in_quote_ending_pieces():
+    # Many pieces ending in a closing quote must not rescan the whole
+    # joined text per piece (a long upload x every target, on the loop).
+    j = translation.join_translations
+    piece = "x" * 30 + "\""
+
+    def best(n: int) -> float:
+        parts = [piece] * n
+        t_best = float("inf")
+        for _ in range(5):
+            t0 = time.perf_counter()
+            out = j(parts)
+            t_best = min(t_best, time.perf_counter() - t0)
+        assert len(out) == n * len(piece) + n - 1
+        return t_best
+
+    small, big = best(2_000), best(20_000)
+    # Linear is ~10x; the old rescan was ~60x.
+    assert big / small < 30, (small, big)
+
+
 def test_join_translations_glues_digit_and_latin_to_han_in_a_zh_ja_target():
     j = translation.join_translations
     assert j(["我买了3", "个苹果"], target="zh") == "我买了3个苹果"
