@@ -1338,13 +1338,23 @@ def test_alternation_tail_trading_with_the_atoms_around_it_stays_rejected(pat):
     r"(?:(?:eben|sozusagen|halt), )+",
     r"(?:\b(?:äh|ähm)\b,? ?)+",
     r"(?:\b(?:also|irgendwie)\b )+",
+    r"(?:\b(?:äh|ähm|öh)\b,? ?)+",
+    r"(?:\b(?:äh|ähm|öh|öhm|hm|hmm)\b,? ?)+",
+    r"(?:\b(?:äh|ähm|hm|öh)\b,? ?)+",
+    r"(?:\b(?:äh|ähm|öh|öhm)\b[,.]?\s?)+",
+    r"(?i)(?:\b(?:äh|ähm|hm|öhm)\b[,.]? ?)+",
+    r"(?:(?:um|umm|äh), )+",
+    r"(?:(?:um|am|umm), )+",
 ])
 def test_repeated_filler_word_list_is_accepted(pat):
     """A mandatory letter of a word list was read as apart from the list's
     own tail, so the last `e` of `irgendwie` seemed to trade with the `o|e`
     slot holding its fourth letter, and every repeated filler cleanup was
     refused. `\\b` after `(?:äh|ähm)` ends the shorter word only where the
-    longer one does not go on, so the optional `,? ?` after it need not."""
+    longer one does not go on, so the optional `,? ?` after it need not.
+    Two words of one length (`äh|öh`, `um|am`) fill the same pinned span
+    only if they are the same text, so they do not split a repetition
+    two ways either."""
     assert not g._nested_repetition(pat)
     g.validate([("r", pat, "")])
 
@@ -1357,6 +1367,20 @@ def test_repeated_filler_word_list_is_accepted(pat):
     r"(?:cb|[ac]bcb)+#",
     r"(?: ?[a-c]|c?bbaa)+#",
     r"(?:\b(?:ab|[ab]b)\b )+",
+    r"(?:\b(?:äh|ä.)\b,? ?)+",
+    r"(?:(?:a.|.b|abb) )+#",
+    r"(?:(?:ax|[ab]x)c)+#",
+    r"(?:(?:um|um), )+",
+    r"(?:\b(?:ab|ab|abc)\b ?)+#",
+    r"(?:(?:ab|\x61b|abb), )+#",
+    r"(?:(?:ab|a\w|abb), )+#",
+    r"(?:(?:a\.|a.|a.b), )+#",
+    r"(?x)(?:(?:a b|ab |abc), )+#",
+    r"(?:(?:Äh|äh|ähm), )+",
+    r"(?i)(?:\b(?:äh|ÄH|ähm)\b ?)+#",
+    r"(?i)(?:\b(?:sa|ſa|saa)\b ?)+#",
+    "(?i)(?:\\b(?:ka|\u212aa|kaa)\\b ?)+#",
+    r"(?i)(?:\b(?:σa|ςa|σaa)\b ?)+#",
 ])
 def test_empty_optional_group_or_class_overlapping_branches_are_rejected(pat):
     """`(?:x?)?` matches empty as its body or by being skipped; `b[bc]` /
@@ -1364,7 +1388,8 @@ def test_empty_optional_group_or_class_overlapping_branches_are_rejected(pat):
     takes, though no branch's witness shows it: each repetition matches two
     ways — `"ain" * 22 + "!"` takes seconds in re.sub, twice that per extra
     unit. A `\\b` after the list pins nothing when two same-width branches
-    match the same word."""
+    match the same word: a class, an escape or a case fold (`ſ`/`s`, the
+    Kelvin sign/`k`, `ς`/`σ`, even without `(?i)`) can make them equal."""
     assert g._nested_repetition(pat)
     with pytest.raises(ValueError, match="nested repetition"):
         g.validate([("r", pat, "")])

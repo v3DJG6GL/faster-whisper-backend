@@ -1660,8 +1660,10 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
 
     `(?:(?:um|umm), )+` overlaps (`um` is a prefix of `umm`), but the `,` that
     must follow can't be matched by any branch character, so the group's match
-    has to end right before the next `,` — and since no two branches have the
-    same width, at most one branch fits that span. One parse per repetition is
+    has to end right before the next `,` — and since no two branches that can
+    match the same text have the same width (same-width branches must be
+    plain characters no case fold makes equal), at most one branch fits that
+    span. One parse per repetition is
     linear, so the enclosing repeat is not refused for it. Deliberately narrow:
     every branch must be a run of single-character, unquantified atoms; the
     follower a mandatory literal, escaped character or plain character class
@@ -1683,23 +1685,36 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
     while pat.startswith(("\\b", "\\B"), i):
         bounded = bounded or pat[i + 1] == "b"
         i += 2
-    widths = set()
+    widths: "dict[int, list[list[str]]]" = {}
     atoms = []
+    pairs = 0
     for a, b in spans:
         branch = _strip_outer_group(pat[a:b])
-        count, p = 0, 0
+        own = []
+        p = 0
         while p < len(branch):
             if branch[p] in "()|^$*+?{":
                 return False
             c, g, e = _next_atom(branch, p)
             if c is None or g is not None or _read_quantifier(branch, e)[2] != e:
                 return False
-            atoms.append(branch[p:e])
-            count += 1
+            own.append(branch[p:e])
             p = e
-        if not count or count in widths:
+        atoms.extend(own)
+        if not own:
             return False
-        widths.add(count)
+        same = widths.setdefault(len(own), [])
+        if same:
+            # Two branches of one width may share the span only when both are
+            # plain characters that no case fold makes equal (`äh|öh`, but
+            # not `äh|ÄH` under (?i), `sa|ſa`, or `ax|[ab]x`).
+            pairs += len(same)
+            if pairs > _SAME_WIDTH_PAIRS or not all(
+                    _literal_atom(x) for x in own + [y for o in same for y in o]):
+                return False
+            if any(_literals_fold_equal(own, other) for other in same):
+                return False
+        same.append(own)
     if bounded and _uniform_wordness(pat, atoms):
         return True
     if i >= n or pat[i] in "()|^$.*+?{":
@@ -1721,6 +1736,25 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
     except re.error:
         return False
     return not any(rx.fullmatch(ch) for rx in compiled for ch in follower)
+
+
+# Same-width branch pairs _follower_fixes_split folds against each other
+# before it gives up and keeps the refusal: a word list of ~90 same-length
+# words, far past any real filler list, while one save stays cheap.
+_SAME_WIDTH_PAIRS = 4096
+
+
+def _literals_fold_equal(x: "list[str]", y: "list[str]") -> bool:
+    """True if two runs of plain-character atoms (see _literal_atom) can match
+    the same text under IGNORECASE | DOTALL — either one fullmatches the
+    other's characters."""
+    import re
+    tx, ty = "".join(a[-1] for a in x), "".join(a[-1] for a in y)
+    try:
+        return bool(re.fullmatch("".join(x), ty, re.IGNORECASE | re.DOTALL)
+                    or re.fullmatch("".join(y), tx, re.IGNORECASE | re.DOTALL))
+    except re.error:
+        return True
 
 
 def _uniform_wordness(pat: str, atoms: "list[str]") -> bool:
