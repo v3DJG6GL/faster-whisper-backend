@@ -291,15 +291,21 @@ def _redact_invisible_slugs(
             orig = str(red.get(key) or "")
             val = orig
             for slug in hidden:
-                # Only the two slug-bearing forms settings/schema.py emits:
-                # `rule {idx} ({slug!r})` and `duplicate rule name '{slug}'`.
-                # Never a bare `'{slug}'`: the collision message quotes the
-                # caller's own map keys, so a key equal to a hidden slug would
-                # turn each save into an existence oracle. Map keys can hold
-                # neither parentheses nor quotes.
-                val = val.replace(f"('{slug}')", "('<hidden rule>')")
-                val = val.replace(
-                    f"rule name '{slug}'", "rule name '<hidden rule>'")
+                # Only the two slug-bearing forms settings/schema.py emits,
+                # and only where it puts them: `rule {idx} ({slug!r})` opens
+                # the message, `duplicate rule name '{slug}' at index {idx}`
+                # is the whole of it (Pydantic may prefix "Value error, ").
+                # Anywhere else the text is the caller's own: a map key in a
+                # collision message, or a regex group name re.error echoes.
+                # Swapping a hidden slug there would blank the caller's error
+                # only when that slug exists, an existence oracle per save.
+                esc = re.escape(slug)
+                val = re.sub(rf"^((?:Value error, )?rule \d+ )\('{esc}'\)",
+                             r"\1('<hidden rule>')", val, count=1)
+                val = re.sub(
+                    rf"^((?:Value error, )?duplicate rule )name '{esc}'"
+                    r"( at index \d+)$",
+                    r"\1name '<hidden rule>'\2", val, count=1)
             swapped = swapped or val != orig
             # The schema's guard messages read `rule {idx} ({slug!r}) entry
             # {eidx}: ...` — after the slug swap the ordinal still gives away

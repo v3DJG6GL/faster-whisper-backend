@@ -32,6 +32,12 @@ logger = logging.getLogger("whisper-api")
 _LOG_WIDTH = 78
 _NAME_COL = 32        # value column starts at this character
 _SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FINAL)
+# Most chars of step text one receipt's PIPELINE section prints. Each text is
+# already cut at the store cap, but the last 500 rows of a long transcript
+# would still make one log record of up to 50 M chars, built and written on
+# the event loop. Every factory rule changing a long transcript fits
+# (15 rows x 2 x 50 000 = 1.5 M); past the budget a row keeps only its label.
+_RECEIPT_STEPS_TEXT_MAX = 2_000_000
 
 # "don't render this row" sentinel for the stage params sections. Distinct
 # from None, which is a real value there and prints as `(none)` — an unset
@@ -886,12 +892,23 @@ def _format_request_block(
         shown = steps[-recent_transcriptions_store._CAP_STEPS_ROWS:]
         if len(shown) < len(steps):
             lines.append(f"    … {len(steps) - len(shown)} earlier steps omitted")
+        budget = _RECEIPT_STEPS_TEXT_MAX
+        omitted = 0
         for name, before, after in shown:
             # The name carries a rule's label or pattern; a CR/LF in it must
             # not start a forged record in the line-oriented log.
             lines.append(f"    ▸ {store_common._LOG_UNSAFE_RE.sub('?', str(name))}")
-            lines.append(f"        {_step_text(before)}")
-            lines.append(f"     →  {_step_text(after)}")
+            if not omitted:
+                b, a = _step_text(before), _step_text(after)
+                budget -= len(b) + len(a)
+                if budget >= 0:
+                    lines.append(f"        {b}")
+                    lines.append(f"     →  {a}")
+                    continue
+            omitted += 1
+            lines.append("        [text omitted: receipt budget]")
+        if omitted:
+            lines.append(f"    … {omitted} step texts omitted (receipt budget)")
         lines.append(rule)
     lines.append(f"  FINAL        {final!r}")
     lines.append(title_rule)

@@ -759,6 +759,45 @@ def test_redact_keeps_own_map_keys_that_equal_a_hidden_slug():
     assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
 
 
+def test_redact_keeps_own_regex_errors_that_echo_a_hidden_slug():
+    """re.error echoes the caller's own pattern text, so a group name such as
+    `('geheim')` or `rule name 'geheim'` used to match the slug swap and
+    blank the caller's own error — only when the hidden slug exists. Only the
+    forms the schema writes at the start of a message are swapped."""
+    for echoed in ("('geheim')", "rule name 'geheim'"):
+        msg = ("Value error, rule 1 ('meins') entry 0: invalid regex: bad "
+               f"character in group name \"{echoed}\" at position 4")
+        assert _redact_one(msg) == [{"loc": "PIPELINE_RULES", "msg": msg}]
+
+
+def test_hidden_slug_echoed_in_own_regex_error_is_not_an_oracle(
+        client, app_module, make_user_key):
+    """A guessed slug in the caller's own regex group name must get the same
+    legible 422 whether or not a hidden rule of that name exists."""
+    slug = _expose_first_regex_list_rule(app_module)
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    rules.insert(0, {"name": "geheim", "label": "geheim",
+                     "type": "regex-list",
+                     "entries": [{"pattern": "x", "replacement": "y"}]})
+    app_module.cfg.PIPELINE_RULES = rules
+    _uid, raw = locked_alice(make_user_key)
+
+    for template in ("(?P<('{g}')>x)", "(?P<rule name '{g}'>x)"):
+        bodies = {}
+        for guess in ("geheim", "nope-xyz"):
+            r = _post_patch(client, {slug: {"entries": [
+                {"pattern": template.format(g=guess), "replacement": ""}]}},
+                headers=bearer(raw))
+            assert r.status_code == 422, r.text
+            errs = r.json()["errors"]
+            assert errs, r.text
+            for e in errs:
+                assert e["loc"] == "PIPELINE_RULES", e
+                assert "<hidden rule>" not in e["msg"], e
+            bodies[guess] = r.text.replace(guess, "GUESS")
+        assert bodies["geheim"] == bodies["nope-xyz"], (template, bodies)
+
+
 def test_redact_blanks_stale_slug_errors_listing_hidden_rules():
     """A stale stored slug reference (CAPTURES_PIPELINE_RULES_EXCLUDE,
     MODEL_OVERRIDES[...] EXCLUDE) fails the model-level check with loc ''

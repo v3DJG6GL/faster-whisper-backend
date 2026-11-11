@@ -514,6 +514,43 @@ def test_receipt_renders_only_the_last_steps(app_module):
     assert block.count("    ▸ #") == rts._CAP_STEPS_ROWS
 
 
+def test_receipt_step_texts_stay_within_the_receipt_budget(app_module):
+    # Each step text is cut at the store cap, but 500 rows of a long
+    # transcript still made one log record of up to 50 M chars. Past the
+    # budget a row keeps its label and drops its texts.
+    from faster_whisper_backend.stats import recent_transcriptions_store as rts
+
+    budget = tx_receipt._RECEIPT_STEPS_TEXT_MAX
+    long_a, long_b = "a" * rts._CAP_RAW, "b" * rts._CAP_RAW
+    n = rts._CAP_STEPS_ROWS
+    steps = [(f"#{i}", long_a, long_b) for i in range(n)]
+    block = _block(app_module, steps=steps)
+    assert len(block) < budget + 100_000
+    assert block.count("    ▸ #") == n
+    per_row = 2 * len(repr(long_a))
+    fit = budget // per_row
+    lines = block.split("\n")
+    i = lines.index(f"    ▸ #{fit}")
+    assert lines[i - 1] == f"     →  {long_b!r}"
+    assert lines[i + 1] == "        [text omitted: receipt budget]"
+    assert lines[i + 2] == f"    ▸ #{fit + 1}"
+    assert f"    … {n - fit} step texts omitted (receipt budget)" in lines
+    assert f"PIPELINE  ({n} steps changed text)" in block
+
+
+def test_receipt_under_the_step_budget_is_unchanged(app_module, monkeypatch):
+    # Every factory rule changing a long transcript fits the budget, so such
+    # a receipt reads exactly as it did without one.
+    from faster_whisper_backend.stats import recent_transcriptions_store as rts
+
+    steps = [(f"#{i}", "a" * rts._CAP_RAW, "b" * (rts._CAP_RAW + 9))
+             for i in range(15)]
+    block = _block(app_module, steps=steps)
+    assert "receipt budget" not in block
+    monkeypatch.setattr(tx_receipt, "_RECEIPT_STEPS_TEXT_MAX", 10 ** 12)
+    assert _block(app_module, steps=steps) == block
+
+
 def test_receipt_clipped_trace_text_renders_identically(app_module):
     # The engine keeps a step text cut at the store cap, with its uncut length
     # and whether the step changed the text. Steps whose edit lies past the
