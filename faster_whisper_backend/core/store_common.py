@@ -64,8 +64,11 @@ def log_safe(s, *, keep_end: bool = False) -> str:
     `keep_end=True` keeps the LAST LOG_FIELD_MAX characters instead of the
     first: for a child's stderr tail, where the fatal line (yt-dlp's
     "ERROR: ...", ffmpeg's last line) comes at the end."""
-    safe = _LOG_UNSAFE_RE.sub("?", s or "")
-    return safe[-LOG_FIELD_MAX:] if keep_end else safe[:LOG_FIELD_MAX]
+    s = s or ""
+    # Cap first: the screen maps one character to one "?", so the output is
+    # the same, and a megabyte label costs no regex pass over its whole length.
+    s = s[-LOG_FIELD_MAX:] if keep_end else s[:LOG_FIELD_MAX]
+    return _LOG_UNSAFE_RE.sub("?", s)
 
 
 # A lone UTF-16 surrogate: json.loads keeps one ("\ud800"), but the tokenizer
