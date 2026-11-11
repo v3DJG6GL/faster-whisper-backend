@@ -1524,6 +1524,54 @@ def test_guard_charges_the_manifest_url_for_each_representation(
     assert guard["_DIALS"].tls.url_bytes < guard["_MAX_FRAGMENT_URL_BYTES"]
 
 
+def _parse_ism_at(xml, ism_url, *, positional):
+    """_parse_ism with the manifest's own URL `ism_url`, handed over the way
+    GenericIE does (positionally) or as a keyword."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    udl.guard_self_check(force=True)
+    doc = compat_etree_fromstring(xml.encode())
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        if positional:
+            return ie._parse_ism_formats_and_subtitles(doc, ism_url)
+        return ie._parse_ism_formats_and_subtitles(doc, ism_url=ism_url)
+
+
+@pytest.mark.parametrize("positional", [True, False], ids=["positional", "keyword"])
+def test_guard_charges_the_manifest_url_for_each_ism_fragment(
+        monkeypatch, positional):
+    """yt-dlp urljoins the manifest's own post-redirect URL (a Location of up
+    to ~64 KB) onto the stream's Url, and every fragment copies the result:
+    300 fragments under a 10 KB URL ask for 3 MB of addresses."""
+    import time
+    xml = _ism(_ism_url("a{start time}", '<c t="0" d="1" r="300"/>'))
+    with monkeypatch.context() as m:
+        m.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 1_000_000)
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+            _parse_ism_at(xml, "http://cdn.example/" + "p" * 10_000 + "/x.ism/Manifest",
+                          positional=positional)
+        # A real CDN URL leaves the same manifest as yt-dlp builds it.
+        fmts, _subs = _parse_ism_at(xml, "http://cdn.example/vod/x.ism/Manifest",
+                                    positional=positional)
+        assert len(fmts[0]["fragments"]) == 300
+        assert fmts[0]["fragments"][0]["url"] == "http://cdn.example/vod/x.ism/a0"
+    # The real budget: 20 000 fragments under a 64 KB redirect target are
+    # refused before any is built; 1 000 under a 2 KB signed URL fit.
+    _reset_budget()
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        _parse_ism_at(_ism(_ism_url("a{start time}", '<c t="0" d="1" r="20000"/>')),
+                      "http://cdn.example/" + "p" * 65_000 + "/x.ism/Manifest",
+                      positional=positional)
+    assert time.monotonic() - t0 < 2.0
+    fmts, _subs = _parse_ism_at(
+        _ism(_ism_url("a{start time}", '<c t="0" d="1" r="1000"/>')),
+        "http://cdn.example/" + "p" * 2_000 + "/x.ism/Manifest",
+        positional=positional)
+    assert len(fmts[0]["fragments"]) == 1000
+
+
 def test_guard_is_not_installed_without_the_ism_bound(monkeypatch):
     from yt_dlp.extractor.common import InfoExtractor
     guard = _inproc_guard()
@@ -1634,6 +1682,75 @@ def test_guard_parses_an_ordinary_hls_master_unchanged():
     media = ("#EXTM3U\n#EXT-X-TARGETDURATION:2\n"
              + "#EXTINF:2,\ns.ts\n" * (cap * 3) + "#EXT-X-ENDLIST\n")
     assert len(_parse_m3u8(media)[0]) == 1
+
+
+def test_guard_charges_hls_master_variants_across_manifests(monkeypatch):
+    """Each master within its own cap is not enough: a page or a set-level
+    F4M can hand one extraction many of them. Their variants spend from the
+    budget DASH and Smooth Streaming spend from; a refused master spends
+    nothing, and the next extraction starts afresh."""
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_REPRESENTATIONS", 10)
+    six = "#EXTM3U\n" + "u\n" * 6
+    assert len(_parse_m3u8(six)[0]) == 6
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_m3u8(six)
+    assert len(_parse_m3u8("#EXTM3U\n" + "u\n" * 4)[0]) == 4
+    # DASH representations share the budget too.
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_mpd(_mpd(_adaptation("<BaseURL>a.m4a</BaseURL>", reps=1)))
+    # A media playlist is one format whatever it lists, and spends nothing.
+    media = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n" + "#EXTINF:2,\ns.ts\n" * 50
+    assert len(_parse_m3u8(media)[0]) == 1
+    _inproc_guard().observe_dials(None)
+    assert len(_parse_m3u8(six)[0]) == 6
+
+
+def _parse_m3u8_at(doc, m3u8_url, *, positional):
+    """_parse_m3u8 with the master's own URL `m3u8_url`, positionally (as
+    _extract_m3u8_formats_and_subtitles hands it over) or as a keyword."""
+    from yt_dlp.extractor.common import InfoExtractor
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        if positional:
+            return ie._parse_m3u8_formats_and_subtitles(doc, m3u8_url, "mp4")
+        return ie._parse_m3u8_formats_and_subtitles(doc, m3u8_url=m3u8_url, ext="mp4")
+
+
+@pytest.mark.parametrize("positional", [True, False], ids=["positional", "keyword"])
+def test_guard_charges_hls_master_addresses(monkeypatch, positional):
+    """yt-dlp builds every variant's address as a fresh urljoin(master URL,
+    line), so a ~64 KB redirect target costs 2 000 x 64 KB per master."""
+    master = "#EXTM3U\n" + "".join(f"v{i}.m3u8\n" for i in range(400))
+    long_url = "http://cdn.example/" + "p" * 1000 + "/master.m3u8"
+    with monkeypatch.context() as m:
+        m.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 1_000_000)
+        assert len(_parse_m3u8_at(master, long_url, positional=positional)[0]) == 400
+        assert len(_parse_m3u8_at(master, long_url, positional=positional)[0]) == 400
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+            _parse_m3u8_at(master, long_url, positional=positional)
+
+
+def test_guard_admits_real_hls_masters_and_hds_sets():
+    """Sixteen masters of 300 variants and renditions under a 300-byte signed
+    URL, plus a set-level HDS manifest naming a few bitrates, spend a small
+    part of one extraction's budget."""
+    query = "?" + "&".join(f"k{i}=" + "v" * 20 for i in range(12))
+    url = "https://cdn.example/vod/master.m3u8" + query
+    assert len(url) >= 300
+    master = ("#EXTM3U\n"
+              + "".join(f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="n{i}",'
+                        f'URI="a{i}.m3u8"\n' for i in range(50))
+              + "".join(f'#EXT-X-STREAM-INF:BANDWIDTH={i + 1},AUDIO="a"\n'
+                        f"v{i}.m3u8{query}\n" for i in range(250)))
+    for _ in range(16):
+        assert len(_parse_m3u8_at(master, url, positional=True)[0]) == 300
+    fmts = _parse_f4m(_f4m(f"<baseURL>{url.rsplit('/', 1)[0]}</baseURL>"
+                           + _f4m_media(5), bootstrap=False))
+    assert len(fmts) == 5
+    guard = _registered_guard()
+    assert guard["_DIALS"].tls.variants == 16 * 300
+    assert 0 < guard["_DIALS"].tls.url_bytes < guard["_MAX_FRAGMENT_URL_BYTES"] // 50
 
 
 def test_guard_is_not_installed_without_the_hls_bound(monkeypatch):
@@ -2037,6 +2154,39 @@ def test_guard_parses_an_ordinary_f4m_manifest_unchanged():
     assert [f["url"] for f in fmts] == ["http://cdn.example/s0.f4m",
                                         "http://cdn.example/s1.f4m"]
     assert len(_parse_f4m(_f4m(_f4m_media(_hls_cap())))) == _hls_cap()
+
+
+@pytest.mark.parametrize("positional", [True, False], ids=["positional", "keyword"])
+def test_guard_charges_f4m_base_url_per_node(monkeypatch, positional):
+    """A set-level manifest's node addresses are each a fresh copy of its
+    <baseURL> (else the manifest URL's directory) + "/" + the node's url:
+    200 nodes under a 10 KB base ask for 2 MB."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+
+    def parse(xml, manifest_url):
+        udl.guard_self_check(force=True)
+        doc = compat_etree_fromstring(xml.encode())
+        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            ie = InfoExtractor(ydl)
+            if positional:
+                return ie._parse_f4m_formats(doc, manifest_url, "x")
+            return ie._parse_f4m_formats(doc, manifest_url=manifest_url, video_id="x")
+    long_base = "http://cdn.example/" + "p" * 10_000
+    short_url = "http://cdn.example/m.f4m"
+    monkeypatch.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 1_000_000)
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        parse(_f4m(f"<baseURL>{long_base}</baseURL>" + _f4m_media(200),
+                   bootstrap=False), short_url)
+    # With no <baseURL>, the manifest URL's own directory is the base.
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        parse(_f4m(_f4m_media(200), bootstrap=False), long_base + "/m.f4m")
+    fmts = parse(_f4m("<baseURL>http://cdn.example/vod</baseURL>" + _f4m_media(200),
+                      bootstrap=False), short_url)
+    assert len(fmts) == 200
+    assert fmts[0]["url"] == "http://cdn.example/vod/v0"
+    # A stream-level manifest's formats share the manifest URL: no charge.
+    assert len(parse(_f4m(_f4m_media(200)), long_base + "/m.f4m")) == 200
 
 
 def test_guard_is_not_installed_without_the_f4m_bound(monkeypatch):

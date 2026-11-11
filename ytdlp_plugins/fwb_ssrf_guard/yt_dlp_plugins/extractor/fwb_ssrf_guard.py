@@ -571,9 +571,10 @@ def _refuse_external_downloaders() -> None:
 # dicts at most) leaves long multi-quality VODs well inside it. Smooth
 # Streaming (_parse_ism_formats_and_subtitles: <c r="N"> expanded once per
 # QualityLevel), an HLS media playlist (HlsFD: one fragment per segment
-# line) and an HDS bootstrap (F4mFD) count against the same cap. The DASH and
-# Smooth Streaming manifests one extraction parses also spend from one running
-# total (_charge), as every manifest within its own cap is not enough.
+# line) and an HDS bootstrap (F4mFD) count against the same cap. The DASH,
+# Smooth Streaming, HLS master and set-level HDS manifests one extraction
+# parses also spend from one running total (_charge), as every manifest within
+# its own cap is not enough.
 _MAX_MPD_SEGMENTS = 1_000_000
 _MPD_SENTINEL = "_fwb_mpd_bounded"
 # Each Representation also becomes its own format (periods merge only when
@@ -858,7 +859,12 @@ def _mpd_expansion_is_bounded() -> bool:
 _ISM_SENTINEL = "_fwb_ism_bounded"
 
 
-def _refuse_oversized_ism(ism_doc) -> None:
+def _refuse_oversized_ism(ism_doc, ism_base_len: int = 0) -> None:
+    """`ism_base_len`: the length of the manifest's own (post-redirect) URL,
+    which yt-dlp urljoins onto each stream's Url and every fragment then
+    copies (the redirect hop can make it ~64 KB). It is charged for every
+    fragment, also under an absolute Url: an over-count of a few hundred
+    bytes each."""
     from yt_dlp.utils import int_or_none
     if ism_doc.get("IsLive") == "TRUE":
         return  # yt-dlp returns no formats for it, before any expansion
@@ -896,7 +902,7 @@ def _refuse_oversized_ism(ism_doc) -> None:
             + sum(abs(int_or_none(c.get("d")) or 0)
                   * max(int_or_none(c.get("r")) or 1, 1) for c in chunks)), 24)
         for level in stream.findall("QualityLevel"):
-            length = (len(pattern) + starts * time_digits + bitrates
+            length = (ism_base_len + len(pattern) + starts * time_digits + bitrates
                       * max(len(level.get("Bitrate") or "") - len("{bitrate}"), 0))
             # The level's pattern is built even with no chunk to expand.
             url_bytes += max(per_track, 1) * length
@@ -907,7 +913,11 @@ def _refuse_oversized_ism(ism_doc) -> None:
 
 def _bounded_ism(original):
     def _parse_ism_formats_and_subtitles(self, ism_doc, *args, **kwargs):
-        _refuse_oversized_ism(ism_doc)
+        # yt-dlp's signature: (ism_doc, ism_url, ism_id=None).
+        ism_url = args[0] if args else kwargs.get("ism_url")
+        # +1: the "/" urljoin adds to a base with no path.
+        _refuse_oversized_ism(
+            ism_doc, len(ism_url) + 1 if isinstance(ism_url, str) else 0)
         return original(self, ism_doc, *args, **kwargs)
     setattr(_parse_ism_formats_and_subtitles, _ISM_SENTINEL, True)
     return _parse_ism_formats_and_subtitles
@@ -963,7 +973,9 @@ def _line_breaks(doc: str) -> int:
             - doc.count("\r\n"))
 
 
-def _refuse_oversized_m3u8(m3u8_doc) -> None:
+def _refuse_oversized_m3u8(m3u8_doc, url_len: int = 0) -> None:
+    """`url_len`: the length of the master's own (post-redirect) URL, which
+    yt-dlp urljoins each variant and rendition line onto."""
     from yt_dlp.utils import ExtractorError
     if not isinstance(m3u8_doc, str) or "#EXT-X-TARGETDURATION" in m3u8_doc:
         return
@@ -971,16 +983,24 @@ def _refuse_oversized_m3u8(m3u8_doc) -> None:
         raise ExtractorError(
             "the playlist has too many lines (more than "
             f"{_MAX_M3U8_MASTER_LINES})", expected=True)
+    count = 0
     for count, _match in enumerate(_M3U8_FORMAT_LINE.finditer(m3u8_doc), 1):
         if count > _MAX_M3U8_FORMATS:
             raise ExtractorError(
                 f"the stream lists too many variants (more than {_MAX_M3U8_FORMATS})",
                 expected=True)
+    # A page (or a set-level F4M) can hand one extraction many masters, each
+    # within the cap: every variant is a format from the extraction's budget,
+    # like a DASH representation, and its address a fresh urljoin(master URL,
+    # line) (an absolute line a slice of the document instead).
+    _charge(0, count, len(m3u8_doc) + count * (url_len + 1))
 
 
 def _bounded_m3u8(original):
     def _parse_m3u8_formats_and_subtitles(self, m3u8_doc, *args, **kwargs):
-        _refuse_oversized_m3u8(m3u8_doc)
+        # yt-dlp's signature: (m3u8_doc, m3u8_url=None, ...).
+        url = args[0] if args else kwargs.get("m3u8_url")
+        _refuse_oversized_m3u8(m3u8_doc, len(url) if isinstance(url, str) else 0)
         return original(self, m3u8_doc, *args, **kwargs)
     setattr(_parse_m3u8_formats_and_subtitles, _M3U8_SENTINEL, True)
     return _parse_m3u8_formats_and_subtitles
@@ -1099,7 +1119,7 @@ _MAX_F4M_NESTED = 16
 _MAX_F4M_DEPTH = 2
 
 
-def _refuse_oversized_f4m(manifest) -> None:
+def _refuse_oversized_f4m(manifest, manifest_url: str = "") -> None:
     if not isinstance(manifest, xml.etree.ElementTree.Element):
         return  # yt-dlp returns or fails on its own, before any node
     # yt-dlp's choice: the 1.0 nodes, else the 2.0 ones.
@@ -1120,6 +1140,12 @@ def _refuse_oversized_f4m(manifest) -> None:
     total = getattr(_DIALS.tls, "f4m_nested", 0) + nested
     if total > _MAX_F4M_NESTED:
         raise _too_many_variants(_MAX_F4M_NESTED)
+    from yt_dlp.downloader.f4m import get_base_url
+    # Each node's address is a fresh <baseURL> (else the manifest URL's
+    # directory, counted whole here) + "/" + its url. A nested child's own
+    # variants are charged where its master is parsed, so none is counted here.
+    base = get_base_url(manifest) or manifest_url
+    _charge(0, 0, len(nodes) * (len(base) + 1))
     _DIALS.tls.f4m_nested = total
 
 
@@ -1128,7 +1154,9 @@ def _bounded_f4m(original):
         depth = getattr(_DIALS.tls, "f4m_depth", 0)
         if depth >= _MAX_F4M_DEPTH:
             raise _too_many_variants(_MAX_F4M_NESTED)
-        _refuse_oversized_f4m(manifest)
+        # yt-dlp's signature: (manifest, manifest_url, video_id, ...).
+        url = args[0] if args else kwargs.get("manifest_url")
+        _refuse_oversized_f4m(manifest, url if isinstance(url, str) else "")
         _DIALS.tls.f4m_depth = depth + 1
         try:
             formats = original(self, manifest, *args, **kwargs)
