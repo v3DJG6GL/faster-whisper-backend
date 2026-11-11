@@ -84,6 +84,11 @@ _COMPILED_RULES: list[_CompiledRule] = []
 # Bumped by every rebuild_caches(): the key under which per-rule-set derived
 # data (the streaming hold-back spec) is cached.
 _RULES_GEN: int = 0
+# Hold-back specs rebuild_caches builds in its worker thread, keyed
+# (gen, selection): one for each selection a session without per-identity or
+# per-model scoping makes. holdback_start runs on the event loop, and a spec on
+# a large map takes most of a second to build.
+_WARM_SPECS: "dict[tuple[int, tuple[int, ...]], _seam_holdback.HoldSpec]" = {}
 # Captured from the terminal rule's name/label in cfg.PIPELINE_RULES at cache
 # build time. Falls back to the constants below if the user removed the
 # terminal row. The slug is used to honor exclude-set membership (a captures
@@ -206,6 +211,7 @@ def rebuild_caches() -> None:
 
 def _rebuild_caches_locked() -> None:
     global _COMPILED_RULES, _TERMINAL_NAME, _TERMINAL_LABEL, _TERMINAL_CARD_NO, _RULES_GEN
+    global _WARM_SPECS
     compiled: list[_CompiledRule] = []
     terminal_name = _TERMINAL_NAME
     terminal_label = _TERMINAL_LABEL
@@ -290,11 +296,16 @@ def _rebuild_caches_locked() -> None:
                                        languages=rule_langs, repeat=rule_repeat,
                                        map_lookup=map_lookup,
                                        max_growth=_callback_growth(rtype, map_lookup)))
+    warm = _warm_holdback_specs(compiled)
     _COMPILED_RULES = compiled
     _TERMINAL_NAME = terminal_name
     _TERMINAL_LABEL = terminal_label
     _TERMINAL_CARD_NO = terminal_card_no
-    _RULES_GEN += 1
+    # Publish the warm specs before the gen: holdback_start reads the gen
+    # first, so a caller that sees the new gen also finds its warm spec.
+    new_gen = _RULES_GEN + 1
+    _WARM_SPECS = {(new_gen, sel): spec for sel, spec in warm.items()}
+    _RULES_GEN = new_gen
     _dictation_map.retain_live_maps(
         r.pattern for r in compiled if r.type == "callback:map")
     # Older-gen specs are never hit again but hold MBs each on a large map;
@@ -641,6 +652,27 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
 # _postprocess_text (_scoping / _rule_runs), so what is held back and what is
 # blamed always matches what the formatting actually runs.
 
+def _warm_holdback_specs(
+        compiled: "list[_CompiledRule]") -> "dict[tuple[int, ...], _seam_holdback.HoldSpec]":
+    """The hold-back spec of every selection holdback_start makes with empty
+    exclude/include, keyed by that selection (indices into `compiled`). Which
+    maps run then depends only on the language: None runs every enabled map,
+    a tagged language its own maps plus the untagged ones, and any other
+    language ("\\x00" stands in for it) the untagged ones alone. Nothing to
+    warm without a map row."""
+    maps = [(i, r) for i, r in enumerate(compiled)
+            if r.type == "callback:map" and r.map_lookup]
+    if not maps:
+        return {}
+    langs: "set[str | None]" = {None, "\x00"}
+    langs.update(lang for _i, r in maps for lang in r.languages)
+    no_scope: "frozenset[str]" = frozenset()
+    sels = {tuple(i for i, r in maps if _rule_runs(r, no_scope, no_scope, lang))
+            for lang in langs}
+    return {sel: _seam_holdback.build_spec(compiled[i].map_lookup for i in sel)
+            for sel in sels}
+
+
 @functools.lru_cache(maxsize=64)
 def _holdback_spec(gen: int, sel: "tuple[int, ...]") -> "_seam_holdback.HoldSpec":
     # `gen` only keys the cache: a rebuild_caches() bumps _RULES_GEN, so a
@@ -675,7 +707,10 @@ def holdback_start(raw: str, *, model_name: "str | None" = None, ident=None,
     sel = tuple(i for i, rule in enumerate(rules)
                 if rule.type == "callback:map" and rule.map_lookup
                 and _rule_runs(rule, exclude, include, language))
-    spec = _holdback_spec(gen, sel)
+    # `is None`, not `or`: a spec with no sequences is falsy yet still warm.
+    spec = _WARM_SPECS.get((gen, sel))
+    if spec is None:
+        spec = _holdback_spec(gen, sel)
     return _seam_holdback.held_start(raw, spec)
 
 
@@ -730,4 +765,5 @@ def _reset_for_tests() -> None:
     (rebuild_caches after reloading config)."""
     global _REBUILD_LOCK
     _holdback_spec.cache_clear()
+    _WARM_SPECS.clear()
     _REBUILD_LOCK = threading.Lock()

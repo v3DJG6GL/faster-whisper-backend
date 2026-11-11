@@ -52,13 +52,19 @@ def test_rebuild_drops_the_old_rule_sets_holdback_specs(monkeypatch):
     """A spec from an older rule set is never served again (the gen keys the
     cache), but it stayed cached until 64 newer specs pushed it out — MBs
     each on a large dictionary map."""
-    monkeypatch.setattr(cfg, "PIPELINE_RULES", [_map_rule({"komma eins": ","})])
+    # Globally off, force-included for one model: a selection the warm specs
+    # (empty scoping) do not cover, so it goes through the LRU.
+    monkeypatch.setattr(cfg, "PIPELINE_RULES",
+                        [{**_map_rule({"komma eins": ","}), "enabled": False}])
+    monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
+                        {"x": {"PIPELINE_RULES_INCLUDE": ["m"]}})
     try:
         pl_engine.rebuild_caches()
-        pl_engine.holdback_start("a komma", language="de")
+        pl_engine.holdback_start("a komma", model_name="x", language="de")
         assert pl_engine._holdback_spec.cache_info().currsize == 1
         pl_engine.rebuild_caches()
         assert pl_engine._holdback_spec.cache_info().currsize == 0
+        assert {gen for gen, _sel in pl_engine._WARM_SPECS} == {pl_engine._RULES_GEN}
     finally:
         monkeypatch.undo()
         pl_engine.rebuild_caches()
