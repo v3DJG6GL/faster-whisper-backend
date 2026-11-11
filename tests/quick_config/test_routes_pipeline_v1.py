@@ -224,3 +224,40 @@ def test_v1_nonadmin_can_edit_exposed_regex_entries(client, app_module, make_use
     r = _patch_rules(client, {slug: {"entries": [
         {"pattern": "behaviour", "replacement": "behavior"}]}}, headers=bearer(alice))
     assert_saved(r, slug)
+
+
+def test_invalid_full_map_patch_returns_capped_legible_422(
+    client, app_module, make_user_key,
+):
+    """A full dictionary of invalid entries fails validation with two errors per
+    entry. The 422 carries at most _SAVE_ERRORS_MAX of them (formatting,
+    redacting and serialising tens of thousands is work the save does for one
+    request), and the first one is still the caller's own, legible error."""
+    slug = _expose_first(app_module, "callback:map", locked=False)
+    idx = next(i for i, r in enumerate(app_module.cfg.PIPELINE_RULES)
+               if r.get("name") == slug)
+    _uid, alice = locked_alice(make_user_key)
+    bad_map = {f"#{i}": i for i in range(schema_map_cap())}
+    r = _patch_rules(client, {slug: {"map": bad_map}}, headers=bearer(alice))
+    assert r.status_code == 422, r.text
+    errs = r.json()["errors"]
+    assert 1 <= len(errs) <= quick_config_routes._SAVE_ERRORS_MAX + 1
+    first = errs[0]
+    assert first["loc"].startswith(f"PIPELINE_RULES.{idx}.callback:map.map"), first
+    assert "<hidden rule>" not in first["msg"]
+
+
+def test_save_error_cap_keeps_the_first_legible_error():
+    """The page toasts the first error without '<hidden rule>'. When the
+    capped head is all hidden-rule errors, the first legible one past the cap
+    is kept, so the toast reads exactly as it would with every error."""
+    cap = quick_config_routes._SAVE_ERRORS_MAX
+    hidden = {"loc": "<hidden rule>", "msg": "<hidden rule>"}
+    mine = {"loc": "PIPELINE_RULES.3.callback:map.map.k", "msg": "bad value"}
+    late = [dict(hidden) for _ in range(cap + 10)] + [mine, dict(mine)]
+    assert quick_config_routes._cap_save_errors(late) == [hidden] * cap + [mine]
+    head_ok = [dict(mine)] + [dict(hidden)] * (cap + 10)
+    assert quick_config_routes._cap_save_errors(head_ok) == head_ok[:cap]
+    assert quick_config_routes._cap_save_errors([hidden] * (cap + 3)) == [hidden] * cap
+    few = [dict(hidden), dict(mine)]
+    assert quick_config_routes._cap_save_errors(few) == few

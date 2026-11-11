@@ -92,6 +92,10 @@ _MAP_MAX_ENTRIES: int = web_common._MAP_MAX_ENTRIES
 # reusing _MAP_MAX_ENTRIES here would make two individually valid dictionaries
 # unsaveable together.
 _MAP_MAX_TOTAL_ENTRIES: int = 4 * _MAP_MAX_ENTRIES
+# Most errors one failed rules save answers (and logs) with. A full dictionary
+# of invalid entries fails with two errors per entry; the page toasts only the
+# first legible one, and every error past a few dozen is the same mistake.
+_SAVE_ERRORS_MAX = 50
 
 
 # Per-type allow-list of fields an end-user is allowed to patch on an
@@ -327,6 +331,36 @@ def _redact_invisible_slugs(
     return out
 
 
+def _cap_save_errors(errors: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The first _SAVE_ERRORS_MAX of the redacted ``errors``, plus the first
+    legible one (no '<hidden rule>' in its msg) when the head has none: the
+    page toasts that entry, so it reads the same as with every error."""
+    head = errors[:_SAVE_ERRORS_MAX]
+    if any("<hidden rule>" not in str(e.get("msg") or "") for e in head):
+        return head
+    legible = next((e for e in errors[_SAVE_ERRORS_MAX:]
+                    if "<hidden rule>" not in str(e.get("msg") or "")), None)
+    return head + [legible] if legible is not None else head
+
+
+def _save_or_errors(
+    rules: list[dict[str, Any]],
+    guard_slugs: frozenset[str],
+    user: dict[str, Any],
+) -> tuple[Any, tuple[int, list[dict[str, str]], list[dict[str, str]]] | None]:
+    """save_overrides on ``rules``; on a ValidationError, the total error
+    count, the unredacted head for the log and the redacted, capped client
+    errors instead. Runs on _GUARDED_SAVE_EXECUTOR: formatting and redacting
+    one error per invalid map entry is too much work for the event loop."""
+    try:
+        return config_store.save_overrides(
+            {"PIPELINE_RULES": rules}, guard_slugs=guard_slugs), None
+    except ValidationError as e:
+        errs = settings_schema.format_validation_errors(e)
+        client_errs = _cap_save_errors(_redact_invisible_slugs(errs, user, rules))
+        return None, (len(errs), errs[:_SAVE_ERRORS_MAX], client_errs)
+
+
 async def apply_rules_patch(
     user: dict[str, Any],
     rules_patch: dict[str, dict[str, Any]],
@@ -546,26 +580,12 @@ async def _apply_rules_patch_locked(
     # rate limit. The dedicated pool keeps a flood of guard-tripping saves from
     # starving every other to_thread call — see _GUARDED_SAVE_EXECUTOR.
     try:
-        written = await asyncio.get_running_loop().run_in_executor(
+        written, failed = await asyncio.get_running_loop().run_in_executor(
             _GUARDED_SAVE_EXECUTOR,
             functools.partial(
-                config_store.save_overrides, {"PIPELINE_RULES": current_rules},
-                guard_slugs=frozenset(guard_slugs),
+                _save_or_errors, current_rules, frozenset(guard_slugs), user,
             ),
         )
-    except ValidationError as e:
-        errs = settings_schema.format_validation_errors(e)
-        # Full (unredacted) detail is fine: the log is admin-eyes-only.
-        # log_safe for the same CR/LF-forgery reason as the success line.
-        logger.warning(
-            "[pipeline-rules] save validation failed from=%s user=%s admin=%s "
-            "patched=%s errors=%s",
-            client_host, store_common.log_safe(user.get("username") or "?"),
-            user.get("is_admin"), saved, store_common.log_safe(str(errs)),
-        )
-        return status.HTTP_422_UNPROCESSABLE_CONTENT, {
-            "errors": _redact_invisible_slugs(errs, user, current_rules),
-        }
     except OSError as e:
         logger.error("[pipeline-rules] save failed: %s", e)
         # Generic client detail — the OSError text embeds the absolute
@@ -575,6 +595,18 @@ async def _apply_rules_patch_locked(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "could not save configuration",
         )
+    if failed is not None:
+        n_errs, errs_head, client_errs = failed
+        # Full (unredacted) detail is fine: the log is admin-eyes-only.
+        # log_safe for the same CR/LF-forgery reason as the success line.
+        logger.warning(
+            "[pipeline-rules] save validation failed from=%s user=%s admin=%s "
+            "patched=%s errors=%d first=%s",
+            client_host, store_common.log_safe(user.get("username") or "?"),
+            user.get("is_admin"), saved, n_errs,
+            store_common.log_safe(str(errs_head)),
+        )
+        return status.HTTP_422_UNPROCESSABLE_CONTENT, {"errors": client_errs}
 
     applied = await pl_apply.apply_hot_changes(written)
 
