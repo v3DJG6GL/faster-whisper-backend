@@ -453,6 +453,13 @@
 
   // absTime / relTime / fmtWhen / timeTick are injected via TIME_HELPERS_JS.
 
+  // A stored stage is the submitter's JSON as sent, so a field may be an
+  // object whose toString is not callable; String() on it throws and the
+  // forEach in render() loses every card. Only primitives are rendered.
+  function _prim(v) {
+    return (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') ? String(v) : '';
+  }
+
   function _el(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -574,11 +581,12 @@
     if (stages.length) {
       var parts = [];
       for (var si = 0; si < stages.length; si++) {
-        var st = stages[si] || {};
-        if (!st.name) continue;
-        var bit = String(st.name);
-        if (st.model) bit += ' (' + st.model + ')';
-        if (st.detail) bit += ' · ' + st.detail;
+        var st = stages[si];
+        if (!st || typeof st !== 'object' || !st.name) continue;
+        var bit = _prim(st.name);
+        if (!bit) continue;
+        if (st.model && _prim(st.model)) bit += ' (' + _prim(st.model) + ')';
+        if (st.detail && _prim(st.detail)) bit += ' · ' + _prim(st.detail);
         parts.push(bit);
       }
       if (parts.length) {
