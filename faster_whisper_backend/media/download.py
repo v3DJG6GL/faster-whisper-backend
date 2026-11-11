@@ -262,16 +262,25 @@ def _fmt_bytes(f: dict, duration: "float | None") -> "tuple[int | None, bool]":
     if tbr and duration:
         try:
             return _sane_bytes(float(tbr) * duration * 125), True
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None, True
     return None, True
 
 
 def _float_or(value, default: "float | None") -> "float | None":
+    """`value` as a finite float, else `default`: a site number can be an
+    integer past float range (an ISM Bitrate is int() of the site's
+    digits), NaN or infinite."""
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        v = float(value)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return v if math.isfinite(v) else default
+
+
+def _site_float(value) -> float:
+    """A site's bitrate or frame rate, 0.0 when missing or unusable."""
+    return _float_or(value or 0, 0.0)
 
 
 def _fmt_rank(f: dict) -> tuple:
@@ -287,11 +296,11 @@ def _fmt_rank(f: dict) -> tuple:
         q,
         int(h) if isinstance(h, (int, float)) and h > 0 else 0,
         int(w) if isinstance(w, (int, float)) and w > 0 else 0,
-        float(f.get("fps") or 0),
+        _site_float(f.get("fps")),
         _is_hdr(f),
         src,
         _vcodec_rank(str(f.get("vcodec") or "")),
-        float(f.get("tbr") or 0),
+        _site_float(f.get("tbr")),
     )
 
 
@@ -312,7 +321,7 @@ def _rung_spec(f: dict) -> str:
     own "1280x720" when only that is known, else ""."""
     h = f.get("height")
     if isinstance(h, (int, float)) and h > 0:
-        fps = float(f.get("fps") or 0)
+        fps = _site_float(f.get("fps"))
         fps_i = int(round(fps)) if fps else 0
         hdr = _is_hdr(f)
         return f"{int(h)}p{fps_i if fps_i > 30 else ''}{' HDR' if hdr else ''}"
@@ -370,7 +379,7 @@ def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
                 q = f.get("quality")
                 score = (lp if isinstance(lp, (int, float)) else -1,
                          q if isinstance(q, (int, float)) else 0,
-                         float(f.get("abr") or f.get("tbr") or 0))
+                         _site_float(f.get("abr") or f.get("tbr")))
                 if best_audio is None or score > best_audio[0]:
                     best_audio = (score, f)
             continue
@@ -417,12 +426,12 @@ def build_video_ladder(info: dict, *, max_bytes: int,
         _tb, top_approx = _fmt_bytes(top, duration)
         if not top_approx:
             continue
-        top_tbr = float(top.get("tbr") or 0)
+        top_tbr = _site_float(top.get("tbr"))
         for m in members[1:]:
             _b, approx = _fmt_bytes(m, duration)
             if approx:
                 continue
-            mt = float(m.get("tbr") or 0)
+            mt = _site_float(m.get("tbr"))
             if top_tbr and mt and abs(mt - top_tbr) / top_tbr <= _TIER_DEDUPE:
                 continue
             chosen.append(m)
@@ -486,7 +495,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     if merges:
         ab, a_approx = _fmt_bytes(audio_f, duration)
         ab_raw = ab
-        a_tbr = float(audio_f.get("abr") or audio_f.get("tbr") or 0)
+        a_tbr = _site_float(audio_f.get("abr") or audio_f.get("tbr"))
         if ab is not None and a_approx and approx_ratio is not None:
             try:
                 r = plausible_ratio(
@@ -496,14 +505,14 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
             except Exception:  # noqa: BLE001
                 pass
     approx = (vb + (ab or 0)) if vb is not None else None
-    v_tbr = float(f.get("tbr") or f.get("vbr") or 0)
+    v_tbr = _site_float(f.get("tbr") or f.get("vbr"))
     if v_tbr and v_approx and ratio:
         v_tbr *= ratio
     tbr = v_tbr + a_tbr
     vcodec = str(f["vcodec"]) if f.get("vcodec") else None
     acodec = str(f.get("acodec")) if has_audio else (
         str(audio_f["acodec"]) if merges and audio_f.get("acodec") else None)
-    fps = float(f.get("fps") or 0)
+    fps = _site_float(f.get("fps"))
     fps_i = int(round(fps)) if fps else None
     hdr = _is_hdr(f)
     h = f.get("height")
@@ -1262,10 +1271,15 @@ def _policy_check_info(info: dict) -> None:
             "live streams aren't supported — try again after the stream ends")
     max_dur = int(getattr(cfg, "URL_MAX_DURATION_S", 14400))
     dur = info.get("duration")
-    if dur is not None and float(dur) > max_dur:
-        raise UrlPolicyError(
-            f"this media runs {float(dur) / 3600:.1f} h — over the server's "
-            f"{max_dur / 3600:.1f} h limit for link downloads")
+    if dur is not None:
+        try:
+            dur_s = float(dur)
+        except OverflowError:  # an integer past float range is past any limit
+            dur_s = math.inf
+        if dur_s > max_dur:
+            raise UrlPolicyError(
+                f"this media runs {dur_s / 3600:.1f} h — over the server's "
+                f"{max_dur / 3600:.1f} h limit for link downloads")
     approx = info.get("filesize_approx") or info.get("filesize")
     if approx is not None and int(approx) > _effective_max_bytes():
         raise UrlPolicyError(_OVER_CAP_MSG)
@@ -1431,8 +1445,8 @@ def _finite_duration(value) -> "float | None":
     nan and land "at": nan in a JSON answer."""
     if value is None:
         return None
-    d = float(value)
-    return d if math.isfinite(d) and d > 0 else None
+    d = _float_or(value, None)
+    return d if d is not None and d > 0 else None
 
 
 # Far above any real audio track (24-bit/192 kHz stereo PCM is 9,216 kbps);
@@ -1694,6 +1708,13 @@ _STDERR_TAIL_MAX = 4096
 # rejected. Matched anywhere in a line, so site text can forge it: only
 # trusted when no result was found.
 _FILTERED_NEEDLE = b"does not pass filter"
+
+# Format ids one download tracks as legs: a merge names two (video, audio),
+# up to four when the selector falls back to other ids. Site text on stdout
+# (a title with escaped newlines in the "does not pass filter" line) can
+# forge progress lines with any number of ids, and every tracked leg costs
+# work on each later line.
+_MAX_PROGRESS_LEGS = 8
 # The stdout line yt-dlp's HTTP downloader prints when --max-filesize skips a
 # file (exit 0): in a merge the OTHER leg is left behind as an intermediate.
 # Matched as the WHOLE line: other lines carry site-controlled text that can
@@ -2090,6 +2111,12 @@ async def _run_yt_dlp(
     def _cumulative(parsed: "tuple[int, int | None, str | None]") -> "tuple[int, int | None]":
         nonlocal completed, last_downloaded, cur_leg
         downloaded, total, fid = parsed
+        # Past the cap a new id is site text, not a leg: its bytes still
+        # count as an unnamed series (the size cap below must see them),
+        # but it is not tracked, so each line's cost stays bounded.
+        if (fid is not None and fid != cur_leg and fid not in leg_done
+                and len(leg_done) >= _MAX_PROGRESS_LEGS):
+            fid = None
         # A named leg changes series when its id does — a counter that
         # drops INSIDE one leg is a retry that did not resume, not a new
         # file. Without ids the drop is the only signal, and only a merge

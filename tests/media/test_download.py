@@ -878,6 +878,19 @@ def test_probe_duration_drops_non_finite_values():
     assert udl._finite_duration("inf") is None
     assert udl._finite_duration(0) is None
     assert udl._finite_duration("61.5") == 61.5
+    # An integer past float range is no length either, not a 500.
+    assert udl._finite_duration(10**400) is None
+
+
+def test_probe_refuses_a_duration_past_float_range(monkeypatch):
+    """An integer duration past float range is past any length limit: the
+    probe refuses it as policy instead of failing with a 500."""
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "extractor_key": "Youtube", "title": "t",
+        "duration": 10**400, "ext": "m4a"})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    with pytest.raises(udl.UrlPolicyError, match="limit for link downloads"):
+        _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
 
 
 
@@ -2060,19 +2073,33 @@ def test_ladder_treats_an_absurd_site_bitrate_as_unknown_size():
     byte count, and scaled by a learned ratio it overflows to infinity."""
     hd = {"format_id": "hls-hd", "protocol": "m3u8_native", "vcodec": "avc1",
           "acodec": "none", "height": 720, "tbr": 1.5e303}
-    for tbr in (1.5e303, 1e308, float("inf"), float("nan")):
-        info = {"duration": 600.0, "formats": [dict(hd, tbr=tbr)]}
-        for ratio in (None, lambda fam: 1.0, lambda fam: 1.6):
-            rung = udl.build_video_ladder(info, max_bytes=10**9,
-                                          approx_ratio=ratio)[0]
-            assert rung["approx_bytes"] is None
-            assert rung["video_bytes"] is None
-            assert rung["tbr_kbps"] is None
-            assert rung["over_cap"] is False
+    for tbr in (1.5e303, 1e308, float("inf"), float("nan"), 10**400):
+        for duration in (600.0, None):
+            info = {"duration": duration, "formats": [dict(hd, tbr=tbr)]}
+            for ratio in (None, lambda fam: 1.0, lambda fam: 1.6):
+                rung = udl.build_video_ladder(info, max_bytes=10**9,
+                                              approx_ratio=ratio)[0]
+                assert rung["approx_bytes"] is None
+                assert rung["video_bytes"] is None
+                assert rung["tbr_kbps"] is None
+                assert rung["over_cap"] is False
     for fs in (float("inf"), float("nan"), 1e300, -5):
         b = udl.build_video_ladder({"ext": "mp4", "filesize": fs},
                                    max_bytes=10**9)[0]
         assert b["approx_bytes"] is None
+    # An integer fps or audio bitrate past float range reads as unknown
+    # too (an ISM manifest's Bitrate is int() of the site's digits).
+    for duration in (600.0, None):
+        rung = udl.build_video_ladder(
+            {"duration": duration, "formats": [
+                dict(hd, tbr=5_000.0, fps=10**400),
+                {"format_id": "aud", "protocol": "https", "vcodec": "none",
+                 "acodec": "mp4a.40.2", "abr": 10**400, "tbr": 10**400}]},
+            max_bytes=10**9)[0]
+        assert rung["format_id"] == "hls-hd"
+        assert rung["audio_format_id"] == "aud"
+        assert rung["fps"] is None
+        assert rung["label"] == "720p"
     # A real size and bitrate stay as they are.
     hd = dict(hd, tbr=5_000.0)
     rung = udl.build_video_ladder({"duration": 600.0, "formats": [hd]},

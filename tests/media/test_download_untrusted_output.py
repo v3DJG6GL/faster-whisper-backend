@@ -7,7 +7,59 @@ from __future__ import annotations
 import pytest
 
 from faster_whisper_backend.media import download as udl
-from tests.media.test_download import _fetch, _fetch_progress, _patch_argv
+from tests.media.test_download import (
+    _fetch, _fetch_progress, _patch_argv, _patch_video_argv)
+
+
+def _forged_legs_line(n: int, done: int) -> str:
+    # A site title with HTML-escaped newlines in yt-dlp's "does not pass
+    # filter" line: every forged row parses as a progress line naming a
+    # new format id.
+    rows = "".join(f"\ndl:{done} {done} NA f{i}" for i in range(n))
+    return f"[download] t{rows} does not pass filter (direct), skipping .."
+
+
+def test_download_video_tracks_a_bounded_number_of_forged_legs(tmp_path, monkeypatch):
+    # Each tracked leg costs work on every later progress line, so a flood
+    # of forged ids must not grow the bookkeeping (nor the byte count)
+    # past the cap.
+    _patch_video_argv(monkeypatch, f"""
+import os
+print({_forged_legs_line(50, 10)!r}, flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+""")
+    out, seen = _fetch_progress(udl.download_video, tmp_path)
+    assert out.endswith("media.mkv")
+    assert len(seen) == 50
+    assert max(d for _f, _t, d in seen) <= 10 * (udl._MAX_PROGRESS_LEGS + 1)
+
+
+def test_download_video_size_cap_still_sees_a_real_leg_after_forged_legs(
+        tmp_path, monkeypatch):
+    # Past the cap a new id is not tracked as a leg, but its bytes still
+    # count: forged rows first must not blind the in-flight size check.
+    _patch_video_argv(monkeypatch, f"""
+import os
+print({_forged_legs_line(50, 0)!r}, flush=True)
+print("dl:5000 NA NA 137", flush=True)
+print("dl:20000 NA NA 137", flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+""")
+    with pytest.raises(udl.UrlPolicyError, match="size limit"):
+        _fetch(udl.download_video, tmp_path, max_bytes=10_000)
+
+
+def test_download_video_two_named_legs_after_the_cap_count_in_full(tmp_path, monkeypatch):
+    _patch_video_argv(monkeypatch, f"""
+import os
+print({_forged_legs_line(20, 0)!r}, flush=True)
+for ln in ("dl:500 1000 NA 137", "dl:1000 1000 NA 137",
+           "dl:100 300 NA 140", "dl:300 300 NA 140"):
+    print(ln, flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+""")
+    _, seen = _fetch_progress(udl.download_video, tmp_path)
+    assert [d for _f, _t, d in seen][-4:] == [500, 1000, 1100, 1300], seen
 
 
 def test_download_over_long_filtered_line_is_still_a_policy_refusal(tmp_path, monkeypatch):
