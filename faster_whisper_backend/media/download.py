@@ -178,6 +178,23 @@ _VIDEO_FILE_EXTS = ("mp4", "mkv", "webm", "mov", "m4v", "avi", "ts", "flv", "mpg
 # is learned per extractor and protocol family (stage_rates has no seed for
 # it: an unmeasured site shows the site's own numbers, marked approximate).
 RATIO_STAGE = "dlratio"
+# Real sites land at 0.3-1.5. The estimate is the site's own claim (bitrate
+# or approximate size), and the learned ratio is shared by every user of the
+# extractor + protocol family: a sample or stored row outside this band is
+# dropped, not clamped, so one far-off manifest cannot price that key's
+# every rung over the size cap.
+RATIO_BAND = (0.1, 10.0)
+
+
+def plausible_ratio(r) -> "float | None":
+    """`r` as a float when it is a believable actual/estimated byte ratio,
+    else None."""
+    try:
+        r = float(r)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return r if math.isfinite(r) and RATIO_BAND[0] <= r <= RATIO_BAND[1] else None
+
 
 # yt-dlp codec ids, ranked the way its default sort ranks them within a
 # height (av01 > vp9 > hevc > avc1 > vp8).
@@ -434,8 +451,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     ratio = None
     if v_approx and approx_ratio is not None:
         try:
-            r = approx_ratio(fam)
-            ratio = float(r) if r and r > 0 else None
+            ratio = plausible_ratio(approx_ratio(fam))
         except Exception:  # noqa: BLE001 — a ledger hiccup never breaks a preview
             ratio = None
     # The estimate BEFORE the learned ratio: the recorder measures the real
@@ -460,9 +476,10 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
         a_tbr = float(audio_f.get("abr") or audio_f.get("tbr") or 0)
         if ab is not None and a_approx and approx_ratio is not None:
             try:
-                r = approx_ratio(protocol_family(audio_f.get("protocol")))
-                if r and r > 0:
-                    ab = int(ab * float(r))
+                r = plausible_ratio(
+                    approx_ratio(protocol_family(audio_f.get("protocol"))))
+                if r:
+                    ab = int(ab * r)
             except Exception:  # noqa: BLE001
                 pass
     approx = (vb + (ab or 0)) if vb is not None else None

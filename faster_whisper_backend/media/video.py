@@ -187,16 +187,21 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
             # one the EWMA settles on sqrt(true ratio) instead of the ratio.
             _raw = rung.get("raw_approx_bytes") or _est
             if rung.get("bytes_approx") and _raw and size > 0:
-                from faster_whisper_backend.runtime import stage_rates as _rates
-                # Off the loop: record() takes the ledger's lock and its
-                # cross-worker file lock (up to 15 s) and fsyncs a rewrite.
-                await asyncio.to_thread(
-                    _rates.record, _udl.RATIO_STAGE, rung.get("extractor"),
-                    rung.get("protocol"), None, size / float(_raw))
+                _ratio = size / float(_raw)
+                # The estimate is the site's own claim and the ledger row is
+                # shared: a ratio no real site lands at is not learned.
+                _learn = _udl.plausible_ratio(_ratio) is not None
+                if _learn:
+                    from faster_whisper_backend.runtime import stage_rates as _rates
+                    # Off the loop: record() takes the ledger's lock and its
+                    # cross-worker file lock (up to 15 s) and fsyncs a rewrite.
+                    await asyncio.to_thread(
+                        _rates.record, _udl.RATIO_STAGE, rung.get("extractor"),
+                        rung.get("protocol"), None, _ratio)
                 logger.info("[url-dl] video estimate %.1f MB → actual %.1f MB "
-                            "(ratio %.2f, %s/%s)", (_est or _raw) / 1e6, size / 1e6,
-                            size / float(_raw), rung.get("extractor"),
-                            rung.get("protocol"))
+                            "(ratio %.2f, %s/%s)%s", (_est or _raw) / 1e6, size / 1e6,
+                            _ratio, rung.get("extractor"), rung.get("protocol"),
+                            "" if _learn else " — outside the plausible band, not learned")
             mid = await asyncio.to_thread(
                 url_media_store.register, path, user_id=user_id, kind="video",
                 protect=({protect} if protect else None))
