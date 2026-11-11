@@ -2189,6 +2189,86 @@ def test_guard_charges_f4m_base_url_per_node(monkeypatch, positional):
     assert len(parse(_f4m(_f4m_media(200)), long_base + "/m.f4m")) == 200
 
 
+def test_guard_charges_chained_f4m_set_addresses(monkeypatch):
+    """With no <baseURL>, yt-dlp joins each relative node onto the directory
+    of the PREVIOUS node's address, so `d{i}/v` urls chain and grow: N nodes
+    of L bytes build ~N^2 * L / 2 (2000 x 500 bytes: ~1 GB from a 1 MB
+    document)."""
+    media = "".join(f'<media url="{"A" * 500}{i}/v" bitrate="{i + 1}"/>'
+                    for i in range(_hls_cap()))
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        _parse_f4m(_f4m(media, bootstrap=False))
+    _reset_budget()
+    monkeypatch.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 10_000_000)
+    media = "".join(f'<media url="{"A" * 40}{i}/v" bitrate="{i + 1}"/>'
+                    for i in range(1000))  # ~23 MB of addresses, 50 KB of XML
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        _parse_f4m(_f4m(media, bootstrap=False))
+
+
+_F4M2_NS = "http://ns.adobe.com/f4m/2.0"
+_LONG_DIR_QUERY = "http://cdn.example/a/m.f4m?sig=x/y/z"
+
+
+@pytest.mark.parametrize("manifest_url,xml", [
+    ("http://cdn.example/m.f4m", _f4m(
+        "".join(f'<media url="https://o{i}.example/p/v{i}.flv" bitrate="{i + 1}"/>'
+                for i in range(5)), bootstrap=False)),
+    (_LONG_DIR_QUERY, _f4m(_f4m_media(5), bootstrap=False)),
+    ("http://cdn.example/a/m.f4m", _f4m(_f4m_media(6, url="d{i}/e/v"),
+                                        bootstrap=False)),
+    ("http://cdn.example/a/m.f4m", _f4m(
+        '<media url="x/y" bitrate="1"/><media url="http://o.example/q/r" bitrate="2"/>'
+        '<media url="s/" bitrate="3"/><media url="t" bitrate="4"/>'
+        '<media url="u/v/w" bitrate="5"/><media url="https://o.example" bitrate="6"/>'
+        '<media url="z" bitrate="7"/>', bootstrap=False)),
+    ("http://cdn.example/a/m.f4m", _f4m(
+        "<baseURL>  http://b.example/vod  </baseURL>"
+        + _f4m_media(4, url="d{i}/v"), bootstrap=False)),
+    ("http://cdn.example/a/m.f4m", _f4m(
+        "<baseURL>  </baseURL>" + _f4m_media(4, url="d{i}/v"), bootstrap=False)),
+    ("http://cdn.example/a/m.f4m",
+     f'<?xml version="1.0"?><manifest xmlns="{_F4M2_NS}"><id>x</id>'
+     '<media href="h0/v" url="u0" bitrate="1"/><media url="u1/w" bitrate="2"/>'
+     '<media href="" url="u2" bitrate="3"/><media href="h3/v" bitrate="4"/>'
+     '</manifest>'),
+    ("http://cdn.example/a/m.f4m", _f4m(
+        '<media url="http://o.example/enc/v" drmAdditionalHeaderId="k" bitrate="1"/>'
+        '<media url="e1/v" bitrate="2"/><media url="" bitrate="3"/>'
+        '<media url="e3/v" drmAdditionalHeaderSetId="k" bitrate="4"/>'
+        '<media url="e4/v" bitrate="5"/>', bootstrap=False)),
+    ("http://cdn.example/a/m.f4m", _f4m(
+        '<media url="n0/c.f4m" bitrate="1"/><media url="n1/c.m3u8" bitrate="2"/>'
+        '<media url="n2/v" bitrate="3"/>', bootstrap=False)),
+    ("m.f4m", _f4m(_f4m_media(3, url="d{i}/v"), bootstrap=False)),
+    ("", _f4m(_f4m_media(3, url="d{i}/v"), bootstrap=False)),
+], ids=["absolute", "flat-query-slash", "chain", "mixed", "baseurl",
+        "empty-baseurl", "f4m2-href", "encrypted-empty", "nested",
+        "no-slash-url", "empty-url"])
+def test_guard_charges_f4m_set_addresses_as_yt_dlp_builds_them(manifest_url, xml):
+    """The set-level charge is sized arithmetically, never built: it must
+    equal the bytes of the addresses yt-dlp then builds, node by node."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    nested = []
+
+    def _child(self, url, video_id, *a, **kw):
+        nested.append(url)
+        return []
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        ie._extract_f4m_formats = types.MethodType(_child, ie)
+        ie._extract_m3u8_formats = types.MethodType(_child, ie)
+        dials = _registered_guard()["_DIALS"]
+        dials.tls.url_bytes = 0
+        fmts = ie._parse_f4m_formats(compat_etree_fromstring(xml.encode()),
+                                     manifest_url, "x")
+    built = sum(len(f["url"]) for f in fmts) + sum(len(u) for u in nested)
+    assert built > 0
+    assert dials.tls.url_bytes == built
+
+
 def test_guard_is_not_installed_without_the_f4m_bound(monkeypatch):
     from yt_dlp.extractor.common import InfoExtractor
     guard = _inproc_guard()
@@ -2260,6 +2340,216 @@ def test_guard_is_not_installed_without_the_f4m_fragment_bound(monkeypatch):
         assert not guard.is_installed()
     with monkeypatch.context() as m:  # a yt-dlp that renamed the function
         m.delattr(f4m, "build_fragments_list")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+# ---- SMIL: _parse_smil_formats_and_subtitles makes one format per distinct
+# src (video / audio / media / imagestream), joins each relative one onto the
+# page's <meta base> as a fresh copy, and fetches every src naming an HLS /
+# HDS / DASH / Smooth Streaming manifest. The guard counts the srcs, sizes the
+# addresses and counts the nested manifests before the parse.
+
+_SMIL_NS = "http://www.w3.org/2005/SMIL21/Language"
+
+
+def _smil(body, *, base=None, ns=None):
+    head = f'<head><meta base="{base}"/></head>' if base else ""
+    xmlns = f' xmlns="{ns}"' if ns else ""
+    return f"<smil{xmlns}>{head}<body><switch>{body}</switch></body></smil>"
+
+
+def _parse_smil(xml, smil_url="http://cdn.example/v.smil", **stubs):
+    """InfoExtractor._parse_smil on `xml`, with the named methods of the
+    extractor replaced by `stubs` (the nested-manifest fetches)."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        for name, fn in stubs.items():
+            setattr(ie, name, types.MethodType(fn, ie))
+        return ie._parse_smil(compat_etree_fromstring(xml.encode()), smil_url, "x")
+
+
+def test_guard_charges_smil_addresses_before_building_them(monkeypatch):
+    """Every relative src is urljoined onto <meta base> as a fresh copy:
+    1 000 srcs under a 1 MB base build ~1 GB from a ~1 MB document."""
+    monkeypatch.setitem(_registered_guard(), "_MAX_FRAGMENT_URL_BYTES", 10_000_000)
+    base = "http://cdn.example/" + "p" * 100_000
+    body = "".join(f'<video src="v{i}.mp4"/>' for i in range(200))  # ~20 MB
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        _parse_smil(_smil(body, base=base))
+
+
+def test_guard_refuses_a_smil_listing_too_many_formats():
+    cap = _hls_cap()
+    rtmp = "".join(f'<video src="mp4:v{i}.mp4"/>' for i in range(cap + 1))
+    with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {cap}"):
+        _parse_smil(_smil(rtmp, base="rtmp://cdn.example/app"))
+    # yt-dlp shares one set of srcs between media and storyboards.
+    _reset_budget()
+    half = cap // 2
+    mixed = ("".join(f'<video src="v{i}.mp4"/>' for i in range(half))
+             + "".join(f'<imagestream src="i{i}.jpg"/>' for i in range(cap + 1 - half)))
+    with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {cap}"):
+        _parse_smil(_smil(mixed))
+    # A src listed twice is one format.
+    _reset_budget()
+    twice = "".join(f'<video src="v{i % cap}.mp4"/>' for i in range(cap + 1))
+    assert len(_parse_smil(_smil(twice))["formats"]) == cap
+
+
+@pytest.mark.parametrize("make", [
+    lambda i: f'<video src="c{i}.m3u8"/>',
+    lambda i: f'<video src="c{i}.ts" proto="m3u8"/>',
+    lambda i: f'<video src="p/c-{i}" ext="mpd"/>',
+    lambda i: f'<audio src="c{i}.f4m"/>',
+    lambda i: f'<media src="c{i}.ism/Manifest" ext="mp4"/>',
+], ids=["m3u8", "proto", "ext-attr", "f4m", "ism"])
+def test_guard_counts_smil_nested_manifests(make):
+    fetched = []
+
+    def _child(self, url, *a, **kw):
+        fetched.append(url)
+        return [], {}
+
+    def _f4m_child(self, url, *a, **kw):
+        fetched.append(url)
+        return []
+    nested = _registered_guard()["_MAX_F4M_NESTED"]
+    stubs = {"_extract_m3u8_formats_and_subtitles": _child,
+             "_extract_mpd_formats_and_subtitles": _child,
+             "_extract_ism_formats_and_subtitles": _child,
+             "_extract_f4m_formats": _f4m_child}
+    with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {nested}"):
+        _parse_smil(_smil("".join(make(i) for i in range(nested + 1))), **stubs)
+    assert fetched == []
+    # Within the cap every one is still fetched.
+    _reset_budget()
+    _parse_smil(_smil("".join(make(i) for i in range(nested))), **stubs)
+    assert len(fetched) == nested
+
+
+def test_guard_counts_a_smil_base_that_names_an_ism_manifest():
+    fetched = []
+
+    def _child(self, url, *a, **kw):
+        fetched.append(url)
+        return [], {}
+    nested = _registered_guard()["_MAX_F4M_NESTED"]
+    body = "".join(f'<video src="../Manifest?i={i}" ext="mp4"/>' for i in range(nested + 1))
+    with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {nested}"):
+        _parse_smil(_smil(body, base="http://cdn.example/s.ism/z"),
+                    _extract_ism_formats_and_subtitles=_child)
+    assert fetched == []
+
+
+def test_guard_admits_a_real_smil():
+    real = _smil("".join(
+        f'<video src="clip_{b}.mp4" system-bitrate="{b}000" width="640" '
+        'height="360"/>' for b in (400, 800, 1200, 2000)),
+        base="http://cdn.example/vod", ns=_SMIL_NS)
+    info = _parse_smil(real)
+    assert [f["format_id"] for f in info["formats"]] == [
+        "http-400", "http-800", "http-1200", "http-2000"]
+    assert info["formats"][0]["url"] == "http://cdn.example/vod/clip_400.mp4"
+    dials = _registered_guard()["_DIALS"]
+    assert dials.tls.variants == 4 and 0 < dials.tls.url_bytes < 1000
+    rtmp = _smil('<video src="mp4:a.mp4" system-bitrate="500000"/>'
+                 '<video src="mp4:b.mp4" system-bitrate="900000"/>',
+                 base="rtmp://cdn.example/app")
+    assert [(f["url"], f["play_path"]) for f in _parse_smil(rtmp)["formats"]] == [
+        ("rtmp://cdn.example/app", "mp4:a.mp4"), ("rtmp://cdn.example/app", "mp4:b.mp4")]
+
+
+def test_guard_bounds_smil_parsed_positionally():
+    """MediasetIE overrides the parse and hands every argument to yt-dlp's
+    positionally."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    cap = _hls_cap()
+    doc = compat_etree_fromstring(_smil(
+        "".join(f'<video src="v{i}.mp4"/>' for i in range(cap + 1)),
+        ns=_SMIL_NS).encode())
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {cap}"):
+            ie._parse_smil_formats_and_subtitles(
+                doc, "http://cdn.example/v.smil", "x", _SMIL_NS, None, None)
+
+
+def test_guard_is_not_installed_without_the_smil_bound(monkeypatch):
+    from yt_dlp.extractor.common import InfoExtractor
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(InfoExtractor, "_parse_smil_formats_and_subtitles",
+                  lambda self, *a, **kw: ([], {}))
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(InfoExtractor, "_parse_smil_formats_and_subtitles")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+# ---- Every builder's formats (HTML5 <source> tags, JW Player, XSPF, ...)
+# then go through YoutubeDL's format pass at ~0.5 ms each. The formats one
+# extraction hands it are counted, across its entries, before each pass.
+
+def _videos(n_entries, n_formats):
+    return {"_type": "playlist", "id": "p", "title": "p", "extractor": "generic",
+            "extractor_key": "Generic", "webpage_url": "http://cdn.example/p",
+            "entries": [{
+                "id": f"e{e}", "title": f"e{e}", "extractor": "generic",
+                "extractor_key": "Generic", "webpage_url": "http://cdn.example/p",
+                "formats": [{"url": f"http://cdn.example/{e}/{i}.mp4",
+                             "format_id": f"f{i}", "ext": "mp4"}
+                            for i in range(n_formats)]}
+                for e in range(n_entries)]}
+
+
+def test_guard_caps_formats_across_one_extraction(monkeypatch):
+    guard = _registered_guard()
+    assert guard["_MAX_EXTRACTION_FORMATS"] == guard["_MAX_MPD_REPRESENTATIONS"]
+    monkeypatch.setitem(guard, "_MAX_EXTRACTION_FORMATS", 50)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        # yt-dlp reports a failed entry as a DownloadError.
+        with pytest.raises(yt_dlp.utils.DownloadError, match="more than 50"):
+            ydl.process_ie_result(_videos(2, 26), download=False)
+        # The first entry's 26 formats passed; only the second was refused.
+        assert _registered_guard()["_DIALS"].tls.processed_formats == 26
+    # At the cap it passes, and the next extraction starts afresh.
+    _reset_budget()
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        res = ydl.process_ie_result(_videos(2, 25), download=False)
+        assert [len(e["formats"]) for e in res["entries"]] == [25, 25]
+
+
+def test_guard_does_not_charge_the_format_pass_to_the_manifest_budget(monkeypatch):
+    """DASH and HLS formats are charged once, where their manifest is parsed:
+    the format pass keeps its own count."""
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_REPRESENTATIONS", 30)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        ydl.process_ie_result(_videos(1, 40), download=False)
+    assert _registered_guard()["_DIALS"].tls.variants == 0
+
+
+def test_guard_is_not_installed_without_the_format_pass_bound(monkeypatch):
+    from yt_dlp.YoutubeDL import YoutubeDL
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.setattr(YoutubeDL, "process_video_result",
+                  lambda self, info_dict, download=True: info_dict)
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the method
+        m.delattr(YoutubeDL, "process_video_result")
         assert not guard.is_installed()
         guard.install()  # nothing to bound: still fails closed
         assert not guard.is_installed()

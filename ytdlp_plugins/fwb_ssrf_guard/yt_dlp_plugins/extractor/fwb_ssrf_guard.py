@@ -213,6 +213,7 @@ def reset_budget() -> None:
     _DIALS.tls.variants = 0
     _DIALS.tls.f4m_nested = 0
     _DIALS.tls.url_bytes = 0
+    _DIALS.tls.processed_formats = 0
 
 
 def _observe(sock) -> None:
@@ -1123,8 +1124,9 @@ def _refuse_oversized_f4m(manifest, manifest_url: str = "") -> None:
     if not isinstance(manifest, xml.etree.ElementTree.Element):
         return  # yt-dlp returns or fails on its own, before any node
     # yt-dlp's choice: the 1.0 nodes, else the 2.0 ones.
-    nodes = (manifest.findall(_F4M_NAMESPACES[0] + "media")
-             or manifest.findall(_F4M_NAMESPACES[1] + "media"))
+    nodes = manifest.findall(_F4M_NAMESPACES[0] + "media")
+    v2 = not nodes
+    nodes = nodes or manifest.findall(_F4M_NAMESPACES[1] + "media")
     if len(nodes) > _MAX_M3U8_FORMATS:
         raise _too_many_variants(_MAX_M3U8_FORMATS)
     if any(manifest.find(ns + "bootstrapInfo") is not None
@@ -1140,12 +1142,32 @@ def _refuse_oversized_f4m(manifest, manifest_url: str = "") -> None:
     total = getattr(_DIALS.tls, "f4m_nested", 0) + nested
     if total > _MAX_F4M_NESTED:
         raise _too_many_variants(_MAX_F4M_NESTED)
-    from yt_dlp.downloader.f4m import get_base_url
-    # Each node's address is a fresh <baseURL> (else the manifest URL's
-    # directory, counted whole here) + "/" + its url. A nested child's own
-    # variants are charged where its master is parsed, so none is counted here.
-    base = get_base_url(manifest) or manifest_url
-    _charge(0, 0, len(nodes) * (len(base) + 1))
+    from yt_dlp.downloader.f4m import get_base_url, remove_encrypted_media
+    # Each node's address is a fresh <baseURL> + "/" + its url or, without
+    # one, the directory of the PREVIOUS node's address + "/" + its url
+    # (yt-dlp reassigns manifest_url in its loop), so relative urls holding
+    # a "/" chain and grow: 2000 nodes of 500 bytes build ~1 GB. Sized by
+    # length only, in yt-dlp's order over the nodes it keeps, never built.
+    # A nested child's own variants are charged where its master is parsed,
+    # so none is counted here.
+    base = get_base_url(manifest)
+    dir_len = max(manifest_url.rfind("/"), 0)
+    url_bytes = 0
+    for node in remove_encrypted_media(nodes):
+        media = node.get("href") if v2 else None
+        if media is None:
+            media = node.get("url")
+        if not media:
+            continue  # skipped before the reassignment
+        cut = media.rfind("/")
+        if media.startswith(("http://", "https://")):
+            url_bytes += len(media)
+            dir_len = cut
+        else:
+            head = len(base) if base else dir_len
+            url_bytes += head + 1 + len(media)
+            dir_len = head + 1 + cut if cut >= 0 else head
+    _charge(0, 0, url_bytes)
     _DIALS.tls.f4m_nested = total
 
 
@@ -1222,6 +1244,143 @@ def _f4m_fragments_are_bounded() -> bool:
     from yt_dlp.downloader import f4m
     return getattr(getattr(f4m, "build_fragments_list", None),
                    _F4M_FRAGMENTS_SENTINEL, False)
+
+
+# SMIL: _parse_smil_formats_and_subtitles (GenericIE sends any page whose XML
+# root is <smil> there) makes one format per distinct src of the <video>,
+# <audio>, <media> and <imagestream> nodes, joins each relative one onto the
+# <meta base> as a fresh copy (1 000 srcs under a 1 MB base: ~1 GB), and
+# fetches and parses every src naming an HLS / HDS / DASH / Smooth Streaming
+# manifest. The srcs are counted against the HLS format cap, their addresses
+# sized against the extraction's budget, and the nested manifests counted
+# with HDS's, all before the parse. Real SMIL lists a handful of bitrates
+# under a short base.
+_SMIL_SENTINEL = "_fwb_smil_bounded"
+_SMIL_PATHS = (".//video", ".//audio", ".//media")
+_SMIL_NESTED_EXTS = ("m3u8", "f4m", "mpd")
+_ISM_MANIFEST = re.compile(r"\.ism/[Mm]anifest")
+
+
+def _refuse_oversized_smil(ie, smil, smil_url, namespace) -> None:
+    if not isinstance(smil, xml.etree.ElementTree.Element):
+        return  # yt-dlp fails on its own, before any node
+    from yt_dlp.utils import determine_ext
+    base = smil_url if isinstance(smil_url, str) else ""
+    for meta in smil.findall(ie._xpath_ns("./head/meta", namespace)):
+        b = meta.get("base") or meta.get("httpBase")
+        if b:
+            base = b
+            break
+    paths = [(path, False) for path in _SMIL_PATHS] + [(".//imagestream", True)]
+    # yt-dlp keeps the first node per src, media before storyboards.
+    srcs = {}
+    for path, image in paths:
+        for node in smil.findall(ie._xpath_ns(path, namespace)):
+            src = node.get("src")
+            if not src or src in srcs:
+                continue
+            srcs[src] = None if image else node
+            if len(srcs) > _MAX_M3U8_FORMATS:
+                raise _too_many_variants(_MAX_M3U8_FORMATS)
+    # A relative src is a fresh urljoin(base + "/", src), at most that long
+    # (an .f4m one gains a short query); an absolute one, an rtmp play_path
+    # or a storyboard is a slice of the document, counted all the same.
+    url_bytes = sum(len(src) if src.startswith("http") else len(base) + 1 + len(src)
+                    for src in srcs)
+    if getattr(_DIALS.tls, "url_bytes", 0) + url_bytes > _MAX_FRAGMENT_URL_BYTES:
+        raise _too_much_url()
+    # Which srcs yt-dlp fetches as a manifest, decided as it decides: by the
+    # address it joins (a base under ".ism/Manifest" makes every relative
+    # src one), so each is joined once here; the budget check above bounds
+    # what that copies. An rtmp src and a storyboard are never fetched.
+    nested, joined_base = 0, f"{base}/"
+    for src, node in srcs.items():
+        if node is None:
+            continue  # a storyboard
+        streamer = node.get("streamer") or base
+        proto = node.get("proto")
+        if proto == "rtmp" or streamer.startswith("rtmp"):
+            continue
+        src_url = (src if src.startswith("http")
+                   else urllib.parse.urljoin(joined_base, src)).strip()
+        if (proto == "m3u8"
+                or (determine_ext(src, default_ext=None) or node.get("ext"))
+                in _SMIL_NESTED_EXTS
+                or _ISM_MANIFEST.search(src_url)):
+            nested += 1
+    total = getattr(_DIALS.tls, "f4m_nested", 0) + nested
+    if total > _MAX_F4M_NESTED:
+        raise _too_many_variants(_MAX_F4M_NESTED)
+    _charge(0, len(srcs), url_bytes)
+    _DIALS.tls.f4m_nested = total
+
+
+def _bounded_smil(original):
+    def _parse_smil_formats_and_subtitles(self, smil, *args, **kwargs):
+        # yt-dlp's signature, which MediasetIE passes on positionally:
+        # (smil, smil_url, video_id, namespace=None, f4m_params=None,
+        #  transform_rtmp_url=None).
+        url = args[0] if args else kwargs.get("smil_url")
+        namespace = args[2] if len(args) > 2 else kwargs.get("namespace")
+        _refuse_oversized_smil(self, smil, url, namespace)
+        return original(self, smil, *args, **kwargs)
+    setattr(_parse_smil_formats_and_subtitles, _SMIL_SENTINEL, True)
+    return _parse_smil_formats_and_subtitles
+
+
+def _bound_smil_formats() -> None:
+    from yt_dlp.extractor.common import InfoExtractor
+    current = getattr(InfoExtractor, "_parse_smil_formats_and_subtitles", None)
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _SMIL_SENTINEL, False):
+        InfoExtractor._parse_smil_formats_and_subtitles = _bounded_smil(current)
+
+
+def _smil_formats_are_bounded() -> bool:
+    from yt_dlp.extractor.common import InfoExtractor
+    return getattr(getattr(InfoExtractor, "_parse_smil_formats_and_subtitles", None),
+                   _SMIL_SENTINEL, False)
+
+
+# Every format any builder made (HTML5 <source> tags, JW Player, XSPF, and
+# the manifests above) then goes through YoutubeDL.process_video_result's
+# sort / select / sanitize pass at ~0.5 ms each, once per entry of the
+# result. The formats one extraction hands that pass are counted, across its
+# entries, before each pass: ~10 s of CPU at the cap. A count of its own:
+# the manifest formats were already charged where they were parsed, and a
+# DASH stream of up to _MAX_MPD_REPRESENTATIONS must still pass.
+_MAX_EXTRACTION_FORMATS = _MAX_MPD_REPRESENTATIONS
+_FORMAT_PASS_SENTINEL = "_fwb_format_pass_bounded"
+
+
+def _bounded_process_video_result(original):
+    def process_video_result(self, info_dict, *args, **kwargs):
+        formats = info_dict.get("formats") if isinstance(info_dict, dict) else None
+        try:
+            count = len(formats) if formats is not None else 0
+        except TypeError:
+            count = 0  # yt-dlp fails on its own
+        total = getattr(_DIALS.tls, "processed_formats", 0) + count
+        if total > _MAX_EXTRACTION_FORMATS:
+            raise _too_many_variants(_MAX_EXTRACTION_FORMATS)
+        _DIALS.tls.processed_formats = total
+        return original(self, info_dict, *args, **kwargs)
+    setattr(process_video_result, _FORMAT_PASS_SENTINEL, True)
+    return process_video_result
+
+
+def _bound_format_pass() -> None:
+    from yt_dlp.YoutubeDL import YoutubeDL
+    current = getattr(YoutubeDL, "process_video_result", None)
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _FORMAT_PASS_SENTINEL, False):
+        YoutubeDL.process_video_result = _bounded_process_video_result(current)
+
+
+def _format_pass_is_bounded() -> bool:
+    from yt_dlp.YoutubeDL import YoutubeDL
+    return getattr(getattr(YoutubeDL, "process_video_result", None),
+                   _FORMAT_PASS_SENTINEL, False)
 
 
 # What a page builds before any count above sees it. GenericIE parses every
@@ -1470,6 +1629,8 @@ def install() -> None:
     _bound_hls_fragments()
     _bound_f4m_formats()
     _bound_f4m_fragments()
+    _bound_smil_formats()
+    _bound_format_pass()
     _bound_etree_parses()
     _bound_json_parses()
     _bound_ffmpeg_inputs()
@@ -1488,7 +1649,9 @@ def is_installed() -> bool:
     variants and lines before it builds their formats, an HLS media
     playlist's segments before HlsFD expands them, an HDS manifest's nodes
     and nested manifests before it builds their formats, an HDS bootstrap's
-    fragments before F4mFD expands them, an XML document's elements and
+    fragments before F4mFD expands them, a SMIL document's srcs, addresses
+    and nested manifests before it builds their formats, the formats of one
+    extraction before each format pass, an XML document's elements and
     a JSON document's arrays and objects before either is parsed, and every
     ffmpeg / ffprobe a postprocessor spawns carries the format whitelist."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
@@ -1502,6 +1665,8 @@ def is_installed() -> bool:
             and _hls_fragments_are_bounded()
             and _f4m_formats_are_bounded()
             and _f4m_fragments_are_bounded()
+            and _smil_formats_are_bounded()
+            and _format_pass_is_bounded()
             and _etree_parses_are_bounded()
             and _json_parses_are_bounded()
             and _ffmpeg_inputs_are_bounded())
