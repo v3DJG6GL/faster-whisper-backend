@@ -215,6 +215,33 @@ _VAD_THRESHOLD_BOUNDS = _client_bounds("vad_threshold")
 # CTranslate2 and takes the whole server down.
 _SUPPRESS_TOKENS_MAX = 256
 _SUPPRESS_TOKEN_ID_MAX = settings_schema.SUPPRESS_TOKEN_ID_MAX
+# That bound is the largest Whisper vocabulary (large-v3's). A multilingual
+# vocabulary is 50259 text / end / start ids, one id per language, 6 control
+# ids and 1501 timestamps (large-v2 / small: 99 languages, 51865 tokens;
+# large-v3 / turbo: 100, 51866); the English-only models have 51864 tokens.
+_SUPPRESS_VOCAB_BASE = 51766
+_SUPPRESS_VOCAB_EN = 51864
+
+
+def _model_suppress_id_max(model) -> int:
+    """One past the loaded model's largest token id, from the CTranslate2
+    model's own attributes; never looser than the global bound. Falls back to
+    the global bound for any model that does not expose them (a stub, an
+    unloaded model). Not the HF tokenizer's size: its tokenizer.json has no
+    timestamp tokens, so it would drop real timestamp ids on large-v2."""
+    inner = getattr(model, "model", None)
+    try:
+        multilingual = inner.is_multilingual
+        if multilingual is False:
+            return min(_SUPPRESS_TOKEN_ID_MAX, _SUPPRESS_VOCAB_EN)
+        n = inner.num_languages
+        if multilingual is True and isinstance(n, int) and n > 0:
+            return min(_SUPPRESS_TOKEN_ID_MAX, _SUPPRESS_VOCAB_BASE + n)
+    except Exception:  # noqa: BLE001 - stub / unloaded model
+        pass
+    return _SUPPRESS_TOKEN_ID_MAX
+
+
 # A client temperature is a number or a retry ladder (list / comma string,
 # like TEMPERATURE): every rung clamped to this range, at most this many rungs.
 _TEMPERATURE_BOUNDS = (0.0, 1.0)
@@ -277,11 +304,14 @@ def _clamp_context_segments(v: "int | None") -> "int | None":
     return _clamp_int(v, b["min"], b["max"])
 
 
-def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
+def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None,
+                            id_max=_SUPPRESS_TOKEN_ID_MAX):
     """Merge clamped per-request decode overrides into transcribe_kwargs (request
     wins). Unknown keys and unparseable values are ignored. Keys LOCKED by an
     identity layer (``ident.locked_client_keys``) are dropped before clamping —
-    the admin-set value stands and the client override is ignored."""
+    the admin-set value stands and the client override is ignored.
+    ``id_max`` is one past the largest suppress_tokens id kept (the loaded
+    model's vocabulary, see _model_suppress_id_max)."""
     if not isinstance(overrides, dict) or not overrides:
         return kwargs
     locked_client_keys = ident.locked_client_keys if ident is not None else frozenset()
@@ -327,7 +357,7 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             ids = None
         if ids is not None:
             ids = [i for i in ids[:_SUPPRESS_TOKENS_MAX]
-                   if -1 <= i < _SUPPRESS_TOKEN_ID_MAX]
+                   if -1 <= i < id_max]
             if ids:
                 kwargs["suppress_tokens"] = ids
             elif not (st.strip() if isinstance(st, str) else st):
@@ -466,6 +496,7 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     if _suppress_blank is False:
         transcribe_kwargs["suppress_blank"] = False
     _suppress_tokens_str = cf("SUPPRESS_TOKENS")
+    id_max = _model_suppress_id_max(model)
     # An explicitly blank SUPPRESS_TOKENS (profile / per-model / global) is
     # "suppress nothing" — faster-whisper's spelling is None, which the
     # SUPPRESS_CHARS merge below reads as "cleared".
@@ -480,7 +511,7 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
             # A value stored before the vocabulary bound existed (env, a
             # legacy file) can still hold an id CTranslate2 crashes on: drop
             # it here too. Nothing left in range means "not set", not a clear.
-            ids = [i for i in ids if -1 <= i < _SUPPRESS_TOKEN_ID_MAX]
+            ids = [i for i in ids if -1 <= i < id_max]
             if ids:
                 transcribe_kwargs["suppress_tokens"] = ids
         else:
@@ -496,7 +527,8 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         v = cf(field)
         if v is not None and v != default:
             transcribe_kwargs[key] = v
-    _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
+    _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident,
+                            id_max=id_max)
     # A client hallucination_silence_threshold of 0 is "off" too (see above).
     if not transcribe_kwargs.get("hallucination_silence_threshold"):
         transcribe_kwargs.pop("hallucination_silence_threshold", None)
