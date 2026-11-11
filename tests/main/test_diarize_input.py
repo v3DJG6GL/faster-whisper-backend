@@ -6,6 +6,7 @@ gives it a private 16 kHz mono WAV instead: its input then costs what the
 transcription's own decode costs, whatever the upload's shape. pyannote is
 never imported — diarize() is stubbed at the boundary the handler uses."""
 
+import asyncio
 import os
 import shutil
 import tempfile
@@ -18,6 +19,7 @@ import pytest
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.audio import transcode as audio_transcode
+from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import wav_bytes
 from tests.audio.test_transcode import mp3_whisper_stops_early
@@ -120,6 +122,61 @@ def test_an_undecodable_upload_keeps_the_original_path(
     assert not os.path.basename(path).startswith("whisperup-diar-")
 
 
+def test_a_refused_input_is_not_handed_to_pyannote(
+        client, fake_model, diarize_seen, monkeypatch):
+    """A refusal by the transcode itself (a plain ValueError, not an av
+    error: here the 60 s frame cap) skips diarization like the separation
+    path does: pyannote's own decoder has no such cap, so the upload is not
+    handed to it as the fallback."""
+    made = []
+
+    def _refuse(src, dst, *, rate, layout, **_kw):
+        made.append(dst)
+        raise ValueError("unsupported audio: a decoded frame runs past 60 s")
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _refuse)
+    body = _post_ok(client, diarize="true")
+    assert diarize_seen == []
+    assert ("diarization skipped: the file could not be prepared"
+            in body["warnings"])
+    assert made and not os.path.exists(made[0])
+
+
+def test_an_av_error_keeps_the_original_path(
+        client, fake_model, diarize_seen, monkeypatch):
+    """PyAV's errors subclass ValueError too: a decoder error is no
+    refusal, and pyannote still gets the upload, as before."""
+    import av
+
+    def _bad(src, dst, *, rate, layout, **_kw):
+        raise av.error.InvalidDataError(1094995529, "Invalid data")
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _bad)
+    body = _post_ok(client, diarize="true")
+    assert "warnings" not in body
+    [(path, _shape)] = diarize_seen
+    assert not os.path.basename(path).startswith("whisperup-diar-")
+
+
+def test_a_cancel_during_the_copy_leaves_no_copy(
+        client, app_module, fake_model, diarize_seen, monkeypatch):
+    """A dropped connection cancels the handler at the copy's await while
+    the worker thread writes on; the copy's path exists before that await,
+    so the stage's finally removes what the thread wrote. The stub writes
+    and then raises the CancelledError the await would."""
+    made = []
+
+    def _write_then_cancel(src, dst, *, rate, layout, **_kw):
+        with open(dst, "wb") as f:
+            f.write(b"\0" * 4096)
+        made.append(dst)
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _write_then_cancel)
+    with pytest.raises(BaseException):
+        _post(client, diarize="true")
+    assert diarize_seen == []
+    assert made and os.path.basename(made[0]).startswith("whisperup-diar-")
+    assert not os.path.exists(made[0])
+
+
 def test_the_copy_stops_a_few_seconds_past_what_whisper_decoded(app_module, tmp_path):
     """faster-whisper's decode ends at an mp3's first invalid packet; the
     transcode skips it and reads on. pyannote gets what Whisper heard (plus
@@ -128,7 +185,7 @@ def test_the_copy_stops_a_few_seconds_past_what_whisper_decoded(app_module, tmp_
     src = mp3_whisper_stops_early(str(tmp_path / "d.mp3"))
     decoded_s = audio_transcode.decode_16k_bounded(src, max_seconds=None).size / 16000
     assert decoded_s < 20
-    dst = app_module._diar_input_wav(src, decoded_s)
+    dst = app_module._diar_input_wav(src, decoded_s, app_module._new_diar_dst())
     try:
         assert dst is not None
         assert os.path.getsize(dst) <= (decoded_s + 5) * 32000 + 44
@@ -140,7 +197,7 @@ def test_the_copy_of_intact_audio_is_unchanged(app_module, tmp_path):
     src = _stereo_wav(tmp_path / "src.wav", rate=48000, seconds=3.0)
     plain = str(tmp_path / "plain.wav")
     audio_transcode.transcode_to_wav(src, plain, rate=16000, layout="mono")
-    dst = app_module._diar_input_wav(src, 3.0)
+    dst = app_module._diar_input_wav(src, 3.0, app_module._new_diar_dst())
     try:
         with open(dst, "rb") as a, open(plain, "rb") as b:
             assert a.read() == b.read()

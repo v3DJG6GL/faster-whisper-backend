@@ -47,6 +47,11 @@ class DecodeTooLong(Exception):
     """decode_16k_bounded's input ran past its `max_seconds` ceiling."""
 
 
+class ResampleFailed(Exception):
+    """decode_16k_bounded's s16 mono resampler refused a group (e.g. more
+    channels than it downmixes); __cause__ is the resampler's own error."""
+
+
 class TranscodeBudgetExceeded(RuntimeError):
     """transcode_to_wav's output passed its `max_bytes` budget. A
     RuntimeError, so a caller that only knows the base class still reads it
@@ -225,9 +230,11 @@ def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
     group reaches the resampler: one 500 000-sample group of a stream that
     declares a 1 Hz rate would resample to ~10^10 samples in a single call.
     For the same reason a group is also handed on once what it resamples
-    to (16 kHz output) reaches `num_samples`, and a single frame past
-    _MAX_FRAME_S is refused. The resampler streams, so where a group ends
-    changes no output sample."""
+    to (16 kHz output) reaches `num_samples`, or once it holds 2 x
+    `num_samples` sample-channels (the stereo-equivalent), so a 254-channel
+    stream meets the resampler on a ~4 MB group instead of ~0.5 GB; and a
+    single frame past _MAX_FRAME_S is refused. The resampler streams, so
+    where a group ends changes no output sample."""
     fifo = _av().audio.fifo.AudioFifo()
     seconds = 0.0
     out = 0.0
@@ -245,7 +252,9 @@ def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
             out += dur * 16000
         frame.pts = None  # Ignore timestamp check.
         fifo.write(frame)
-        if fifo.samples >= num_samples or out >= num_samples:
+        if (fifo.samples >= num_samples or out >= num_samples
+                or fifo.samples * len(frame.layout.channels)
+                >= 2 * num_samples):
             yield fifo.read()
             out = 0.0
     if fifo.samples > 0:
@@ -280,7 +289,13 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
         frames = _fw_valid_frames(container.decode(stream))
         frames = _fw_bounded_groups(frames, 500000, max_seconds)
         for group in itertools.chain(frames, [None]):
-            for frame in resampler.resample(group):
+            try:
+                resampled = resampler.resample(group)
+            except MemoryError:
+                raise  # the caller's own arm: no property of the group
+            except Exception as e:
+                raise ResampleFailed(str(e)) from e
+            for frame in resampled:
                 array = frame.to_ndarray()
                 dtype = array.dtype
                 raw_buffer.write(array)

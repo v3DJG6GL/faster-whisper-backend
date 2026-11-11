@@ -36,6 +36,9 @@ def _encode(src, dst, *args):
     return dst
 
 
+_PAN_71 = "pan=7.1|c0=c0|c1=c1|c2=c0|c3=c1|c4=c0|c5=c1|c6=c0|c7=c1"
+
+
 @pytest.fixture
 def stereo_wav(tmp_path):
     return write_wav(str(tmp_path / "s.wav"), _tone(3.0, 44100, 2),
@@ -52,6 +55,13 @@ def stereo_wav(tmp_path):
     ("a.mp3", ["-c:a", "libmp3lame", "-b:a", "64k"]),
     ("a.ogg", ["-c:a", "libopus", "-b:a", "24k"]),
     ("a.m4a", ["-c:a", "aac", "-b:a", "64k"]),
+    # Past 125 000 samples (8 ch) / ~166 667 (6 ch) a group is handed on
+    # before faster-whisper's would be, so the channel-width flush runs on
+    # real audio.
+    ("a8ch.wav", ["-af", _PAN_71]),
+    ("a8ch.flac", ["-af", _PAN_71, "-c:a", "flac"]),
+    ("a6ch.wav", ["-ar", "96000", "-af",
+                  "pan=5.1|c0=c0|c1=c1|c2=c0|c3=c1|c4=c0|c5=c1"]),
 ])
 def test_output_matches_faster_whispers_decode(tmp_path, stereo_wav, name, args):
     src = _encode(stereo_wav, str(tmp_path / name), *args)
@@ -131,3 +141,41 @@ def test_a_frame_longer_than_60_s_is_refused(tmp_path):
         "else:\n"
         "    print('ok')\n")
     assert got == "DecodeTooLong"
+
+
+def _silence_opus(tmp_path, channels, seconds):
+    """`channels` channels of Opus silence (mapping family 255: one stream
+    per channel), a few hundred KB however long the decode runs."""
+    dst = str(tmp_path / f"s{channels}.opus")
+    try:
+        r = subprocess.run(
+            [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "s16le", "-ac", str(channels), "-ar", "48000",
+             "-t", str(seconds), "-i", "/dev/zero",
+             "-c:a", "libopus", "-mapping_family", "255", "-b:a", "768k",
+             "-compression_level", "0", dst],
+            capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.skip("ffmpeg unavailable")
+    if r.returncode != 0:
+        pytest.skip(f"ffmpeg cannot write {channels}-channel opus")
+    return dst
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="RLIMIT_AS, /proc/self/status and /dev/zero are Linux's")
+def test_a_many_channel_group_is_bounded(tmp_path):
+    """A 500 000-sample group of 128 float channels is 256 MB before the
+    resampler sees it; a group is handed on at the stereo-equivalent
+    sample count instead, so a ~0.5 MB upload cannot buy that. The s16 mono
+    resampler then refuses the width as ResampleFailed: transcribe() would
+    meet the same refusal after buffering the full group again."""
+    src = _silence_opus(tmp_path, 128, 12)
+    got = run_under_ram_ceiling(
+        "try:\n"
+        f"    transcode.decode_16k_bounded({src!r}, max_seconds=None)\n"
+        "except Exception as e:\n"
+        "    print(type(e).__name__)\n"
+        "else:\n"
+        "    print('ok')\n")
+    assert got == "ResampleFailed"

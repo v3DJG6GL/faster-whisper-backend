@@ -1483,22 +1483,30 @@ def _sep_ram_cap() -> "int | None":
         return None
 
 
-def _diar_input_wav(src_path: str,
-                    decoded_s: "float | None" = None) -> "str | None":
-    """A private 16 kHz mono WAV of `src_path` for pyannote (the caller
-    unlinks it), or None to hand it `src_path` as before. pyannote decodes
-    its whole input as float32 at the file's native rate and channel count
-    before it downmixes and resamples to 16 kHz mono itself, so 8 channels
-    at 192 kHz cost it nearly 100x what the transcription's own 16 kHz mono
-    decode costs; this copy costs what that decode does. Bounded by the
-    temp dir's free space minus a margin, like the separation transcode;
-    any failure keeps the original, so no file is refused here.
-    `decoded_s`, the seconds Whisper decoded, ends the copy 5 s past them:
-    Whisper's decode stops at an mp3's first invalid packet, the transcode
-    reads on past it, and speaker turns past the transcript label nothing.
-    "whisperup-" puts a hard restart's leftover in the startup sweep."""
+def _new_diar_dst() -> str:
+    """An empty private path for _diar_input_wav's copy. "whisperup-" puts
+    a hard restart's leftover in the startup sweep."""
     fd, dst = tempfile.mkstemp(prefix="whisperup-diar-", suffix=".wav")
     os.close(fd)
+    return dst
+
+
+def _diar_input_wav(src_path: str, decoded_s: "float | None",
+                    dst: str) -> "str | None":
+    """`dst` (from _new_diar_dst; the caller unlinks it) filled with a 16 kHz
+    mono WAV of `src_path` for pyannote, or None to hand it `src_path` as
+    before. pyannote decodes its whole input as float32 at the file's native
+    rate and channel count before it downmixes and resamples to 16 kHz mono
+    itself, so 8 channels at 192 kHz cost it nearly 100x what the
+    transcription's own 16 kHz mono decode costs; this copy costs what that
+    decode does. Bounded by the temp dir's free space minus a margin, like
+    the separation transcode; a failed copy keeps the original, except a
+    refusal by the transcode itself (a plain ValueError, not an av error),
+    which raises DiarizationError instead: pyannote's own decoder has no such
+    refusal, so that input is not handed to it.
+    `decoded_s`, the seconds Whisper decoded, ends the copy 5 s past them:
+    Whisper's decode stops at an mp3's first invalid packet, the transcode
+    reads on past it, and speaker turns past the transcript label nothing."""
     try:
         try:
             budget = max(0, shutil.disk_usage(os.path.dirname(dst)).free
@@ -1511,9 +1519,17 @@ def _diar_input_wav(src_path: str,
                            if decoded_s else None))
         return dst
     except Exception as e:  # noqa: BLE001 — pyannote reports its own decode error
+        import av
+        store_common.unlink_quietly(dst)
+        # PyAV's errors subclass ValueError too; the same predicate as the
+        # separation transcode's refusal.
+        if isinstance(e, ValueError) and not isinstance(e, av.FFmpegError):
+            logger.warning("[diarize] input refused (%s); skipping "
+                           "diarization", _log_safe(str(e)))
+            raise _diarization.DiarizationError(
+                "diarization skipped: the file could not be prepared") from e
         logger.warning("[diarize] 16 kHz input copy failed (%s); diarizing "
                        "the original", _log_safe(str(e)))
-        store_common.unlink_quietly(dst)
         return None
 
 
@@ -2879,6 +2895,11 @@ async def transcribe(
                     # no ceiling, inside the inference slot.
                     raise _transcode.DecodeTooLong(
                         "audio does not fit in free memory") from _mem
+                except _transcode.ResampleFailed as _rs:
+                    # transcribe() runs the same resampler and fails on the
+                    # same group, after buffering a whole 500 000-sample
+                    # group of every channel again: answer its error now.
+                    raise (_rs.__cause__ or _rs) from None
                 except Exception as _dec_err:
                     # transcribe() runs the same steps on the path and meets
                     # the same error at the same frame, so handing it the
@@ -3142,11 +3163,17 @@ async def transcribe(
                             model=(_diarization_model or None),
                             device=_diarization._resolve_device())
                         tx_progress._check_cancelled(_pid)
-                        # Off the GPU slot, like the separation transcode.
-                        _diar_wav = await asyncio.to_thread(
-                            _diar_input_wav, tmp_path,
-                            float(getattr(info, "duration", 0.0) or 0.0))
+                        # The copy's path is made here, not in the worker
+                        # thread: a dropped connection cancels the await
+                        # below while the thread writes on, and the finally
+                        # then still removes what it wrote.
+                        _diar_dst = _new_diar_dst()
                         try:
+                            # Off the GPU slot, like the separation transcode.
+                            _diar_wav = await asyncio.to_thread(
+                                _diar_input_wav, tmp_path,
+                                float(getattr(info, "duration", 0.0) or 0.0),
+                                _diar_dst)
                             tx_progress._check_cancelled(_pid)
                             async with tx_models.get_inference_semaphore():
                                 tx_progress._check_cancelled(_pid)
@@ -3163,7 +3190,7 @@ async def transcribe(
                                     cancel_check=lambda: tx_progress._cancel_requested(_pid),
                                 )
                         finally:
-                            await _unlink_off_loop(_diar_wav)
+                            await _unlink_off_loop(_diar_dst)
                         # Pure-Python O(segments × turns) — off the loop so a
                         # long file doesn't stall every other request.
                         speakers_list = await asyncio.to_thread(
