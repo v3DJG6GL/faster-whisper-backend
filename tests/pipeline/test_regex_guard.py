@@ -1345,6 +1345,8 @@ def test_alternation_tail_trading_with_the_atoms_around_it_stays_rejected(pat):
     r"(?i)(?:\b(?:äh|ähm|hm|öhm)\b[,.]? ?)+",
     r"(?:(?:um|umm|äh), )+",
     r"(?:(?:um|am|umm), )+",
+    "(?:\\b(?:\u03b9a|\u03b9a\u03b9a)\\b ?)+#",
+    r"(?ia)(?:\b(?:um|umm)\b,? ?)+",
 ])
 def test_repeated_filler_word_list_is_accepted(pat):
     """A mandatory letter of a word list was read as apart from the list's
@@ -1393,6 +1395,36 @@ def test_empty_optional_group_or_class_overlapping_branches_are_rejected(pat):
     assert g._nested_repetition(pat)
     with pytest.raises(ValueError, match="nested repetition"):
         g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    "(?i)(?:\\b(?:a\u03b9|a\u03b9a\u03b9)\\b,? ?)+#",
+    "(?i)(?:\\b(?:\u03b9a|\u03b9a\u03b9a)\\b ?)+#",
+    "(?i)(?:\\b(?:\u0399a|\u0399a\u0399a)\\b ?)+#",
+    "(?i)(?:\\b(?:\u1fbea|\u1fbea\u1fbea)\\b ?)+#",
+    "(?i)(?:\\b(?:\u0345!|\u0345!\u0345!)\\b,? ?)+#",
+    "(?i)(?:(?:\u0345 |\u0345 \u0345 )\\b)+#",
+    "(?i)(?:(?:\u0345-|\u0345-\u0345-)\\b)+#",
+    r"(?a)(?:\b(?iu:ak|akak)\b ?)+#",
+])
+def test_word_list_whose_case_fold_crosses_the_word_line_is_rejected(pat):
+    """Under (?i) sre also matches iota (U+03B9, U+0399, U+1FBE: word
+    characters) with U+0345 COMBINING YPOGEGRAMMENI (not one), so a `\\b`
+    beside an iota atom falls inside what the list reads as one word and
+    pins nothing: `"a\\u0345" * 32 + "!"` takes seconds, Fibonacci-like
+    per extra unit. A `u` scope under a global `a` does the same with `k` and
+    the Kelvin sign, which the ASCII `\\b` reads as no word character."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+def test_entry_that_writes_the_fold_crossing_trigger_cannot_feed_a_word_list():
+    """The first entry turns plain words into the iota trigger, so no Greek
+    text has to come from Whisper: the second entry is refused on save."""
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("t", "Zebra ?", "\u0345x"),
+                    ("t", "(?i)(?:\\b(?:\u03b9x|\u03b9x\u03b9x)\\b)+#", "")])
 
 
 @pytest.mark.parametrize("pat", [

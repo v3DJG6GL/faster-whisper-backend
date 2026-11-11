@@ -1769,15 +1769,36 @@ def _uniform_wordness(pat: str, atoms: "list[str]") -> bool:
         if not got:
             return False
         chars |= got
-    modes = [0]
+    # Under a Unicode (?i), sre also matches its extra folds, which
+    # lower()/upper() miss, and one class crosses the \w line: iota ι/Ι/ι
+    # (word) with U+0345 COMBINING YPOGEGRAMMENI (not), so an `ι` atom can sit
+    # next to a \b inside what reads as one word. The Unicode \b test takes
+    # the whole fold class.
+    folded = chars
     try:
-        if re.compile(pat).flags & re.ASCII:
-            modes.append(re.ASCII)
+        global_ascii = re.compile(pat).flags & re.ASCII
     except re.error:
         return False
+    if _ignorecase(pat) and not global_ascii:
+        extra = getattr(_sre_modules()[1], "_EXTRA_CASES", {})
+        folded = set(chars)
+        for c in chars:
+            for v in (c, c.lower(), c.upper()):
+                if len(v) == 1:
+                    folded.add(v)
+                    folded.update(chr(x) for x in extra.get(ord(v.lower()[:1]), ()))
+    # A `u` scope under a global `a` folds its atoms Unicode-wide beside an
+    # ASCII \b, where `k` is a word character and the Kelvin sign it matches
+    # is not (`ſ`/`s`, `ı`/`i` alike): too exotic to model, so no shortcut.
+    if global_ascii and _ignorecase(pat) and re.search(r"\(\?[aiLmsux-]*u", pat):
+        return False
+    modes = [0]
+    if global_ascii:
+        modes.append(re.ASCII)
     if re.search(r"\(\?[aiLmsux-]*a", pat):
         modes.append(re.ASCII)
-    return all(len({re.fullmatch(r"\w", c, m) is None for c in chars}) == 1
+    return all(len({re.fullmatch(r"\w", c, m) is None
+                    for c in (chars if m else folded)}) == 1
                for m in modes)
 
 
