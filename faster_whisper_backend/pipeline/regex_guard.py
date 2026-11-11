@@ -754,7 +754,14 @@ def _nested_repetition_scan(pat: str) -> bool:
             # `(?:n?n)+` is `(?:n{1,2})+` spelled with an optional atom: each
             # repetition takes one or two of a run's characters, so it splits
             # the run as many ways as `(n|nn)+` (see _optional_overlap).
-            if _optional_overlap(pat[frame["start"]:close], icase):
+            # A body past _branch_atoms' depth cut is read as "may split
+            # ambiguously": it refuses only under an enclosing variable
+            # quantifier, so an unrepeated deep nest stays accepted.
+            try:
+                overlap = _optional_overlap(pat[frame["start"]:close], icase)
+            except _TooWide:
+                overlap = True
+            if overlap:
                 frame["rep"] = True
             # `(?:,?\s?)+` matches ", " as one repetition or as two, one atom
             # each: see _optional_only.

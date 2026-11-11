@@ -2172,11 +2172,26 @@ def test_possessive_and_backref_linear_rules_accepted(pat):
     r"(?:(?>,+) |, )+#", r"(?: ?+-| -)+#", r"(?:,++x|,,x)+#",
     r"(?:,?+ ?)+#", r"(?: ?+-?)+#", r"(?:[,;]?+\s?)+#", r"(?:,*+ ?)+#", r"(?:(?:,)?+ ?)+#",
     r"(?:,{0,1}+ ?)+#", r"(?:(?:x?){1}+ ?)+#",
+    r"(?:(Ab(?:k(?:ü(?:r(?:z(?:ung)?)?)?)?)?) )+",
 ])
 def test_possessive_empty_capable_or_deep_branch_does_not_hide_overlap(pat):
     assert g._nested_repetition(pat), pat
     with pytest.raises(ValueError, match="nested repetition"):
         g.validate([("r", pat, "")])
+
+
+# The depth cut refuses a deep nest only under an enclosing variable
+# quantifier: a linear chain of optional groups that nothing repeats matches
+# each input one way, so abbreviation and command-chain rules save.
+@pytest.mark.parametrize("pat", [
+    r"\b(Ab(?:k(?:ü(?:r(?:z(?:ung)?)?)?)?)?)\b",
+    r"(\d+)(?:,(\d+)(?: (Euro(?: pro (Stück(?: netto)?)?)?)?)?)?",
+    r"(?:Doppel(?:punkt(?: (?:und(?: dann(?: neue Zeile)?)?)?)?)?)",
+    r"((?:x(?:y(?:z(?:w(?:v)?)?)?)?)?q)",
+])
+def test_unrepeated_deep_nest_accepted(pat):
+    assert not g._nested_repetition(pat), pat
+    g.validate([("r", pat, "")])
 
 
 # Refusing past the depth cut keeps the screen cheap: read in full, this
