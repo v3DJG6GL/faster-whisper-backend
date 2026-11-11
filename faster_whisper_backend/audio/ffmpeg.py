@@ -15,10 +15,11 @@ logger = logging.getLogger(__name__)
 # demuxer is chosen by CONTENT, so an extensionless upload reading
 # "ffconcat version 1.0 / file 'x.wav'" decodes x.wav). A real clip is
 # self-contained, so refusing these by the opened format's name rejects
-# nothing legitimate.
+# nothing legitimate. vobsub belongs here too: its header read opens the
+# sibling <name>.sub, and a VobSub index never carries audio.
 MULTI_INPUT_DEMUXERS = frozenset({
     "concat", "hls", "applehttp", "dash", "imf", "sdp", "rtp", "rtsp",
-    "image2", "avisynth", "vapoursynth",
+    "image2", "avisynth", "vapoursynth", "vobsub",
 })
 
 

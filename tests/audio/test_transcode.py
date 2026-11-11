@@ -339,6 +339,23 @@ def test_open_audio_refuses_an_ffconcat_before_it_opens_the_sibling(tmp_path):
             audio_transcode.refuse_multi_input(playlist)
 
 
+def test_open_audio_refuses_a_vobsub_index_before_it_opens_the_sibling(
+        tmp_path):
+    """A VobSub .idx makes its demuxer open the sibling <name>.sub inside
+    av.open; the allowlist refuses it at probe time, with or without that
+    sibling."""
+    assert "vobsub" not in audio_ffmpeg.single_input_demuxers().split(",")
+    idx = tmp_path / "up.wav"
+    idx.write_bytes(b"# VobSub index file, v7 (Do not modify this line!)\n"
+                    b"size: 720x576\n")
+    for sibling_present in (False, True):
+        if sibling_present:
+            (tmp_path / "up.sub").write_bytes(b"\x00" * 2048)
+        with pytest.raises(ValueError, match="unsupported container") as ei:
+            audio_transcode.declared_shape(str(idx))
+        assert not isinstance(ei.value, av.FFmpegError)
+
+
 def test_open_audio_pins_the_single_input_demuxer_allowlist(tmp_path,
                                                             monkeypatch):
     allowed = audio_ffmpeg.single_input_demuxers().split(",")
