@@ -424,10 +424,26 @@ def test_lone_surrogate_nested_in_steps_or_stages_422(client, nested):
     assert "invalid Unicode" in r.json()["detail"]
 
 
+@pytest.mark.parametrize("nested", [
+    '"stages": [' + "[" * 200 + "]" * 200 + "]",
+    '"steps": [[' + "[" * 200 + "]" * 200 + ', "a", "b"]]',
+], ids=["stages", "steps"])
+def test_deeply_nested_steps_or_stages_422(client, nested):
+    """Real steps/stages nest 3-4 levels deep. A hand-built body nested
+    hundreds of levels deep stays under the byte and node caps, yet the
+    admin export pretty-prints it with indent=2 into a string that grows
+    with depth squared, so the depth is bounded at submit time."""
+    body = '{"request_id": "req-deep", "user_comment": "x", %s}' % nested
+    r = client.post(_SUBMIT, content=body,
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 422
+
+
 def test_realistic_steps_and_stages_still_accepted(client):
     steps = [[f"stage-{i}", "before " * 200, "after " * 200] for i in range(40)]
     stages = [{"name": "transcribing", "model": "large-v3", "seconds": 1.5},
-              {"name": "translating", "target": "en"}]
+              {"name": "translating", "target": "en"},
+              {"name": "translating", "targets": ["en", "de"], "speakers": 2}]
     r = client.post(_SUBMIT, json={
         "request_id": "req-steps-ok",
         "user_comment": "x",

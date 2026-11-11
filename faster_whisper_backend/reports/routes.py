@@ -73,6 +73,7 @@ class CorrectionIn(BaseModel):
 _NESTED_STR_MAX = 65_536
 _NESTED_BUDGET = {"steps": 1_048_576, "stages": 262_144}
 _NESTED_MAX_NODES = 10_000
+_NESTED_MAX_DEPTH = 16
 
 
 class ReportSubmitIn(BaseModel):
@@ -113,19 +114,22 @@ class ReportSubmitIn(BaseModel):
     # steps[0] (or inside a stages dict) would bypass them. Any contained str is
     # bounded at the same 64 KB, and the walked total at a budget far above the
     # store's _CAP_STEPS_JSON / _CAP_STAGES_JSON, so nothing stored intact
-    # today starts 422-ing. The types stay list[Any]: tightening them would turn
-    # shapes _truncate_steps silently drops today into 422s.
+    # today starts 422-ing. The nesting depth is bounded too: real steps and
+    # stages nest 3-4 levels deep, while a list nested thousands deep fits the
+    # byte and node caps yet makes the admin export (indent=2) grow with depth
+    # squared. The types stay list[Any]: tightening them would turn shapes
+    # _truncate_steps silently drops today into 422s.
     @field_validator("steps", "stages")
     @classmethod
     def _bound_nested_strings(cls, v: list[Any], info: Any) -> list[Any]:
         budget = _NESTED_BUDGET[info.field_name]
         total = 0
-        stack: list[Any] = [v]
+        stack: list[tuple[Any, int]] = [(v, 1)]
         visited = 0
         while stack:
-            item = stack.pop()
+            item, depth = stack.pop()
             visited += 1
-            if visited > _NESTED_MAX_NODES:
+            if visited > _NESTED_MAX_NODES or depth > _NESTED_MAX_DEPTH:
                 raise ValueError("field too large")
             if isinstance(item, str):
                 if len(item) > _NESTED_STR_MAX:
@@ -134,10 +138,10 @@ class ReportSubmitIn(BaseModel):
                 if total > budget:
                     raise ValueError("field too large")
             elif isinstance(item, dict):
-                stack.extend(item.keys())
-                stack.extend(item.values())
+                stack.extend((k, depth + 1) for k in item.keys())
+                stack.extend((x, depth + 1) for x in item.values())
             elif isinstance(item, (list, tuple)):
-                stack.extend(item)
+                stack.extend((x, depth + 1) for x in item)
         return v
 
 
