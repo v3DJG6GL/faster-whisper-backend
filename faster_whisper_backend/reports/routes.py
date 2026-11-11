@@ -137,10 +137,18 @@ class ReportSubmitIn(BaseModel):
                 total += len(item)
                 if total > budget:
                     raise ValueError("field too large")
+            # Every pushed child is popped and counted later, so a container
+            # whose children would overrun the node budget is refused before
+            # they are queued: a wide list of millions of ints otherwise
+            # costs a walk entry per child before the pop-side check fires.
             elif isinstance(item, dict):
+                if visited + len(stack) + 2 * len(item) > _NESTED_MAX_NODES:
+                    raise ValueError("field too large")
                 stack.extend((k, depth + 1) for k in item.keys())
                 stack.extend((x, depth + 1) for x in item.values())
             elif isinstance(item, (list, tuple)):
+                if visited + len(stack) + len(item) > _NESTED_MAX_NODES:
+                    raise ValueError("field too large")
                 stack.extend((x, depth + 1) for x in item)
         return v
 

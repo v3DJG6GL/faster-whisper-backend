@@ -439,6 +439,44 @@ def test_deeply_nested_steps_or_stages_422(client, nested):
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize("field,wide,max_peak", [
+    ("steps", [[0] * 10_000], 200_000),
+    # pydantic copies a nested dict (~330 KB here); the walk adds ~1.3 MB.
+    ("stages", [{f"k{i}": 0 for i in range(10_000)}], 800_000),
+], ids=["list", "dict"])
+def test_wide_nested_steps_refused_before_walk(monkeypatch, field, wide,
+                                                max_peak):
+    """The node budget is checked before a container's children are pushed,
+    so one wide list (millions of ints fit the 4 MiB body) is refused without
+    first queueing a walk entry per child."""
+    import tracemalloc
+
+    from pydantic import ValidationError
+
+    from faster_whisper_backend.reports import routes as reports_routes
+
+    monkeypatch.setattr(reports_routes, "_NESTED_MAX_NODES", 100)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValidationError, match="field too large"):
+            reports_routes.ReportSubmitIn.model_validate({field: wide})
+        _cur, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < max_peak
+
+
+def test_wide_nested_steps_422_without_spending_rate_budget(client, app_module):
+    limit = int(app_module.cfg.REPORTS_SUBMIT_RATE_PER_10MIN)
+    r = client.post(_SUBMIT, json={"request_id": "req-wide",
+                                   "user_comment": "x",
+                                   "steps": [[0] * 20_000]})
+    assert r.status_code == 422
+    for i in range(limit):
+        assert client.post(_SUBMIT, json=_payload(request_id=f"w-{i}")
+                           ).status_code == 200
+
+
 def test_realistic_steps_and_stages_still_accepted(client):
     steps = [[f"stage-{i}", "before " * 200, "after " * 200] for i in range(40)]
     stages = [{"name": "transcribing", "model": "large-v3", "seconds": 1.5},
