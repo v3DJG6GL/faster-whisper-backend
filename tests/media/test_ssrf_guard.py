@@ -1434,6 +1434,56 @@ def test_guard_refuses_absurd_fragment_url_bytes(parse, xml):
     assert time.monotonic() - t0 < 2.0
 
 
+_BIG = "1" + "0" * 24  # 25 digits: past UINT64's 20
+_PLAIN_ISM_URL = "QualityLevels(128000)/Fragments(audio=0)"
+_TIMELINE = ('<SegmentTemplate media="s$Number$.m4s" timescale="{timescale}" '
+             'startNumber="{start}"><SegmentTimeline><S t="{t}" d="{d}" r="{r}"/>'
+             '<S d="1"/></SegmentTimeline></SegmentTemplate>')
+
+
+def _timeline(t="0", d="1", r="2", timescale="1", start="1"):
+    return _mpd(_adaptation(_TIMELINE.format(t=t, d=d, r=r, timescale=timescale,
+                                             start=start)))
+
+
+def _ism_numbers(t="0", d="1", r="2", bitrate="128000", url=_PLAIN_ISM_URL):
+    return _ism(_ism_url(url, f'<c t="{t}" d="{d}" r="{r}"/>', bitrate=bitrate))
+
+
+@pytest.mark.parametrize("parse,xml", [
+    (_parse_ism, _ism_numbers().replace('Duration="72000000000"', f'Duration="{_BIG}"')),
+    (_parse_ism, _ism_numbers().replace('TimeScale="10000000"', f'TimeScale="{_BIG}"')),
+    (_parse_ism, _ism_numbers().replace("<StreamIndex ", f'<StreamIndex TimeScale="{_BIG}" ')),
+    (_parse_ism, _ism_numbers(t=_BIG)),
+    (_parse_ism, _ism_numbers(d=_BIG)),
+    (_parse_ism, _ism_numbers(r="-" + "9" * 24)),
+    (_parse_ism, _ism_numbers(bitrate=_BIG)),
+    (_parse_mpd, _timeline(t=_BIG)),
+    (_parse_mpd, _timeline(d=_BIG)),
+    (_parse_mpd, _timeline(r="-" + "9" * 24)),
+    (_parse_mpd, _timeline(timescale=_BIG)),
+    (_parse_mpd, _timeline(start=_BIG)),
+], ids=["ism-duration", "ism-timescale", "ism-stream-timescale", "ism-t", "ism-d",
+        "ism-r", "ism-bitrate", "mpd-t", "mpd-d", "mpd-r", "mpd-timescale",
+        "mpd-start-number"])
+def test_guard_refuses_an_overlong_manifest_number(parse, xml):
+    """yt-dlp does big-integer arithmetic and a str() per fragment on these
+    numbers; past UINT64's 20 digits that costs ~1 ms a fragment at 4 000
+    digits, so a short manifest buys minutes of CPU."""
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        parse(xml)
+
+
+def test_guard_admits_manifest_numbers_at_uint64_width():
+    """A live timeline's times in a fine timescale reach 17-20 digits."""
+    top = "18446744073709551615"
+    fmts, _subs = _parse_ism(_ism_numbers(t=f" {top} ", d=top, bitrate=top))
+    assert len(fmts[0]["fragments"]) == 2
+    _reset_budget()
+    fmts, _subs = _parse_mpd(_timeline(t=top, d=top, timescale=top, start=top))
+    assert len(fmts[0]["fragments"]) == 4
+
+
 def test_guard_parses_real_template_widths_unchanged():
     """Real templates (zero-padded widths, a signed query, the
     representation's own @id) expand exactly as yt-dlp does on its own, and a
@@ -2548,6 +2598,26 @@ def test_guard_refuses_a_smil_whose_duplicate_textstreams_would_scan_quadratical
     copies = f'<textstream src="s{cap - 1}.vtt"/>' * 5_000
     with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {cap}"):
         _parse_smil(_smil('<video src="v.mp4"/>' + distinct + copies))
+
+
+def test_guard_charges_smil_textstream_dedup_by_length(monkeypatch):
+    """The dedup's comparisons cost the length of the srcs they compare (only
+    equal-length strings are compared byte by byte), so few but long srcs of
+    one length stay under the comparison count and still scan for seconds."""
+    def body(prefix):
+        distinct = "".join(f'<textstream src="{prefix}{i:06d}.vtt"/>' for i in range(200))
+        copies = f'<textstream src="{prefix}{199:06d}.vtt"/>' * 300
+        return _smil('<video src="v.mp4"/>' + distinct + copies)
+    # ~160 MB compared: under the real budget, admitted as yt-dlp keeps it.
+    long = body("s" * 1990)
+    assert len(_parse_smil(long)["subtitles"]["en"]) == 200
+    _reset_budget()
+    monkeypatch.setitem(_registered_guard(), "_MAX_SMIL_SUB_SCAN_BYTES", 10_000_000)
+    with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {_hls_cap()}"):
+        _parse_smil(long)
+    # Short srcs of the same count stay well under even the lowered budget.
+    _reset_budget()
+    assert len(_parse_smil(body("s"))["subtitles"]["en"]) == 200
 
 
 def test_guard_bounds_smil_parsed_positionally():

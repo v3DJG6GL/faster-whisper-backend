@@ -663,6 +663,20 @@ def _digits(value: int) -> int:
     return abs(value).bit_length() * 30103 // 100000 + 2
 
 
+# Smooth Streaming's times, durations, timescales and bitrates and DASH's
+# S@t/@d/@r, @timescale and @startNumber are 64-bit at most: 20 digits.
+# yt-dlp parses them and does big-integer arithmetic and a str() per fragment
+# on what it builds from them, ~1 ms a fragment at 4 000 digits.
+_MAX_NUMBER_CHARS = 20
+
+
+def _refuse_long_number(value) -> None:
+    if isinstance(value, str) and len(value.strip()) > _MAX_NUMBER_CHARS:
+        from yt_dlp.utils import ExtractorError
+        raise ExtractorError("a number in the stream manifest is too long",
+                             expected=True)
+
+
 def _mpd_segment_info(element, parent: dict, q) -> dict:
     """The counting half of yt-dlp's extract_multisegment_info: a level's
     SegmentList / SegmentTemplate overrides what it inherits."""
@@ -676,6 +690,9 @@ def _mpd_segment_info(element, parent: dict, q) -> dict:
     timeline = source.find(q("SegmentTimeline"))
     entries = timeline.findall(q("S")) if timeline is not None else []
     if entries:
+        for e in entries:
+            for name in ("t", "d", "r"):
+                _refuse_long_number(e.get(name))
         info["s"] = [(_number(e.get("d"), int) or 0,
                       max(_number(e.get("r", 0), int) or 0, 0)) for e in entries]
         # The largest $Time$ the timeline can reach: a start, plus every
@@ -684,9 +701,11 @@ def _mpd_segment_info(element, parent: dict, q) -> dict:
             max(abs(_number(e.get("t", 0), int) or 0) for e in entries)
             + sum(abs(d) * (1 + r) for d, r in info["s"]))
     start = source.get("startNumber")
+    _refuse_long_number(start)
     if start:
         info["start"] = _number(start, int)
     timescale = source.get("timescale")
+    _refuse_long_number(timescale)
     if timescale:
         info["timescale"] = _number(timescale, int)
     duration = source.get("duration")
@@ -869,10 +888,13 @@ def _refuse_oversized_ism(ism_doc, ism_base_len: int = 0) -> None:
     from yt_dlp.utils import int_or_none
     if ism_doc.get("IsLive") == "TRUE":
         return  # yt-dlp returns no formats for it, before any expansion
+    _refuse_long_number(ism_doc.get("Duration"))
+    _refuse_long_number(ism_doc.get("TimeScale"))
     count = variants = url_bytes = 0
     for stream in ism_doc.findall("StreamIndex"):
         if stream.get("Type") not in ("video", "audio", "text"):
             continue
+        _refuse_long_number(stream.get("TimeScale"))
         # Every QualityLevel counts, also one whose codec yt-dlp skips: an
         # over-count far below the cap, and a yt-dlp that learns the codec
         # stays bounded.
@@ -884,9 +906,14 @@ def _refuse_oversized_ism(ism_doc, ism_base_len: int = 0) -> None:
             raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
         if not tracks:
             continue
+        for level in stream.findall("QualityLevel"):
+            _refuse_long_number(level.get("Bitrate"))
+        chunks = stream.findall("c")
+        for c in chunks:
+            for name in ("t", "d", "r"):
+                _refuse_long_number(c.get(name))
         # yt-dlp: range(int_or_none(r) or 1) per chunk, so r <= -1 builds no
         # fragment, but the chunk is still read once per level: it costs one.
-        chunks = stream.findall("c")
         per_track = sum(max(int_or_none(c.get("r")) or 1, 1) for c in chunks)
         count += tracks * per_track
         if count > _MAX_MPD_SEGMENTS:
@@ -1315,6 +1342,11 @@ _ISM_MANIFEST = re.compile(r"\.ism/[Mm]anifest")
 # The textstream list scan costs ~7 ns a comparison: twice what the format
 # cap of distinct srcs costs on its own stays well under 0.1 s.
 _MAX_SMIL_SUB_SCANS = 2 * _MAX_M3U8_FORMATS ** 2
+# A comparison reads the srcs byte by byte only when their lengths match, so
+# few long srcs of one length cost what the count does not see: ~8.7 GB/s,
+# so this is ~0.03 s (~0.12 s for 4-byte characters). Real SMIL compares a
+# few KB; 2 000 distinct 50-character srcs come to ~100 MB.
+_MAX_SMIL_SUB_SCAN_BYTES = 256 * 1024 * 1024
 
 
 def _refuse_oversized_smil(ie, smil, smil_url, namespace) -> None:
@@ -1340,8 +1372,9 @@ def _refuse_oversized_smil(ie, smil, smil_url, namespace) -> None:
                 raise _too_many_variants(_MAX_M3U8_FORMATS)
     # The subtitle parse dedups the textstream srcs with a list scan, and a
     # repeated src scans it again, so what is bounded is the comparisons that
-    # scan makes: at most the distinct srcs seen so far, per textstream.
-    subs, scanned = set(), 0
+    # scan makes: at most the distinct srcs seen so far, per textstream, and
+    # the bytes of those that share its length.
+    subs, scanned, compared, same_len = set(), 0, 0, {}
     for node in smil.findall(ie._xpath_ns(".//textstream", namespace)):
         src = node.get("src")
         if not src:
@@ -1349,8 +1382,13 @@ def _refuse_oversized_smil(ie, smil, smil_url, namespace) -> None:
         scanned += len(subs)
         if scanned > _MAX_SMIL_SUB_SCANS:
             raise _too_many_variants(_MAX_M3U8_FORMATS)
+        n = len(src)
+        compared += same_len.get(n, 0) * n
+        if compared > _MAX_SMIL_SUB_SCAN_BYTES:
+            raise _too_many_variants(_MAX_M3U8_FORMATS)
         if src not in subs:
             subs.add(src)
+            same_len[n] = same_len.get(n, 0) + 1
             if len(subs) > _MAX_M3U8_FORMATS:
                 raise _too_many_variants(_MAX_M3U8_FORMATS)
     # A relative src is a fresh urljoin(base + "/", src), at most that long
