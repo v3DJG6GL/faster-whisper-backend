@@ -1020,15 +1020,12 @@ function _registerAdminListener(event, key, fn) {
 function makeBadges(name) {
   const d = fieldDef(name);
   const wrap = _el('div', 'badges');
-  if (d.restart_required) {
-    wrap.innerHTML += '<span class="badge restart">restart</span>';
-  } else {
-    wrap.innerHTML += '<span class="badge live">live</span>';
-  }
+  wrap.appendChild(d.restart_required ? _el('span', 'badge restart', 'restart')
+                                       : _el('span', 'badge live', 'live'));
   if (d.provenance === 'env') {
-    wrap.innerHTML += '<span class="badge env">env: ' + d.env_var + '</span>';
+    wrap.appendChild(_el('span', 'badge env', 'env: ' + d.env_var));
   } else if (d.provenance === 'local.json') {
-    wrap.innerHTML += '<span class="badge local">local.json</span>';
+    wrap.appendChild(_el('span', 'badge local', 'local.json'));
   }
   return wrap;
 }

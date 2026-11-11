@@ -1134,7 +1134,8 @@ function paint() {
   const note = find(row, c => c.classList.contains('help-env-pinned'));
   const badges = find(row, c => c.classList.contains('badges'));
   return [row.classList.contains('env-pinned'), note && note.textContent,
-          badges && badges.innerHTML.includes('env: WHISPER_MODEL_OVERRIDES')];
+          badges && (find(badges, c => c.classList.contains('env')) || {}).textContent
+              === 'env: WHISPER_MODEL_OVERRIDES'];
 }
 const free = paint();
 pinned.add('MODEL_OVERRIDES');
