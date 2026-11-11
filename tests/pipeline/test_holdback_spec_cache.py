@@ -69,3 +69,42 @@ def test_rebuild_warms_default_selections_off_loop(monkeypatch):
     finally:
         monkeypatch.undo()
         pl_engine.rebuild_caches()
+
+
+def test_reader_mid_rebuild_never_pairs_new_rules_with_old_warm_spec(monkeypatch):
+    """holdback_start reads the gen, then the rules, then the warm specs,
+    without the rebuild lock. A reader that runs at any point of a rebuild
+    after the new rules are published must hold back by the NEW rules: the
+    old gen's warm spec was built from the old rule set's rows at the same
+    indices. The reader is run before every line of the rebuild."""
+    import sys
+
+    monkeypatch.setattr(cfg, "PIPELINE_RULES", [_map_rule({"komma eins": ","})])
+    try:
+        pl_engine.rebuild_caches()
+        old_rules = pl_engine._COMPILED_RULES
+        assert pl_engine.holdback_start("a komma") == 1
+        monkeypatch.setattr(cfg, "PIPELINE_RULES", [_map_rule({"punkt eins": "."})])
+
+        seen: list[int] = []
+        target = pl_engine._rebuild_caches_locked.__code__
+
+        def local(frame, event, _arg):
+            if event == "line" and pl_engine._COMPILED_RULES is not old_rules:
+                seen.append(pl_engine.holdback_start("a komma"))
+            return local
+
+        def global_trace(frame, _event, _arg):
+            return local if frame.f_code is target else None
+
+        prev = sys.gettrace()
+        sys.settrace(global_trace)
+        try:
+            pl_engine.rebuild_caches()
+        finally:
+            sys.settrace(prev)
+        assert seen, "no line ran after the rules were published"
+        assert seen == [len("a komma")] * len(seen)
+    finally:
+        monkeypatch.undo()
+        pl_engine.rebuild_caches()

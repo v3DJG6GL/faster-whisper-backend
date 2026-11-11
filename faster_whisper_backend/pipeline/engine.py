@@ -297,14 +297,17 @@ def _rebuild_caches_locked() -> None:
                                        map_lookup=map_lookup,
                                        max_growth=_callback_growth(rtype, map_lookup)))
     warm = _warm_holdback_specs(compiled)
+    # Publish order: warm specs, rules, gen. holdback_start reads the gen,
+    # then the rules, then the warm specs, so a caller that sees the new rules
+    # finds only new-gen warm specs: under the old gen it misses and builds
+    # from the current rules, never pairing new-rule indices with a spec built
+    # from the old rule set. A caller that sees the new gen finds its spec.
+    new_gen = _RULES_GEN + 1
+    _WARM_SPECS = {(new_gen, sel): spec for sel, spec in warm.items()}
     _COMPILED_RULES = compiled
     _TERMINAL_NAME = terminal_name
     _TERMINAL_LABEL = terminal_label
     _TERMINAL_CARD_NO = terminal_card_no
-    # Publish the warm specs before the gen: holdback_start reads the gen
-    # first, so a caller that sees the new gen also finds its warm spec.
-    new_gen = _RULES_GEN + 1
-    _WARM_SPECS = {(new_gen, sel): spec for sel, spec in warm.items()}
     _RULES_GEN = new_gen
     _dictation_map.retain_live_maps(
         r.pattern for r in compiled if r.type == "callback:map")
@@ -698,10 +701,11 @@ def holdback_start(raw: str, *, model_name: "str | None" = None, ident=None,
     words the active dictation maps would still join with the next utterance.
     See pipeline/seam_holdback.py."""
     exclude, include = _scoping(model_name, ident)
-    # Read the gen BEFORE the rules: rebuild_caches rebinds _COMPILED_RULES
-    # first and bumps _RULES_GEN after, so a rebuild in between can at worst
-    # file a newer rule set's spec under a gen nobody looks up again — never
-    # old-rule indices under the live gen.
+    # Read the gen BEFORE the rules: rebuild_caches rebinds _WARM_SPECS, then
+    # _COMPILED_RULES, and bumps _RULES_GEN last, so a rebuild in between can
+    # at worst file a newer rule set's spec under a gen nobody looks up again —
+    # never old-rule indices under the live gen, nor an old warm spec for the
+    # new rules.
     gen = _RULES_GEN
     rules = _COMPILED_RULES
     sel = tuple(i for i, rule in enumerate(rules)
