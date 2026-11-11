@@ -466,6 +466,38 @@ def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
     assert calls == []
 
 
+def test_deeply_nested_segment_id_is_refused_before_the_work(
+        client, app_module, monkeypatch):
+    """A ~2 KB id nested 1000 deep parses and passes the body screen, but
+    the response (and the job row) cannot render it: the client would get a
+    500 after the whole translation ran. Refused up front instead, and a
+    parked receipt is handed back; an id nested up to the cap still echoes."""
+    import json
+
+    calls = _enable_stubbed(app_module, monkeypatch)
+    cap = tr_routes._ID_MAX_DEPTH
+    # Raw JSON text: the test client's own encoder would recurse on 1000.
+    for depth, idx in ((1000, 0), (cap + 1, 1)):
+        nested = "[" * depth + "]" * depth
+        segs = ['{"id": 7, "text": "zwei"}'] * idx + [
+            '{"id": %s, "text": "eins"}' % nested]
+        _park("cap-d", hold_s=90)
+        r = client.post(
+            URL,
+            content='{"segments": [%s], "targets": ["en"], '
+                    '"captured_id": "cap-d"}' % ", ".join(segs),
+            headers={"Content-Type": "application/json"})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == (
+            f"segments[{idx}].id is nested too deeply")
+        assert receipt_hold.pending() == 0
+    assert calls == []
+    # A dict level counts like a list level; at the cap the id echoes.
+    at_cap = json.loads('{"k": ' * (cap - 1) + "[]" + "}" * (cap - 1))
+    r = _post_ok(client, segments=[{"id": at_cap, "text": "eins"}])
+    assert r.json()["segments"][0]["id"] == at_cap
+
+
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
 def test_422_non_finite_number_in_body(client, app_module, monkeypatch,
                                        literal):

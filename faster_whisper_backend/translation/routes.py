@@ -73,10 +73,43 @@ _TEXT_TRANSLATE_MAX_SPEAKER = 64
 # kept-original fallback names them once per target: warning prose clips
 # each id (segments[].id still echoes it whole).
 _WARN_ID_MAX = 64
+# A segment id echoes into the response and the job row, whose encoders
+# recurse per nesting level: an id ~1000 levels deep (2 KB of brackets)
+# would fail both only after the translation ran. Any realistic list /
+# object id is a few levels deep.
+_ID_MAX_DEPTH = 32
 # While the request queues for the GPU slot or its model loads, nothing
 # reports progress — this keeps a held dictation receipt's idle timer fresh
 # meanwhile (LOG_RECEIPT_HOLD_S is at least 5 s).
 _HOLD_HEARTBEAT_S = 2.0
+
+
+def _too_deep(value, limit: int = _ID_MAX_DEPTH) -> bool:
+    """True when ``value`` nests lists / objects more than ``limit`` levels
+    deep. Iterative, and it stops descending at the limit: the value may be
+    nested far past the recursion limit."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (list, dict)):
+            if depth > limit:
+                return True
+            stack.extend((c, depth + 1) for c in
+                         (item.values() if isinstance(item, dict) else item))
+    return False
+
+
+def _screen_body(body) -> "int | None":
+    """Raise what json.dumps raises on a body the response could not render
+    (lone surrogate, NaN / Infinity); otherwise the index of the first
+    segment whose id is nested too deeply, or None."""
+    json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    segments = body.get("segments")
+    if isinstance(segments, list):
+        for i, seg in enumerate(segments):
+            if isinstance(seg, dict) and _too_deep(seg.get("id")):
+                return i
+    return None
 
 # translate_segments' warning strings name segments by 1-based POSITION
 # ("segment 2", "segments 1-3"). On this endpoint clients address segments by
@@ -177,11 +210,10 @@ async def translate_text(request: Request,
         # response (and the job row's result) only after the run is recorded.
         # Same for a NaN/Infinity literal (json.loads accepts them, the
         # JSONResponse renders with allow_nan=False). The screen walks the
-        # whole 4 MiB body, so it runs in a worker thread, not on the loop.
+        # whole 4 MiB body, so it runs in a worker thread, not on the loop;
+        # the same walk finds a segment id nested too deeply to echo.
         try:
-            await asyncio.to_thread(
-                lambda: json.dumps(body, ensure_ascii=False,
-                                   allow_nan=False).encode("utf-8"))
+            _deep_id_at = await asyncio.to_thread(_screen_body, body)
         except UnicodeEncodeError:
             raise HTTPException(
                 status_code=422,
@@ -208,6 +240,10 @@ async def translate_text(request: Request,
                     status_code=422,
                     detail=f"segments[{i}] must be an object with a string "
                            "'text'")
+            if i == _deep_id_at:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"segments[{i}].id is nested too deeply")
             speaker = seg.get("speaker")
             speaker = (_log_safe(speaker.strip()[:_TEXT_TRANSLATE_MAX_SPEAKER])
                        or None) if isinstance(speaker, str) else None
