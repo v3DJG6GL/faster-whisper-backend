@@ -2101,6 +2101,59 @@ def test_guard_counts_a_nested_reference_in_either_f4m_attribute():
     assert fetched == []
 
 
+_JOINED_NESTED = 17  # one past _MAX_F4M_NESTED
+
+
+@pytest.mark.parametrize("manifest_url,media", [
+    ("http://cdn.example/m.f4m", "<baseURL>http://a.example/b.f4m?</baseURL>"
+     + _f4m_media(_JOINED_NESTED, url="x{i}")),
+    ("http://cdn.example/m.f4m", "<baseURL>http://a.example/b.f4m</baseURL>"
+     + _f4m_media(_JOINED_NESTED, url="/")),
+    ("http://cdn.example/m.f4m", "<baseURL>http://a.example/b.m3u8?</baseURL>"
+     + _f4m_media(_JOINED_NESTED, url="x{i}")),
+    ("http://a.example/p.f4m?x/set", _f4m_media(_JOINED_NESTED, url="x{i}")),
+    # A trailing run of slashes longer than any fixed window: the head keeps
+    # ".f4m" only far behind its end, and every "/" node after it is nested.
+    ("http://cdn.example/m.f4m", _f4m_media(1, url="x.f4m" + "/" * 100)
+     + _f4m_media(_JOINED_NESTED - 1, url="/")),
+], ids=["query-in-base", "slash-under-base", "m3u8-query-in-base",
+        "query-in-dir", "long-slash-run"])
+def test_guard_counts_f4m_nested_on_the_joined_address(manifest_url, media):
+    """yt-dlp decides a nested fetch on the address it joins, not on the
+    node's own attribute: a "?" in the head hides the node's url from
+    determine_ext, and a "/" node under ".../b.f4m" ends in "b.f4m//"."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    assert _registered_guard()["_MAX_F4M_NESTED"] == _JOINED_NESTED - 1
+    fetched = []
+
+    def _child(self, url, video_id, *a, **kw):
+        fetched.append(url)
+        return []
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        ie._extract_f4m_formats = types.MethodType(_child, ie)
+        ie._extract_m3u8_formats = types.MethodType(_child, ie)
+        with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+            ie._parse_f4m_formats(
+                compat_etree_fromstring(_f4m(media, bootstrap=False).encode()),
+                manifest_url, "x")
+    assert fetched == []
+
+
+def test_guard_admits_an_f4m_set_manifest_of_a_few_streams():
+    fetched = []
+
+    def _child(self, url, video_id, *a, **kw):
+        fetched.append(url)
+        return [{"url": url, "format_id": url}]
+    fmts = _parse_f4m(_f4m(_f4m_media(3, url="stream_{i}.f4m"), bootstrap=False),
+                      _extract_f4m_formats=_child)
+    assert fetched == [f"http://cdn.example/stream_{i}.f4m" for i in range(3)]
+    assert len(fmts) == 3
+
+
 def test_guard_bounds_nested_f4m_references_per_extraction():
     from yt_dlp.utils import compat_etree_fromstring
     nested = _registered_guard()["_MAX_F4M_NESTED"]
@@ -2465,6 +2518,27 @@ def test_guard_admits_a_real_smil():
         ("rtmp://cdn.example/app", "mp4:a.mp4"), ("rtmp://cdn.example/app", "mp4:b.mp4")]
 
 
+
+def test_guard_refuses_a_smil_with_too_many_textstreams():
+    """_parse_smil_subtitles dedups the textstream srcs with a list, which is
+    quadratic in them."""
+    import time
+    cap = _hls_cap()
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match=f"more than {cap}"):
+        _parse_smil(_smil("".join(f'<textstream src="s{i}.vtt"/>'
+                                  for i in range(cap + 1))))
+    assert time.monotonic() - t0 < 1.0
+    # A repeated src is one track, as yt-dlp keeps it.
+    twice = "".join(f'<textstream src="s{i % cap}.vtt"/>' for i in range(cap + 5))
+    assert len(_parse_smil(_smil('<video src="v.mp4"/>' + twice))["subtitles"]["en"]) == cap
+    real = _smil('<video src="v.mp4"/>' + "".join(
+        f'<textstream src="http://cdn.example/{lang}.vtt" systemLanguage="{lang}"/>'
+        for lang in ("en", "de", "fr")))
+    assert _parse_smil(real)["subtitles"] == {
+        lang: [{"url": f"http://cdn.example/{lang}.vtt", "ext": "vtt"}]
+        for lang in ("en", "de", "fr")}
+
 def test_guard_bounds_smil_parsed_positionally():
     """MediasetIE overrides the parse and hands every argument to yt-dlp's
     positionally."""
@@ -2530,6 +2604,33 @@ def test_guard_caps_formats_across_one_extraction(monkeypatch):
         res = ydl.process_ie_result(_videos(2, 25), download=False)
         assert [len(e["formats"]) for e in res["entries"]] == [25, 25]
 
+
+
+def _url_only_videos(n_entries):
+    """Entries a scrape builds from bare media links: a url, no formats."""
+    return {"_type": "playlist", "id": "p", "title": "p", "extractor": "generic",
+            "extractor_key": "Generic", "webpage_url": "http://cdn.example/p",
+            "entries": [{
+                "id": f"e{e}", "title": f"e{e}", "extractor": "generic",
+                "extractor_key": "Generic", "webpage_url": "http://cdn.example/p",
+                "url": f"http://cdn.example/{e}.mp4"} for e in range(n_entries)]}
+
+
+def test_guard_counts_url_only_entries_in_the_format_pass(monkeypatch):
+    """yt-dlp makes a url-only entry its own single format, and each entry
+    costs a format pass all the same."""
+    monkeypatch.setitem(_registered_guard(), "_MAX_EXTRACTION_FORMATS", 50)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        with pytest.raises(yt_dlp.utils.DownloadError, match="more than 50"):
+            ydl.process_ie_result(_url_only_videos(51), download=False)
+    _reset_budget()
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        res = ydl.process_ie_result(_url_only_videos(50), download=False)
+        assert len(res["entries"]) == 50
+    _reset_budget()
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        ydl.process_ie_result(_url_only_videos(1)["entries"][0], download=False)
+    assert _registered_guard()["_DIALS"].tls.processed_formats == 1
 
 def test_guard_does_not_charge_the_format_pass_to_the_manifest_budget(monkeypatch):
     """DASH and HLS formats are charged once, where their manifest is parsed:

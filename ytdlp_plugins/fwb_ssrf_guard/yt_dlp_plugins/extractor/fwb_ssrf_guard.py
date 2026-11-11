@@ -1132,17 +1132,8 @@ def _refuse_oversized_f4m(manifest, manifest_url: str = "") -> None:
     if any(manifest.find(ns + "bootstrapInfo") is not None
            for ns in _F4M_NAMESPACES):
         return  # a stream-level manifest refers to nothing outside it
-    from yt_dlp.utils import determine_ext
-    # yt-dlp reads @href in a 2.0 manifest only and @url otherwise: a node
-    # naming a manifest in either counts, which can only overcount.
-    nested = sum(1 for node in nodes
-                 if any(determine_ext(node.get(attr) or "") in ("f4m", "m3u8")
-                        for attr in ("href", "url")))
-    # The download child never resets the budget: it extracts once.
-    total = getattr(_DIALS.tls, "f4m_nested", 0) + nested
-    if total > _MAX_F4M_NESTED:
-        raise _too_many_variants(_MAX_F4M_NESTED)
     from yt_dlp.downloader.f4m import get_base_url, remove_encrypted_media
+    from yt_dlp.utils import determine_ext
     # Each node's address is a fresh <baseURL> + "/" + its url or, without
     # one, the directory of the PREVIOUS node's address + "/" + its url
     # (yt-dlp reassigns manifest_url in its loop), so relative urls holding
@@ -1150,9 +1141,16 @@ def _refuse_oversized_f4m(manifest, manifest_url: str = "") -> None:
     # length only, in yt-dlp's order over the nodes it keeps, never built.
     # A nested child's own variants are charged where its master is parsed,
     # so none is counted here.
+    # yt-dlp fetches a node as a nested manifest when determine_ext of that
+    # joined address says .f4m / .m3u8, and the head decides it as often as
+    # the node does (".../b.f4m?" + "x", ".../b.f4m" + "/"), so the address's
+    # extension is followed along in the same loop as its length.
     base = get_base_url(manifest)
+    base_head = _f4m_head(base, determine_ext) if base else None
+    dir_head = _f4m_head(manifest_url[:max(manifest_url.rfind("/"), 0)],
+                         determine_ext)
     dir_len = max(manifest_url.rfind("/"), 0)
-    url_bytes = 0
+    url_bytes, joined_nested = 0, set()
     for node in remove_encrypted_media(nodes):
         media = node.get("href") if v2 else None
         if media is None:
@@ -1163,12 +1161,65 @@ def _refuse_oversized_f4m(manifest, manifest_url: str = "") -> None:
         if media.startswith(("http://", "https://")):
             url_bytes += len(media)
             dir_len = cut
+            ext = determine_ext(media)
+            dir_head = _f4m_head(media[:cut], determine_ext)
         else:
             head = len(base) if base else dir_len
             url_bytes += head + 1 + len(media)
             dir_len = head + 1 + cut if cut >= 0 else head
+            ext = _f4m_joined_ext(base_head or dir_head, media, determine_ext)
+            if not base_head and cut >= 0:
+                dir_head = _f4m_head_join(dir_head, media[:cut], determine_ext)
+        if ext in ("f4m", "m3u8"):
+            joined_nested.add(id(node))
+    # yt-dlp reads @href in a 2.0 manifest only and @url otherwise: a node
+    # naming a manifest in either counts too, which can only overcount.
+    nested = sum(1 for node in nodes
+                 if id(node) in joined_nested
+                 or any(determine_ext(node.get(attr) or "") in ("f4m", "m3u8")
+                        for attr in ("href", "url")))
+    # The download child never resets the budget: it extracts once.
+    total = getattr(_DIALS.tls, "f4m_nested", 0) + nested
+    if total > _MAX_F4M_NESTED:
+        raise _too_many_variants(_MAX_F4M_NESTED)
     _charge(0, 0, url_bytes)
     _DIALS.tls.f4m_nested = total
+
+
+# determine_ext reads an address up to its first "?", takes the text after
+# the last "." there, and answers "f4m" / "m3u8" only for exactly that text,
+# trailing slashes allowed; it needs a "." anywhere in the address. A head
+# (the base, or the directory a node is joined onto) is therefore kept as
+# three facts, never as the growing text: whether it holds a "?", whether it
+# holds a ".", and the manifest extension its text before the "?" ends in
+# ("" for none). Appending "/" + more keeps that extension only when the
+# more is slashes alone.
+def _f4m_tail_ext(guess, determine_ext) -> str:
+    ext = determine_ext("." + guess)
+    return ext if ext in ("f4m", "m3u8") else ""
+
+
+def _f4m_head(text, determine_ext):
+    pre, query, _ = text.partition("?")
+    return (bool(query), "." in text,
+            _f4m_tail_ext(pre.rpartition(".")[2], determine_ext))
+
+
+def _f4m_head_join(head, more, determine_ext):
+    """The facts of head + "/" + more."""
+    query, dot, tail = head
+    dot = dot or "." in more
+    if query:
+        return query, dot, tail
+    pre, query, _ = more.partition("?")
+    guess = pre.rpartition(".")[2] if "." in pre else f"{tail}/{pre}"
+    return bool(query), dot, _f4m_tail_ext(guess, determine_ext)
+
+
+def _f4m_joined_ext(head, media, determine_ext) -> str:
+    """determine_ext(head + "/" + media), from the head's facts."""
+    query, dot, tail = _f4m_head_join(head, media, determine_ext)
+    return tail if dot else ""
 
 
 def _bounded_f4m(original):
@@ -1251,10 +1302,12 @@ def _f4m_fragments_are_bounded() -> bool:
 # <audio>, <media> and <imagestream> nodes, joins each relative one onto the
 # <meta base> as a fresh copy (1 000 srcs under a 1 MB base: ~1 GB), and
 # fetches and parses every src naming an HLS / HDS / DASH / Smooth Streaming
-# manifest. The srcs are counted against the HLS format cap, their addresses
-# sized against the extraction's budget, and the nested manifests counted
-# with HDS's, all before the parse. Real SMIL lists a handful of bitrates
-# under a short base.
+# manifest; every distinct <textstream> src becomes a subtitle track, found
+# distinct by a list scan. The srcs and the textstream srcs are counted
+# against the HLS format cap, the addresses sized against the extraction's
+# budget, and the nested manifests counted with HDS's, all before the parse.
+# Real SMIL lists a handful of bitrates and subtitle tracks under a short
+# base.
 _SMIL_SENTINEL = "_fwb_smil_bounded"
 _SMIL_PATHS = (".//video", ".//audio", ".//media")
 _SMIL_NESTED_EXTS = ("m3u8", "f4m", "mpd")
@@ -1281,6 +1334,14 @@ def _refuse_oversized_smil(ie, smil, smil_url, namespace) -> None:
                 continue
             srcs[src] = None if image else node
             if len(srcs) > _MAX_M3U8_FORMATS:
+                raise _too_many_variants(_MAX_M3U8_FORMATS)
+    # The subtitle parse dedups the textstream srcs with a list: quadratic.
+    subs = set()
+    for node in smil.findall(ie._xpath_ns(".//textstream", namespace)):
+        src = node.get("src")
+        if src and src not in subs:
+            subs.add(src)
+            if len(subs) > _MAX_M3U8_FORMATS:
                 raise _too_many_variants(_MAX_M3U8_FORMATS)
     # A relative src is a fresh urljoin(base + "/", src), at most that long
     # (an .f4m one gains a short query); an absolute one, an rtmp play_path
@@ -1356,10 +1417,12 @@ _FORMAT_PASS_SENTINEL = "_fwb_format_pass_bounded"
 def _bounded_process_video_result(original):
     def process_video_result(self, info_dict, *args, **kwargs):
         formats = info_dict.get("formats") if isinstance(info_dict, dict) else None
+        # Each call is a format pass, and yt-dlp makes an entry with a url
+        # and no formats its own single format.
         try:
-            count = len(formats) if formats is not None else 0
+            count = max(len(formats) if formats is not None else 0, 1)
         except TypeError:
-            count = 0  # yt-dlp fails on its own
+            count = 1  # yt-dlp fails on its own
         total = getattr(_DIALS.tls, "processed_formats", 0) + count
         if total > _MAX_EXTRACTION_FORMATS:
             raise _too_many_variants(_MAX_EXTRACTION_FORMATS)
