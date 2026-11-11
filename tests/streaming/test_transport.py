@@ -7,9 +7,11 @@ if ffmpeg (or its libopus encoder) is unavailable.
 
 import asyncio
 import logging
+import socket
 import struct
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -288,6 +290,142 @@ def test_ffmpeg_transport_bounds_a_one_frame_allocation_bomb():
 
     assert asyncio.run(run()) < 512 * 1024
     assert total == 0
+
+
+def _transport_argv(monkeypatch) -> list:
+    """The argv FfmpegTransport.start() hands to the subprocess, unrun."""
+    seen = []
+
+    async def fake_exec(*args, **_kw):
+        seen.append(list(args))
+        raise OSError("not started")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    async def run():
+        with pytest.raises(OSError):
+            await FfmpegTransport(_nosink).start()
+
+    asyncio.run(run())
+    return seen[0]
+
+
+def test_ffmpeg_transport_restricts_the_input_demuxer(monkeypatch):
+    """The demuxer is picked by content, so the argv must name the containers
+    a dictation client sends: a manifest/playlist demuxer (dash, hls, concat)
+    fetches what it references, and ffmpeg 7.0's dash demuxer does so past
+    -protocol_whitelist."""
+    argv = _transport_argv(monkeypatch)
+    assert "-format_whitelist" in argv
+    at = argv.index("-format_whitelist")
+    assert at < argv.index("-i")
+    allowed = set(argv[at + 1].split(","))
+    assert {"matroska", "webm", "ogg", "mov", "mp4", "wav", "mp3", "aac",
+            "flac"} <= allowed
+    assert not allowed & {"dash", "hls", "concat", "webm_dash_manifest",
+                          "sdp", "rtsp", "image2", "tee"}
+
+
+def _ffmpeg_binary(which: str) -> str:
+    if which == "default":
+        return ffmpeg_exe()
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415 — optional bundled binary
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        pytest.skip("imageio-ffmpeg binary unavailable")
+
+
+_CLIENT_CONTAINERS = {
+    "webm_opus": ["-c:a", "libopus", "-f", "webm"],
+    "ogg_opus": ["-c:a", "libopus", "-f", "ogg"],
+    "mp4_aac_fragmented": ["-c:a", "aac", "-f", "mp4",
+                           "-movflags", "frag_keyframe+empty_moov+default_base_moof"],
+    "m4a_aac": ["-c:a", "aac", "-f", "ipod"],
+    "mp3": ["-c:a", "libmp3lame", "-f", "mp3"],
+    "flac": ["-c:a", "flac", "-f", "flac"],
+    "adts_aac": ["-c:a", "aac", "-f", "adts"],
+    "wav": ["-c:a", "pcm_s16le", "-f", "wav"],
+}
+
+
+async def _decode(data: bytes) -> int:
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    t = FfmpegTransport(sink)
+    await t.start()
+    await t.feed(data)
+    await t.aclose()
+    return total
+
+
+@pytest.mark.parametrize("which", ["default", "imageio"])
+@pytest.mark.parametrize("container", sorted(_CLIENT_CONTAINERS))
+def test_ffmpeg_transport_decodes_every_client_container(container, which, monkeypatch, tmp_path):
+    """Each container a recorder produces still opens under the demuxer
+    allowlist, with the system ffmpeg and with the bundled fallback."""
+    exe = _ffmpeg_binary(which)
+    out = tmp_path / "clip"
+    r = subprocess.run(
+        [exe, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=1:sample_rate=48000", "-ac", "2",
+         *_CLIENT_CONTAINERS[container], str(out)],
+        capture_output=True, timeout=30)
+    if r.returncode != 0 or not out.exists():
+        pytest.skip(f"{container} encode unavailable")
+    monkeypatch.setattr("faster_whisper_backend.audio.ffmpeg.ffmpeg_exe", lambda: exe)
+    # ~1 s of 16 kHz mono s16le = 32000 bytes (codec priming adds a little).
+    assert asyncio.run(_decode(out.read_bytes())) >= 30000
+
+
+@pytest.mark.parametrize("which", ["default", "imageio"])
+def test_ffmpeg_transport_never_follows_a_dash_manifest(which, monkeypatch):
+    """A streamed MPD must not make the server connect to its BaseURL. ffmpeg
+    7.0.2 (the imageio-ffmpeg fallback) dials it despite
+    -protocol_whitelist pipe; the demuxer allowlist refuses the manifest."""
+    exe = _ffmpeg_binary(which)
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    srv.settimeout(0.1)
+    port = srv.getsockname()[1]
+    hits = []
+    stop = threading.Event()
+
+    def accept():
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except (socket.timeout, OSError):
+                continue
+            hits.append(1)
+            conn.close()
+
+    th = threading.Thread(target=accept, daemon=True)
+    th.start()
+    mpd = (
+        '<?xml version="1.0"?>\n'
+        '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" '
+        'mediaPresentationDuration="PT1S" minBufferTime="PT1S" '
+        'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">\n'
+        f'<BaseURL>http://127.0.0.1:{port}/</BaseURL>\n'
+        '<Period><AdaptationSet mimeType="audio/mp4">'
+        '<Representation id="a" bandwidth="64000" codecs="mp4a.40.2">'
+        '<BaseURL>seg.mp4</BaseURL></Representation></AdaptationSet></Period>'
+        '</MPD>\n').encode()
+    monkeypatch.setattr("faster_whisper_backend.audio.ffmpeg.ffmpeg_exe", lambda: exe)
+    try:
+        decoded = asyncio.run(_decode(mpd))
+    finally:
+        stop.set()
+        th.join(5)
+        srv.close()
+    assert hits == []
+    assert decoded == 0
 
 
 def test_stream_route_accepts_webm_via_ffmpeg(client, energy_vad):

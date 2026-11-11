@@ -41,6 +41,13 @@ _DECODE_HEADROOM_S = 120.0
 # stereo, Opus, MP3, AAC) never come near it; a bomb frame fails to decode
 # and the child stays at its baseline size.
 _MAX_FFMPEG_ALLOC = 64 * 1024 * 1024
+# Input demuxers ffmpeg may open. It picks one by content, whatever the
+# handshake declared, and a manifest demuxer fetches what it references:
+# ffmpeg 7.0's dash demuxer (the imageio-ffmpeg fallback) connects to an MPD's
+# BaseURL despite -protocol_whitelist pipe. Every ENCODED_FORMATS stream probes
+# as one of these; a name matches a multi-name demuxer ("webm" opens
+# "matroska,webm", "mp4" opens "mov,mp4,m4a,3gp,3g2,mj2").
+_INPUT_DEMUXERS = "matroska,webm,ogg,mov,mp4,m4a,3gp,3g2,mj2,wav,mp3,aac,flac"
 
 
 class RawPcmTransport:
@@ -100,6 +107,7 @@ class FfmpegTransport:
             # libavformat into following file:// or http:// external references
             # (the classic ffmpeg local-file-read / SSRF surface).
             "-protocol_whitelist", "pipe",
+            "-format_whitelist", _INPUT_DEMUXERS,
             "-i", "pipe:0",
             "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(self._sr),
             "pipe:1",
