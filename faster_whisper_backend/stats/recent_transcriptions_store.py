@@ -151,6 +151,20 @@ def _require_conn() -> sqlite3.Connection:
     return store_common.require_init(_conn, "recent_transcriptions_store")
 
 
+# list_recent's search predicate. SQLite matches LIKE '%needle%' by retrying
+# the needle at every offset, so a periodic needle over periodic text costs
+# len(text) x len(needle) per row; Python's bytes search stays linear there. The arguments arrive as UTF-8 bytes
+# (CAST AS BLOB): bytes.lower() folds ASCII only, exactly as SQLite's LIKE
+# does, and a UTF-8 byte match is a character match.
+_CONTAINS_FN = "fwb_ascii_icontains"
+
+
+def _ascii_icontains(hay: bytes | None, needle: bytes | None) -> int:
+    if hay is None or needle is None:
+        return 0
+    return 1 if needle.lower() in hay.lower() else 0
+
+
 @contextlib.contextmanager
 def _reader_conn() -> Iterator[sqlite3.Connection]:
     """A read-only connection of the caller's own, closed on exit. On the
@@ -165,6 +179,7 @@ def _reader_conn() -> Iterator[sqlite3.Connection]:
                            timeout=store_common.BUSY_TIMEOUT_S)
     try:
         conn.row_factory = sqlite3.Row
+        conn.create_function(_CONTAINS_FN, 2, _ascii_icontains, deterministic=True)
         conn.execute("PRAGMA query_only=ON;")
         conn.execute("PRAGMA temp_store=MEMORY;")
         yield conn
@@ -440,9 +455,9 @@ def list_recent(
     - user_id_filter: one id (/quick-config scope='own' keeps one user's
       traces out of another's view) or a sequence (an IN clause, the /stats
       jobs who-filter; an empty sequence = no filter).
-    - query: case-insensitive substring of raw_text OR final_text. SQLite
-      LIKE folds ASCII only, so umlauts match case-sensitively; acceptable
-      for this free-text search.
+    - query: case-insensitive substring of raw_text OR final_text. The
+      fold is ASCII only (as SQLite LIKE's), so umlauts match
+      case-sensitively; acceptable for this free-text search.
     - kind: a recent-jobs kind, or a sequence of them (any of those).
     - status: 'ok' | 'error' | 'cancelled', or 'failed' = anything but ok.
     - slow_rtf: only jobs with processing_s / audio_s > slow_rtf."""
@@ -482,15 +497,15 @@ def list_recent(
         where.append("audio_s > 0 AND processing_s > ? * audio_s")
         params.append(float(slow_rtf))
     if query:
-        # Escape LIKE wildcards so a literal % or _ in the search text is
-        # matched literally rather than as a wildcard.
-        needle = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        like = f"%{needle}%"
+        # A literal substring: %, _ and backslash match themselves, as in an
+        # escaped LIKE '%needle%' (see _CONTAINS_FN for why not LIKE).
         where.append(
-            "(raw_text LIKE ? ESCAPE '\\' OR final_text LIKE ? ESCAPE '\\')"
+            f"({_CONTAINS_FN}(CAST(raw_text AS BLOB), ?)"
+            f" OR {_CONTAINS_FN}(CAST(final_text AS BLOB), ?))"
         )
-        params.append(like)
-        params.append(like)
+        needle = query.encode("utf-8")
+        params.append(needle)
+        params.append(needle)
     sql = "SELECT * FROM recent_transcriptions"
     if where:
         sql += " WHERE " + " AND ".join(where)

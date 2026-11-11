@@ -55,14 +55,12 @@ def test_recent_transcriptions_reads_skip_the_shared_connection(tx_store, monkey
 def test_recent_transcriptions_write_does_not_wait_for_a_search(tx_store, monkeypatch):
     """record_timing runs on the event loop: a /quick-config text search
     scanning the table in a worker thread must not hold it off until done."""
-    import sqlite3
-
     tx_store.record_timing(request_id="r1", model="m", audio_s=1.0,
                            processing_s=0.5, status="ok", words=2)
     waited, writers = [], []
 
-    def like_then_write(*_a):
-        # SQLite's LIKE, overridden: fires mid-scan, once.
+    def match_then_write(*_a):
+        # The search predicate, overridden: fires mid-scan, once.
         if not writers:
             w = threading.Thread(target=tx_store.record_timing, kwargs=dict(
                 request_id="r2", model="m", audio_s=1.0, processing_s=0.5,
@@ -71,17 +69,9 @@ def test_recent_transcriptions_write_does_not_wait_for_a_search(tx_store, monkey
             w.start()
             w.join(timeout=5)
             waited.append(w.is_alive())
-        return False
+        return 0
 
-    real_connect = sqlite3.connect
-
-    def connect(*a, **kw):
-        c = real_connect(*a, **kw)
-        c.create_function("like", 3, like_then_write)
-        return c
-
-    tx_store._conn.create_function("like", 3, like_then_write)
-    monkeypatch.setattr(sqlite3, "connect", connect)
+    monkeypatch.setattr(tx_store, "_ascii_icontains", match_then_write)
     assert tx_store.list_recent(limit=5, query="needle") == []
     for w in writers:
         w.join()
