@@ -1338,7 +1338,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     size = info.get("filesize_approx") or info.get("filesize")
     fs = int(size) if size else None
     ext = str(info["ext"]) if info.get("ext") else None
-    abr = float(info["abr"]) if info.get("abr") else None
+    abr = _plausible_abr(info.get("abr"))
     ladder: "list[dict]" = []
     if getattr(cfg, "URL_VIDEO_ENABLED", False):
         from faster_whisper_backend.runtime import stage_rates as _rates
@@ -1386,6 +1386,23 @@ def _finite_duration(value) -> "float | None":
         return None
     d = float(value)
     return d if math.isfinite(d) and d > 0 else None
+
+
+# Far above any real audio track (24-bit/192 kHz stereo PCM is 9,216 kbps);
+# it keeps the progress estimate's duration * abr product finite.
+_ABR_MAX_KBPS = 100_000
+
+
+def _plausible_abr(value) -> "float | None":
+    """A site's audio bitrate in kbps, or None when it is garbage: an
+    integer past float range, NaN, a non-positive or absurd value."""
+    if not value:
+        return None
+    try:
+        abr = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return abr if math.isfinite(abr) and 0 < abr <= _ABR_MAX_KBPS else None
 
 
 def host_for_log(url: "str | None") -> str:

@@ -880,6 +880,22 @@ def test_probe_duration_drops_non_finite_values():
     assert udl._finite_duration("61.5") == 61.5
 
 
+
+@pytest.mark.parametrize("abr", [1e306, 10**400, float("nan"), -5, "x"],
+                         ids=["huge", "past-float", "nan", "negative", "text"])
+def test_probe_drops_implausible_abr(monkeypatch, abr):
+    """A site-supplied abr feeds the progress estimate's duration * abr
+    product: 1e306 overflows it into a 500, and an integer past float range
+    must not raise out of probe() at all. Garbage reads as unknown."""
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "extractor_key": "Youtube", "title": "t",
+        "duration": 3600, "ext": "m4a", "abr": abr})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert info.abr is None
+    assert udl._plausible_abr(129.5) == 129.5
+    assert udl._plausible_abr("128") == 128.0
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "10.1.2.3",
                                   "192.168.1.1", "169.254.169.254",
                                   "100.64.0.1", "::1"])
