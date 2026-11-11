@@ -184,6 +184,23 @@ def _sre_char_eq(a: str, b: str) -> bool:
     return a == b or re.fullmatch(re.escape(a), b, re.IGNORECASE) is not None
 
 
+@functools.lru_cache(maxsize=4096)
+def _sre_fold(c: str) -> str:
+    """One representative per sre IGNORECASE class: two chars match each
+    other exactly when their representatives are equal (sre lowers, then
+    joins its extra cases: ſ/s, ς/σ, ι/U+0345)."""
+    try:
+        from re import _compiler
+    except ImportError:  # pragma: no cover - Python < 3.11
+        import sre_compile as _compiler
+    lo = _compiler._sre.unicode_tolower(ord(c))
+    return chr(min((lo, *getattr(_compiler, "_EXTRA_CASES", {}).get(lo, ()))))
+
+
+def _fold_key(s: str) -> str:
+    return "".join(_sre_fold(c) for c in s)
+
+
 # Matched strings whose sre-fold lookup the replacer remembers (per map).
 _FOLD_MEMO_MAX = 1024
 # fold_memo.get default: a memoised None means "no key", not "not memoised".
@@ -224,6 +241,9 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
     keys_by_len: dict[int, list[str]] = {}
     for k in keys:
         keys_by_len.setdefault(len(k), []).append(k)
+    by_fold: dict[str, list[str]] = {}
+    for k in keys:
+        by_fold.setdefault(_fold_key(k), []).append(k)
     fold_memo: dict[str, "str | None"] = {}
 
     def replace(mt: "re.Match[str]") -> str:
@@ -233,16 +253,21 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
             # sre's case folding is not str.lower(): "İ" matches "i" but
             # lowers to "i" + U+0307, "ς" matches "σ" but lowers to itself.
             # Ask sre which key it matched; it folds char by char, so only
-            # keys of the matched length can be it, compared char by char
-            # (cached per char pair: a 10 000-key map must not compile one
-            # full-key pattern per candidate on every miss). First match in
-            # key order wins, as before; the result is memoised per string.
-            # One lookup, not a check then a read: other threads share this
-            # memo and may clear it in between.
+            # keys of the matched string's fold class can be it, compared
+            # char by char (cached per char pair: a 10 000-key map must not
+            # compile one full-key pattern per candidate on every miss, nor
+            # compare every key of the matched length). First match in key
+            # order wins, as before; the keys of the matched length stay the
+            # fallback. The result is memoised per string. One lookup, not a
+            # check then a read: other threads share this memo and may clear
+            # it in between.
             value = fold_memo.get(key, _MISS)
             if value is _MISS:
-                value = next((lookup[k.lower()] for k in keys_by_len.get(len(key), ())
-                              if all(_sre_char_eq(a, b) for a, b in zip(k, key))), None)
+                for same in (by_fold.get(_fold_key(key), ()), keys_by_len.get(len(key), ())):
+                    value = next((lookup[k.lower()] for k in same if len(k) == len(key)
+                                  and all(_sre_char_eq(a, b) for a, b in zip(k, key))), None)
+                    if value is not None:
+                        break
                 if len(fold_memo) >= _FOLD_MEMO_MAX:
                     fold_memo.clear()
                 fold_memo[key] = value

@@ -300,6 +300,52 @@ def test_fold_fallback_cost_is_bounded_by_the_alphabet_not_the_key_count(monkeyp
     assert len(calls) <= 100
 
 
+def test_fold_fallback_cost_is_bounded_by_the_key_length_not_the_key_count(monkeypatch):
+    # Each distinct sre-fold miss scanned every key of its length: a
+    # 10 000-key map of "ſſſſ…" keys and a transcript of "ssss…" words took
+    # ~14 ms per word. Only the keys of the word's fold class are compared.
+    from faster_whisper_backend.pipeline import dictation_map as dm
+    import itertools
+    import string
+    keys = ["ſſſſ" + "".join(t) for t in
+            itertools.islice(itertools.product(string.ascii_lowercase, repeat=3), 2000)]
+    pattern, replace, _lookup = dm.compile_map({k: k.upper() for k in keys})
+    calls = []
+    real = dm._sre_char_eq
+    monkeypatch.setattr(dm, "_sre_char_eq", lambda a, b: calls.append(1) or real(a, b))
+    words = [k.replace("ſ", "s") for k in keys[-200:]]
+    out = pattern.sub(replace, " ".join(words))
+    assert out == " ".join(k.upper() for k in keys[-200:])
+    assert len(calls) <= 200 * 7 * 2
+
+
+def test_fold_fallback_picks_the_same_key_as_a_scan_in_key_order():
+    """The fold-class index must answer exactly what comparing every key of
+    the matched length in key order answers, over the characters where sre's
+    folding and str.lower() part ways."""
+    import random
+    rng = random.Random(7)
+    pool = "sSſkKKiIİıσςΣιΙιµμΜåÅÅaäÄbφϕθϑ"
+    for _ in range(300):
+        m = {}
+        for _ in range(rng.randint(1, 30)):
+            m["".join(rng.choice(pool) for _ in range(rng.randint(1, 4)))] = f"<{len(m)}>"
+        pattern, replace, lookup = dictation_map.compile_map(m)
+        keys = list(m)
+
+        def scan(mt, lookup=lookup, keys=keys):
+            key = mt.group(1)
+            value = lookup.get(key.lower())
+            if value is None:
+                value = next((lookup[k.lower()] for k in keys if len(k) == len(key)
+                              and re.fullmatch(re.escape(k), key, re.IGNORECASE)), None)
+            return mt.group(0) if value is None else value
+
+        text = " ".join("".join(rng.choice(pool) for _ in range(rng.randint(1, 4)))
+                        for _ in range(20))
+        assert pattern.sub(replace, text) == pattern.sub(scan, text), (m, text)
+
+
 def test_fold_memo_survives_a_clear_between_check_and_read():
     # The compiled map (and its fold memo) is shared by every thread that runs
     # the pipeline, and a full memo is cleared. A clear landing between a
