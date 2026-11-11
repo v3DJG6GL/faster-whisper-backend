@@ -58,6 +58,39 @@ def test_stats_usage_out_of_range_window_is_422(client):
     assert r.status_code == 200 and r.json()["step"] <= 3600
 
 
+@pytest.mark.parametrize("err", [OverflowError("timestamp out of range"),
+                                 OSError(22, "Invalid argument")])
+def test_stats_naive_tz_platform_overflow_is_422(client, monkeypatch, err):
+    """With no tz the window resolves in the server's local zone, where the
+    platform's localtime can refuse epoch extremes (Windows: OSError 22 before
+    1970 / after 3000). That is a 422 for the absurd window, not a 500; with a
+    tz set the same error is a real failure and still propagates."""
+    def boom(*_a, **kw):
+        if kw.get("tz") is None:
+            raise err
+        raise RuntimeError("tz-set path reached")
+
+    monkeypatch.setattr(us, "overview", boom)
+    monkeypatch.setattr(us, "tail", boom)
+    for url in ("/stats/usage?from=0&to=0&compare=prev",
+                "/stats/pick?dim=user&from=0&to=0",
+                "/stats/tail?from=0&to=0"):
+        r = client.get(url)
+        assert r.status_code == 422, url
+        assert "out of range" in r.json()["detail"]
+
+    def tz_set_fails(*_a, **_kw):
+        raise type(err)(*err.args)
+
+    monkeypatch.setattr(us, "overview", tz_set_fails)
+    monkeypatch.setattr(us, "tail", tz_set_fails)
+    for url in ("/stats/usage?from=0&to=0&tz=UTC",
+                "/stats/pick?dim=user&from=0&to=0&tz=UTC",
+                "/stats/tail?from=0&to=0&tz=UTC"):
+        with pytest.raises(type(err)):
+            client.get(url)
+
+
 def test_stats_usage_ok(client):
     r = client.get("/stats/usage")
     assert r.status_code == 200

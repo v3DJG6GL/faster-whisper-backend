@@ -32,7 +32,7 @@ import json
 import logging
 import math
 import time
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -366,6 +366,22 @@ def _window_param(*, days: int | None, from_: int | None, to: int | None,
         raise HTTPException(422, detail=str(e))
 
 
+async def _gather_in_window(gather: Callable[[], dict[str, Any]],
+                            w: usage_store.WindowSpec) -> dict[str, Any]:
+    """Run a route's store gather off the event loop. With no tz the window
+    resolves in the server's local zone, where the platform's localtime can
+    refuse an in-range but extreme day (Windows raises OSError 22 before 1970
+    and after 3000): that is the caller's window, so a 422. With a tz the
+    store does plain arithmetic, so the same error is a real failure."""
+    try:
+        return await asyncio.to_thread(gather)
+    except (OverflowError, OSError):
+        if w.tz is not None:
+            raise
+        raise HTTPException(
+            422, detail="window out of range for the server's local time zone")
+
+
 def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -> list[str]:
     """The ids behind the picked labels. Admin (and own) viewers send ids.
     A non-admin "all" viewer sends the row `id` the picker / leaderboard
@@ -546,7 +562,7 @@ async def stats_usage(
                 if names.get(u) and (not scrub or u == caller_uid)}
         return out
 
-    return await asyncio.to_thread(_gather)
+    return await _gather_in_window(_gather, w)
 
 
 @router.get(
@@ -608,7 +624,7 @@ async def stats_pick(
                      for r in rows],
         }
 
-    return await asyncio.to_thread(_gather)
+    return await _gather_in_window(_gather, w)
 
 
 JOB_KINDS: frozenset[str] = frozenset(jobs.KINDS)
@@ -721,7 +737,7 @@ async def stats_tail(
             days=w.days, from_day=w.from_day, to_day=w.to_day, all_time=w.all_time,
             jobs_retention_days=jobs_retention)
 
-    doc = await asyncio.to_thread(_gather)
+    doc = await _gather_in_window(_gather, w)
     doc["scope"] = scope.scope
     return doc
 
