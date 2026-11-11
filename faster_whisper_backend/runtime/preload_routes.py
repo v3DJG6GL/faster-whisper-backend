@@ -40,6 +40,7 @@ at best hands the size ledger a free measurement of it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -48,6 +49,7 @@ from pydantic import BaseModel, Field
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
+from faster_whisper_backend.audio import diarization as _diarization
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.translation import gating as tr_gating
@@ -230,6 +232,15 @@ async def preload_models(body: PreloadRequest,
     logger.debug("[preload] POST %d model(s) from=%s user=%s",
                  len(entries), trigger or "-",
                  (user.get("user_id") or "-")[:8])
+    # Admission below asks the diarization device on the loop, and the first
+    # ask in a process may import torch and probe CUDA (seconds): a preload
+    # POST is usually that first ask, so it is made here in a thread, after
+    # which the loop's ask is cheap. Separation's device is config alone.
+    if (getattr(cfg, "MODEL_PRELOAD_ENABLED", True)
+            and getattr(cfg, "DIARIZATION_ENABLED", False)
+            and any(f == "diarization" and (f, mid) not in denied
+                    for f, mid in entries)):
+        await asyncio.to_thread(_diarization._resolve_device)
     return preload.register_plan(user.get("user_id"), entries,
                                  plan_id=body.plan_id, denied=denied,
                                  stage_ahead=body.stage_ahead,

@@ -527,3 +527,45 @@ def test_route_plan_is_rejudged_after_the_allowlist_withdraws_a_model(
                         raising=False)
     asyncio.run(preload._handle((pid, "diarization", "p/x")))
     assert loads == [("diarization", "p/x")]
+
+
+def test_diarization_device_is_first_resolved_off_the_event_loop(
+        client, app_module, monkeypatch):
+    """_resolve_device can import torch and probe CUDA (seconds, once per
+    process): a preload POST is usually the first thing to need it, so the
+    route resolves it in a worker thread before admission asks again on the
+    loop, where it is then cheap."""
+    _enable(app_module, monkeypatch, DIARIZATION_MODEL="p/default",
+            DIARIZATION_ALLOWED_MODELS={"p/x"})
+    on_loop = []
+
+    def _resolve():
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return "cpu"
+    monkeypatch.setattr(diarization, "_resolve_device", _resolve)
+    r = client.post(_URL, json={"models": [{"family": "diarization",
+                                            "id": "p/x"}]})
+    assert r.status_code == 202
+    assert on_loop and on_loop[0] is False
+
+
+def test_preload_leaves_the_diarization_device_alone_when_it_is_not_needed(
+        client, app_module, monkeypatch):
+    """No warm-up thread for a POST that cannot reach a diarization load:
+    preloading or the stage is off, or the only diarization entry is
+    refused."""
+    calls = record_calls(monkeypatch, diarization, "_resolve_device",
+                         lambda: "cpu")
+    _enable(app_module, monkeypatch, MODEL_PRELOAD_ENABLED=False)
+    client.post(_URL, json=_body())
+    _enable(app_module, monkeypatch, DIARIZATION_ENABLED=False)
+    client.post(_URL, json=_body())
+    _enable(app_module, monkeypatch, DIARIZATION_MODEL="p/default",
+            DIARIZATION_ALLOWED_MODELS={"p/x"})
+    client.post(_URL, json={"models": [{"family": "diarization",
+                                        "id": "p/nope"}]})
+    assert calls == []
