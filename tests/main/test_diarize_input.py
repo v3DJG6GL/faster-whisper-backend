@@ -216,3 +216,24 @@ def test_the_route_bounds_the_copy_by_the_transcribed_duration(
     [(_path, shape)] = diarize_seen
     assert shape[:2] == (16000, 1)
     assert shape[2] <= 6 * 16000
+
+
+def test_the_diarization_device_is_resolved_off_the_event_loop(
+        client, app_module, fake_model, monkeypatch):
+    """_resolve_device can import torch and probe CUDA (seconds, once per
+    process): the plan's device lookup runs in a worker thread, even when
+    the stage then soft-skips because diarization is off."""
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", False,
+                        raising=False)
+    on_loop = []
+
+    def _resolve():
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return "cpu"
+    monkeypatch.setattr(diarization, "_resolve_device", _resolve)
+    _post_ok(client, diarize="true")
+    assert on_loop and not any(on_loop)

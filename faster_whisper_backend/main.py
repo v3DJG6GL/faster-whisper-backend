@@ -2420,7 +2420,9 @@ async def transcribe(
                                        device=_sep_dev)
             if _diarize:
                 try:
-                    _diar_dev = _diarization._resolve_device()
+                    # Off the loop: it may import torch and probe CUDA.
+                    _diar_dev = await asyncio.to_thread(
+                        _diarization._resolve_device)
                 except Exception:  # noqa: BLE001
                     _diar_dev = None
                 _rplan.set_stage_model("diarizing",
@@ -2900,6 +2902,12 @@ async def transcribe(
                     # same group, after buffering a whole 500 000-sample
                     # group of every channel again: answer its error now.
                     raise (_rs.__cause__ or _rs) from None
+                except _transcode.DecodeFailed as _df:
+                    # The whitelisted open succeeded and the decoder itself
+                    # failed: transcribe(path) would re-open the file with
+                    # no decoder whitelist only to meet the same error, so
+                    # answer that error now.
+                    raise (_df.__cause__ or _df) from None
                 except Exception as _dec_err:
                     # transcribe() runs the same steps on the path and meets
                     # the same error at the same frame, so handing it the

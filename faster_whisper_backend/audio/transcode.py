@@ -53,6 +53,12 @@ class ResampleFailed(Exception):
     channels than it downmixes); __cause__ is the resampler's own error."""
 
 
+class DecodeFailed(Exception):
+    """decode_16k_bounded's decoder failed after _open_audio had opened the
+    file; __cause__ is the av error. Told apart from a failed open: the
+    decoder already ran, so decoding the path again meets the same error."""
+
+
 class TranscodeBudgetExceeded(RuntimeError):
     """transcode_to_wav's output passed its `max_bytes` budget. A
     RuntimeError, so a caller that only knows the base class still reads it
@@ -309,19 +315,22 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
     dtype = None
     container, stream = _open_audio(src_path)
     try:
-        frames = _fw_valid_frames(container.decode(stream))
-        frames = _fw_bounded_groups(frames, 500000, max_seconds)
-        for group in itertools.chain(frames, [None]):
-            try:
-                resampled = resampler.resample(group)
-            except MemoryError:
-                raise  # the caller's own arm: no property of the group
-            except Exception as e:
-                raise ResampleFailed(str(e)) from e
-            for frame in resampled:
-                array = frame.to_ndarray()
-                dtype = array.dtype
-                raw_buffer.write(array)
+        try:
+            frames = _fw_valid_frames(container.decode(stream))
+            frames = _fw_bounded_groups(frames, 500000, max_seconds)
+            for group in itertools.chain(frames, [None]):
+                try:
+                    resampled = resampler.resample(group)
+                except MemoryError:
+                    raise  # the caller's own arm: no property of the group
+                except Exception as e:
+                    raise ResampleFailed(str(e)) from e
+                for frame in resampled:
+                    array = frame.to_ndarray()
+                    dtype = array.dtype
+                    raw_buffer.write(array)
+        except av.FFmpegError as e:
+            raise DecodeFailed(str(e)) from e
     finally:
         container.close()
     # As in decode_audio: resampler objects are only freed by a collection.
@@ -413,6 +422,62 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
         yield from _out(resampler.resample(None))
 
 
+# _drop_before keeps every frame that ends within _SKIP_GUARD_S of the cut,
+# so the resampler's filter has settled on real input again by the first
+# kept sample; it holds at most _SKIP_HOLD_MAX_S (or _SKIP_HOLD_MAX_BYTES) of
+# frames while looking for a point on the 16 kHz grid.
+_SKIP_GUARD_S = 1.0
+_SKIP_HOLD_MAX_S = 60.0
+_SKIP_HOLD_MAX_BYTES = 64 << 20
+
+
+def _drop_before(frames, skip_out: int, state: dict):
+    """`frames` without whole frames that end more than _SKIP_GUARD_S ahead
+    of output sample `skip_out` (16 kHz), so the samples a skip discards are
+    decoded but never resampled: the skip of a link's language-check piece
+    comes from a remote playlist, and a few KB of FLAC at an odd rate
+    resamples ~50x slower than it decodes. state["n"] / state["rate"] count
+    the input samples dropped.
+
+    The output stays sample-for-sample what resampling everything gives:
+    frames are dropped only in runs that keep the 16 kHz output on the same
+    grid (n * 16000 % rate == 0). The first frame always passes (an MP3's
+    is trimmed to the encoder delay, off every grid point), and dropping
+    stops at the first frame whose format, layout or rate differs (the
+    resampler restarts there) or that runs past _MAX_FRAME_S (_resampled
+    refuses it). A run that meets no grid point within _SKIP_HOLD_MAX_S or
+    _SKIP_HOLD_MAX_BYTES (only a crafted rate or block size) is dropped
+    off the grid anyway."""
+    skip_s = skip_out / 16000
+    it = iter(frames)
+    first = next(it, None)
+    if first is None:
+        return
+    yield first
+    setup = (first.format.name, first.layout.name, first.sample_rate)
+    seen, held, held_n, held_bytes = first.samples, [], 0, 0
+    for f in it:
+        r = f.sample_rate
+        if ((f.format.name, f.layout.name, r) != setup or not r
+                or f.samples / r > _MAX_FRAME_S
+                or (seen + held_n + f.samples) / r >= skip_s - _SKIP_GUARD_S):
+            yield from held
+            yield f
+            yield from it
+            return
+        held.append(f)
+        held_n += f.samples
+        held_bytes += f.samples * len(f.layout.channels) * f.format.bytes
+        if ((state["n"] + held_n) * 16000 % r == 0
+                or held_n / r > _SKIP_HOLD_MAX_S
+                or held_bytes > _SKIP_HOLD_MAX_BYTES):
+            state["n"] += held_n
+            state["rate"] = r
+            seen += held_n
+            held, held_n, held_bytes = [], 0, 0
+    yield from held
+
+
 def _read_16k(container, stream, want: int, *, skip: int = 0,
               after: "float | None" = None):
     """Decode `stream` from where the container stands into 16 kHz mono
@@ -425,16 +490,22 @@ def _read_16k(container, stream, want: int, *, skip: int = 0,
     frames = (f for f in _decoded_frames(container, stream)
               if after is None or f.time is None
               or f.time + f.samples / f.sample_rate >= after)
+    state = {"n": 0, "rate": None}
+    if skip:
+        frames = _drop_before(frames, skip, state)
     # The skipped samples are dropped as they decode, never collected: the
     # skip of a link's language-check piece comes from a remote playlist, so
     # holding it would let a tiny body ask for gigabytes.
-    chunks, have, drop = [], 0, skip
+    chunks, have, consumed = [], 0, 0
     # Fresh resampler per call: it keeps samples buffered across a seek.
     for out in _resampled(frames, format="flt", layout="mono", rate=16000):
         chunk = out.to_ndarray().reshape(-1)
-        if drop:
-            cut = min(drop, chunk.size)
-            drop -= cut
+        # What _drop_before took out never reached the resampler.
+        dropped = (state["n"] * 16000 // state["rate"]) if state["rate"] else 0
+        remaining = skip - dropped - consumed
+        if remaining > 0:
+            cut = min(remaining, chunk.size)
+            consumed += cut
             chunk = chunk[cut:]
             if not chunk.size:
                 continue

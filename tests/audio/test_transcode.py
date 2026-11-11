@@ -223,9 +223,11 @@ def _two_tone(path, *, rate=44100, pts_offset_s=0):
     pcm = np.repeat((tone * 8000).astype(np.int16), 2)
     if path.endswith(".wav"):
         return write_wav(path, pcm.tobytes(), nchannels=2, rate=rate)
+    mp3 = path.endswith(".mp3")
     with av.open(path, "w") as out:
-        st = out.add_stream("aac", rate=rate, layout="stereo")
-        step = 1024
+        st = out.add_stream("libmp3lame" if mp3 else "aac", rate=rate,
+                            layout="stereo")
+        step = 1152 if mp3 else 1024
         frames = pcm.reshape(-1, 2)
         for i in range(0, len(frames), step):
             fr = av.AudioFrame.from_ndarray(
@@ -516,6 +518,43 @@ def test_decode_span_does_not_hold_the_skipped_audio(tmp_path):
     assert a.base is None or a.base.nbytes <= 2 * RATE * 4
 
 
+def test_decode_span_does_not_resample_the_skipped_audio(tmp_path,
+                                                         monkeypatch):
+    """A skip far into a long, tiny file costs a decode, not a resample: a
+    link's language check takes the skip from a remote playlist, and a
+    few-KB FLAC of hours of silence at an odd rate resamples ~50x slower
+    than it decodes."""
+    rate = 1100
+    src = str(tmp_path / "long.flac")
+    with av.open(src, "w", format="flac") as out:
+        st = out.add_stream("flac", rate=rate)
+        st.layout = "mono"
+        st.codec_context.options = {"frame_size": "65535"}
+        block = np.zeros((1, rate * 600), dtype=np.int16)
+        for i in range(18):                     # 3 h
+            fr = av.AudioFrame.from_ndarray(block, format="s16",
+                                            layout="mono")
+            fr.sample_rate, fr.pts = rate, i * block.shape[1]
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    fed = []
+    real = audio_transcode._resampled
+
+    def counting(frames, **kw):
+        def tally():
+            for f in frames:
+                fed.append(f.samples)
+                yield f
+        return real(tally(), **kw)
+
+    monkeypatch.setattr(audio_transcode, "_resampled", counting)
+    a = audio_transcode.decode_span_16k(src, 3 * 3600 - 10.0, 1.0)
+    assert a.size == RATE
+    assert sum(fed) < 120 * rate
+
+
 def _read_16k_holding_everything(container, stream, want, *, skip=0):
     """The implementation that kept every skipped sample: the reference
     the drop-while-decoding one must match sample for sample."""
@@ -533,11 +572,14 @@ def _read_16k_holding_everything(container, stream, want, *, skip=0):
     return np.concatenate(chunks)[skip:skip + want]
 
 
-@pytest.mark.parametrize("fixture", ["two.m4a", "concat.mp3"])
+@pytest.mark.parametrize("fixture", ["two.m4a", "two.ts", "two.mp3",
+                                     "concat.mp3"])
 def test_decode_span_matches_the_full_decode_reference(tmp_path, fixture):
-    src = (_two_tone(str(tmp_path / fixture)) if fixture == "two.m4a"
-           else _concat_mp3(tmp_path))
-    for skip in (0.0, 0.001, 1.0, 3.9999, 7.3, 59.999, 61.2, 1000.0):
+    src = (_concat_mp3(tmp_path) if fixture == "concat.mp3"
+           else _two_tone(str(tmp_path / fixture)))
+    # 12.5 / 25.0 land past whole runs of frames the skip never resamples.
+    for skip in (0.0, 0.001, 1.0, 3.9999, 7.3, 12.5, 25.0, 59.999, 61.2,
+                 1000.0):
         for seconds in (0.0, 0.01, 1.0, 20.0):
             got = audio_transcode.decode_span_16k(src, skip, seconds)
             container, stream = audio_transcode._open_audio(src)

@@ -304,8 +304,12 @@ def test_wav_with_unreadable_channel_count_skips_separation(
         client, monkeypatch, fake_model, separate_calls, tmp_path):
     """PyAV reports 0 channels for a 1024-channel WAV and cannot transcode
     it (an FFmpegError: the fallback hands over the original), while
-    libsndfile reads it whole: its size is unknown, so it is skipped."""
+    libsndfile reads it whole: its size is unknown, so it is skipped. The
+    upload decode is stubbed: PyAV cannot decode it for Whisper either, and
+    this is about the separation skip."""
     import wave
+    monkeypatch.setattr(audio_transcode, "decode_16k_bounded",
+                        lambda path, *, max_seconds: np.zeros(16000, "float32"))
     with wave.open(str(tmp_path / "src.wav"), "wb") as w:
         w.setnchannels(1024)
         w.setsampwidth(1)
