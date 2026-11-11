@@ -581,7 +581,8 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                        trace: "list | None" = None,
                        extra_excludes: "set[str] | None" = None,
                        ident=None,
-                       language: "str | None" = None) -> str:
+                       language: "str | None" = None,
+                       bound: "int | None" = None) -> str:
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
     each rule that changes the text, is skipped, or is force-included appends
     `(label_with_ordinal, before, after)` so the per-request log block can
@@ -591,7 +592,10 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
 
     The output is bounded by output_bound(len(text)): the rule that would
     pass it is not applied (traced "[OUTPUT BOUND — not applied]") and the
-    remaining rules are skipped.
+    remaining rules are skipped. `bound` tightens that bound further: a
+    caller walking many pieces of one text separately (one walk per word)
+    passes what is left of the whole text's bound, so the pieces together
+    build no more than one walk over the text would.
 
     Per-model scoping (precedence top-down):
       1. PIPELINE_RULES_EXCLUDE — force-DISABLE for this model (highest priority).
@@ -622,7 +626,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     wrappers, so per-model exclusion of trim-edges has no effect there.
     """
     exclude, include = _scoping(model_name, ident, extra_excludes)
-    bound = output_bound(len(text))
+    bound = output_bound(len(text)) if bound is None else min(bound, output_bound(len(text)))
     capped = False
     memo = [None, False, None] if trace is not None else None
     for card in _cards(_COMPILED_RULES):

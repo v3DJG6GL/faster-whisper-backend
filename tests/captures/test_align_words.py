@@ -363,3 +363,76 @@ def test_apply_chips_consistency_with_training_tokens():
         [{"wrong": "134 Schrägstrich 92", "correct": "134/92",
           "idx": 3, "idx_end": 5}],
     ) == "Tag und Nacht 134/92"
+
+
+# A card a delegated editor may save (regex_guard accepts it): eleven
+# doublings, padded with identity entries. One short word grows 2048-fold,
+# under the floor of the output bound of its own walk.
+_DOUBLING_CARD = {"name": "dbl", "label": "Dbl", "type": "regex-list", "enabled": True,
+                  "entries": [{"pattern": "(.)", "replacement": "\\1\\1"}] * 11
+                  + [{"pattern": "(.)", "replacement": "\\1"}] * 189}
+
+
+def _install_card(app_module, card):
+    from tests.settings._rules_helpers import terminal_rule
+
+    app_module.cfg.PIPELINE_RULES = [card, terminal_rule()]
+    pl_engine.rebuild_caches()
+
+
+def test_unspaced_split_is_bounded_on_an_expanding_rule(app_module):
+    # Each word expands alone far past what the whole text may grow to; the
+    # character split of the one final token then compares MBs of chars.
+    import time
+
+    _install_card(app_module, _DOUBLING_CARD)
+    raw = ["的"] * 20
+    final = pl_engine._postprocess_text("".join(raw))
+    t0 = time.monotonic()
+    out = capture_samples._align_words_to_final(_words(*raw), final)
+    assert time.monotonic() - t0 < 2
+    assert len(out) == len(raw)
+    assert _join(out).replace(" ", "") == final
+
+
+def test_split_unspaced_gives_up_past_its_cell_budget(monkeypatch):
+    split = capture_samples._split_unspaced
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_CELLS", 3)
+    assert split(["他", "好"], ["他好"]) is None
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_CELLS", 4)
+    assert split(["他", "好"], ["他好"]) == [["他"], ["好"]]
+
+
+def test_word_walks_share_one_output_budget(app_module, monkeypatch):
+    # One walk per distinct raw word, each under its own floor, must not build
+    # more chars together than one walk over all of them may.
+    _install_card(app_module, _DOUBLING_CARD)
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    raw = [" w" + letters[i // 26] + letters[i % 26] + "xy" for i in range(100)]
+    assert len(set(raw)) == 100
+    real = pl_engine._postprocess_text
+    sizes: list[int] = []
+
+    def spy(text, *a, **kw):
+        out = real(text, *a, **kw)
+        sizes.append(len(out))
+        return out
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", spy)
+    out = capture_samples._align_words_to_final(_words(*raw), " ".join(raw))
+    assert len(out) == len(raw)
+    assert sum(sizes) <= pl_engine.output_bound(sum(len(w) for w in raw))
+
+
+def test_word_walks_keep_every_word_under_a_real_rule(app_module):
+    # A real rule set is far inside the shared budget: every word still gets
+    # its own post-processed form.
+    _install_card(app_module, {"name": "sub", "label": "Sub", "type": "regex-list",
+                               "enabled": True,
+                               "entries": [{"pattern": "Komma", "replacement": ","}]})
+    raw = [" Hallo", " Komma", " Welt"] * 200
+    final = pl_engine._postprocess_text("".join(raw))
+    out = capture_samples._align_words_to_final(_words(*raw), final)
+    assert _join(out) == final
+    assert [w["word"] for w in out] == ["Hallo", ",", "Welt"] * 200
+    assert all(w["raw_word"] == " Komma" for w in out[1::3])

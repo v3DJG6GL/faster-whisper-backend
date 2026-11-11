@@ -556,14 +556,26 @@ def _align_words_to_final(
     # group with hundreds of words.
     post_cache: dict[str, str] = {}
     raw_keys: list[str] = []
+    # Each word's walk is bounded relative to the word alone, and that bound's
+    # floor dwarfs a word: a rule set that expands its input would build up to
+    # the floor once per distinct word. The walks share the bound of one walk
+    # over all distinct words instead; a word past it keeps its raw form.
+    budget = pl_engine.output_bound(sum(len(r) for r in {w.get("word") or "" for w in src}))
+    used = 0
     for w in src:
         raw_w = w.get("word") or ""
         post_w = post_cache.get(raw_w)
         if post_w is None:
-            try:
-                post_w = pl_engine._postprocess_text(raw_w, model_name=model_name, ident=ident, language=language)
-            except Exception:
+            if budget - used <= len(raw_w):
                 post_w = raw_w
+            else:
+                try:
+                    post_w = pl_engine._postprocess_text(
+                        raw_w, model_name=model_name, ident=ident, language=language,
+                        bound=budget - used)
+                except Exception:
+                    post_w = raw_w
+                used += len(post_w)
             post_cache[raw_w] = post_w
         raw_keys.append(_align_key(post_w) or _align_key(raw_w))
 
@@ -672,6 +684,14 @@ def _align_words_to_final(
     return out
 
 
+# Most chars of a gap's raw words times chars of its final tokens that
+# _split_unspaced compares. The comparison costs up to their product; a real
+# unspaced gap (ten minutes of zh / ja speech) stays under 10 M cells, while a rule
+# set expanding the words can reach hundreds of M — minutes of CPU per
+# captures request. Past it the caller's token-count split takes over.
+_SPLIT_UNSPACED_MAX_CELLS = 16_000_000
+
+
 def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None:
     """Split the final tokens `toks` of one alignment gap among the gap's raw
     words, whose isolated post-processed forms (whitespace removed) are
@@ -683,7 +703,10 @@ def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None
     whose chars they replace, in proportion, the remainder to the last; an
     inserted one joins the word before it, or the first word. Returns each
     raw word's pieces (one per token it reaches, empty when a rule deleted
-    it), or None when no character matches."""
+    it), or None when no character matches or the gap is too large to
+    compare character by character (_SPLIT_UNSPACED_MAX_CELLS)."""
+    if sum(map(len, texts)) * sum(map(len, toks)) > _SPLIT_UNSPACED_MAX_CELLS:
+        return None
     a_own = [r for r, t in enumerate(texts) for _ in t]
     tok_of = [k for k, t in enumerate(toks) for _ in t]
     b = "".join(toks)
