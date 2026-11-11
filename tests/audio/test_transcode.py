@@ -192,7 +192,8 @@ def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch
     assert len(in_opens) == 1
     assert in_opens[0].get("options") == {
         "protocol_whitelist": "file",
-        "format_whitelist": audio_ffmpeg.single_input_demuxers()}
+        "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+        "codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}
     assert in_opens[0].get("metadata_errors") == "ignore"
 
 
@@ -275,7 +276,8 @@ def test_decode_pieces_refuses_non_file_protocols(tmp_path, monkeypatch):
     audio_transcode.decode_pieces_16k(src, [0.0], 1.0)
     assert [kw.get("options") for f, kw in opens if f == src] == [
         {"protocol_whitelist": "file",
-         "format_whitelist": audio_ffmpeg.single_input_demuxers()}]
+         "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+         "codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}]
 
 
 def test_decode_pieces_refuses_an_ffconcat_sibling(tmp_path):
@@ -368,7 +370,8 @@ def test_open_audio_pins_the_single_input_demuxer_allowlist(tmp_path,
     audio_transcode.refuse_multi_input(src)
     assert [kw.get("options") for f, kw in opens if f == src] == [
         {"protocol_whitelist": "file",
-         "format_whitelist": audio_ffmpeg.single_input_demuxers()}] * 2
+         "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+         "codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}] * 2
 
 
 def _damaged_mp3(path, *, seconds=8):
@@ -891,3 +894,122 @@ def test_an_8k_flac_with_the_longest_legal_frames_still_transcodes(tmp_path):
     audio_transcode.transcode_to_wav_16k_mono(src, dst)
     with wave.open(dst, "rb") as w:
         assert w.getnframes() == 20 * RATE
+
+
+def _write_clip(path, audio_codec, *, rate=44100, video_codec=None, fmt=None):
+    """A 1 s 440 Hz tone in `audio_codec`, plus a few frames of
+    `video_codec` when given, muxed into `path` (format from its suffix
+    unless `fmt`)."""
+    c = av.open(path, "w", format=fmt)
+    a = c.add_stream(audio_codec, rate=rate)
+    a.layout = "mono"
+    v = None
+    if video_codec:
+        v = c.add_stream(video_codec, rate=5)
+        v.width = v.height = 32
+        v.pix_fmt = "yuv420p"
+    ctx = a.codec_context
+    res = av.AudioResampler(format=ctx.format.name, layout="mono", rate=rate)
+    t = np.arange(rate) / rate
+    tone = (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16)
+    frame = av.AudioFrame.from_ndarray(tone.reshape(1, -1), format="s16",
+                                       layout="mono")
+    frame.sample_rate = rate
+    chunk = ctx.frame_size or 1024
+    pts = 0
+    for out in res.resample(frame) + res.resample(None):
+        arr = out.to_ndarray()
+        for i in range(0, arr.shape[1], chunk):
+            piece = av.AudioFrame.from_ndarray(
+                np.ascontiguousarray(arr[:, i:i + chunk]),
+                format=out.format.name, layout="mono")
+            piece.sample_rate = rate
+            piece.pts = pts
+            pts += piece.samples
+            for pkt in a.encode(piece):
+                c.mux(pkt)
+    for pkt in a.encode():
+        c.mux(pkt)
+    if v is not None:
+        for _ in range(5):
+            vf = av.VideoFrame.from_ndarray(
+                np.zeros((32, 32, 3), dtype=np.uint8), format="rgb24")
+            for pkt in v.encode(vf):
+                c.mux(pkt)
+        for pkt in v.encode():
+            c.mux(pkt)
+    c.close()
+    return path
+
+
+_CLIPS = [
+    ("a.wav", "pcm_s16le", 44100, None),
+    ("a.flac", "flac", 44100, None),
+    ("a.mp3", "libmp3lame", 44100, None),
+    ("a.m4a", "aac", 44100, None),
+    ("a.ogg", "libopus", 48000, None),
+    ("a.opus", "libopus", 48000, None),
+    ("av.webm", "libopus", 48000, "libvpx"),
+    ("av.mkv", "flac", 44100, "mpeg4"),
+    ("av264.mkv", "libopus", 48000, "libx264"),
+    ("av.mp4", "aac", 44100, "mpeg4"),
+]
+
+
+def test_pyav_audio_decoders_lists_audio_decoders_only():
+    names = audio_ffmpeg.pyav_audio_decoders().split(",")
+    assert {"flac", "aac", "opus", "mp3", "pcm_s16le", "vorbis"} <= set(names)
+    assert not {"mpeg4", "h264", "vp8", "png", "subrip"} & set(names)
+
+
+@pytest.mark.parametrize("name,acodec,rate,vcodec", _CLIPS,
+                         ids=[c[0] for c in _CLIPS])
+def test_open_audio_opens_audio_decoders_only_and_pcm_is_unchanged(
+        name, acodec, rate, vcodec, tmp_path, monkeypatch):
+    """A client file is opened with PyAV's own audio decoders as the codec
+    whitelist, so stream probing never runs a video decoder on a crafted
+    video track; the decoded audio is byte-identical to an open without it."""
+    import hashlib
+    src = _write_clip(str(tmp_path / name), acodec, rate=rate,
+                      video_codec=vcodec)
+    opens = _spy_av_open(monkeypatch)
+    got = audio_transcode.decode_16k_bounded(src, max_seconds=None)
+    dst = str(tmp_path / "got.wav")
+    audio_transcode.transcode_to_wav_16k_mono(src, dst)
+    src_opens = [kw["options"] for f, kw in opens if f == src]
+    assert len(src_opens) == 2 and all(
+        o["codec_whitelist"] == audio_ffmpeg.pyav_audio_decoders()
+        for o in src_opens)
+
+    opens.clear()
+    monkeypatch.setattr(audio_ffmpeg, "pyav_audio_decoders", lambda: "")
+    ref = audio_transcode.decode_16k_bounded(src, max_seconds=None)
+    ref_dst = str(tmp_path / "ref.wav")
+    audio_transcode.transcode_to_wav_16k_mono(src, ref_dst)
+    src_opens = [kw["options"] for f, kw in opens if f == src]
+    assert len(src_opens) == 2
+    assert not any("codec_whitelist" in o for o in src_opens)
+    assert got.size > 8000
+    assert hashlib.sha1(got.tobytes()).digest() == hashlib.sha1(ref.tobytes()).digest()
+    with open(dst, "rb") as f, open(ref_dst, "rb") as g:
+        assert f.read() == g.read()
+
+
+def test_open_audio_refuses_to_open_the_video_decoder(tmp_path, caplog):
+    """The video track is still listed, but libavformat's stream probe is
+    refused its decoder ("not on whitelist") instead of decoding it."""
+    import logging
+    src = _write_clip(str(tmp_path / "av.mkv"), "flac", video_codec="mpeg4")
+    av.logging.set_level(av.logging.ERROR)
+    try:
+        with caplog.at_level(logging.ERROR):
+            container, stream = audio_transcode._open_audio(src)
+            try:
+                assert stream.type == "audio"
+                assert [s.type for s in container.streams].count("video") == 1
+            finally:
+                container.close()
+    finally:
+        av.logging.set_level(None)
+    assert any("not on whitelist" in r.getMessage() for r in caplog.records), \
+        [r.getMessage() for r in caplog.records]

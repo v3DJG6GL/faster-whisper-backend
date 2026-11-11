@@ -69,19 +69,24 @@ def _av():
 
 
 def _open_client_file(av, path: str):
-    """av.open of client-chosen bytes: file protocol only, and no demuxer
-    that pulls in other inputs (audio_ffmpeg.single_input_demuxers). A
+    """av.open of client-chosen bytes: file protocol only, no demuxer that
+    pulls in other inputs (audio_ffmpeg.single_input_demuxers), and audio
+    decoders only (audio_ffmpeg.pyav_audio_decoders). A
     playlist fails that allowlist with EINVAL before it opens a single
     entry; it is answered ValueError("unsupported container") — a plain
     ValueError, the refusal callers tell apart from an av decode error."""
     # metadata_errors="ignore" as in faster-whisper's decode_audio: PyAV's
     # default "strict" raises UnicodeDecodeError (a ValueError — read as a
     # refusal upstream) on a non-UTF-8 tag, e.g. a cp1252 RIFF INFO title.
+    options = {"protocol_whitelist": "file",
+               "format_whitelist": audio_ffmpeg.single_input_demuxers()}
+    # Audio decoders only: stream probing would otherwise open the decoder
+    # of a (crafted) video track that nothing here reads. The video stream
+    # is still listed, just never decoded.
+    if decoders := audio_ffmpeg.pyav_audio_decoders():
+        options["codec_whitelist"] = decoders
     try:
-        return av.open(path, options={
-            "protocol_whitelist": "file",
-            "format_whitelist": audio_ffmpeg.single_input_demuxers()},
-            metadata_errors="ignore")
+        return av.open(path, options=options, metadata_errors="ignore")
     except av.FFmpegError as e:
         if getattr(e, "errno", None) == errno.EINVAL:
             raise ValueError("unsupported container") from e

@@ -1,7 +1,7 @@
 """Locate the ffmpeg executable, shared by the streaming transport and the
 media package (download, captions, subtitle muxing), name the demuxers a
-client-supplied file must never open as, and list the binary's audio
-decoders."""
+client-supplied file must never open as, and list the audio decoders of
+the binary and of PyAV."""
 
 import functools
 import logging
@@ -50,6 +50,26 @@ def single_input_demuxers() -> str:
             names.update(name.split(","))
     return ",".join(sorted(names))
 
+
+
+@functools.lru_cache(maxsize=1)
+def pyav_audio_decoders() -> str:
+    """PyAV's `codec_whitelist` for client-supplied bytes: every audio
+    decoder its own libavcodec has (it can differ from the CLI binary's,
+    see audio_decoder_whitelist), comma-joined. libavformat opens a decoder
+    for every stream while probing, so without it a video track in an
+    mkv/mp4 runs a video decoder in-process that the audio-only readers
+    never need. "" when none is found: the caller then omits the option,
+    as an empty whitelist would refuse every decoder."""
+    import av  # noqa: PLC0415 — optional dependency; callers import it first
+    names = []
+    for n in sorted(av.codecs_available):
+        try:
+            if av.Codec(n, "r").type == "audio":   # encoder-only names raise
+                names.append(n)
+        except Exception:  # noqa: BLE001 — a name PyAV cannot open as a decoder
+            continue
+    return ",".join(names)
 
 def format_whitelist_args(format_name: "str | None") -> "list[str]":
     """The ffmpeg CLI input options ahead of a client file's `-i`: file
