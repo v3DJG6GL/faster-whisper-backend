@@ -429,12 +429,17 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
 # sample count) of frames while looking for a point on the 16 kHz grid.
 # Where dropping stops short of the cut (a format change), the rest of the
 # skip is resampled up to _SKIP_RESAMPLE_MAX of work (input samples x
-# channels x max(1, 16000 / rate)): ~380 s of 44.1 kHz stereo.
+# channels x max(1, 16000 / rate), plus _SKIP_SETUP_CHANGE_COST per change of
+# format, layout or rate): ~380 s of 44.1 kHz stereo. A change makes
+# _resampled flush and build a new resampler, ~1 ms or ~58k units of steady
+# resampling; uncharged, a stream that alternates its rate every frame would
+# cost ~70x the budget in rebuilds.
 _SKIP_GUARD_S = 1.0
 _SKIP_HOLD_MAX_S = 60.0
 _SKIP_HOLD_MAX_BYTES = 64 << 20
 _SKIP_HOLD_MAX_FRAMES = 16384
 _SKIP_RESAMPLE_MAX = 1 << 25
+_SKIP_SETUP_CHANGE_COST = 1 << 16
 
 
 def _drop_before(frames, skip_out: int, state: dict):
@@ -496,14 +501,20 @@ def _charged_until_cut(f, it, at: float, skip_s: float):
     """`f` and the rest of `it`, for a skip _drop_before stopped dropping
     `at` seconds in, short of the cut: the frames before _SKIP_GUARD_S
     ahead of it are resampled only to be discarded, so their resample work
-    is charged and past _SKIP_RESAMPLE_MAX the piece is refused. A frame
-    without a rate or over _MAX_FRAME_S ends the charge: _resampled
+    is charged and past _SKIP_RESAMPLE_MAX the piece is refused. Each
+    change of format, layout or rate, `f`'s own included, adds
+    _SKIP_SETUP_CHANGE_COST: _resampled rebuilds its resampler there. A
+    frame without a rate or over _MAX_FRAME_S ends the charge: _resampled
     handles it as before."""
-    work = 0.0
+    work, setup = 0.0, None
     while f is not None:
         r = f.sample_rate
         if not r or f.samples / r > _MAX_FRAME_S or at >= skip_s - _SKIP_GUARD_S:
             break
+        frame_setup = (f.format.name, f.layout.name, r)
+        if frame_setup != setup:
+            work += _SKIP_SETUP_CHANGE_COST
+            setup = frame_setup
         work += f.samples * len(f.layout.channels) * max(1.0, 16000 / r)
         if work > _SKIP_RESAMPLE_MAX:
             raise ValueError("unsupported audio: the skipped part changes "

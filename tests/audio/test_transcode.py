@@ -640,6 +640,56 @@ def test_drop_before_holds_a_bounded_number_of_frames():
     assert peak[0] <= audio_transcode._SKIP_HOLD_MAX_FRAMES + 2
 
 
+def test_drop_before_charges_each_format_change():
+    """A skip whose frames alternate their rate every frame is refused early:
+    each change makes _resampled flush and build a new resampler, which
+    costs far more than the frame's samples, so a 2 MiB MP3 alternating
+    8000 / 11025 Hz would otherwise burn ~30 s of CPU under the budget."""
+
+    class _Frame(_TinyFrame):
+        samples = 576
+
+    class _Rate8k(_Frame):
+        sample_rate = 8000
+
+    class _Rate11k(_Frame):
+        sample_rate = 11025
+
+    def frames():
+        for i in range(40_000):  # ~2400 s of audio
+            yield (_Rate8k if i % 2 == 0 else _Rate11k)()
+
+    yielded = 0
+    with pytest.raises(ValueError, match="changes format"):
+        for _f in audio_transcode._drop_before(frames(), 16000 * 1000,
+                                               {"n": 0, "rate": None}):
+            yielded += 1
+    assert yielded <= 1100
+
+
+def test_drop_before_passes_a_skip_with_a_few_format_changes():
+    """A real stream changes setup a handful of times in the skip (an ad
+    insert switching rate at a segment boundary): the per-change charge
+    leaves it well inside the budget."""
+
+    class _Frame(_TinyFrame):
+        samples = 1152
+
+    class _Rate44k(_Frame):
+        sample_rate = 44100
+
+    class _Rate48k(_Frame):
+        sample_rate = 48000
+
+    def frames():
+        for i in range(30_000):  # ~750 s, a rate change every 1000 frames
+            yield (_Rate44k if (i // 1000) % 2 == 0 else _Rate48k)()
+
+    out = list(audio_transcode._drop_before(frames(), 16000 * 300,
+                                            {"n": 0, "rate": None}))
+    assert out
+
+
 def _read_16k_holding_everything(container, stream, want, *, skip=0):
     """The implementation that kept every skipped sample: the reference
     the drop-while-decoding one must match sample for sample."""
