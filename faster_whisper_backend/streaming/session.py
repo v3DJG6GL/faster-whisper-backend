@@ -458,10 +458,12 @@ class StreamSession:
             return  # behind realtime — skip the partial decode so we can catch up
         if self._speech_ms < self.cfg.min_speech_ms:
             return
-        if rms_dbfs(self.audio) < self.cfg.rms_gate_dbfs:
+        audio = await asyncio.get_running_loop().run_in_executor(
+            self._vad_pool, self._partial_input)
+        if audio is None:
             return
         try:
-            words = await self.decode_partial(self.audio.copy(), self._prompt)
+            words = await self.decode_partial(audio, self._prompt)
         except CloseAbort:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -481,6 +483,35 @@ class StreamSession:
             "pending": self.la.text_of(self.la.provisional()),
         })
         self._maybe_trim()
+
+    # The join, the RMS pass and the copy below each walk the whole utterance
+    # buffer (up to max_buffer_sec, tens of ms near the ceiling), so they run on
+    # the session's worker (see _vad_pool) like the VAD and _compose. The
+    # awaiting caller is _pump, the sole session mutator, so nothing touches the
+    # buffer meanwhile; the single worker also queues a teardown's finalize
+    # behind a cancelled partial's still-running join.
+
+    def _partial_input(self) -> "np.ndarray | None":
+        """The partial decode's input, or None under the RMS gate."""
+        buf = self.audio
+        if rms_dbfs(buf) < self.cfg.rms_gate_dbfs:
+            return None
+        return buf.copy()
+
+    def _final_input(self) -> "tuple[np.ndarray, np.ndarray | None]":
+        """``(buffer, decode input)``; the decode input is None when the
+        utterance is too short or too quiet for a final decode."""
+        buf = self.audio
+        if self._speech_ms < self.cfg.min_speech_ms or rms_dbfs(buf) < self.cfg.rms_gate_dbfs:
+            return buf, None
+        return buf, buf.copy()
+
+    async def _whole_audio_off_loop(self, audio: np.ndarray) -> np.ndarray:
+        """``_whole_audio`` on the worker when there is a trim bank to join."""
+        if not self._trimmed_audio:
+            return audio
+        return await asyncio.get_running_loop().run_in_executor(
+            self._vad_pool, self._whole_audio, audio)
 
     def _maybe_trim(self) -> None:
         dur = self._audio_samples / self.cfg.sample_rate
@@ -559,13 +590,14 @@ class StreamSession:
         """The finalize body. _finalize owns the reset + ordinal advance, so
         every exit from here — return or raise — closes the utterance exactly
         once."""
-        audio = self.audio
+        audio, decode_input = await asyncio.get_running_loop().run_in_executor(
+            self._vad_pool, self._final_input)
         decode_failed = False
         # A decode ran but its words were replaced by LocalAgreement's, which
         # are already utterance-absolute (see the trim merge below).
         words_absolute = False
         # Anti-hallucination: never run the final decode on near-silence.
-        if self._speech_ms < self.cfg.min_speech_ms or rms_dbfs(audio) < self.cfg.rms_gate_dbfs:
+        if decode_input is None:
             # The gate judges the LIVE (post-trim) buffer only — text already
             # committed by LocalAgreement from earlier LOUD audio must not be
             # discarded with the near-silent tail (reachable via the
@@ -594,7 +626,7 @@ class StreamSession:
             await self._emit_utterance("decoding")
             t0 = time.perf_counter()
             try:
-                raw, words, dropped_all = await self.decode_final(audio.copy(), self._prompt)
+                raw, words, dropped_all = await self.decode_final(decode_input, self._prompt)
             except CloseAbort:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -622,7 +654,7 @@ class StreamSession:
                     # on_final is the route's only hook, and without it the
                     # failed decode left no /stats row at all.
                     await self._report_final(
-                        self._whole_audio(audio), forced=forced, decoded=False,
+                        await self._whole_audio_off_loop(audio), forced=forced, decoded=False,
                         decode_failed=True, proc_dur=proc_dur, raw="", words=[])
                     return
             elif not (raw and raw.strip()) and not dropped_all:
@@ -650,7 +682,7 @@ class StreamSession:
         # audio↔text pair, not a fragment. Only a real decode's words are
         # buffer-relative; the LocalAgreement words (gate path, failed or empty
         # decode) are already utterance-absolute and include the banked prefix.
-        full_audio = self._whole_audio(audio)
+        full_audio = await self._whole_audio_off_loop(audio)
         if self._trimmed_audio and decoded and not words_absolute:
             off = self._buffer_offset
             words = self._trimmed_words + [

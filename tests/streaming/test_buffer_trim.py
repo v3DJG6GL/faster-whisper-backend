@@ -361,6 +361,42 @@ def test_buffer_counter_matches_the_array_after_every_frame():
     assert trimmed, "trim never fired — the trim writer went untested"
 
 
+def test_buffer_join_rms_and_whole_audio_run_off_the_loop(monkeypatch):
+    """The join, the RMS gate and the trim-bank reassembly each walk the whole
+    utterance (up to max_buffer_sec): on the loop they would stall every other
+    request at each partial and final."""
+    from faster_whisper_backend.streaming import session as streaming_session
+    from tests.conftest import on_event_loop
+
+    seen: list[tuple[str, bool]] = []
+    real_rms, real_audio = streaming_session.rms_dbfs, StreamSession.audio.fget
+    real_whole = StreamSession._whole_audio
+
+    def rms_spy(x):
+        seen.append(("rms", on_event_loop()))
+        return real_rms(x)
+
+    def audio_spy(self):
+        # A read that actually joins. The pre-speech preroll trim joins too, but
+        # never more than preroll_keep_ms plus one frame: not counted.
+        if (self._audio_cache is None
+                and self._audio_samples > self._preroll_keep_samples + FRAME_SAMPLES):
+            seen.append(("join", on_event_loop()))
+        return real_audio(self)
+
+    def whole_spy(self, audio):
+        seen.append(("whole", on_event_loop()))
+        return real_whole(self, audio)
+
+    monkeypatch.setattr(streaming_session, "rms_dbfs", rms_spy)
+    monkeypatch.setattr(StreamSession, "audio", property(audio_spy))
+    monkeypatch.setattr(StreamSession, "_whole_audio", whole_spy)
+    _s, _msgs, finals_meta, trimmed = _run_long_utterance(speech_ms=3500)
+    assert finals_meta and trimmed, "no trim-banked final — the whole-audio path went untested"
+    assert {k for k, _ in seen} == {"rms", "join", "whole"}
+    assert [k for k, on in seen if on] == []
+
+
 def test_capture_segments_share_the_utterance_timeline(client, app_module, monkeypatch,
                                                        created_captures):
     """Route level: after a mid-utterance trim the capture's audio and words
