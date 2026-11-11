@@ -98,8 +98,15 @@ class FfmpegTransport:
         return self._reader_dead and not self._closed
 
     async def start(self) -> None:
+        exe = audio_ffmpeg.ffmpeg_exe()
+        # Probing opens and decodes a frame of every stream the container
+        # declares, so a video track would run a video decoder the s16le
+        # output never needs. The listing is cached per binary after the
+        # first session; it runs a subprocess, hence off the loop.
+        decoders = await asyncio.to_thread(audio_ffmpeg.audio_decoder_whitelist, exe)
+        codec_args = ["-codec_whitelist", decoders] if decoders else []
         self._proc = await asyncio.create_subprocess_exec(
-            audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+            exe, "-hide_banner", "-loglevel", "error",
             "-max_alloc", str(_MAX_FFMPEG_ALLOC),
             # Restrict the input demuxer to the stdin pipe only. The client's
             # container bytes are self-contained (WebM/Opus/Ogg/mp4/…), so a
@@ -108,6 +115,7 @@ class FfmpegTransport:
             # (the classic ffmpeg local-file-read / SSRF surface).
             "-protocol_whitelist", "pipe",
             "-format_whitelist", _INPUT_DEMUXERS,
+            *codec_args,
             "-i", "pipe:0",
             "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(self._sr),
             "pipe:1",

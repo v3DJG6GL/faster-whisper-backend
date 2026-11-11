@@ -1,10 +1,12 @@
 """Locate the ffmpeg executable, shared by the streaming transport and the
-media package (download, captions, subtitle muxing), and name the demuxers a
-client-supplied file must never open as."""
+media package (download, captions, subtitle muxing), name the demuxers a
+client-supplied file must never open as, and list the binary's audio
+decoders."""
 
 import functools
 import logging
 import shutil
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -78,3 +80,55 @@ def ffmpeg_exe() -> str:
         logger.warning("[ffmpeg] no system ffmpeg and imageio-ffmpeg "
                        "unavailable (%s); encoded transports will fail.", exc)
         return "ffmpeg"
+
+
+def audio_decoder_names(listing: str) -> "list[str]":
+    """The decoder names in `ffmpeg -decoders` output whose type flag is
+    audio ("A....." rows). The legend above the ------ rule has an
+    " A..... = Audio" row of its own, so only rows below the rule count."""
+    names = []
+    in_table = False
+    for line in listing.splitlines():
+        parts = line.split()
+        if not in_table:
+            in_table = bool(parts) and set(parts[0]) == {"-"}
+            continue
+        if len(parts) >= 2 and parts[0].startswith("A"):
+            names.append(parts[1])
+    return names
+
+
+# Binaries whose listing failure is already logged: the listing runs once per
+# streaming session until it succeeds, and sessions are client-paced.
+_decoder_listing_warned: "set[str]" = set()
+
+
+@functools.lru_cache(maxsize=4)
+def _listed_audio_decoders(exe: str) -> str:
+    out = subprocess.run([exe, "-hide_banner", "-decoders"], capture_output=True,
+                         encoding="utf-8", errors="replace", check=True,
+                         timeout=15).stdout
+    names = audio_decoder_names(out)
+    if not names:
+        raise ValueError("no audio decoder in the listing")
+    return ",".join(names)
+
+
+def audio_decoder_whitelist(exe: str) -> str:
+    """`-codec_whitelist` value for client-supplied audio: every audio
+    decoder of the binary `exe`, comma-joined. ffmpeg opens and decodes a
+    frame of every stream while probing, so without it a video track in an
+    mkv/mp4 runs a video decoder the audio-only output never needs. "" when
+    the listing fails: the caller then omits the flag, as an empty whitelist
+    would refuse every decoder. A failure is not cached (lru_cache keeps no
+    exception), so the next caller asks the binary again. Blocking: call it
+    off the event loop."""
+    try:
+        return _listed_audio_decoders(exe)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        if exe in _decoder_listing_warned:
+            return ""
+        _decoder_listing_warned.add(exe)
+        logger.warning("[ffmpeg] could not list the audio decoders of %s (%s); "
+                       "decoding without a decoder whitelist.", exe, exc)
+        return ""

@@ -15,7 +15,9 @@ import threading
 
 import pytest
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
+from faster_whisper_backend.streaming import transport as stream_transport
 from faster_whisper_backend.streaming.transport import (
     FfmpegTransport,
     RawPcmTransport,
@@ -346,6 +348,8 @@ _CLIENT_CONTAINERS = {
     "flac": ["-c:a", "flac", "-f", "flac"],
     "adts_aac": ["-c:a", "aac", "-f", "adts"],
     "wav": ["-c:a", "pcm_s16le", "-f", "wav"],
+    "wav_adpcm_ms": ["-c:a", "adpcm_ms", "-f", "wav"],
+    "m4a_alac": ["-c:a", "alac", "-f", "ipod"],
 }
 
 
@@ -426,6 +430,111 @@ def test_ffmpeg_transport_never_follows_a_dash_manifest(which, monkeypatch):
         srv.close()
     assert hits == []
     assert decoded == 0
+
+
+def test_ffmpeg_transport_whitelists_only_audio_decoders(monkeypatch):
+    """ffmpeg opens and decodes a frame of EVERY stream while probing, so the
+    argv must name the decoders a dictation stream can need: all audio ones
+    of the binary, no video / image / subtitle decoder."""
+    argv = _transport_argv(monkeypatch)
+    assert "-codec_whitelist" in argv
+    at = argv.index("-codec_whitelist")
+    assert at < argv.index("-i")
+    allowed = set(argv[at + 1].split(","))
+    assert {"opus", "vorbis", "aac", "mp3", "flac", "alac", "pcm_s16le",
+            "adpcm_ms"} <= allowed
+    assert not allowed & {"mpeg4", "h264", "hevc", "vp9", "mjpeg", "png",
+                          "rawvideo", "ass", "subrip"}
+
+
+def test_ffmpeg_transport_omits_the_decoder_list_when_the_listing_fails(monkeypatch):
+    """No listing (missing binary, timeout) keeps the previous argv instead of
+    passing an empty whitelist that would refuse every decoder."""
+    monkeypatch.setattr("faster_whisper_backend.audio.ffmpeg.ffmpeg_exe",
+                        lambda: "/nonexistent/ffmpeg-for-test")
+    argv = _transport_argv(monkeypatch)
+    assert "-codec_whitelist" not in argv
+    assert argv[argv.index("-i") + 1] == "pipe:0"
+
+
+def test_audio_decoder_whitelist_retries_after_a_failed_listing(monkeypatch):
+    """A timed-out listing is not an answer: the next session asks again
+    rather than running without the whitelist until a restart."""
+    exe = ffmpeg_exe()
+    audio_ffmpeg._listed_audio_decoders.cache_clear()
+    real_run = subprocess.run
+
+    def _timeout(*_a, **_kw):
+        raise subprocess.TimeoutExpired("ffmpeg", 15)
+
+    monkeypatch.setattr(audio_ffmpeg.subprocess, "run", _timeout)
+    assert audio_ffmpeg.audio_decoder_whitelist(exe) == ""
+    monkeypatch.setattr(audio_ffmpeg.subprocess, "run", real_run)
+    assert "opus" in audio_ffmpeg.audio_decoder_whitelist(exe).split(",")
+
+
+def test_audio_decoder_whitelist_skips_the_legend():
+    """The legend above the ------ rule has " A..... = Audio" lines too."""
+    listing = ("Decoders:\n V..... = Video\n A..... = Audio\n S..... = Subtitle\n"
+               " ------\n V....D h264                 H.264\n"
+               " A....D opus                 Opus\n AF...D flac                 FLAC\n"
+               " A..X.D sonic                Sonic\n S..... ass                  ASS\n")
+    assert audio_ffmpeg.audio_decoder_names(listing) == ["opus", "flac", "sonic"]
+
+
+@pytest.mark.parametrize("which", ["default", "imageio"])
+def test_ffmpeg_transport_never_decodes_a_video_track(which, monkeypatch, tmp_path):
+    """An mkv carrying an mpeg4 video track next to Opus: the video decoder
+    is refused while probing (ffmpeg logs it off the whitelist) and the
+    audio decodes byte for byte as it did without the whitelist."""
+    exe = _ffmpeg_binary(which)
+    clip = tmp_path / "av.mkv"
+    r = subprocess.run(
+        [exe, "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1:sample_rate=48000",
+         "-c:v", "mpeg4", "-c:a", "libopus", "-f", "matroska", str(clip)],
+        capture_output=True, timeout=30)
+    if r.returncode != 0 or not clip.exists():
+        pytest.skip("mkv mpeg4+opus encode unavailable")
+    data = clip.read_bytes()
+    reference = subprocess.run(
+        [exe, "-hide_banner", "-loglevel", "error",
+         "-protocol_whitelist", "pipe",
+         "-format_whitelist", stream_transport._INPUT_DEMUXERS,
+         "-i", "pipe:0",
+         "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000", "pipe:1"],
+        input=data, capture_output=True, timeout=30).stdout
+    assert len(reference) >= 30000
+
+    monkeypatch.setattr("faster_whisper_backend.audio.ffmpeg.ffmpeg_exe", lambda: exe)
+    real_exec = asyncio.create_subprocess_exec
+    log_path = tmp_path / "ffmpeg.log"
+    got = bytearray()
+
+    async def sink(b):
+        got.extend(b)
+
+    with open(log_path, "wb") as log_fh:
+        async def exec_with_debug_log(*args, **kw):
+            args = list(args)
+            args[args.index("-loglevel") + 1] = "debug"
+            kw["stderr"] = log_fh
+            return await real_exec(*args, **kw)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_with_debug_log)
+
+        async def run():
+            t = FfmpegTransport(sink)
+            await t.start()
+            await t.feed(data)
+            await t.aclose()
+
+        asyncio.run(run())
+    log = log_path.read_text(encoding="utf-8", errors="replace")
+    assert "Codec (mpeg4) not on whitelist" in log
+    assert "get_format" not in log
+    assert bytes(got) == reference
 
 
 def test_stream_route_accepts_webm_via_ffmpeg(client, energy_vad):
