@@ -459,6 +459,30 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     assert not [m for m in caplog.messages if "cross-user-read" in m]
 
 
+def test_by_request_id_pins_an_unknown_scope_to_own_rows(client, make_user_key):
+    """A stored captures scope outside none / own / all (a hand-edited or
+    restored api-keys DB; set_user_permissions refuses it) is pinned to the
+    caller's own rows on every sibling route, and here too: a filter on the
+    exact value "own" would hand such a caller every match."""
+    from faster_whisper_backend.auth import api_keys_store
+
+    _, uid_owner, _, conn = _root_and_alice(make_user_key)
+    uid_viewer, _ = make_user_key("viewer", pages={"captures": "own"})
+    api_keys_store._require_conn().execute(
+        "UPDATE users SET permissions = ? WHERE id = ?",
+        (json.dumps({"pages": {"captures": "Own"}}), uid_viewer))
+    # A new key rebuilds the key index from the stored row.
+    raw_viewer, _rec = api_keys_store.create_key(uid_viewer)
+    _insert_member(conn, "byreqcap0003", None, user_id=uid_owner,
+                   request_id="req-shared")
+    _insert_member(conn, "byreqcap0004", None, user_id=uid_viewer,
+                   request_id="req-shared")
+
+    r = _get(client, raw_viewer, "by-request/req-shared")
+    assert r.status_code == 200
+    assert [c["id"] for c in r.json()["captures"]] == ["byreqcap0004"]
+
+
 def test_propose_merges_audits_cross_user_read(client, make_user_key,
                                                monkeypatch, caplog):
     """Proposals carry other users' capture previews + resolved usernames to a
@@ -484,6 +508,41 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
     assert r.status_code == 200
     audit = [m for m in caplog.messages if "cross-user-read" in m]
     assert audit and "merge-proposal" in audit[0]
+
+
+def test_merge_estimate_audits_every_member_of_a_cross_user_merge(
+        client, make_user_key, caplog):
+    """The audit record keeps 8 chars of the id it is given, so one record
+    for a joined id list names the first member only, and a scope=all
+    non-admin's merge of several captures of another user reads as one
+    capture: every member gets its own record."""
+    import logging
+
+    _, uid_owner, raw_owner, conn = _root_and_alice(make_user_key)
+    _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
+    ids = ["auditm01cap0", "auditm02cap0", "auditm03cap0", "auditm04cap0"]
+    for cid in ids:
+        _insert_member(conn, cid, None, user_id=uid_owner)
+        p = captures_store.abs_audio_path(captures_store._relpath_for(cid, "wav"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        _write_silent_wav(p, 1600)
+
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = _post_members(client, raw_viewer, "samples/merge-estimate", ids)
+    assert r.status_code == 200, r.text
+    audit = [m for m in caplog.messages
+             if "cross-user-read" in m and "read merge " in m]
+    assert len(audit) == len(ids)
+    for cid in ids:
+        assert sum(f"id={cid[:8]} " in m for m in audit) == 1
+    assert all(f"owner={uid_owner[:8]}" in m for m in audit)
+
+    # The owner's own merge stays silent.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = _post_members(client, raw_owner, "samples/merge-estimate", ids)
+    assert r.status_code == 200, r.text
+    assert not [m for m in caplog.messages if "cross-user-read" in m]
 
 
 def test_propose_merges_narrows_to_several_picked_speakers(client, make_user_key,

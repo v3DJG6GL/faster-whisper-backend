@@ -467,10 +467,10 @@ async def by_request_id_api(
     request_id: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """Cross-link from /reports → captures sharing a request_id. Non-admin
-    callers (scope=own) see only rows they own; admin-equivalent (scope=
-    all) sees every match. The endpoint backs the reports-page "show
-    capture" jump, so the same scope rules that gate /captures itself
+    """Cross-link from /reports → captures sharing a request_id. Only an
+    admin-equivalent caller (scope=all) sees every match; any other scope
+    sees only rows the caller owns. The endpoint backs the reports-page
+    "show capture" jump, so the same scope rules that gate /captures itself
     apply here."""
     # Off the loop, like list_captures_api: find_by_request_id json.loads
     # every matching row's words + segments blobs on the shared connection
@@ -478,8 +478,12 @@ async def by_request_id_api(
     def _run() -> list[dict[str, Any]]:
         rows = captures_store.find_by_request_id(request_id)
         perms = user["permissions"]
-        if perms.scope("captures") == "own":
-            caller_uid = user.get("user_id")
+        # Anything but "all" filters, as effective_user_id_for does for the
+        # siblings: a stored scope outside the known values must not read as
+        # unfiltered. `or ""` so a caller record without a user_id never
+        # equals a legacy row's NULL owner.
+        if perms.scope("captures") != "all":
+            caller_uid = user.get("user_id") or ""
             rows = [r for r in rows if r.get("user_id") == caller_uid]
         usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
         for r in rows:
@@ -1319,11 +1323,11 @@ def _validate_merge_payload(
     )
     # Audit a non-admin scope=all caller merging another user's captures; every
     # merge endpoint (create, /preview-audio, /preview-words, /preview-save-chips,
-    # /merge-estimate) validates through here, like the per-row audits elsewhere.
-    _audit_cross_user_read(
-        user, {"user_id": owner_user_id}, "merge",
-        ",".join(member_ids[:3]) + ("+" if len(member_ids) > 3 else ""),
-    )
+    # /merge-estimate) validates through here. One record per member, like
+    # _bulk_guard: the record keeps 8 chars of its id, so a joined id list
+    # would name the first member only.
+    for mid in member_ids:
+        _audit_cross_user_read(user, {"user_id": owner_user_id}, "merge", mid)
 
     # Cap on TRIMMED audio — what the merged WAV actually is. Reuses the
     # proposer's cached per-capture trim so the batch flow (already warm) pays
