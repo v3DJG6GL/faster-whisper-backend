@@ -1517,8 +1517,15 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
     # letters shifts where the alternation starts: `[ab]?(?:bx|x)` matches
     # "bx" as `b` + `x` or as `bx`, so that alternation's own positions do
     # trade with each other, and are counted one by one as any other atoms.
-    shifted = {atoms[y][3] for y in range(m)
-               if atoms[y] and atoms[y][3] is not None and sets[y] is not None
+    # Only the alternation's first position starts it: an optional space
+    # after `(?:na ja|tja)` shares the phrase's inner space, which no
+    # repetition can begin with, so it shifts nothing.
+    first: "dict[int, int]" = {}
+    for y in range(m):
+        if atoms[y] and atoms[y][3] is not None:
+            first.setdefault(id(atoms[y][3]), y)
+    shifted = {atoms[y][3] for y in first.values()
+               if sets[y] is not None
                and any(sets[x] & sets[y] for x in optional
                        if atoms[x][3] is not atoms[y][3])}
 
@@ -1562,7 +1569,12 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
         cuts = [x for x in range(m) if sets[x] is None
                 or (not atoms[x][1] and c not in sets[x])]
         if not cuts:
-            if sum(c in s for s in sets) >= 2:
+            # No position stops `c`, so any two items holding it trade it —
+            # but two positions of one un-shifted alternation are one item
+            # (see apart): `h` fits every position of
+            # `(?:äh|also|halt|sozusagen)` and still only one word is taken.
+            took = [x for x in range(m) if c in sets[x]]
+            if any(apart(x, y) for p, x in enumerate(took) for y in took[p + 1:]):
                 return True
             continue
         if tuple(cuts) in seen_cuts:
@@ -1891,9 +1903,16 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
     (`\\b` / `\\B` before it are skipped — they only restrict the match); and
     no follower character may be matched by any branch atom, case-insensitively
     and with DOTALL, so a flag elsewhere in the pattern cannot widen an atom
-    past the check. Anything else answers False and keeps the refusal:
-    `(?:(?:ax|[ab]x)c)+#` has two same-width branches matching `ax`, and
-    `((?:a|aa)a?)+#` has an optional follower — both stay exponential.
+    past the check. Optional single-character atoms between the group and that
+    follower — `(?:(?:ok|okay)[,.]? )+` — are read past, and their characters
+    count as follower characters: none may be matched by a branch atom either,
+    so the first of them the input holds ends the group as the follower does.
+    Two such atoms sharing a character split by themselves; that is
+    _optional_overlap's test on the enclosing body, which
+    _nested_repetition_scan runs before it asks here. Anything else answers
+    False and keeps the refusal: `(?:(?:ax|[ab]x)c)+#` has two same-width
+    branches matching `ax`, and `((?:a|aa)a?)+#` has an optional follower a
+    branch can match and no mandatory one — both stay exponential.
 
     A `\\b` right after the group pins the split by itself when every branch
     character is a word character (or every one is not): a shorter branch
@@ -1938,12 +1957,21 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
         same.append(own)
     if bounded and _uniform_wordness(pat, atoms):
         return True
-    if i >= n or pat[i] in "()|^$.*+?{":
-        return False
-    char, group, j = _next_atom(pat, i)
-    if char is None or group is not None:
-        return False
-    k = _read_quantifier(pat, j)[2]
+    skipped: "set[str]" = set()
+    while True:
+        if i >= n or pat[i] in "()|^$.*+?{":
+            return False
+        char, group, j = _next_atom(pat, i)
+        if char is None or group is not None:
+            return False
+        k = _read_quantifier(pat, j)[2]
+        if not _optional_quantifier(pat[j:k]):
+            break
+        got = _follower_chars(pat[i:j])
+        if not got:
+            return False
+        skipped |= got
+        i = k
     if k > j:
         q = pat[j:k]
         lo = q[1:].split(",")[0].rstrip("}?+") if q[0] == "{" else ""
@@ -1952,6 +1980,7 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
     follower = _follower_chars(pat[i:j])
     if not follower:
         return False
+    follower = follower | skipped
     try:
         compiled = [re.compile(x, re.IGNORECASE | re.DOTALL) for x in set(atoms)]
     except re.error:

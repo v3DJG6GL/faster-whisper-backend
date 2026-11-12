@@ -1347,6 +1347,36 @@ def test_alternation_tail_trading_with_the_atoms_around_it_stays_rejected(pat):
     r"(?:(?:um|am|umm), )+",
     "(?:\\b(?:\u03b9a|\u03b9a\u03b9a)\\b ?)+#",
     r"(?ia)(?:\b(?:um|umm)\b,? ?)+",
+    r"(?:\b(?:äh|also|halt|sozusagen)\b,? ?)+",
+    r"(?i)(?:\b(?:äh|ähm|also|halt|sozusagen|irgendwie)\b,? ?)+",
+    r"(?i)(?:\b(?:ja|also|aha|naja)\b,? ?)+",
+    r"(?:\b(?:um|uh|hmm|mhm|umm)\b,? ?)+",
+    r"(?:\b(?:er|eh|hey|here)\b,? ?)+",
+    r"(?:\b(?:na|an|naja|ja)\b,? ?)+",
+    r"(?:\b(?:ja|also|aha|naja)\b[,.]?\s?)+",
+    r"(?i)(?:\b(?:mhm|mh|hm|hmm)\b[,.]? ?)+",
+    r"(?:\b(?:I|you|he|she|we|they)\b ?)+",
+    r"(?i)(?:\b(?:ha|haha|ah|aha)\b,? ?)+",
+    r"(?i)(?:\b(?:äh|ähm|öh|öhm|hm|hmm|mhm)\b,? ?)+",
+    r"(?:\b(?:mhm|hm)\b ?)+",
+    r"(?:\b(?:I|he|she)\b ?)+",
+    r"(?:\b(?:a|aa)\b ?)+#",
+    r"(?:(?:mhm|hm) ?)+#",
+    r"(?:(?:I|he|she) ?)+#",
+    r"(?:(?:aba|ba))+#",
+    r"(?:(?:baa|ab) ?)+#",
+    r"(?i)(?:b?(?:a|aa)\b,? ?)+#",
+    r"(?:(?:ok|okay)[,.]? )+",
+    r"(?:(?:ok|okay),? )+",
+    r"(?i)(?:(?:ja|jaja|jo)[,.]? )+",
+    r"(?:(?:äh|ähm),? )+",
+    r"(?:(?:a|aa),?,)+#",
+    r"(?:(?:a|aa) ? )+#",
+    r"(?: ?(?:a|aa)[,.]? )+#",
+    r"(?i)(?:\b(?:you know|I mean|like)\b,? ?)+",
+    r"(?i)(?:\b(?:na ja|naja|tja)\b[,.]? ?)+",
+    r"(?:(?:na ja|tja) ?)+",
+    r"(?:(?:ab|cxb)x?)+#",
 ])
 def test_repeated_filler_word_list_is_accepted(pat):
     """A mandatory letter of a word list was read as apart from the list's
@@ -1356,9 +1386,59 @@ def test_repeated_filler_word_list_is_accepted(pat):
     longer one does not go on, so the optional `,? ?` after it need not.
     Two words of one length (`äh|öh`, `um|am`) fill the same pinned span
     only if they are the same text, so they do not split a repetition
-    two ways either."""
+    two ways either. A letter that every position of the list can hold
+    (`h` in `äh|also|halt|sozusagen`, `m` in `mhm|hm`) is still one word
+    taken whole, not two items trading it; optional punctuation before a
+    mandatory separator (`(?:ok|okay)[,.]? `) leaves the separator ending
+    the word; and an optional space after the list does not move the start
+    of a phrase that holds a space past its first letter (`na ja|tja`)."""
     assert not g._nested_repetition(pat)
     g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:(?:ha|ah|aha) ?)+#",
+    r"(?:(?:ha|ah|aha|haha) ?)+#",
+    r"(?:(?:a| a) ?)+#",
+    r"(?:(?:a|aa)h?)+",
+    r"(?:\b(?:a|a-a)\b-?)+#",
+    r"(?:\b(?:mhm|hm)\b[m ]?)+",
+    r"(?:(?:a|aa)a?,)+#",
+    r"(?:(?:a|a,),? )+#",
+    r"(?:(?:a|a\.)[,.]? )+#",
+    r"(?:(?:a|ab)[b,]? )+#",
+    r"(?i)(?:(?:a|aa)A? )+#",
+    r"(?:(?:a|aa)b?a? )+#",
+    r"(?:(?:a|aa),?,?,)+#",
+    r"(?:(?:a|aa)[,.]?[.;]? )+#",
+    r"(?:(?:a|-a)-?)+#",
+    r"(?:(?:\w|-\w)-?)+#",
+])
+def test_filler_list_whose_follower_or_prefix_trades_a_letter_stays_rejected(pat):
+    """The neighbours of the accepted filler lists that do split two ways:
+    a word that is another word's prefix with nothing pinning its end
+    (`ha|ah|aha|haha` runs 17 s on 24 units), an optional atom after the
+    list that a word can take (`(?:a|aa)a?`, `(?:a|a,),? `, also by case
+    fold), two optional atoms sharing a character, and an optional atom
+    that takes the first letter of the next word (`(?:a|-a)-?`;
+    `(?:\\b(?:a|a-a)\\b-?)+#` runs minutes on 20 units)."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?i)(?:\b(?:äh|na ja)\b,? ?)+",
+    r"(?:(?:a b|c) ?)+",
+    r"(?i)(?:(?:nicht wahr|gell)\??,? ?)+",
+    r"(?:(?:so|sozusagen),? ?)+",
+])
+def test_filler_list_shapes_still_read_as_ambiguous(pat):
+    """Linear rules the screen still refuses, on the safe side: a phrase
+    whose space lies past the shortest word's length, and a word with its
+    longer form where no mandatory atom ends the repetition. Pinned so a
+    change of either verdict is a decision, not a side effect."""
+    assert g._nested_repetition(pat)
 
 
 @pytest.mark.parametrize("pat", [
