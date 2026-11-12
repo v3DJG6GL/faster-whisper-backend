@@ -203,6 +203,38 @@ def test_stream_handshake_scrubs_surrogates_from_echoed_fields(
         json.dumps(msgs, ensure_ascii=False).encode("utf-8")
 
 
+def test_stream_handshake_treats_a_non_string_response_format_as_json(
+        client, make_user_key, fake_model, app_module, energy_vad, caplog):
+    """Only the strings "json" / "verbose_json" mean anything. A list or an
+    object is echoed whole in the ready frame otherwise: a lone surrogate
+    inside it breaks the real server's frame encode (TestClient never
+    encodes, hence the explicit .encode), and a deeply nested one breaks the
+    receipt block's str() for every utterance of the session."""
+    _, raw_alice = make_user_key("alice")
+    for spelling in ('["\\ud800"]', '{"a":"\\ud800"}', "7"):
+        with stream_ws(client, raw_alice) as ws:
+            # Raw text: the escape reaches the server as a browser sends it.
+            ws.send_text('{"type":"config","model":"whisper-1","audio":'
+                         '{"format":"pcm_s16le","sample_rate":16000},'
+                         f'"response_format":{spelling}}}')
+            ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["response_format"] == "json", spelling
+        json.dumps(ready, ensure_ascii=False).encode("utf-8")
+
+    deep = "[" * 50000 + "]" * 50000
+    with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+        with stream_ws(client, raw_alice) as ws:
+            ws.send_text('{"type":"config","model":"whisper-1","audio":'
+                         '{"format":"pcm_s16le","sample_rate":16000},'
+                         f'"response_format":{deep}}}')
+            ready = ws.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["response_format"] == "json"
+            speak_and_stop(ws)
+    assert not any("log block failed" in r.getMessage() for r in caplog.records)
+
+
 def test_setup_window_error_delivers_internal_error_and_closes(
         client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
     """A failure in the handshake→loop setup window (after the audio consumer task

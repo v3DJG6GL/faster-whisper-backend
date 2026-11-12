@@ -21,7 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 from tests._page_helpers import needs_node
 from tests._streaming_helpers import (
     const_pcm, dictate_session, drain_frames as _drain, handshake as _handshake,
-    ready_ws, speak_and_stop, stop_and_drain, stream_ws)
+    ready_ws, speak_and_stop, stop_and_drain, stop_if_open_and_drain, stream_ws)
 from tests._transcription_helpers import guard_line
 from tests.conftest import FakeInfo, FakeSegment, FakeWord, locked_user, record_calls
 from faster_whisper_backend.stats import metrics, usage_store
@@ -530,6 +530,57 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
 
+def test_oversized_text_frame_is_refused_before_the_parse(client, app_module,
+                                                        monkeypatch, energy_vad,
+                                                        caplog):
+    """run() hands uvicorn a 1 MiB message ceiling, but an app served any
+    other way gets the websocket library's 16 MiB default, and a text frame
+    is JSON-parsed on the event loop. The route keeps the bound itself: a
+    longer text frame closes 1009 unparsed, as the handshake and mid-session;
+    one at the bound is still read. Mid-session the teardown still drains
+    the utterance in flight, quietly, onto the closed socket."""
+    from faster_whisper_backend.core import store_common
+
+    monkeypatch.setattr(streaming_routes, "_WS_MAX_TEXT_FRAME", 256)
+    parsed = record_calls(monkeypatch, store_common, "json_object",
+                          lambda text, *a, **kw: len(text))
+
+    with pytest.raises(WebSocketDisconnect) as ei:
+        with stream_ws(client) as ws:
+            ws.send_text("x" * 257)
+            ws.receive_json()
+    assert ei.value.code == 1009
+    assert 257 not in parsed
+    assert len(streaming_routes._active_sessions) == 0
+    assert streaming_routes._stream_sessions._counts == {}
+
+    with caplog.at_level(logging.WARNING, logger=streaming_routes.logger.name):
+        with ready_ws(client) as ws:
+            ws.send_bytes(_pcm(8000, 2500))
+            ws.send_text(json.dumps({"type": "flush"}).ljust(256))
+            ws.send_text(json.dumps({"type": "flush"}).ljust(257))
+            msgs, code = stop_if_open_and_drain(ws)
+    assert code == 1009
+    assert not any(m.get("type") in ("error", "closing") for m in msgs)
+    assert 256 in parsed and 257 not in parsed
+    assert not [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.ERROR]
+    assert len(streaming_routes._active_sessions) == 0
+    assert streaming_routes._stream_sessions._counts == {}
+
+
+def test_text_frame_bound_matches_the_served_message_ceiling(app_module,
+                                                             monkeypatch):
+    """One number in two places: the route's own bound and the ws_max_size
+    run() passes to uvicorn must not drift apart."""
+    import uvicorn
+
+    served = {}
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: served.update(kw))
+    app_module.run()
+    assert served["ws_max_size"] == streaming_routes._WS_MAX_TEXT_FRAME == 1024 * 1024
+
+
 def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
         client, app_module, monkeypatch, caplog):
     """One client must not be able to fill the pool. The global cap is left
@@ -547,6 +598,49 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
             assert ei.value.code == streaming_routes._WS_TOO_MANY
     assert any("STREAMING_MAX_SESSIONS_PER_USER" in r.getMessage()
                for r in caplog.records)
+
+
+def test_cap_refusal_log_lines_are_throttled_per_kind(client, app_module,
+                                                      monkeypatch, caplog):
+    """The client chooses how often a refused handshake repeats, and the log
+    is a fixed-size rotating chain: one line per kind of cap per interval,
+    carrying the count it stands for. The kinds are throttled separately, so
+    a per-user flood cannot hide the server-wide line. Every refusal still
+    closes 4429."""
+    def _refused(n):
+        for _ in range(n):
+            with pytest.raises(WebSocketDisconnect) as ei:
+                with stream_ws(client) as ws2:
+                    ws2.receive_json()
+            assert ei.value.code == streaming_routes._WS_TOO_MANY
+
+    def _lines(needle):
+        return [r.getMessage() for r in caplog.records if needle in r.getMessage()]
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 10, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
+                        raising=False)
+    with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+        with ready_ws(client):
+            _refused(20)
+            assert len(_lines("refused: per-user cap")) == 1
+            assert not _lines("refused: server-wide cap")
+
+            monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 1,
+                                raising=False)
+            monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER",
+                                0, raising=False)
+            _refused(20)
+            assert len(_lines("refused: server-wide cap")) == 1
+            assert len(_lines("refused: per-user cap")) == 1
+
+            # The interval over: the next line says how many it stood for.
+            monkeypatch.setattr(streaming_routes, "_SHED_LOG_INTERVAL_S", 0.0)
+            _refused(1)
+            assert "19 more refused" in _lines("refused: server-wide cap")[-1]
+            assert len(_lines("refused: server-wide cap")) == 2
+        assert len(streaming_routes._active_sessions) == 0
+    assert streaming_routes._stream_sessions._counts == {}
 
 
 def test_per_user_cap_zero_is_unlimited(client, app_module, monkeypatch):

@@ -328,6 +328,22 @@ def test_ffmpeg_transport_restricts_the_input_demuxer(monkeypatch):
                           "sdp", "rtsp", "image2", "tee"}
 
 
+def test_ffmpeg_transport_caps_the_declared_stream_count(monkeypatch):
+    """Probing opens a decoder for every stream the container declares, and
+    libavformat's own ceiling is 1000 of them: a few hundred KB of container
+    then holds hundreds of MB in the child. -max_alloc bounds one allocation
+    and the output ratio bounds PCM; neither counts streams, so the argv
+    carries the count as an input option beside them."""
+    argv = _transport_argv(monkeypatch)
+    assert "-max_alloc" in argv
+    assert "-max_streams" in argv
+    at = argv.index("-max_streams")
+    assert at < argv.index("-i")
+    assert argv[at + 1] == str(stream_transport._MAX_INPUT_STREAMS)
+    # Room for a recorder's audio (+ video) track and a file's cover art.
+    assert 4 <= stream_transport._MAX_INPUT_STREAMS <= 16
+
+
 def _ffmpeg_binary(which: str) -> str:
     if which == "default":
         return ffmpeg_exe()
@@ -384,6 +400,56 @@ def test_ffmpeg_transport_decodes_every_client_container(container, which, monke
     monkeypatch.setattr("faster_whisper_backend.audio.ffmpeg.ffmpeg_exe", lambda: exe)
     # ~1 s of 16 kHz mono s16le = 32000 bytes (codec priming adds a little).
     assert asyncio.run(_decode(out.read_bytes())) >= 30000
+
+
+@pytest.mark.parametrize("which", ["default", "imageio"])
+def test_ffmpeg_transport_refuses_a_container_with_too_many_streams(
+        which, monkeypatch, tmp_path):
+    """Both binaries take the option: a container at the stream cap decodes
+    as before, one over it is refused at open and leaves a dead transport
+    (the route then ends the session)."""
+    exe = _ffmpeg_binary(which)
+    cap = stream_transport._MAX_INPUT_STREAMS
+    one = tmp_path / "one.mkv"
+    r = subprocess.run(
+        [exe, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=0.5:sample_rate=48000",
+         "-c:a", "flac", "-f", "matroska", str(one)],
+        capture_output=True, timeout=30)
+    if r.returncode != 0 or not one.exists():
+        pytest.skip("mkv flac encode unavailable")
+
+    def _tracks(n):
+        out = tmp_path / f"t{n}.mkv"
+        subprocess.run(
+            [exe, "-hide_banner", "-loglevel", "error", "-i", str(one),
+             *(["-map", "0:a"] * n), "-c", "copy", "-f", "matroska", str(out)],
+            capture_output=True, timeout=30, check=True)
+        return out.read_bytes()
+
+    monkeypatch.setattr("faster_whisper_backend.audio.ffmpeg.ffmpeg_exe", lambda: exe)
+    # ~0.5 s of 16 kHz mono s16le = 16000 bytes.
+    assert asyncio.run(_decode(_tracks(cap))) >= 15000
+
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        try:
+            await t.feed(_tracks(cap + 1))
+            # ffmpeg exits at the refusal, which ends the reader.
+            await asyncio.wait_for(asyncio.shield(t._reader), 10)
+            return t.dead
+        finally:
+            await t.aclose()
+
+    assert asyncio.run(run()) is True
+    assert total == 0
 
 
 @pytest.mark.parametrize("which", ["default", "imageio"])

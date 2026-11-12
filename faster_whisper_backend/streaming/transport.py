@@ -41,6 +41,14 @@ _DECODE_HEADROOM_S = 120.0
 # stereo, Opus, MP3, AAC) never come near it; a bomb frame fails to decode
 # and the child stays at its baseline size.
 _MAX_FFMPEG_ALLOC = 64 * 1024 * 1024
+# Ceiling on the streams one container may declare. Probing opens a decoder
+# for each of them, and libavformat's own limit is 1000: a few hundred KB of
+# Matroska carrying that many audio tracks holds hundreds of MB in the child
+# for as long as the session lives, with no single allocation or output byte
+# the two bounds above would notice. A recorder sends one audio track (at
+# most audio + video) and a file adds cover art or a chapter track; a
+# container over the cap is refused at open.
+_MAX_INPUT_STREAMS = 8
 # Input demuxers ffmpeg may open. It picks one by content, whatever the
 # handshake declared, and a manifest demuxer fetches what it references:
 # ffmpeg 7.0's dash demuxer (the imageio-ffmpeg fallback) connects to an MPD's
@@ -108,6 +116,7 @@ class FfmpegTransport:
         self._proc = await asyncio.create_subprocess_exec(
             exe, "-hide_banner", "-loglevel", "error",
             "-max_alloc", str(_MAX_FFMPEG_ALLOC),
+            "-max_streams", str(_MAX_INPUT_STREAMS),
             # Restrict the input demuxer to the stdin pipe only. The client's
             # container bytes are self-contained (WebM/Opus/Ogg/mp4/…), so a
             # crafted playlist/concat/ffconcat input must not be able to coax

@@ -106,10 +106,41 @@ _SHED_LOG_INTERVAL_S = 10.0
 # 2-byte frames, so without this a client could queue millions of tuples under
 # the byte cap (each PCM frame may re-arm one queued flush).
 _HARD_CAP_ITEMS = 4096
+# Longest TEXT frame the route parses, in characters. The same number run()
+# hands uvicorn as ws_max_size; kept here as well because an app served
+# without run() gets the websocket library's 16 MiB default, and a text frame
+# is JSON-parsed on the event loop (about half a second for 16 MiB).
+_WS_MAX_TEXT_FRAME = 1024 * 1024
+# Close code for a frame over that bound (RFC 6455 "message too big"), the one
+# uvicorn itself sends at ws_max_size.
+_WS_TOO_BIG = 1009
+# Per kind of handshake cap refusal ("user" / "server"): [monotonic time of the
+# last line logged, refusals since]. Kept apart so a per-user flood cannot
+# hide the server-wide line.
+_cap_refusal_log: dict[str, list[float]] = {}
 # Client-facing text of every revocation `unauthorized` frame.
 _REVOKED_MSG = "credential no longer valid; closing"
 
 router = APIRouter()
+
+
+def _log_cap_refused(kind: str, msg: str, *args: object) -> None:
+    """Log a handshake cap refusal: one INFO line per ``kind`` every
+    _SHED_LOG_INTERVAL_S, carrying the number of refusals it stands for.
+
+    A refused handshake costs the client nothing and no rate limit sits in
+    front of it, so a line per refusal lets one key holder roll the retained
+    log chain off disk."""
+    state = _cap_refusal_log.setdefault(kind, [float("-inf"), 0])
+    now = time.monotonic()
+    if now - state[0] < _SHED_LOG_INTERVAL_S:
+        state[1] += 1
+        return
+    suppressed = int(state[1])
+    state[0], state[1] = now, 0
+    logger.info(
+        msg + " (%d more refused since the previous line; at most one line "
+        "every %.0f s)", *args, suppressed, _SHED_LOG_INTERVAL_S)
 
 
 async def _safe_ws_send(ws: WebSocket, message: dict, *, close: bool = False) -> bool:
@@ -658,7 +689,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
     try:
         _took_slot = _stream_sessions.acquire(_stream_key)
     except rate_limit.RateLimited as rl:
-        logger.info(
+        _log_cap_refused(
+            "user",
             "[stream] refused: per-user cap "
             "(STREAMING_MAX_SESSIONS_PER_USER=%d) reached for %s",
             _stream_sessions.limit(), store_common.log_safe(_stream_key))
@@ -670,7 +702,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # session, and the finally below is not reached from here.
         if _took_slot:
             _stream_sessions.release(_stream_key)
-        logger.info(
+        _log_cap_refused(
+            "server",
             "[stream] refused: server-wide cap "
             "(STREAMING_MAX_SESSIONS=%d) reached", max_sessions)
         await _refuse(ws, _WS_TOO_MANY,
@@ -733,6 +766,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
         conf = {}
         pending_audio: "bytes | None" = None
         if first.get("text") is not None:
+            if len(first["text"]) > _WS_MAX_TEXT_FRAME:
+                await ws.close(code=_WS_TOO_BIG)
+                return
             conf = store_common.json_object(first["text"]) or {}
         elif first.get("bytes") is not None:
             pending_audio = first["bytes"]
@@ -756,11 +792,15 @@ async def transcribe_stream(ws: WebSocket) -> None:
         req_language = _handshake_language(_req_language)
         _language_dropped = (req_language is None and isinstance(_req_language, str)
                              and bool(_req_language.strip()))
-        response_format = conf.get("response_format", "json")
+        _req_format = conf.get("response_format", "json")
         # Echoed in the ready frame: a lone surrogate would make the frame's
-        # UTF-8 encode raise, so it is dropped as in the prompt.
-        if isinstance(response_format, str):
-            response_format = _SURROGATE_RE.sub("", response_format)
+        # UTF-8 encode raise, so it is dropped as in the prompt. A non-string
+        # (a list, an object) is treated as absent, like `model`: only the
+        # two strings mean anything, and a JSON tree would be echoed whole
+        # and stringified into every receipt block. Capped for the same
+        # two sinks.
+        response_format = (_SURROGATE_RE.sub("", _req_format)[:64]
+                           if isinstance(_req_format, str) else "json")
         # Per-connection initial prompt (the client's "Vocabulary / prompt"). Sentinel,
         # same as batch: key ABSENT → inherit DEFAULT_PROMPT; present (incl. "") →
         # use verbatim, where "" CLEARS the inherited prompt (no initial_prompt).
@@ -1931,6 +1971,15 @@ async def transcribe_stream(ws: WebSocket) -> None:
                                                 "audio decoder stopped; closing")
                         break
                 elif msg.get("text") is not None:
+                    if len(msg["text"]) > _WS_MAX_TEXT_FRAME:
+                        # Closed first, as uvicorn does at ws_max_size; the
+                        # break still drains and commits what was decoded.
+                        async with send_lock:
+                            try:
+                                await ws.close(code=_WS_TOO_BIG)
+                            except (RuntimeError, WebSocketDisconnect):
+                                pass
+                        break
                     ctrl = store_common.json_object(msg["text"])
                     if ctrl is None:
                         continue
@@ -2063,5 +2112,8 @@ async def dictate_page() -> HTMLResponse:
 
 def _reset_for_tests() -> None:
     """Test-only: a socket torn down without the route's finally would strand
-    an id and make the cap tests' exact-count pins order-dependent."""
+    an id and make the cap tests' exact-count pins order-dependent. The
+    cap-refusal log throttle is module state too: left armed, it would swallow
+    the line a later test looks for."""
     _active_sessions.clear()
+    _cap_refusal_log.clear()
