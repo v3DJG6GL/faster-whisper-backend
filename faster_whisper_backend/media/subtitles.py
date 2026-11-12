@@ -43,24 +43,36 @@ _HOH_RE = re.compile(r"sdh|hoh|hearing|hörgeschädigt", re.I)
 _NAME_MAX = 64
 
 
+def _url_path(f: dict) -> "str | None":
+    """The path of a format entry's URL; None when the URL does not parse
+    (an unclosed IPv6 bracket, a host NFKC turns into a delimiter): the URL
+    is the site's text, and such an entry is unusable, not fatal."""
+    try:
+        return urllib.parse.urlsplit(str(f.get("url") or "")).path
+    except ValueError:
+        return None
+
+
 def _ext_of(f: dict) -> "str | None":
     """A format entry's subtitle type: its `ext`, else the URL's suffix."""
     ext = f.get("ext")
     if not ext:
-        path = urllib.parse.urlsplit(str(f.get("url") or "")).path
+        path = _url_path(f) or ""
         ext = path.rsplit(".", 1)[-1] if "." in path else None
     return str(ext).lower() if ext else None
 
 
 def _is_playlist(f: dict) -> bool:
-    url_path = urllib.parse.urlsplit(str(f.get("url") or "")).path.lower()
+    url_path = (_url_path(f) or "").lower()
     return "m3u8" in str(f.get("protocol") or "") or url_path.endswith(".m3u8")
 
 
 def _best_format(formats) -> "dict | None":
-    """The vtt (else srt) entry of a track, skipping HLS playlists."""
+    """The vtt (else srt) entry of a track, skipping HLS playlists and
+    entries whose URL does not parse."""
     usable = [f for f in formats or () if isinstance(f, dict)
               and str(f.get("url") or "").startswith(("https://", "http://"))
+              and _url_path(f) is not None
               and not _is_playlist(f) and _ext_of(f) in _FORMATS]
     usable.sort(key=lambda f: _FORMATS.index(_ext_of(f)))
     return usable[0] if usable else None

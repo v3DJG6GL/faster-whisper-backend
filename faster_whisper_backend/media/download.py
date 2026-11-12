@@ -38,6 +38,7 @@ import math
 import os
 import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -316,6 +317,17 @@ def protocol_family(protocol: "str | None") -> str:
     return "https"
 
 
+# A real codec id is under 40 characters ("av01.0.12M.10.0.110.09.16.09.0");
+# a manifest's CODECS attribute is site text of any length, and a rung is
+# copied into every preview response and progress poll.
+_CODEC_MAX = 64
+
+
+def _codec_str(v) -> str:
+    """A site's codec id for a rung, cut to what a real one needs."""
+    return str(v)[:_CODEC_MAX]
+
+
 def _rung_spec(f: dict) -> str:
     """The resolution half of a label: "1080p", "1080p60 HDR", the site's
     own "1280x720" when only that is known, else ""."""
@@ -452,7 +464,7 @@ def build_video_ladder(info: dict, *, max_bytes: int,
         b = _sane_bytes(fs) if fs else None
         return [{
             "kind": "video", "height": None, "width": None, "fps": None,
-            "hdr": False, "vcodec": str(vcodec) if vcodec else None,
+            "hdr": False, "vcodec": _codec_str(vcodec) if vcodec else None,
             "acodec": None, "container": "mkv", "protocol": "https",
             "format_id": None, "audio_format_id": None,
             "video_bytes": b, "audio_bytes": None, "approx_bytes": b,
@@ -509,9 +521,9 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     if v_tbr and v_approx and ratio:
         v_tbr *= ratio
     tbr = v_tbr + a_tbr
-    vcodec = str(f["vcodec"]) if f.get("vcodec") else None
-    acodec = str(f.get("acodec")) if has_audio else (
-        str(audio_f["acodec"]) if merges and audio_f.get("acodec") else None)
+    vcodec = _codec_str(f["vcodec"]) if f.get("vcodec") else None
+    acodec = _codec_str(f.get("acodec")) if has_audio else (
+        _codec_str(audio_f["acodec"]) if merges and audio_f.get("acodec") else None)
     fps = _site_float(f.get("fps"))
     fps_i = int(round(fps)) if fps else None
     hdr = _is_hdr(f)
@@ -1485,9 +1497,23 @@ def _mask_userinfo(text: str) -> str:
     return _URL_QUERY_RE.sub(r"\1?***", _URL_USERINFO_RE.sub(r"\1***@", text))
 
 
+# How much of a probe error is masked and logged. The mask runs on the
+# event loop and its query pattern rescans the rest of the text from every
+# scheme in it (quadratic on "http://http://..."), while a redirect or a
+# meta refresh makes the URL yt-dlp quotes as long as the site likes. The
+# log keeps 120 characters of the result either way.
+_MASK_WINDOW = 4096
+# What the window's cut leaves of a URL whose login ran past it: the scheme
+# and a login without the "@" _URL_USERINFO_RE keys on.
+_URL_CUT_LOGIN_RE = re.compile(r"(?i)(https?://)[^/\s?#@]+\Z")
+
+
 def _log_probe_failure(url: str, e: Exception) -> None:
+    text = str(e)
+    if len(text) > _MASK_WINDOW:
+        text = _URL_CUT_LOGIN_RE.sub(r"\1***", text[:_MASK_WINDOW])
     logger.warning("[url-dl] probe failed for host %s: %s",
-                   host_for_log(url), log_safe(_mask_userinfo(str(e))))
+                   host_for_log(url), log_safe(_mask_userinfo(text)))
 
 
 def _capped_get(url: str, *, max_bytes: int, timeout: float,
@@ -2001,6 +2027,13 @@ async def download_video(
 # At most one progress callback per this many seconds (the terminal line is
 # flushed after EOF regardless). A name so tests can drop it to 0.
 _PROGRESS_EMIT_MIN_S = 0.3
+# The job dir is measured at most this often while the child runs, and may
+# hold twice the size cap plus this margin: the downloaded legs (held to the
+# cap by the progress count) and one merged or fixed-up copy of them (over
+# the cap, the result is refused anyway), with room for a fragment not yet
+# appended and the container's own overhead. Names so tests can lower them.
+_DISK_SCAN_MIN_S = 1.0
+_DISK_MARGIN_BYTES = 64 * 1024 * 1024
 
 
 async def _run_yt_dlp(
@@ -2022,8 +2055,9 @@ async def _run_yt_dlp(
     yt-dlp, stream its progress lines into `emit(downloaded, total)` (one
     call per 0.3 s; with `cumulative`, summed across the files one
     invocation fetches — the audio selector never merges, so it is off there),
-    enforce the byte cap, the wall clock and cancellation, then hand the
-    finished directory to `find_result`."""
+    enforce the byte cap (on the progress count and on what `dest_dir`
+    holds), the wall clock and cancellation, then hand the finished
+    directory to `find_result`."""
     # YTDLP_NO_PLUGINS makes yt-dlp skip plugin loading entirely; the launcher
     # installs the guard directly and so is immune, but --plugin-dirs is the
     # belt to that braces and must not be silently disabled by the ambient
@@ -2152,15 +2186,29 @@ async def _run_yt_dlp(
     filtered_out = False
     over_cap = False
     last_emitted: "tuple[int, int | None] | None" = None
+    disk_limit = 2 * max_bytes + _DISK_MARGIN_BYTES
+    last_scan = t0
     try:
         assert proc.stdout is not None
         while True:
-            if time.monotonic() - t0 > timeout:
+            now = time.monotonic()
+            if now - t0 > timeout:
                 await _kill()
                 raise UrlTimeoutError("the download timed out")
             if cancel_check is not None and cancel_check():
                 await _kill()
                 raise UrlCancelled()
+            # The merge / fixup after the legs prints no progress line, and
+            # a stream copy can write many times what it read (a sample
+            # table that names the same bytes again and again): the
+            # progress count never sees that output, and the size check on
+            # the result only runs once the child has exited.
+            if now - last_scan >= _DISK_SCAN_MIN_S:
+                last_scan = now
+                if await asyncio.to_thread(_dir_bytes, dest_dir) > disk_limit:
+                    await _kill()
+                    await asyncio.to_thread(_discard_partials, dest_dir)
+                    raise UrlPolicyError(_OVER_CAP_MSG)
             try:
                 raw = await asyncio.wait_for(_read_line(proc.stdout), 0.5)
             except asyncio.TimeoutError:
@@ -2253,6 +2301,25 @@ async def _run_yt_dlp(
     logger.info("[url-dl] downloaded %.1f MB in %.1fs (host %s)",
                 size / 1e6, time.monotonic() - t0, host_for_log(url))
     return result
+
+
+def _dir_bytes(dest_dir: str) -> int:
+    """The bytes the regular files directly in `dest_dir` hold right now."""
+    total = 0
+    try:
+        with os.scandir(dest_dir) as entries:
+            for entry in entries:
+                try:
+                    # A fresh lstat, not the directory's cached entry: on
+                    # Windows that one lags behind a file still being written.
+                    st = os.lstat(entry.path)
+                except OSError:
+                    continue  # renamed or removed since it was listed
+                if stat.S_ISREG(st.st_mode):
+                    total += st.st_size
+    except OSError:
+        pass
+    return total
 
 
 def _discard_partials(dest_dir: str) -> None:

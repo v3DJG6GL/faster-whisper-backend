@@ -1275,6 +1275,47 @@ def test_probe_failure_log_masks_the_links_query(monkeypatch, caplog):
     assert "s3cret" not in caplog.text and "frag" not in caplog.text
 
 
+def test_probe_failure_log_is_bounded_for_a_site_sized_error(caplog):
+    """A redirect or meta refresh makes yt-dlp's quoted URL as long as the
+    site likes, and the mask runs on the event loop: only a fixed window of
+    the text is masked, whatever its length."""
+    text = "ERROR: Unsupported URL: http://h/" + "http://" * 9000
+    t0 = time.monotonic()
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        udl._log_probe_failure("http://h/x", Exception(text))
+    assert time.monotonic() - t0 < 1.0
+    rec = [r.getMessage() for r in caplog.records if "probe failed" in r.getMessage()]
+    assert rec and "ERROR: Unsupported URL: http://h/http://" in rec[0]
+
+
+def test_probe_failure_log_is_unchanged_for_a_text_inside_the_window(caplog):
+    text = "Unsupported URL: https://u:pw@h/x?token=abc " + "y" * 60
+    text += "z" * (udl._MASK_WINDOW - len(text))
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        udl._log_probe_failure("https://h/x", Exception(text))
+    rec = [r.getMessage() for r in caplog.records if "probe failed" in r.getMessage()]
+    assert rec == ["[url-dl] probe failed for host h: "
+                   + udl.log_safe(udl._mask_userinfo(text))]
+    assert "Unsupported URL: https://***@h/x?*** yyy" in rec[0]
+    assert "pw" not in caplog.text and "abc" not in caplog.text
+
+
+def test_probe_failure_log_masks_a_login_cut_by_the_window(caplog):
+    """The window's cut can land inside a URL's login, before the "@" the
+    mask keys on: that cut login must not reach the log (the masked query in
+    front of it shrinks to four characters, so the cut is inside the part of
+    the line the log keeps)."""
+    head = "ERROR: https://cdn.example/p?" + "q" * 5000
+    head = head[:udl._MASK_WINDOW - len(" https://alice:s3cr")] + " "
+    text = head + "https://alice:s3cret@nas.example.com/p"
+    assert text[:udl._MASK_WINDOW].endswith("https://alice:s3cr")
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        udl._log_probe_failure("https://nas.example.com/p", Exception(text))
+    rec = [r.getMessage() for r in caplog.records if "probe failed" in r.getMessage()]
+    assert rec and "ERROR: https://cdn.example/p?*** https://***" in rec[0]
+    assert "alice" not in caplog.text and "s3cr" not in caplog.text
+
+
 def test_download_partial_only_is_size_limit(tmp_path, monkeypatch):
     # --max-filesize skip: clean exit, only a .part file left behind.
     _patch_argv(monkeypatch, _yt_dlp_script("media.m4a.part", size=1))
@@ -2068,6 +2109,45 @@ def test_video_ladder_skips_drm_storyboards_rtmp_and_flags_over_cap():
     assert udl.build_video_ladder({}, max_bytes=1) == []
 
 
+def test_ladder_caps_site_codec_strings():
+    """A manifest's CODECS attribute is site text of any length; a rung
+    carries what a real codec id needs, and the container still follows the
+    codec family."""
+    import json
+    long_v = "avc1." + "A" * 100_000
+    long_a = "mp4a.40." + "B" * 100_000
+    muxed = _fmt(format_id="m", vcodec=long_v, acodec=long_a, height=360,
+                 ext="mp4", filesize=1_000_000)
+    video_only = _fmt(format_id="v", vcodec=long_v, acodec="none", height=1080,
+                      ext="mp4", filesize=2_000_000)
+    audio = _fmt(format_id="a", vcodec="none", acodec=long_a, abr=128,
+                 filesize=100_000)
+    ladder = udl.build_video_ladder(
+        {"duration": 100.0, "formats": [muxed, video_only, audio]},
+        max_bytes=10**9)
+    assert [r["format_id"] for r in ladder] == ["v", "m"]
+    assert ladder[0]["audio_format_id"] == "a"
+    for r in ladder:
+        assert r["vcodec"] == long_v[:64] and r["acodec"] == long_a[:64]
+        assert r["container"] == "mp4"
+    assert len(json.dumps(ladder)) < 10_000
+    # The rung of a link that names nothing rankable carries the same cap.
+    best = udl.build_video_ladder({"ext": "mp4", "vcodec": long_v}, max_bytes=10**9)
+    assert [r["label"] for r in best] == ["Best available"]
+    assert best[0]["vcodec"] == long_v[:64]
+
+
+def test_ladder_keeps_a_real_codec_id_whole():
+    av1 = "av01.0.12M.10.0.110.09.16.09.0"
+    vid = _fmt(format_id="v", vcodec=av1, acodec="none", height=1080,
+               filesize=2_000_000)
+    aud = _fmt(format_id="a", vcodec="none", acodec="mp4a.40.2", abr=128)
+    rung = udl.build_video_ladder({"duration": 10.0, "formats": [vid, aud]},
+                                  max_bytes=10**9)[0]
+    assert (rung["vcodec"], rung["acodec"], rung["container"]) == (
+        av1, "mp4a.40.2", "mkv")
+
+
 def test_ladder_treats_an_absurd_site_bitrate_as_unknown_size():
     """A manifest's BANDWIDTH is the site's word: 1.5e306 b/s is a 300-digit
     byte count, and scaled by a learned ratio it overflows to infinity."""
@@ -2301,6 +2381,82 @@ def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeyp
     # The second stream's restart at 100 must not read as 100 of 1300
     # (deterministic: _patch_video_argv turns the emit throttle off).
     assert [d for _f, _t, d in seen] == [500, 1000, 1100, 1300], seen
+
+
+def test_download_video_aborts_when_the_merge_outgrows_the_cap(tmp_path, monkeypatch):
+    """The merge / fixup that follows the legs prints no progress line and
+    can write far more than it read: what the job dir holds is watched while
+    the child runs, not only measured once it has exited."""
+    monkeypatch.setattr(udl, "_DISK_SCAN_MIN_S", 0.0)
+    monkeypatch.setattr(udl, "_DISK_MARGIN_BYTES", 1000)
+    _patch_video_argv(monkeypatch, """
+import os, time
+for name, n in (("media.f1.mp4", 600), ("media.f2.m4a", 300)):
+    open(os.path.join(r"__DEST__", name), "wb").write(b"x" * n)
+print("dl:600 600 NA f1", flush=True)
+print("dl:300 300 NA f2", flush=True)
+open(os.path.join(r"__DEST__", "media.temp.mkv"), "wb").write(b"x" * 50_000)
+time.sleep(60)
+""")
+    t0 = time.monotonic()
+    with pytest.raises(udl.UrlPolicyError, match="size limit"):
+        _fetch(udl.download_video, tmp_path, max_bytes=1000, timeout=60)
+    assert time.monotonic() - t0 < 10
+    assert os.listdir(str(tmp_path)) == []
+
+
+def test_download_video_merge_at_the_cap_is_not_refused(tmp_path, monkeypatch):
+    """Both legs plus one merged copy of them is what a run at the size cap
+    holds at its peak: twice the cap, never past it."""
+    monkeypatch.setattr(udl, "_DISK_SCAN_MIN_S", 0.0)
+    monkeypatch.setattr(udl, "_DISK_MARGIN_BYTES", 0)
+    dest = tmp_path / "job"
+    dest.mkdir()
+    seen = tmp_path / "peak-seen"
+    # The stand-in holds its peak until a scan has measured it.
+    _patch_video_argv(monkeypatch, f"""
+import os, time
+d = r"__DEST__"
+for name, n in (("media.f1.mp4", 700), ("media.f2.m4a", 300)):
+    open(os.path.join(d, name), "wb").write(b"x" * n)
+print("dl:700 700 NA f1", flush=True)
+print("dl:300 300 NA f2", flush=True)
+open(os.path.join(d, "media.temp.mkv"), "wb").write(b"x" * 1000)
+t0 = time.monotonic()
+while not os.path.exists(r"{seen}") and time.monotonic() - t0 < 20:
+    time.sleep(0.02)
+os.remove(os.path.join(d, "media.f1.mp4"))
+os.remove(os.path.join(d, "media.f2.m4a"))
+os.rename(os.path.join(d, "media.temp.mkv"), os.path.join(d, "media.mkv"))
+""")
+    scans = []
+    real = udl._dir_bytes
+
+    def _scan(d):
+        scans.append(real(d))
+        if scans[-1] == 2000:
+            seen.write_bytes(b"")
+        return scans[-1]
+    monkeypatch.setattr(udl, "_dir_bytes", _scan)
+    out = _fetch(udl.download_video, dest, max_bytes=1000)
+    assert os.path.basename(out) == "media.mkv" and os.path.getsize(out) == 1000
+    assert max(scans) == 2000  # the peak was measured, and admitted
+
+
+def test_dir_bytes_counts_regular_files_only(tmp_path):
+    job = tmp_path / "job"
+    (job / "sub").mkdir(parents=True)
+    (job / "media.f1.mp4").write_bytes(b"x" * 10)
+    (job / "media.temp.mkv").write_bytes(b"x" * 5)
+    (job / "sub" / "inner").write_bytes(b"x" * 100)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"x" * 1000)
+    try:
+        os.symlink(str(outside), str(job / "media.link"))
+    except (OSError, NotImplementedError):  # Windows without the privilege
+        pass
+    assert udl._dir_bytes(str(job)) == 15
+    assert udl._dir_bytes(str(tmp_path / "gone")) == 0
 
 
 _TWO_LEGS_BY_ID_SCRIPT = _yt_dlp_script(

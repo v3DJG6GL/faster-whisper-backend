@@ -58,6 +58,26 @@ def test_srf_skips_the_hls_stub_and_infers_the_ext():
     assert subs.language_of(_SRF) is None
 
 
+def test_a_track_with_an_unparseable_url_is_skipped_not_fatal():
+    """A manifest's subtitle URI is site text: one that urlsplit refuses (an
+    unclosed IPv6 bracket, a host that NFKC-normalises into a delimiter)
+    costs that entry, not the whole probe."""
+    info = {"subtitles": {
+        "en": [{"url": "http://[::1/en.vtt", "ext": "vtt"}],
+        "de": [{"url": "https://ok.example/de.vtt", "ext": "vtt"}],
+        "fr": [{"url": "http://a\u2100b/fr.vtt"}],
+        # A track keeps its usable entry beside an unusable one.
+        "it": [{"url": "http://[::1/it.vtt", "ext": "vtt"},
+               {"url": "https://ok.example/it.srt"}],
+    }}
+    public, sources = subs.list_tracks(info)
+    assert [(t["id"], t["ext"]) for t in public] == [("m-de", "vtt"), ("m-it", "srt")]
+    assert sources == {
+        "m-de": {"url": "https://ok.example/de.vtt", "ext": "vtt"},
+        "m-it": {"url": "https://ok.example/it.srt", "ext": "srt"},
+    }
+
+
 def test_auto_without_orig_falls_back_to_the_named_language():
     info = {"language": "en", "automatic_captions": {
         "en": _yt_formats("en", "English"), "fr": _yt_formats("fr", "French")}}
