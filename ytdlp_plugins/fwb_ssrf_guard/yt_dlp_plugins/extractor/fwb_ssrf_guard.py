@@ -216,6 +216,7 @@ def reset_budget() -> None:
     _DIALS.tls.processed_formats = 0
     _DIALS.tls.line_work = 0
     _DIALS.tls.label_chars = 0
+    _DIALS.tls.table_chars = 0
 
 
 def _observe(sock) -> None:
@@ -1680,36 +1681,50 @@ def _labels_too_long():
                           expected=True)
 
 
+def _padded_chars(rows) -> int:
+    """The characters of a table whose rows are each padded to the widest
+    cell of every column: its rows x the sum of those widths (never less
+    than the cells' sum). `rows` holds each row's cell widths."""
+    widest: "list[int]" = []
+    count = 0
+    for row in rows:
+        count += 1
+        for pos, chars in enumerate(row):
+            if pos == len(widest):
+                widest.append(chars)
+            elif chars > widest[pos]:
+                widest[pos] = chars
+    return count * sum(widest)
+
+
+def _format_label_widths(fmt: dict) -> "list[int]":
+    widths = {key: len(value) if isinstance(value := fmt.get(key), str) else 0
+              for key in _FORMAT_LABELS}
+    # What the pass fills in for a format that states none: the resolution
+    # from its sizes, the ext and the protocol from its address (yt-dlp's
+    # determine_ext and the URL's scheme).
+    chars = sum(_digits(fmt[key]) for key in ("width", "height")
+                if isinstance(fmt.get(key), int))
+    widths["resolution"] = max(widths["resolution"], chars)
+    url = fmt.get("url")
+    if isinstance(url, str):
+        if not fmt.get("ext"):
+            ext = url.partition("?")[0].rpartition(".")[2]
+            if _URL_EXT.match(ext):
+                widths["ext"] = max(widths["ext"], len(ext))
+        if not fmt.get("protocol"):
+            widths["protocol"] = max(widths["protocol"], url.find(":"))
+    return list(widths.values())
+
+
 def _format_label_chars(formats) -> int:
-    """The characters of the table yt-dlp renders for `formats`: its rows x
-    the widest label of each kind (never less than the labels' sum)."""
+    """The label text the pass and the rows of the formats table copy per
+    format, before any table is drawn: sized as that table, rows x the
+    widest label of each kind."""
     if not isinstance(formats, (list, tuple)):
         return 0  # yt-dlp fails on its own
-    widest = dict.fromkeys(_FORMAT_LABELS, 0)
-    rows = 0
-    for fmt in formats:
-        if not isinstance(fmt, dict):
-            continue
-        rows += 1
-        for key in _FORMAT_LABELS:
-            value = fmt.get(key)
-            if isinstance(value, str) and len(value) > widest[key]:
-                widest[key] = len(value)
-        # What the pass fills in for a format that states none: the
-        # resolution from its sizes, the ext and the protocol from its
-        # address (yt-dlp's determine_ext and the URL's scheme).
-        chars = sum(_digits(fmt[key]) for key in ("width", "height")
-                    if isinstance(fmt.get(key), int))
-        widest["resolution"] = max(widest["resolution"], chars)
-        url = fmt.get("url")
-        if isinstance(url, str):
-            if not fmt.get("ext"):
-                ext = url.partition("?")[0].rpartition(".")[2]
-                if _URL_EXT.match(ext):
-                    widest["ext"] = max(widest["ext"], len(ext))
-            if not fmt.get("protocol"):
-                widest["protocol"] = max(widest["protocol"], url.find(":"))
-    return rows * sum(widest.values())
+    return _padded_chars(_format_label_widths(fmt) for fmt in formats
+                         if isinstance(fmt, dict))
 
 
 def _bounded_process_video_result(original):
@@ -1747,6 +1762,80 @@ def _format_pass_is_bounded() -> bool:
     from yt_dlp.YoutubeDL import YoutubeDL
     return getattr(getattr(YoutubeDL, "process_video_result", None),
                    _FORMAT_PASS_SENTINEL, False)
+
+
+# yt-dlp draws four tables (formats, thumbnails, subtitles, automatic
+# captions) at every print point of an entry, whether or not a listing was
+# asked for, and every one through the `render_table` its YoutubeDL module
+# imports: each row is padded to the widest cell of every column, so ONE
+# long cell costs its length per row. One 200 000-character subtitle language
+# among 2 000 (a 485 kB DASH manifest) peaked at 1.2 GB. Every table is sized
+# there, before it is drawn, against the label budget; real subtitle and
+# thumbnail lists are a few kB.
+# An entry draws the same tables again at each of its print points (eight at
+# most), so a draw cannot spend from the label budget itself: 20 000 ordinary
+# formats are over half of it once. What one extraction draws has a budget
+# of its own, sixteen full tables.
+_MAX_TABLE_CHARS = 16 * _MAX_FORMAT_LABEL_CHARS
+_TABLE_SENTINEL = "_fwb_table_bounded"
+# The YoutubeDL methods that draw a table.
+_TABLE_DRAWERS = ("render_formats_table", "render_thumbnails_table",
+                  "render_subtitles_table")
+
+
+def _cell_chars(cell) -> int:
+    if isinstance(cell, str):
+        return len(cell)
+    if isinstance(cell, int):
+        return _digits(cell)  # no conversion: see _digits
+    return len(str(cell))
+
+
+def _row_chars(row) -> "list[int]":
+    return [_cell_chars(cell) for cell in row]
+
+
+def _bounded_render_table(original):
+    def render_table(header_row, data, *args, **kwargs):
+        rows = data if isinstance(data, (list, tuple)) else list(data)
+        chars = _padded_chars(map(_row_chars, rows))
+        total = getattr(_DIALS.tls, "table_chars", 0) + chars
+        if chars > _MAX_FORMAT_LABEL_CHARS or total > _MAX_TABLE_CHARS:
+            raise _labels_too_long()
+        _DIALS.tls.table_chars = total
+        return original(header_row, rows, *args, **kwargs)
+    setattr(render_table, _TABLE_SENTINEL, True)
+    return render_table
+
+
+def _ydl_module():
+    # `yt_dlp.YoutubeDL` the attribute is the class; the module is this.
+    import importlib
+    return importlib.import_module("yt_dlp.YoutubeDL")
+
+
+def _bound_tables() -> None:
+    module = _ydl_module()
+    current = vars(module).get("render_table")
+    # As with DASH: nothing to wrap leaves is_installed() failing closed.
+    if callable(current) and not getattr(current, _TABLE_SENTINEL, False):
+        module.render_table = _bounded_render_table(current)
+
+
+def _tables_are_bounded() -> bool:
+    module = _ydl_module()
+    if not getattr(vars(module).get("render_table"), _TABLE_SENTINEL, False):
+        return False
+    # A yt-dlp whose lists stop looking up the module's `render_table`
+    # would bypass the swap: each must still name it, as a global of that
+    # module.
+    for name in _TABLE_DRAWERS:
+        fn = getattr(module.YoutubeDL, name, None)
+        code = getattr(fn, "__code__", None)
+        if (code is None or "render_table" not in code.co_names
+                or getattr(fn, "__globals__", None) is not vars(module)):
+            return False
+    return True
 
 
 # What a page builds before any count above sees it. GenericIE parses every
@@ -1997,6 +2086,7 @@ def install() -> None:
     _bound_f4m_fragments()
     _bound_smil_formats()
     _bound_format_pass()
+    _bound_tables()
     _bound_etree_parses()
     _bound_json_parses()
     _bound_ffmpeg_inputs()
@@ -2017,7 +2107,8 @@ def is_installed() -> bool:
     and nested manifests before it builds their formats, an HDS bootstrap's
     bytes before F4mFD parses it and its fragments before F4mFD expands them, a SMIL document's srcs, addresses
     and nested manifests before it builds their formats, the formats of one
-    extraction before each format pass, an XML document's elements and
+    extraction before each format pass, every table of formats, thumbnails
+    or subtitles before it is drawn, an XML document's elements and
     a JSON document's arrays and objects before either is parsed, and every
     ffmpeg / ffprobe a postprocessor spawns carries the format whitelist."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
@@ -2033,6 +2124,7 @@ def is_installed() -> bool:
             and _f4m_fragments_are_bounded()
             and _smil_formats_are_bounded()
             and _format_pass_is_bounded()
+            and _tables_are_bounded()
             and _etree_parses_are_bounded()
             and _json_parses_are_bounded()
             and _ffmpeg_inputs_are_bounded())

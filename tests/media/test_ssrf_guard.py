@@ -3295,6 +3295,190 @@ def test_guard_is_not_installed_without_the_format_pass_bound(monkeypatch):
     assert guard.is_installed()
 
 
+# ---- The tables yt-dlp draws. It renders the formats, thumbnails, subtitles
+# and automatic-captions tables at every print point of an entry, asked for
+# or not, and pads each row to the widest cell of every column: one long
+# cell costs its length per row.
+
+def _listed(**lists):
+    return {"id": "x", "title": "t", "extractor": "generic",
+            "extractor_key": "Generic", "webpage_url": "http://cdn.example/m",
+            "formats": _plain_formats(3), **lists}
+
+
+def _subtitles(n, long=0, formats=("vtt",), name=None):
+    subs = {f"l{i}": [{"url": f"http://cdn.example/{i}.{ext}", "ext": ext,
+                       **({"name": name} if name else {})} for ext in formats]
+            for i in range(n)}
+    if long:
+        subs["x" * long] = subs.pop("l0")
+    return subs
+
+
+def _thumbnails(n, long=0):
+    return [{"url": f"http://cdn.example/{i}.jpg" + "?" + "x" * (long if i == 0 else 0),
+             "width": 320, "height": 180} for i in range(n)]
+
+
+@pytest.mark.parametrize("lists", [
+    lambda long: {"subtitles": _subtitles(1000, long)},
+    lambda long: {"automatic_captions": _subtitles(1000, long)},
+    lambda long: {"thumbnails": _thumbnails(1000, long)},
+], ids=["subtitles", "automatic-captions", "thumbnails"])
+def test_guard_caps_the_widest_cell_times_the_rows_of_every_table(lists):
+    """ONE 200 000-character subtitle language among 2 000 (a 485 KiB DASH
+    manifest) peaked at 1.2 GB: every row of the table is padded to it."""
+    guard = _registered_guard()
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            ydl.process_ie_result(_listed(**lists(10_000)), download=False)
+    # A refused table spends nothing: only the tables before it were drawn.
+    assert guard["_DIALS"].tls.table_chars < 10_000
+    _reset_budget()
+    # The same thousand rows without the long one pass.
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        res = ydl.process_ie_result(_listed(**lists(0)), download=False)
+    assert len(res["formats"]) == 3
+    assert 0 < guard["_DIALS"].tls.table_chars < guard["_MAX_TABLE_CHARS"] // 16
+
+
+def test_guard_caps_a_long_subtitle_language_of_a_dash_manifest():
+    """The measured shape, through the real parser: text AdaptationSets, one
+    with a long @lang."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    xml = _mpd(
+        '<Period><AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2">'
+        '<Representation id="a" bandwidth="1"><BaseURL>a.m4a</BaseURL>'
+        "</Representation></AdaptationSet>" + "".join(
+            f'<AdaptationSet mimeType="text/vtt" lang="{"x" * 10_000 if i == 0 else f"l{i}"}">'
+            f'<Representation id="t{i}" bandwidth="1"><BaseURL>s{i}.vtt</BaseURL>'
+            "</Representation></AdaptationSet>" for i in range(1000))
+        + "</Period>")
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        fmts, subs = InfoExtractor(ydl)._parse_mpd_formats_and_subtitles(
+            compat_etree_fromstring(xml.encode()),
+            mpd_base_url="http://cdn.example/", mpd_url="http://cdn.example/m.mpd")
+        assert len(subs) == 1000
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            ydl.process_ie_result(
+                {**_listed(), "formats": fmts, "subtitles": subs}, download=False)
+
+
+def test_guard_sizes_a_table_before_it_is_drawn():
+    """Rows x the sum of the widest cell of each column, whatever the cells
+    are: the renderer is never reached with a table past the budget."""
+    guard = _registered_guard()
+    udl.guard_self_check(force=True)
+    render = sys.modules["yt_dlp.YoutubeDL"].render_table
+    assert guard["_padded_chars"]([(1, 5, 0), (3, 2, 0), (2, 2, 7)]) == 3 * (3 + 5 + 7)
+    assert guard["_padded_chars"]([]) == 0
+    assert guard["_cell_chars"]("abc") == 3
+    assert guard["_cell_chars"](None) == len("None")
+    assert guard["_cell_chars"](1.5) == 3
+    # A number is sized without the conversion.
+    assert len(str(10 ** 4000)) <= guard["_cell_chars"](10 ** 4000) < 4100
+    assert render(["A", "B"], [["a", "1"], ["bb", "22"]]) == "A  B\na  1\nbb 22"
+    assert guard["_DIALS"].tls.table_chars == 2 * (2 + 2)
+    cap = guard["_MAX_FORMAT_LABEL_CHARS"]
+    with mock.patch.dict(guard, {"_MAX_FORMAT_LABEL_CHARS": 100}):
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            render(["A", "B"], [["a" * 49, "b"], ["a", "b" * 2]])
+        assert render(["A", "B"], [["a" * 48, "b"], ["a", "b" * 2]])
+        # Rows of any iterable are sized all the same.
+        with pytest.raises(yt_dlp.utils.ExtractorError):
+            render(["A"], (["a" * 51] for _ in range(2)))
+    assert guard["_MAX_FORMAT_LABEL_CHARS"] == cap
+
+
+def test_guard_charges_table_draws_across_one_extraction(monkeypatch):
+    """Each entry draws its tables afresh at every print point: what one
+    extraction draws comes from one budget, which a new extraction resets."""
+    guard = _registered_guard()
+    udl.guard_self_check(force=True)
+    render = sys.modules["yt_dlp.YoutubeDL"].render_table
+    monkeypatch.setitem(guard, "_MAX_TABLE_CHARS", 1000)
+    rows = [["a" * 30, "b" * 10] for _ in range(10)]
+    render(["A", "B"], rows)
+    render(["A", "B"], rows)
+    with pytest.raises(yt_dlp.utils.ExtractorError,
+                       match="format names are too long"):
+        render(["A", "B"], rows)
+    assert guard["_DIALS"].tls.table_chars == 800
+    _reset_budget()
+    assert guard["_DIALS"].tls.table_chars == 0
+    assert render(["A", "B"], rows)
+
+
+def test_guard_admits_the_tables_of_real_lists(monkeypatch):
+    """200 subtitle languages in 5 formats, as many automatic captions and
+    60 thumbnails are a sliver of one table's budget, and 20 000 ordinary
+    formats drawn at every print point of a download fit the extraction's."""
+    guard = _registered_guard()
+    names = dict(formats=("vtt", "ttml", "srv3", "srv2", "json3"),
+                 name="English (auto-generated)")
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        res = ydl.process_ie_result(_listed(
+            subtitles=_subtitles(200, **names),
+            automatic_captions=_subtitles(200, **names),
+            thumbnails=_thumbnails(60)), download=False)
+        assert len(res["subtitles"]) == 200 and len(res["thumbnails"]) == 60
+        assert guard["_DIALS"].tls.table_chars < guard["_MAX_FORMAT_LABEL_CHARS"] // 20
+        _reset_budget()
+        # The widths of the formats table from a twentieth of the rows:
+        # every row is as wide as the next.
+        rows = guard["_MAX_EXTRACTION_FORMATS"] // 20
+        sized = []
+        monkeypatch.setattr(
+            sys.modules["yt_dlp.YoutubeDL"], "render_table",
+            lambda header, data, **kw: sized.append(guard["_padded_chars"](
+                map(guard["_row_chars"], data)) * 20))
+        ydl.render_formats_table({"formats": [{
+            "format_id": f"video=4500000-{i:05d}", "ext": "mp4",
+            "container": "mp4_dash", "width": 3840, "height": 2160, "fps": 59.94,
+            "vcodec": "hvc1.2.4.L153.B0", "acodec": "mp4a.40.2", "language": "en-US",
+            "format_note": "DASH video", "protocol": "http_dash_segments",
+            "tbr": 4500.0, "vbr": 4400.0, "abr": 128.0, "asr": 48000,
+            "filesize": 123456789, "audio_channels": 2, "dynamic_range": "HDR10",
+            "url": f"https://cdn.example/v/{i}/seg.m4s?sig=" + "s" * 300,
+        } for i in range(rows)]})
+    assert 0 < sized[0] < guard["_MAX_FORMAT_LABEL_CHARS"]
+    # pre_process, after_filter, video, before_dl, post_process, after_move,
+    # after_video, playlist: no entry is drawn at more points.
+    assert 8 * sized[0] < guard["_MAX_TABLE_CHARS"]
+
+
+def test_guard_is_not_installed_without_the_table_bound(monkeypatch):
+    from yt_dlp.utils import render_table
+    module = sys.modules["yt_dlp.YoutubeDL"]
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    assert module.render_table is not render_table
+    with monkeypatch.context() as m:
+        m.setattr(module, "render_table", render_table)
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the renderer
+        m.delattr(module, "render_table")
+        assert not guard.is_installed()
+        guard.install()  # nothing to bound: still fails closed
+        assert not guard.is_installed()
+    for name in ("render_formats_table", "render_thumbnails_table",
+                 "render_subtitles_table"):
+        with monkeypatch.context() as m:  # a list drawn some other way
+            m.setattr(module.YoutubeDL, name, lambda self, *a: None)
+            assert not guard.is_installed()
+        with monkeypatch.context() as m:
+            m.delattr(module.YoutubeDL, name)
+            assert not guard.is_installed()
+    assert guard.is_installed()
+
+
 # ---- What a page builds before anything counts it: GenericIE parses every
 # HTML page it scrapes as XML first, and reads every ld+json block with
 # json.loads — up to the 64 MiB body cap, ~1.6 GB of tree or objects. The
