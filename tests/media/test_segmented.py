@@ -469,3 +469,97 @@ def test_fetch_caps_and_failures(served, tmp_path, monkeypatch):
     # Cancel: checked before every request.
     with pytest.raises(udl.UrlCancelled):
         _fetch(src, [0.0], 6.0, tmp_path, cancel=lambda: True)
+
+
+def test_hls_charges_the_joined_addresses_before_building_them(monkeypatch):
+    # Every segment line becomes one address about as long as the base (a
+    # redirect target, a master's variant line — the site picks both): the
+    # product is charged before the first join, not after the list is built.
+    joins = []
+    real = seg.urllib.parse.urljoin
+    monkeypatch.setattr(seg.urllib.parse, "urljoin",
+                        lambda *a, **k: joins.append(1) or real(*a, **k))
+    monkeypatch.setattr(seg, "MAX_JOINED_URL_BYTES", 256 * 1024)
+    base = "https://cdn.test/" + "a/" * 2000 + "index.m3u8"
+    text = "#EXTM3U\n" + "#EXTINF:1,\nx\n" * 100 + "#EXT-X-ENDLIST\n"
+    with pytest.raises(seg.Unsupported, match="addresses are too long"):
+        seg.parse_hls(text, base)
+    assert joins == []
+    # The same playlist on an ordinary base parses as before.
+    assert len(seg.parse_hls(text, _BASE).segments) == 100
+    # A master's lines are charged the same way.
+    master = "#EXTM3U\n" + "".join(
+        f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",URI="{i}.m3u8"\n' for i in range(100))
+    with pytest.raises(seg.Unsupported, match="addresses are too long"):
+        seg.parse_hls(master, base)
+    assert joins == [1] * 100
+
+
+def test_hls_admits_a_long_programme_on_a_signed_address():
+    # 20 000 segments under a 300-byte tokenised address: far inside the
+    # charge, parsed exactly as before.
+    base = "https://cdn.test/v/index.m3u8?token=" + "t" * 264
+    assert len(base) == 300
+    text = "#EXTM3U\n" + "".join(
+        f"#EXTINF:2.0,\ns{i}.ts\n" for i in range(20_000)) + "#EXT-X-ENDLIST\n"
+    media = seg.parse_hls(text, base)
+    assert len(media.segments) == 20_000
+    assert media.segments[0] == (("https://cdn.test/v/s0.ts", None), 2.0)
+    assert media.segments[-1] == (("https://cdn.test/v/s19999.ts", None), 2.0)
+
+
+def test_fetch_refuses_an_overlong_playlist_address_before_asking_for_it(
+        served, tmp_path):
+    # A master names its media playlist: an address past the cap is never
+    # requested (nor used as the base every segment line is joined to).
+    table, calls = served
+    master = "https://cdn.test/master.m3u8"
+    long_uri = "a/" * 5000 + "au.m3u8"
+    for line in (f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",DEFAULT=YES,URI="{long_uri}"\n',
+                 f"#EXT-X-STREAM-INF:BANDWIDTH=1\n{long_uri}\n"):
+        calls.clear()
+        table[master] = ("#EXTM3U\n" + line).encode()
+        table["https://cdn.test/" + long_uri] = hls_playlist(["s0.ts"]).encode()
+        with pytest.raises(seg.Unsupported, match="playlist address is too long"):
+            _fetch({"protocol": "hls", "url": master}, [0.0], 2.0, tmp_path)
+        assert [u for u, _h in calls] == [master]
+    # The link's own playlist address is held to the same cap.
+    calls.clear()
+    with pytest.raises(seg.Unsupported, match="playlist address is too long"):
+        _fetch({"protocol": "hls", "url": "https://cdn.test/" + long_uri},
+               [0.0], 2.0, tmp_path)
+    assert calls == []
+
+
+def test_fetch_refuses_an_overlong_redirect_target_before_parsing(
+        fake_capped_get, tmp_path, monkeypatch):
+    # The URL that answered is the base of every relative line: a redirect
+    # to an address past the cap is refused before the playlist is parsed.
+    edge = "https://edge.cdn.test/" + "a/" * 5000 + "index.m3u8"
+    serve_hls(fake_capped_get.table, edge, 3)
+    asked = "https://site.test/manifest?token=1"
+    fake_capped_get.redirects[asked] = edge
+    parsed = []
+    real = seg.parse_hls
+    monkeypatch.setattr(seg, "parse_hls",
+                        lambda *a, **k: parsed.append(1) or real(*a, **k))
+    with pytest.raises(seg.Unsupported, match="playlist address is too long"):
+        _fetch({"protocol": "hls", "url": asked}, [0.0], 2.0, tmp_path)
+    assert parsed == [] and len(fake_capped_get.calls) == 1
+
+
+def test_dash_charges_the_joined_addresses_before_building_them(monkeypatch):
+    # The fragment list's shared base is joined once per fragment.
+    joins = []
+    real = seg.urllib.parse.urljoin
+    monkeypatch.setattr(seg.urllib.parse, "urljoin",
+                        lambda *a, **k: joins.append(1) or real(*a, **k))
+    monkeypatch.setattr(seg, "MAX_JOINED_URL_BYTES", 256 * 1024)
+    frags = [{"path": f"f{i}.dash", "duration": 2.0} for i in range(100)]
+    with pytest.raises(seg.Unsupported, match="addresses are too long"):
+        seg.dash_media(frags, "https://cdn.test/" + "a/" * 2000)
+    assert joins == []
+    assert len(seg.dash_media(frags, "https://cdn.test/d/").segments) == 100
+    # Fragments with their own addresses never read the base.
+    own = [{"url": f"https://cdn.test/f{i}.dash", "duration": 2.0} for i in range(100)]
+    assert len(seg.dash_media(own, None).segments) == 100

@@ -43,6 +43,14 @@ PLAYLIST_MAX_BYTES = 2 * 1024 * 1024   # a 4 h playlist of 2 s segments ≈ 1 MB
 # fragment, unbounded: past ~150k (the HLS playlist bound) the list is
 # refused before any walk, and the full download takes over.
 MAX_DASH_FRAGMENTS = 200_000
+# A playlist address this module asks for, and the one that answers (a
+# redirect target). Signed CDN addresses run to a few KB; the site picks
+# both, and the one that answers is the base every relative line joins to.
+MAX_PLAYLIST_URL_LEN = 8192
+# Each segment line joined to its base is a new string about as long as the
+# base, so the addresses of one stream cost lines × base. Charged before the
+# first join: a 12 h playlist of 2 s segments on a 300-byte address is 13 MB.
+MAX_JOINED_URL_BYTES = 64 * 1024 * 1024
 BUDGET_S = 60.0                        # every request of one check, wall clock
 MARGIN_S = 1.0                         # around each piece
 # The extractor's request headers we pass on (some CDNs want the page as
@@ -128,6 +136,10 @@ def parse_hls(text: str, base_url: str) -> "Media | str":
     lines = [ln.strip() for ln in text.lstrip("\ufeff").splitlines() if ln.strip()]
     if not lines or not lines[0].startswith("#EXTM3U"):
         raise Unsupported("not an HLS playlist")
+    # Every line counts (a tag line joins nothing): an upper bound that
+    # needs no parse, and the text cap already bounds the lines themselves.
+    if len(lines) * len(base_url) > MAX_JOINED_URL_BYTES:
+        raise Unsupported("the playlist's addresses are too long")
     renditions: "list[tuple[bool, str | None]]" = []
     variants: "list[tuple[int, str]]" = []
     segments: "list[tuple[Part, float]]" = []
@@ -216,6 +228,11 @@ def dash_media(fragments, base_url: "str | None") -> Media:
     duration is the init segment; every other one needs a duration."""
     init: "Part | None" = None
     segments: "list[tuple[Part, float]]" = []
+    # The same charge as parse_hls: the base is joined once per fragment
+    # that carries a path instead of its own address.
+    if (isinstance(base_url, str) and isinstance(fragments, list)
+            and len(fragments) * len(base_url) > MAX_JOINED_URL_BYTES):
+        raise Unsupported("the stream's addresses are too long")
     for i, frag in enumerate(fragments or ()):
         if not isinstance(frag, dict) or "range" in frag or "byte_range" in frag:
             raise Unsupported("a fragment this server does not fetch")
@@ -266,9 +283,13 @@ async def fetch_pieces(source: dict, starts: "list[float] | None", seconds: floa
         bouncing to a CDN edge), as hls.js, ffmpeg and yt-dlp resolve them."""
         if cancel_check():
             raise _udl.UrlCancelled()
+        if len(url) > MAX_PLAYLIST_URL_LEN:
+            raise Unsupported("the stream's playlist address is too long")
         _ctype, body, final = await _udl.capped_get(
             url, max_bytes=PLAYLIST_MAX_BYTES, deadline=deadline,
             headers=headers, want_url=True)
+        if len(final) > MAX_PLAYLIST_URL_LEN:
+            raise Unsupported("the stream's playlist address is too long")
         return body.decode("utf-8", errors="replace"), final
 
     if source.get("protocol") == "dash":
