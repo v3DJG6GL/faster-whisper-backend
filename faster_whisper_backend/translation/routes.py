@@ -222,6 +222,11 @@ async def translate_text(request: Request,
             raise HTTPException(
                 status_code=422,
                 detail="body contains a non-finite number (NaN/Infinity)")
+        except RecursionError:
+            # Objects nested tens of thousands deep parse, but the encoder
+            # gives up on them — before the id walk gets to answer.
+            raise HTTPException(status_code=422,
+                                detail="body is nested too deeply")
         segments = body.get("segments")
         if not isinstance(segments, list) or not segments:
             raise HTTPException(status_code=422,

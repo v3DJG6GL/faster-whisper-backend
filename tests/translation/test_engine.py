@@ -3152,6 +3152,30 @@ def test_translation_logs_buckets_per_target(base_cfg, monkeypatch, caplog):
     assert "[translate] en 100%" not in "\n".join(lines)
 
 
+def test_translation_progress_lines_screen_the_target(base_cfg, monkeypatch, caplog):
+    """The admin translation lab hands its `target` over bounded by length
+    only, and the per-target lines print it: a line break in it would write
+    a second, forged record into the line-oriented log. Only the log lines
+    are screened: the result keys and the progress callback keep the raw
+    target, which the caller matches on."""
+    _install_fake(monkeypatch, _xlate)
+    monkeypatch.setattr(translation.cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
+    same, other = "de\nCRITICAL x", "en\rCRITICAL y"
+    ticks = []
+    with caplog.at_level(logging.INFO, logger="whisper-server"):
+        results, _warnings, _meta = _translate(
+            _segs("Eins.", "Zwei.", "Drei."), [same, other], same,
+            progress_cb=lambda *a, **kw: ticks.append(kw.get("target")))
+    lines = [r.getMessage() for r in caplog.records
+             if r.getMessage().startswith("[translate] ")]
+    assert "[translate] de?CRITICAL x copied verbatim (same language)" in lines
+    assert any(l.startswith("[translate] en?CRITICAL y done in ") for l in lines)
+    assert any(l.startswith("[translate] en?CRITICAL y ") and "%" in l for l in lines)
+    assert not any("\n" in l or "\r" in l for l in lines)
+    assert set(results[0]) == {same, other}
+    assert {same, other} <= set(ticks)
+
+
 @pytest.mark.parametrize("batch", [2, 1])
 def test_run_plan_unit_clock_covers_the_whole_target(base_cfg, monkeypatch,
                                                      tmp_path, batch):

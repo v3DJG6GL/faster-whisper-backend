@@ -498,6 +498,43 @@ def test_deeply_nested_segment_id_is_refused_before_the_work(
     assert r.json()["segments"][0]["id"] == at_cap
 
 
+def test_body_nested_past_the_encoder_is_a_422_not_a_500(
+        client, app_module, monkeypatch):
+    """Tens of thousands of nested OBJECTS still parse, but the body screen's
+    encode gives up on them with a RecursionError — before the id walk that
+    answers a deep segment id. A caller error like the other screen refusals:
+    422, nothing translated, and a parked receipt is handed back."""
+    calls = _enable_stubbed(app_module, monkeypatch)
+    deep = '{"a":' * 35000 + "1" + "}" * 35000
+    for raw in ('{"segments": [{"id": 1, "text": "eins"}], "targets": ["en"], '
+                '"captured_id": "cap-r", "x": %s}' % deep,
+                '{"segments": [{"id": %s, "text": "eins"}], "targets": ["en"], '
+                '"captured_id": "cap-r"}' % deep):
+        _park("cap-r", hold_s=90)
+        r = client.post(URL, content=raw,
+                        headers={"Content-Type": "application/json"})
+        assert r.status_code == 422, r.text
+        # A platform with a smaller thread stack refuses the same body one
+        # step earlier, in the parse.
+        assert r.json()["detail"] in ("body is nested too deeply",
+                                      "expected a JSON body")
+        if r.json()["detail"] == "expected a JSON body":
+            receipt_hold._reset_for_tests()   # refused before the key is known
+        assert receipt_hold.pending() == 0
+    assert calls == []
+
+    # The arm itself, whatever depth this platform's encoder gives up at.
+    def _gives_up(_body):
+        raise RecursionError("maximum recursion depth exceeded")
+    monkeypatch.setattr(tr_routes, "_screen_body", _gives_up)
+    _park("cap-r", hold_s=90)
+    r = client.post(URL, json=_body(captured_id="cap-r"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "body is nested too deeply"
+    assert receipt_hold.pending() == 0
+    assert calls == []
+
+
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
 def test_422_non_finite_number_in_body(client, app_module, monkeypatch,
                                        literal):

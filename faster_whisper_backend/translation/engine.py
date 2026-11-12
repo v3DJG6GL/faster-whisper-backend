@@ -54,6 +54,7 @@ from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core import device_memory
+from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core.languages import (
     _NAMES, ZH_HANT_REGIONS, _normalise_code, canonical_code, language_codes,
     language_label, language_name, lookup, same_language)
@@ -1779,19 +1780,24 @@ async def translate_segments(
         # one line when a target finishes — so a run is diagnosable from
         # the server log alone and the client's receipts can be checked.
         b = int(min(1.0, tp) * 20)
+        # Screened for the log lines only: one caller (the admin translation
+        # lab) bounds its target by length alone, and a line break in it
+        # would start a forged record. progress_cb below gets the raw value,
+        # which the run panel and the result keys match on.
+        log_target = store_common.log_safe(str(unit_state["target"]))
         if b > unit_state["bucket"] and not unit_state["instant"]:
             unit_state["bucket"] = b
             if b < 20:
-                logger.info("[translate] %s %d%% (%d/%d)", unit_state["target"],
+                logger.info("[translate] %s %d%% (%d/%d)", log_target,
                             b * 5, unit_state["done"], len(segments))
         if tp >= 1.0 and unit_state["bucket"] < 21:
             unit_state["bucket"] = 21
             if unit_state["instant"]:
                 logger.info("[translate] %s copied verbatim (same language)",
-                            unit_state["target"])
+                            log_target)
             else:
                 logger.info("[translate] %s done in %.1fs (%d segments)",
-                            unit_state["target"],
+                            log_target,
                             time.perf_counter() - unit_state["t0"], len(segments))
         if progress_cb is None:
             return
