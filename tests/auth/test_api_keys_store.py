@@ -843,3 +843,25 @@ def test_own_revoke_still_seen_after_a_failed_rebuild(ak, uid, monkeypatch):
         ak.revoke_key(rec["id"])
     monkeypatch.undo()
     assert ak.lookup_by_raw_key(raw) is None
+
+
+def test_owed_rebuild_is_not_skipped_while_the_version_read_fails(
+        ak, uid, monkeypatch):
+    """The version read answers its cached value on error, and after a failed
+    rebuild that value is the owed-rebuild mark itself: comparing the two
+    would find them equal and authenticate the revoked key from the stale
+    index for as long as the DB stays unreadable."""
+    raw, rec = ak.create_key(uid)
+    assert ak.lookup_by_raw_key(raw) is not None
+
+    real = ak._require_conn()
+    broken = failing_conn(real, ("SELECT k.key_hash", "PRAGMA data_version"))
+    monkeypatch.setattr(ak, "_require_conn", lambda: broken)
+    with pytest.raises(sqlite3.OperationalError):
+        ak.revoke_key(rec["id"])
+    with pytest.raises(sqlite3.OperationalError):
+        ak.lookup_by_raw_key(raw)
+    with pytest.raises(sqlite3.OperationalError):
+        ak.is_locked_down()
+    monkeypatch.undo()
+    assert ak.lookup_by_raw_key(raw) is None

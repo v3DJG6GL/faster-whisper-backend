@@ -377,7 +377,10 @@ def _refresh_if_sibling_committed() -> None:
     if not _DB_READY:
         return
     with _lock:
-        if _data_version_locked() != _DATA_VERSION:
+        # -2: a rebuild is owed (see _rebuild_index_locked). The version
+        # read falls back to the cached value on error, so it cannot be
+        # trusted to differ.
+        if _DATA_VERSION == -2 or _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
 
 
