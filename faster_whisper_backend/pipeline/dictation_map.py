@@ -32,6 +32,7 @@ from __future__ import annotations
 import collections
 import functools
 import itertools
+import math
 import re
 import threading
 from typing import Callable, Iterable
@@ -76,28 +77,85 @@ def _shape(key: str) -> tuple[int, str, str]:
     return len(key), _edge(key[:1]), _edge(key[-1:])
 
 
+# Branches a prefix-tree node may hold before they are cut into gated chunks.
+_WIDE_NODE = 8
+
+
 def _prefix_tree(keys: list[str]) -> str:
     """Keys of one length as a prefix tree ("K(?:omma|olon)").
 
     sre has no trie: a flat ``(?:k1|...|kN)`` is walked branch by branch at
     every text position, so a 10 000-key map cost up to ~1 s per 20 KB
     transcript. Here each position tries one branch per distinct next char.
-    Chars are bucketed by ``str.lower()`` when that is one char: sre's
-    IGNORECASE compiles a cased literal from its simple lowercase alone, and
-    the two agree on every such char (a test pins that), so any member
-    stands for the whole bucket.
-    "İ" (lowers to two chars) keeps its own bucket; "ſ" and "s", which
-    sre folds together but ``lower()`` keeps apart, stay two buckets that
-    are each tried — same span either way."""
+    Chars are bucketed by sre's own IGNORECASE class (``_sre_fold``): any
+    member's literal matches the whole class and no other char (a test pins
+    both), so "ſ" / "s", "ı" / "i" / "İ" and "ς" / "σ" share one bucket.
+    ``str.lower()`` keeps those apart, and a twin in a bucket of its own is
+    a second branch that matches the same text: keys spelled in every s/ſ,
+    i/ı variant are then all walked at each "si" of a transcript.
+
+    A node wider than ``_WIDE_NODE`` (one key per distinct char: thousands
+    fit in a map) is that flat walk again, wherever it sits in the tree, so
+    ``_gated`` cuts it into chunks. The branches with the most keys below
+    them go last, where they stay ungated."""
     if not keys[0]:
         return ""
     buckets: dict[str, list[str]] = {}
     for k in keys:
-        fold = k[0].lower()
-        buckets.setdefault(fold if len(fold) == 1 else k[0], []).append(k)
-    branches = [re.escape(run[0][0]) + _prefix_tree([k[1:] for k in run])
-                for run in buckets.values()]
-    return branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+        buckets.setdefault(_sre_fold(k[0]), []).append(k)
+    runs = list(buckets.values())
+    if len(runs) > _WIDE_NODE:
+        runs.sort(key=len)
+    heads = [run[0][0] for run in runs]
+    branches = [re.escape(head) + _prefix_tree([k[1:] for k in run])
+                for head, run in zip(heads, runs)]
+    if len(branches) == 1:
+        return branches[0]
+    if len(branches) > _WIDE_NODE:
+        branches = _gated(branches, heads)
+    return "(?:" + "|".join(branches) + ")"
+
+
+def _lookahead(chars: Iterable[str]) -> str:
+    """Refuses, in one step, a position whose next char is none of ``chars``
+    (a set folds case exactly like the literals it stands in front of)."""
+    return "(?=[" + "".join(re.escape(c) for c in chars) + "])"
+
+
+def _gated(branches: list[str], heads: list[str]) -> list[str]:
+    """A wide node's branches, all but the last ~√n of them in chunks of
+    ~√n behind a lookahead for the chunk's head chars: ~2·√n tries per
+    visit instead of n.
+
+    One level of chunks, not a binary search: each level is one more nested
+    group, a wide node can sit at every char of a key, and re's parser and
+    compiler recurse per group — halving down to ``_WIDE_NODE``, a map the
+    schema accepts needs ~1200 frames to compile, and the engine skips a
+    rule whose compile raises RecursionError. The ungated tail holds the
+    node's fullest branches, so a branch in a chunk has ``_WIDE_NODE`` or
+    more siblings with at least as many keys: each gate on a path through
+    the tree divides the keys below it by 9 or more, which a map's 10 000
+    allow four times. A gated tree is that many groups deeper than an
+    ungated one, no more.
+    The tail is tried for every char, gated or not, so what the node
+    matches does not depend on the gates."""
+    size = max(_WIDE_NODE, math.isqrt(len(branches) - 1) + 1)
+    tail = len(branches) - size
+    out = []
+    for i in range(0, tail, size):
+        chunk = branches[i:min(i + size, tail)]
+        out.append(chunk[0] if len(chunk) == 1 else
+                   _lookahead(heads[i:i + len(chunk)]) + "(?:" + "|".join(chunk) + ")")
+    return out + branches[tail:]
+
+
+def _lead_gate(keys: list[str]) -> str:
+    """One lookahead for any key's first char, in front of the whole key
+    group. The alternation has a branch per key length and edge kind, and a
+    gate inside a branch hides the lead chars from sre's own first-char
+    skip: without this one, a text position whose char starts no key at all
+    still enters each of those branches."""
+    return _lookahead(sorted({k[0] for k in keys})) if keys else ""
 
 
 def _alternation(keys: list[str]) -> str:
@@ -237,7 +295,7 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
         prefix = r"(?:" + _WHISPER_PUNCT + r"(?:[ \t]*+" + ahead + r"|" + ahead + r"))?"
     else:
         prefix = ""
-    pattern = _compile_map_pattern(prefix + r"(" + alternation + r")")
+    pattern = _compile_map_pattern(prefix + _lead_gate(keys) + r"(" + alternation + r")")
     keys_by_len: dict[int, list[str]] = {}
     for k in keys:
         keys_by_len.setdefault(len(k), []).append(k)
