@@ -10,6 +10,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import difflib
+import itertools
 import json
 import os
 import re
@@ -266,6 +267,11 @@ def _apply_chips_to_text(
             # the text before it (a long capture took seconds per chip).
             cur = [m.span() for m in re.finditer(r"\S+", out)]
             cur_starts = [a for a, _ in cur]
+            # Whether a token range holds a char of a script written without
+            # spaces, asked once per range: every occurrence in one unspaced
+            # run shares its range, and the search walks all the text an
+            # earlier `correct` put before the run's first such char.
+            unspaced: dict[tuple[int, int], bool] = {}
         for needle, flex in ((n, f) for n in needles for f in (False, True)):
             for i, j in _occurrences(out, needle, cursor if anchored else 0,
                                      flex):
@@ -290,7 +296,10 @@ def _apply_chips_to_text(
                 # nor one on the second "Python" of "Python很好，Python很强"
                 # (the whole token counts, not just up to the occurrence).
                 d2 = 0
-                if _NO_SPACE_SCRIPT.search(out, ts, te):
+                ns = unspaced.get((ts, te))
+                if ns is None:
+                    ns = unspaced[(ts, te)] = bool(_NO_SPACE_SCRIPT.search(out, ts, te))
+                if ns:
                     k0 = max(0, min(k + shift, len(tok_starts) - 1))
                     d2 = abs(i - chars - tok_starts[k0] - off)
                 d = (abs(k + shift - pos), d2)
@@ -706,6 +715,9 @@ def _align_words_to_final(
     # One _SPLIT_UNSPACED_MAX_CELLS for the whole call, not per gap: many small
     # gaps around a word a rule expands would each pay that expansion again.
     split_cells = _SPLIT_UNSPACED_MAX_CELLS
+    # And one _SPLIT_UNSPACED_MAX_WORK: each gap's cells fit the budget above
+    # while its matcher works a multiple of them on a repetitive text.
+    split_work = [_SPLIT_UNSPACED_MAX_WORK]
     for t in range(len(seg_bounds) - 1):
         ri0, fj0 = seg_bounds[t]
         ri1, fj1 = seg_bounds[t + 1]
@@ -725,7 +737,7 @@ def _align_words_to_final(
                 split_cells -= cells
                 split = _split_unspaced(
                     ["".join((post_cache.get(src[ri].get("word") or "") or "").split())
-                     for ri in unmatched], ins)
+                     for ri in unmatched], ins, split_work)
         if split is not None:
             for ri, parts in zip(unmatched, split):
                 owners[ri].extend(parts)
@@ -770,8 +782,45 @@ def _align_words_to_final(
 # captures request. Past it the caller's token-count split takes over.
 _SPLIT_UNSPACED_MAX_CELLS = 16_000_000
 
+# Most inner-loop steps the matcher of _split_unspaced may take over all the
+# gaps of one _align_words_to_final call. The cell product only bounds ONE
+# longest-match search; a repetitive text that differs every few chars (a
+# recognition loop on a phrase a rule changes) repeats that search per
+# matching block: uncharged, 640 k cells take seconds and the cells the cap
+# admits, minutes. An identical text at the cell cap costs one search (16 M steps),
+# and a ten-minute zh / ja text with an edit every few chars stays inside.
+_SPLIT_UNSPACED_MAX_WORK = 2 * _SPLIT_UNSPACED_MAX_CELLS
 
-def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None:
+
+class _SplitTooCostly(Exception):
+    """The matcher of _split_unspaced ran past its work budget."""
+
+
+class _BudgetedMatcher(difflib.SequenceMatcher):
+    """SequenceMatcher(autojunk=False) that charges an upper bound of each
+    longest-match search against `work`, a one-item list the caller's gaps
+    share, before running it, and raises _SplitTooCostly past it. Under the
+    budget the opcodes are difflib's own."""
+
+    def __init__(self, a: str, b: str, work: list[int]) -> None:
+        super().__init__(None, a, b, autojunk=False)
+        self._work = work
+        # The search over a[alo:ahi] visits, per char, at most the places
+        # that char has in `b`: prefix sums price any range in O(1).
+        self._prefix = [0, *itertools.accumulate(len(self.b2j.get(ch, ())) for ch in a)]
+
+    def find_longest_match(self, alo=0, ahi=None, blo=0, bhi=None):
+        if ahi is None:
+            ahi = len(self.a)
+        self._work[0] -= self._prefix[ahi] - self._prefix[alo] + 1
+        if self._work[0] < 0:
+            raise _SplitTooCostly
+        return super().find_longest_match(alo, ahi, blo, bhi)
+
+
+def _split_unspaced(
+    texts: list[str], toks: list[str], work: list[int] | None = None,
+) -> list[list[str]] | None:
     """Split the final tokens `toks` of one alignment gap among the gap's raw
     words, whose isolated post-processed forms (whitespace removed) are
     `texts`, character by character. In a script written without spaces the
@@ -783,16 +832,23 @@ def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None
     inserted one joins the word before it, or the first word. Returns each
     raw word's pieces (one per token it reaches, empty when a rule deleted
     it), or None when no character matches or the gap is too large to
-    compare character by character (_SPLIT_UNSPACED_MAX_CELLS)."""
+    compare character by character (_SPLIT_UNSPACED_MAX_CELLS), or the
+    comparison runs past `work`, the matcher steps left to the caller's gaps
+    (a one-item list, charged here; _SPLIT_UNSPACED_MAX_WORK when omitted)."""
     if sum(map(len, texts)) * sum(map(len, toks)) > _SPLIT_UNSPACED_MAX_CELLS:
         return None
+    if work is None:
+        work = [_SPLIT_UNSPACED_MAX_WORK]
     a_own = [r for r, t in enumerate(texts) for _ in t]
     tok_of = [k for k, t in enumerate(toks) for _ in t]
     b = "".join(toks)
     own = [-1] * len(b)
-    sm = difflib.SequenceMatcher(None, "".join(texts), b, autojunk=False)
+    try:
+        ops = _BudgetedMatcher("".join(texts), b, work).get_opcodes()
+    except _SplitTooCostly:
+        return None
     matched = False
-    for tag, a0, a1, b0, b1 in sm.get_opcodes():
+    for tag, a0, a1, b0, b1 in ops:
         if tag == "equal":
             matched = True
             own[b0:b1] = a_own[a0:a1]

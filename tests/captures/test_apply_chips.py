@@ -256,6 +256,28 @@ def test_apply_chips_in_long_unspaced_runs_stays_fast():
     assert out == "我喜欢鱼和狗" + text[6:]
 
 
+def test_many_chips_in_one_unspaced_run_search_the_run_once_per_chip(monkeypatch):
+    # Asked per occurrence, whether the run holds a char of a script written
+    # without spaces walks all the text the earlier chips' `correct` put
+    # before the run's first one: 200 chips on a 300-char member take seconds.
+    calls: list[tuple] = []
+    real = capture_samples._NO_SPACE_SCRIPT
+
+    class _Spy:
+        def search(self, *a):
+            calls.append(a)
+            return real.search(*a)
+
+        def match(self, *a):
+            return real.match(*a)
+
+    monkeypatch.setattr(capture_samples, "_NO_SPACE_SCRIPT", _Spy())
+    chips = [{"idx": i, "wrong": "的", "correct": "a" * 200} for i in range(20)]
+    out = capture_samples._apply_chips_to_text("的" * 300, chips)
+    assert out == ("a" * 200) * 20 + "的" * 280
+    assert len(calls) <= 2 * len(chips)
+
+
 # A long spaced capture with 40 chips on its most frequent word: each
 # occurrence counted the tokens before it by splitting all the text before
 # it, which took ~7 s on the server and ~19 s in the page (200 chips: most of

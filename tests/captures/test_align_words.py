@@ -485,15 +485,67 @@ def test_unspaced_split_cells_are_one_budget_for_all_gaps(monkeypatch):
     calls: list[int] = []
     real = capture_samples._split_unspaced
 
-    def spy(texts, toks):
+    def spy(texts, toks, *a):
         calls.append(1)
-        return real(texts, toks)
+        return real(texts, toks, *a)
     monkeypatch.setattr(capture_samples, "_split_unspaced", spy)
     raw = [w for i in range(10) for w in (" 中", f" a{i}")]
     final = " ".join(t for i in range(10) for t in ("中", f"a{i}"))
     out = capture_samples._align_words_to_final(_words(*raw), final)
     assert len(calls) == 2
     assert _join(out) == final
+
+
+def test_split_unspaced_gives_up_past_its_work_budget(monkeypatch):
+    # A repetitive text that differs at every other char: the matcher searches
+    # the rest again per matching block, far past the cells the two sides
+    # span (160 k here, 12 M steps).
+    import time
+
+    _install_word_map(monkeypatch, {})
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_WORK", 1_000_000)
+    split = capture_samples._split_unspaced
+    assert split(["哈"] * 400, ["哈呵" * 200]) is None
+    # The same cells on an identical text are one search.
+    assert split(["哈"] * 400, ["哈" * 400]) == [["哈"]] * 400
+    raw = ["哈"] * 800
+    final = "哈呵" * 400
+    t0 = time.monotonic()
+    out = capture_samples._align_words_to_final(_words(*raw), final)
+    assert time.monotonic() - t0 < 2
+    assert len(out) == len(raw)
+    assert _join(out) == final
+
+
+def test_unspaced_split_work_is_one_budget_for_all_gaps(monkeypatch):
+    # Many unspaced gaps that each fit the work budget alone: together they
+    # spend it once, and the gaps past it take the token-count split.
+    _install_word_map(monkeypatch, {})
+    texts, tok = ["哈"] * 40, "哈呵" * 20
+    left = [10 ** 9]
+    assert capture_samples._split_unspaced(texts, [tok], left) is not None
+    one_gap = 10 ** 9 - left[0]
+    assert one_gap > len(texts) * len(tok)
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_WORK", 2 * one_gap + one_gap // 2)
+    results: list[bool] = []
+    real = capture_samples._split_unspaced
+
+    def spy(texts, toks, *a):
+        split = real(texts, toks, *a)
+        results.append(split is not None)
+        return split
+    monkeypatch.setattr(capture_samples, "_split_unspaced", spy)
+    raw = [w for i in range(6) for w in (f" a{i}", " 哈", *texts[1:])]
+    final = " ".join(t for i in range(6) for t in (f"a{i}", tok))
+    out = capture_samples._align_words_to_final(_words(*raw), final)
+    assert results == [True, True, False, False, False, False]
+    assert len(out) == len(raw)
+    # A split gap shows one piece per word, a gap past the budget its token
+    # on the first word.
+    assert _join(out).replace(" ", "") == final.replace(" ", "")
+    assert [w["word"] for w in out[1:3]] == ["哈呵", "哈呵"]
+    assert out[-len(texts)]["word"] == tok
+    assert all(w.get("removed") for w in out[-len(texts) + 1:])
 
 
 def test_word_walks_keep_every_word_under_a_real_rule(app_module):
