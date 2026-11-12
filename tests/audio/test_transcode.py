@@ -421,6 +421,252 @@ def test_decode_pieces_skip_a_damaged_frame(tmp_path):
     assert [len(p) for p in pieces] == [RATE] * 3
 
 
+class _RejectedPacket:
+    """A demuxed packet the decoder rejects as invalid data."""
+
+    def __init__(self, size):
+        self.size = size
+
+    def decode(self):
+        raise av.error.InvalidDataError(1094995529, "Invalid data found")
+
+
+class _RejectingContainer:
+    """Stands in for an opened container whose demuxer hands out `packets`
+    rejected packets of `packet_size` bytes; `pulled` counts them."""
+
+    def __init__(self, *, size, packets, packet_size, name=""):
+        self.size, self.name, self.pulled = size, name, 0
+        self._packets, self._packet_size = packets, packet_size
+
+    def demux(self, _stream):
+        for _ in range(self._packets):
+            self.pulled += 1
+            yield _RejectedPacket(self._packet_size)
+
+
+def test_decoded_frames_stop_once_the_rejected_packets_outweigh_the_file(
+        tmp_path, monkeypatch):
+    """Packets the decoder rejects are skipped only up to the file's own
+    size plus a margin: the packets of a real file are disjoint parts of
+    it, so more than that means a sample table that names one byte range
+    again and again, each read in full and charged to no decode budget."""
+    monkeypatch.setattr(audio_transcode, "_SKIPPED_PACKETS_MARGIN", 4096)
+    container = _RejectingContainer(size=10_000, packets=5000,
+                                    packet_size=1000)
+    state = {}
+    assert list(audio_transcode._decoded_frames(container, None, state)) == []
+    # 10 000 + 4096 bytes are skipped; the packet that passes them ends it.
+    assert container.pulled == 15
+    assert state == {"cut": True}
+
+    # Rejected packets that fit in the file are all skipped, as before.
+    container = _RejectingContainer(size=10_000, packets=14, packet_size=1000)
+    state = {}
+    assert list(audio_transcode._decoded_frames(container, None, state)) == []
+    assert container.pulled == 14 and state == {}
+
+    # A container that reports no size is measured on disk.
+    src = tmp_path / "ten-thousand.bin"
+    src.write_bytes(b"\x00" * 10_000)
+    container = _RejectingContainer(size=0, packets=5000, packet_size=1000,
+                                    name=str(src))
+    assert list(audio_transcode._decoded_frames(container, None)) == []
+    assert container.pulled == 15
+
+
+def _mp4_boxes(data):
+    i = 0
+    while i + 8 <= len(data):
+        size = int.from_bytes(data[i:i + 4], "big")
+        yield data[i + 4:i + 8], data[i + 8:i + size]
+        i += size
+
+
+def _mp4_box(kind, payload):
+    return (len(payload) + 8).to_bytes(4, "big") + kind + payload
+
+
+def _mp4_with_tables(data, tables):
+    """The MP4 boxes of `data` with each sample-table box named in `tables`
+    rewritten by its function, and without the edit list (the demuxer would
+    trim the sample table to the edit's duration)."""
+    out = b""
+    for kind, payload in _mp4_boxes(data):
+        if kind == b"edts":
+            continue
+        if kind in tables:
+            payload = tables[kind](payload)
+        elif kind in (b"moov", b"trak", b"mdia", b"minf", b"stbl"):
+            payload = _mp4_with_tables(payload, tables)
+        out += _mp4_box(kind, payload)
+    return out
+
+
+def _aliased_m4a(path, *, real, repeats, sample_size):
+    """A mono AAC .m4a whose sample table keeps its first `real` samples and
+    then names one byte range (inside the first frame, so no AAC frame)
+    `repeats` times as a sample of `sample_size` bytes: four bytes of chunk
+    offset per repeat, each one demuxed in full and rejected by the
+    decoder."""
+    rate = 44100
+    with av.open(path, "w", format="mp4") as out:
+        st = out.add_stream("aac", rate=rate, layout="mono")
+        t = np.arange(rate * 2) / rate
+        x = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        for i in range(0, len(x), 1024):
+            fr = av.AudioFrame.from_ndarray(
+                x[i:i + 1024].reshape(1, -1), format="fltp", layout="mono")
+            fr.sample_rate, fr.pts = rate, i
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    data = open(path, "rb").read()
+    found = {}
+
+    def u32(*values):
+        return b"".join(v.to_bytes(4, "big") for v in values)
+
+    def stsz(p):
+        # One track: its samples lie back to back from the first chunk on.
+        sizes = [int.from_bytes(p[12 + 4 * i:16 + 4 * i], "big")
+                 for i in range(real)]
+        found["sizes"] = sizes
+        return p[:4] + u32(0, real + repeats, *sizes,
+                           *[sample_size] * repeats)
+
+    def stco(p):
+        first = int.from_bytes(p[8:12], "big")
+        offsets = [first + sum(found["sizes"][:i]) for i in range(real)]
+        return p[:4] + u32(real + repeats, *offsets, *[first + 3] * repeats)
+
+    tables = {b"stsz": stsz, b"stco": stco,
+              b"stsc": lambda p: p[:4] + u32(1, 1, 1, 1),
+              b"stts": lambda p: p[:4] + u32(1, real + repeats, 1024)}
+    boxes = list(_mp4_boxes(data))
+    assert boxes[-1][0] == b"moov"      # so no chunk offset moves
+    # stsz stands ahead of stco in the muxer's stbl, so `found` is filled.
+    moov = _mp4_with_tables(boxes[-1][1], tables)
+    with open(path, "wb") as f:
+        f.write(b"".join(_mp4_box(k, p) for k, p in boxes[:-1])
+                + _mp4_box(b"moov", moov))
+    return path
+
+
+class _CountingContainer:
+    """An opened container that adds up the bytes its demuxer hands out."""
+
+    def __init__(self, container):
+        self._container, self.demuxed = container, 0
+
+    def __getattr__(self, name):
+        return getattr(self._container, name)
+
+    def demux(self, *args, **kwargs):
+        for packet in self._container.demux(*args, **kwargs):
+            self.demuxed += packet.size
+            yield packet
+
+
+def _count_demuxed(monkeypatch):
+    """Every container _open_audio opens from here on, wrapped to count."""
+    opened, real = [], audio_transcode._open_audio
+
+    def counting(path):
+        container, stream = real(path)
+        opened.append(_CountingContainer(container))
+        return opened[-1], stream
+
+    monkeypatch.setattr(audio_transcode, "_open_audio", counting)
+    return opened
+
+
+def test_a_sample_table_naming_one_range_many_times_is_not_read_in_full(
+        tmp_path, monkeypatch):
+    """Behind 0.9 s of real audio the file names one 8000-byte range 3000
+    times: 24 MB of demuxing for a 43 KB file, quadratic in the upload
+    size. Every reader that skips rejected packets stops after about one
+    file size (plus the margin) of them and keeps what decoded; the cost
+    measurement, which then has not seen the file's end, answers no."""
+    real, repeats, sample_size = 40, 3000, 8000
+    src = _aliased_m4a(str(tmp_path / "aliased.m4a"), real=real,
+                       repeats=repeats, sample_size=sample_size)
+    size = os.path.getsize(src)
+    assert size < 50_000
+    # The honest samples, then the rejected ones up to the one that passes
+    # the limit.
+    per_read = (2 * size + audio_transcode._SKIPPED_PACKETS_MARGIN
+                + sample_size)
+    assert per_read < repeats * sample_size // 10
+    head = real * 1024 * RATE // 44100
+    opened = _count_demuxed(monkeypatch)
+
+    span = audio_transcode.decode_span_16k(src, 0.0, 20.0)
+    assert abs(span.size - head) < 2048
+    assert opened.pop().demuxed <= per_read
+
+    # 0.0 lies in the real audio, 20.0 and 40.0 in the repeated range.
+    pieces = audio_transcode.decode_pieces_16k(src, [0.0, 20.0, 40.0], 0.5)
+    assert [p.size for p in pieces] == [RATE // 2, 0, 0]
+    assert opened.pop().demuxed <= 3 * per_read
+
+    dst = str(tmp_path / "out.wav")
+    audio_transcode.transcode_to_wav_16k_mono(src, dst)
+    with wave.open(dst, "rb") as w:
+        assert abs(w.getnframes() - head) < 2048
+    assert opened.pop().demuxed <= per_read
+
+    assert audio_transcode.decoded_cost_within(
+        src, cost_per_s=lambda rate, channels: 1.0, max_cost=1e9) is False
+    assert opened.pop().demuxed <= per_read
+
+
+def _decoded_frames_skipping_everything(container, stream, rejected):
+    """The loop without a limit on what it skips: the reference a damaged
+    real file must still match frame for frame. `rejected` collects the
+    sizes of the packets it skips."""
+    for packet in container.demux(stream):
+        try:
+            frames = packet.decode()
+        except av.error.InvalidDataError:
+            rejected.append(packet.size)
+            continue
+        yield from frames
+
+
+def test_a_damaged_real_file_decodes_as_before(tmp_path, monkeypatch):
+    """Whatever a real file's rejected packets add up to fits in the file,
+    so the limit never ends its decode: with no margin at all, an mp3
+    damaged in several places still gives every frame the unlimited loop
+    gives, and its cost is still measured to the end."""
+    monkeypatch.setattr(audio_transcode, "_SKIPPED_PACKETS_MARGIN", 0)
+    src = _damaged_mp3(str(tmp_path / "damaged.mp3"))
+    data = bytearray(open(src, "rb").read())
+    for at in (len(data) // 5, len(data) // 3, 4 * len(data) // 5):
+        data[at:at + 300] = bytes(range(256)) + bytes(44)
+    with open(src, "wb") as f:
+        f.write(data)
+
+    def frames(reader, *args):
+        container, stream = audio_transcode._open_audio(src)
+        try:
+            return [f.to_ndarray().copy() for f in reader(container, stream,
+                                                          *args)]
+        finally:
+            container.close()
+
+    state, rejected = {}, []
+    got = frames(audio_transcode._decoded_frames, state)
+    want = frames(_decoded_frames_skipping_everything, rejected)
+    assert len(rejected) >= 4 and sum(rejected) < len(data)
+    assert state == {} and sum(f.shape[1] for f in got) > 6 * RATE
+    assert len(got) == len(want)
+    assert all(np.array_equal(a, b) for a, b in zip(got, want))
+    assert audio_transcode.decoded_cost_within(
+        src, cost_per_s=lambda rate, channels: 1.0, max_cost=1e9) is True
+
+
 def _concat_mp3(tmp_path):
     """2 s of 44.1 kHz stereo mp3 followed by 2 s of 22.05 kHz mono, as
     `cat a.mp3 b.mp3` makes it: the decoder's frames change rate and layout
@@ -688,6 +934,134 @@ def test_drop_before_passes_a_skip_with_a_few_format_changes():
     out = list(audio_transcode._drop_before(frames(), 16000 * 300,
                                             {"n": 0, "rate": None}))
     assert out
+
+
+def _crc(data, *, bits, poly):
+    """MSB-first CRC from a zero start value: FLAC's CRC-8 and CRC-16."""
+    top, mask, crc = 1 << (bits - 1), (1 << bits) - 1, 0
+    for byte in data:
+        crc ^= byte << (bits - 8)
+        for _ in range(8):
+            crc = ((crc << 1) ^ poly) & mask if crc & top else (crc << 1) & mask
+    return crc
+
+
+_FLAC_RATE_CODES = {176400: 2, 192000: 3}
+
+
+def _rate_switching_flac(path, rates, *, frames):
+    """A hand-written silent mono FLAC of 16-sample constant blocks whose
+    frame headers name `rates` in turn (13-15 bytes a frame): the decoder
+    hands each frame on at its own rate, so every frame is a format change.
+    An encoder writes one rate per file; a rate off the code table is
+    written in tens of Hz."""
+    def frame(n, rate):
+        code, tail = _FLAC_RATE_CODES.get(rate), b""
+        if code is None:
+            code, tail = 14, (rate // 10).to_bytes(2, "big")
+        number = (bytes([n]) if n < 0x80
+                  else bytes([0xC0 | n >> 6, 0x80 | n & 0x3F]))
+        # Sync, block size and rate codes, mono 16-bit, the frame number,
+        # the block size (minus one) and the rate the codes point at.
+        head = bytes([0xFF, 0xF8, 0x60 | code, 0x08]) + number + b"\x0f" + tail
+        head += bytes([_crc(head, bits=8, poly=0x07)])
+        body = head + b"\x00\x00\x00"       # a constant subframe of zeros
+        return body + _crc(body, bits=16, poly=0x8005).to_bytes(2, "big")
+
+    assert frames < 0x800
+    info = (b"\x00\x10\x00\x10" + b"\x00" * 6
+            + ((rates[0] << 44) | (15 << 36)).to_bytes(8, "big") + b"\x00" * 16)
+    with open(path, "wb") as f:
+        f.write(b"fLaC" + bytes([0x80, 0, 0, len(info)]) + info)
+        f.write(b"".join(frame(n, rates[n % len(rates)])
+                         for n in range(frames)))
+    return path
+
+
+def _count_resamplers(monkeypatch):
+    """The av.AudioResampler objects built from here on, as a list to
+    count."""
+    built, real = [], av.AudioResampler
+
+    def counting(*args, **kwargs):
+        built.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(av, "AudioResampler", counting)
+    return built
+
+
+@pytest.mark.parametrize("rates,frames,most", [
+    ((192000, 176400), 600, 40),
+    # A rebuild costs ~10x more up here, so a change weighs 13.
+    ((655350, 655340), 100, 12),
+])
+def test_resampled_refuses_a_stream_that_changes_format_every_frame(
+        tmp_path, monkeypatch, rates, frames, most):
+    """A stream whose rate changes on every frame is refused after a bounded
+    number of resampler rebuilds, wherever it is read: each rebuild costs
+    ~2 ms (more at a high rate) for a ~14-byte frame that yields no output
+    sample, so none of the output-side budgets ever ends the decode."""
+    src = _rate_switching_flac(str(tmp_path / "switching.flac"), rates,
+                               frames=frames)
+    dst = str(tmp_path / "out.wav")
+    built = _count_resamplers(monkeypatch)
+    for read in (
+            lambda: audio_transcode.decode_span_16k(src, 0.0, 20.0),
+            lambda: audio_transcode.decode_span_16k(src, 0.5, 20.0),
+            lambda: audio_transcode.decode_pieces_16k(src, [0.0], 20.0),
+            lambda: audio_transcode.transcode_to_wav(
+                src, dst, rate=44100, layout="stereo")):
+        del built[:]
+        with pytest.raises(ValueError, match="changes format too often") as e:
+            read()
+        # A refusal, not a decode error: the callers tell the two apart.
+        assert not isinstance(e.value, av.FFmpegError)
+        assert len(built) <= most
+    assert not os.path.exists(dst)
+
+
+def _pcm_frames(rates, *, per_rate, samples=160):
+    """s16 mono frames of a ramp, `per_rate` of them at each of `rates` in
+    turn."""
+    for i, rate in enumerate(rates):
+        for j in range(per_rate):
+            ramp = (np.arange(samples) + (i * per_rate + j) * samples) % 2000
+            fr = av.AudioFrame.from_ndarray(
+                ramp.astype(np.int16).reshape(1, -1), format="s16",
+                layout="mono")
+            fr.sample_rate = rate
+            yield fr
+
+
+def _resampled_16k(frames):
+    out = [o.to_ndarray().reshape(-1) for o in audio_transcode._resampled(
+        frames, format="flt", layout="mono", rate=16000)]
+    return np.concatenate(out)
+
+
+def test_resampled_passes_a_stream_with_a_few_format_changes():
+    """Far more changes than a real file has (a concatenated mp3 has one, a
+    TS recording a handful) stay inside the allowance, and the output is
+    each run resampled on its own, in order."""
+    rates = [44100, 48000] * 60 + [44100]           # 120 changes
+    got = _resampled_16k(_pcm_frames(rates, per_rate=10))
+    runs = list(_pcm_frames(rates, per_rate=10))
+    want = np.concatenate([_resampled_16k(runs[i:i + 10])
+                           for i in range(0, len(runs), 10)])
+    assert got.size > 0 and np.array_equal(got, want)
+
+
+def test_resampled_allowance_grows_with_the_frames_decoded(monkeypatch):
+    """The allowance is refilled by decoded frames, so a long recording that
+    keeps changing at a slow pace is never refused, however long it runs,
+    while the same number of changes at twice the pace is."""
+    monkeypatch.setattr(audio_transcode, "_MAX_SETUP_CHANGES", 4)
+    monkeypatch.setattr(audio_transcode, "_FRAMES_PER_SETUP_CHANGE", 16)
+    rates = [44100, 48000] * 30
+    assert _resampled_16k(_pcm_frames(rates, per_rate=16)).size > 0
+    with pytest.raises(ValueError, match="changes format too often"):
+        _resampled_16k(_pcm_frames(rates, per_rate=8))
 
 
 def _read_16k_holding_everything(container, stream, want, *, skip=0):

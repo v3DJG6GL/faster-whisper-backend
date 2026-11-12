@@ -43,6 +43,24 @@ _PCM_BITS = {"pcm_u8": 8, "pcm_s8": 8, "pcm_alaw": 8, "pcm_mulaw": 8,
 # samples of 8 kHz FLAC).
 _MAX_FRAME_S = 60.0
 
+# Changes of input format, layout or rate _resampled follows in one stream:
+# _MAX_SETUP_CHANGES up front plus one per _FRAMES_PER_SETUP_CHANGE frames
+# decoded so far, a change counting rate // 48000 (at least 1). Each one
+# flushes and builds a resampler, ~2 ms up to 192 kHz and ~18 ms at 655 kHz,
+# while a 13-byte FLAC frame that names a new rate yields no output sample:
+# unbounded, 280 KB of them hold a thread for ~30 s and no output-side budget
+# ends it. The refill is in frames, not seconds of audio — a frame costs the
+# sender bytes, while a 16-sample frame at 1 Hz is 16 s for the same 13. A
+# real file changes 0-2 times; a day of MPEG-TS is allowed several hundred.
+_MAX_SETUP_CHANGES = 128
+_FRAMES_PER_SETUP_CHANGE = 4096
+
+# What _decoded_frames skips of packets the decoder rejects, on top of the
+# file's own size. The packets of a real file are disjoint parts of it, so
+# its rejected ones never add up to more than the file; the margin is for a
+# demuxer that hands out a little more than it read.
+_SKIPPED_PACKETS_MARGIN = 1 << 20
+
 
 class DecodeTooLong(Exception):
     """decode_16k_bounded's input ran past its `max_seconds` ceiling."""
@@ -220,13 +238,15 @@ def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
     """Whether `src_path`, decoded to its end, costs at most `max_cost`: each
     frame is charged its duration times cost_per_s(rate, channels) at its own
     shape. Nothing is written; False as soon as the sum passes `max_cost`, or
-    on a frame without a channel count. Unlike declared_shape this does not
-    trust the header, which the uploader wrote: a Matroska Segment Duration
-    can declare a second for hours of audio. Raises what the decode raises."""
+    on a frame without a channel count, or when the decode stops short of the
+    end (see _decoded_frames): what lies behind was not measured, and another
+    decoder may read it. Unlike declared_shape this does not trust the
+    header, which the uploader wrote: a Matroska Segment Duration can declare
+    a second for hours of audio. Raises what the decode raises."""
     container, stream = _open_audio(src_path)
     try:
-        cost = 0.0
-        for frame in _decoded_frames(container, stream):
+        cost, state = 0.0, {}
+        for frame in _decoded_frames(container, stream, state):
             channels = len(frame.layout.channels)
             if channels <= 0 or not frame.sample_rate:
                 return False
@@ -234,7 +254,7 @@ def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
                      * cost_per_s(frame.sample_rate, channels))
             if cost > max_cost:
                 return False
-        return True
+        return not state.get("cut")
     finally:
         container.close()
 
@@ -363,19 +383,37 @@ def refuse_multi_input(path: str) -> None:
         container.close()
 
 
-def _decoded_frames(container, stream):
+def _decoded_frames(container, stream, state: "dict | None" = None):
     """The audio frames of `stream` from where the container stands, skipping
     a packet the decoder rejects as invalid data. One damaged frame in an
     otherwise playable file (a bad mp3 frame, a flac block with a broken
     CRC) must not abort the whole decode: faster-whisper's own decode_audio
     tolerates it, so the file transcribes. Any other decode error stays a
     PyAV FFmpegError (a decode failure: the caller falls back), NOT the
-    plain ValueError main.py treats as a refused input."""
+    plain ValueError main.py treats as a refused input.
+
+    The frames end, as at the end of the file, once the skipped packets add
+    up to more than the file's size plus _SKIPPED_PACKETS_MARGIN, and
+    state["cut"] is set: a sample table can name one byte range any number
+    of times at four bytes each, and a rejected packet is demuxed in full
+    but charged to none of the budgets, which all count decoded frames."""
     invalid = _av().error.InvalidDataError
+    size = container.size
+    if size <= 0:
+        try:
+            size = os.path.getsize(container.name)
+        except OSError:
+            size = 0
+    limit, skipped = size + _SKIPPED_PACKETS_MARGIN, 0
     for packet in container.demux(stream):
         try:
             frames = packet.decode()
         except invalid:
+            skipped += packet.size
+            if skipped > limit:
+                if state is not None:
+                    state["cut"] = True
+                return
             continue
         yield from frames
 
@@ -387,11 +425,14 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
     switching 5.1 and stereo) — read as a refused input upstream — so a new
     one replaces it, after flushing, whenever the input changes. Output pts
     count samples across resamplers: each new one would restart at 0 and the
-    muxer refuses timestamps that go backwards."""
+    muxer refuses timestamps that go backwards. A stream that changes more
+    often than its allowance (see _MAX_SETUP_CHANGES) is refused with the
+    same plain ValueError."""
     from fractions import Fraction
 
     av = _av()
     resampler, setup, done = None, None, 0
+    changes, seen = 0, 0
 
     def _out(resampled):
         nonlocal done
@@ -401,6 +442,7 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
             yield out
 
     for frame in frames:
+        seen += 1
         # Checked before the resampler sees the frame: it resamples the
         # whole frame in one call (see _MAX_FRAME_S).
         if frame.sample_rate and frame.samples / frame.sample_rate > _MAX_FRAME_S:
@@ -410,6 +452,13 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
         frame_setup = (frame.format.name, frame.layout.name, frame.sample_rate)
         if frame_setup != setup:
             if resampler is not None:
+                # The first build is no change. The rate weighs the change:
+                # building a resampler costs more the higher its input rate.
+                changes += max(1, (frame.sample_rate or 0) // 48000)
+                if changes > (_MAX_SETUP_CHANGES
+                              + seen // _FRAMES_PER_SETUP_CHANGE):
+                    raise ValueError("unsupported audio: the stream changes "
+                                     "format too often")
                 yield from _out(resampler.resample(None))
             resampler = av.AudioResampler(format=format, layout=layout,
                                           rate=rate)
