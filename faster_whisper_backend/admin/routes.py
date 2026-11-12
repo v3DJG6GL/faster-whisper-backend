@@ -591,7 +591,12 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
             except ValidationError as e:
                 # A stored per-model / profile / captures exclude still names a
                 # rule only the local copy has; the factory list would strand it.
-                logger.warning("[config] clear-local-override refused: %s", e)
+                # Reasons only: str(e) quotes the stored document (HF_TOKEN
+                # included) as the input of a whole-file validator, and this
+                # line is served by /logs.
+                logger.warning("[config] clear-local-override refused: %s", "; ".join(
+                    f"{x['loc']}: {x['msg']}" if x["loc"] else x["msg"]
+                    for x in settings_schema.format_validation_errors(e)))
                 return web_common.validation_error_response(e)
             except (RuntimeError, OSError) as e:
                 logger.error("[config] clear-local-override failed: %s", e)
@@ -1499,8 +1504,15 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
                 "skipped": False, "error": None, "slow": False,
             })
 
-    return Response(await asyncio.to_thread(_render_dry_run, steps, text),
-                    media_type="application/json")
+    try:
+        body = await asyncio.to_thread(_render_dry_run, steps, text)
+    except ValueError:
+        # json.loads accepts NaN / Infinity and an escaped unpaired surrogate;
+        # the render refuses the first (allow_nan=False) and cannot encode
+        # the second (UnicodeEncodeError is a ValueError).
+        return _bad_request("sample or rules hold a value JSON cannot carry "
+                            "(NaN/Infinity or an unpaired surrogate)")
+    return Response(body, media_type="application/json")
 
 
 class _TranslationTestBody(BaseModel):

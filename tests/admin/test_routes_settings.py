@@ -414,6 +414,28 @@ def test_clear_local_override_that_would_strand_a_ref_is_a_422(
     assert app_module.cfg.PIPELINE_RULES is running
 
 
+def test_clear_local_override_refusal_logs_no_stored_values(
+        client, tmp_path, monkeypatch, caplog):
+    """A whole-file validator failure reports the stored document as its
+    input, HF_TOKEN included; the refusal line reaches the log /logs serves,
+    so it carries the reasons only, on one line."""
+    _seed_factory(monkeypatch, tmp_path, _rules("alpha"))
+    token = "hf_" + "AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+    with open(config_store.OVERRIDES_PATH, "w", encoding="utf-8") as f:
+        json.dump({"CAPTURES_SAMPLE_MAX_DURATION_S": 1, "DIARIZATION_ENABLED": True,
+                   "HF_TOKEN": token, "PIPELINE_RULES": []}, f, sort_keys=True)
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        r = client.post("/settings/factory-rules/clear-local-override")
+    assert r.status_code == 422, r.text
+    lines = [rec.getMessage() for rec in caplog.records
+             if "clear-local-override refused" in rec.getMessage()]
+    assert len(lines) == 1, caplog.text
+    assert "CAPTURES_SAMPLE_MIN_DURATION_S" in lines[0]
+    assert "\n" not in lines[0] and "input_value" not in lines[0]
+    assert token[-22:] not in lines[0] and token[:8] not in lines[0]
+    assert not lines[0].endswith("refused: ") and "refused: : " not in lines[0]
+
+
 def _pin_pipeline_rules(monkeypatch, app_module):
     """Pin PIPELINE_RULES by env, stub the rebuild and park a sentinel rule
     list on cfg; returns the rebuild-call list."""

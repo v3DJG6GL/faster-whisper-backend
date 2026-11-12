@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import Field, ValidationError
+from pydantic_core import to_json
 
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config as cfg
@@ -475,8 +476,14 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
         try:
             parsed = json.loads(sim)
             if isinstance(parsed, dict):
+                # Each value is echoed under fields.<NAME>.client_sim.sent: an
+                # escaped lone surrogate, or a value nested deeper than the
+                # response serializer goes, parses but cannot be sent back.
+                to_json({"fields": {"": {"client_sim": {"sent": parsed}}}})
                 sim_dict = parsed
-        except json.JSONDecodeError as e:
+        except (ValueError, RecursionError) as e:
+            # ValueError: JSONDecodeError, an integer past int()'s digit limit,
+            # and the serializer's refusal (PydanticSerializationError).
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 f"sim is not valid JSON: {e}")
 

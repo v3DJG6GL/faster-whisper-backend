@@ -43,6 +43,23 @@ def test_render_matches_jsonresponse_for_every_utf8_width(ch):
             JSONResponse({"steps": st, "final": fin}).body
 
 
+@pytest.mark.parametrize("body", [
+    '{"sample":"abc","rules":[{"label":NaN,"type":"regex-list","enabled":true,"entries":[]}]}',
+    '{"sample":"abc","rules":[{"label":Infinity,"type":"regex-list","enabled":true,"entries":[]}]}',
+    '{"sample":"a\\ud800","rules":[]}',
+    '{"sample":"abc","rules":[{"label":"x\\ud800","type":"regex-list","enabled":true,"entries":[]}]}',
+], ids=["nan-label", "infinity-label", "surrogate-sample", "surrogate-label"])
+def test_a_value_the_body_cannot_carry_is_a_400(client, body):
+    """The render refuses NaN / Infinity (allow_nan=False) and cannot encode
+    an unpaired surrogate; both arrive in a body json.loads accepts and were
+    an unhandled error past the dry run."""
+    r = client.post("/settings/test-pipeline", content=body,
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 400, r.text
+    assert "JSON cannot carry" in r.json()["error"]
+
+
+
 def test_dry_run_body_is_serialised_off_the_event_loop(client, monkeypatch):
     real = json.dumps
     on_loop: list[bool] = []

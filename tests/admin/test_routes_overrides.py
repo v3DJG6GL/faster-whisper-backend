@@ -267,6 +267,36 @@ def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_ke
     assert cs("DEFAULT_HOTWORDS")["value"] == "x" * 2048
 
 
+@pytest.mark.parametrize("sim", [
+    "1" * 5000,                                  # int() refuses > 4300 digits
+    '{"beam_size": ' + "1" * 5000 + "}",
+    '{"hotwords": "a\\ud800"}',                  # parses, cannot be sent back
+    '{"hotwords": "a\\ud800", "language": "d\\ud800"}',
+    '{"beam_size": ' + "[" * 300 + "]" * 300 + "}",  # deeper than the response goes
+], ids=["huge-int", "huge-int-value", "surrogate", "surrogates", "deep"])
+def test_resolve_sim_the_response_cannot_carry_is_a_400(client, h, sim):
+    """A `sim` json.loads rejects with something other than a JSONDecodeError,
+    or accepts but the response (which echoes each value) cannot encode, is
+    the same 400 as any other malformed sim."""
+    r = client.get(f"{OV}/resolve", headers=h, params={"model": "whisper-1", "sim": sim})
+    assert r.status_code == 400, r.text
+    assert "sim is not valid JSON" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("sim", ['{"temperature": NaN}', '{"temperature": Infinity}',
+                                 '{"temperature": [[[[0.2]]]]}',
+                                 '{"hotwords": "\\ud83d\\ude00"}'])
+def test_resolve_sim_odd_but_usable_values_still_resolve(client, h, sim):
+    r = client.get(f"{OV}/resolve", headers=h, params={"model": "whisper-1", "sim": sim})
+    assert r.status_code == 200, r.text
+    f = r.json()["fields"]
+    if "temperature" in sim:
+        assert f["TEMPERATURE"]["client_sim"]["outcome"] == "ignored_invalid"
+        assert "NaN" not in r.text and "Infinity" not in r.text
+    else:
+        assert f["DEFAULT_HOTWORDS"]["client_sim"]["value"] == "\U0001f600"
+
+
 def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them(
         client, make_user_key, h):
     # Live-dictation keys report what the streaming handshake
