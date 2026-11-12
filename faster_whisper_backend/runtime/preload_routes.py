@@ -105,6 +105,12 @@ _FAMILY_CFG_KEY = {"diarization": "DIARIZATION_MODEL",
                    "separation": "BGM_SEPARATION_UVR_MODEL",
                    "translation": "TRANSLATION_MODEL"}
 
+# The stage switch each family's job needs on; a caller whose ident locks
+# it off can never run the stage, so nothing is warmed for it.
+_FAMILY_TOGGLE = {"diarization": "DIARIZE",
+                  "separation": "SEPARATE_BGM",
+                  "translation": "TRANSLATE_TO"}
+
 
 def _allowed(family: str, model_id: str,
              effective: "dict[str, str] | None" = None,
@@ -130,8 +136,12 @@ def _allowed(family: str, model_id: str,
     A family whose model field is in `locked` (the caller's ident.locked)
     admits its effective value only: the batch handler resolves a locked
     knob to the server value and merely reports a different request
-    ignored, so the preload must not load one either."""
+    ignored, so the preload must not load one either. A family whose stage
+    toggle (_FAMILY_TOGGLE) is in `locked` admits nothing: it is put there
+    only when the ident locks it off."""
     effective = effective or {}
+    if _FAMILY_TOGGLE.get(family) in locked:
+        return False
     _cfg_key = _FAMILY_CFG_KEY.get(family)
     if _cfg_key is not None and _cfg_key in locked:
         want = effective.get(_cfg_key) or ""
@@ -172,8 +182,9 @@ def _effective_stage_models(
     """The caller's identity/per-model effective stage models, resolved
     against the whisper model the plan names (else DEFAULT_MODEL) and the
     body's override_profile — the ident the batch handler builds for the
-    same job — plus which of those fields the ident locks. ({}, empty) on
-    any failure, which degrades to the global-only rule."""
+    same job — plus which of those fields the ident locks, and each stage
+    toggle it locks OFF (one locked on, or unlocked, refuses nothing).
+    ({}, empty) on any failure, which degrades to the global-only rule."""
     # Only a whisper id the server ADMITS picks the per-model layer: the
     # batch handler refuses any other before a stage runs, so its
     # MODEL_OVERRIDES stage models are ones no real job could use. A refused
@@ -190,9 +201,16 @@ def _effective_stage_models(
             user, resolved_model,
             request_profile=(body.override_profile or "").strip() or None)
         keys = _FAMILY_CFG_KEY.values()
+        # DIARIZE / SEPARATE_BGM resolve to a bool, TRANSLATE_TO to a string
+        # whose blank form means off.
+        off = frozenset(
+            t for t in _FAMILY_TOGGLE.values()
+            if t in ident.locked
+            and not str(effective_config.cfg_for(resolved_model, t, ident)
+                        or "").strip())
         return ({k: (effective_config.cfg_for(resolved_model, k, ident)
                      or "").strip() for k in keys},
-                frozenset(k for k in keys if k in ident.locked))
+                frozenset(k for k in keys if k in ident.locked) | off)
     except Exception:  # noqa: BLE001 — never worse than the global rule
         return {}, frozenset()
 

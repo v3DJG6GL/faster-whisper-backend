@@ -245,6 +245,99 @@ def test_a_locked_stage_model_admits_only_the_effective_value(
     assert row.get("reason") != "not_allowed"
 
 
+def test_a_stage_toggle_locked_off_admits_nothing_of_that_family(monkeypatch):
+    # The batch handler resolves a locked DIARIZE / SEPARATE_BGM /
+    # TRANSLATE_TO to the server value, so a caller whose ident locks it off
+    # never runs the stage: a preload would warm (and in a singleton family
+    # evict for) a model none of its jobs can use.
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/A", raising=False)
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-A", raising=False)
+    monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "org/repo-GGUF:Q4_K_M", raising=False)
+    for family, model_id, cfg_key, toggle in (
+            ("diarization", "p/A", "DIARIZATION_MODEL", "DIARIZE"),
+            ("separation", "UVR-A", "BGM_SEPARATION_UVR_MODEL", "SEPARATE_BGM"),
+            ("translation", "org/repo-GGUF:Q4_K_M", "TRANSLATION_MODEL",
+             "TRANSLATE_TO")):
+        eff = {cfg_key: model_id}
+        assert preload_routes._allowed(family, model_id, eff, frozenset())
+        assert not preload_routes._allowed(
+            family, model_id, eff, frozenset({toggle})), family
+        # Not even the locked model itself.
+        assert not preload_routes._allowed(
+            family, model_id, eff, frozenset({toggle, cfg_key})), family
+        # Another family's toggle is not this one's business.
+        other = next(t for t in ("DIARIZE", "SEPARATE_BGM", "TRANSLATE_TO")
+                     if t != toggle)
+        assert preload_routes._allowed(
+            family, model_id, eff, frozenset({other})), family
+
+
+def test_only_a_toggle_locked_off_reaches_the_policy(
+        client, app_module, monkeypatch):
+    # Locked ON, or off but unlocked (the request may still turn it on),
+    # refuses nothing; the policy the worker re-judges under carries the
+    # locked-off toggle, so the dequeue check refuses too.
+    _enable(app_module, monkeypatch,
+            DIARIZATION_ALLOWED_MODELS=[], DIARIZATION_MODEL="p/A",
+            DIARIZE=False, SEPARATE_BGM=False, TRANSLATE_TO="")
+    body = {"models": [{"family": "diarization", "id": "p/A"}]}
+    seen = record_calls(monkeypatch, preload, "register_plan",
+                        lambda *a, **kw: kw.get("policy"))
+
+    def _ident(values, locked):
+        monkeypatch.setattr(
+            effective_config, "build_ident",
+            lambda *a, **k: effective_config.Resolved(
+                values=values, locked=set(locked)))
+
+    _ident({}, [])
+    assert _one(client, body).get("reason") != "not_allowed"
+    _ident({"DIARIZE": True, "TRANSLATE_TO": "en"}, ["DIARIZE", "TRANSLATE_TO"])
+    assert _one(client, body).get("reason") != "not_allowed"
+    assert not seen[-1][1] & {"DIARIZE", "SEPARATE_BGM", "TRANSLATE_TO"}
+    # Locked with no identity value: the global DIARIZE (off) is what the
+    # job gets.
+    _ident({}, ["DIARIZE"])
+    row = _one(client, body)
+    assert row["state"] == "deferred" and row["reason"] == "not_allowed"
+    assert "DIARIZE" in seen[-1][1]
+    assert not preload._policy_allows("diarization", "p/A", seen[-1])
+    _ident({"DIARIZE": False, "SEPARATE_BGM": False, "TRANSLATE_TO": " "},
+           ["DIARIZE", "SEPARATE_BGM", "TRANSLATE_TO"])
+    row = _one(client, body)
+    assert row["state"] == "deferred" and row["reason"] == "not_allowed"
+    assert seen[-1][1] >= {"DIARIZE", "SEPARATE_BGM", "TRANSLATE_TO"}
+
+
+def test_a_key_bound_to_diarize_locked_off_cannot_preload_diarization(
+        client, app_module, monkeypatch, make_user_key):
+    from tests.conftest import bind_key, first_key_id
+    _enable(app_module, monkeypatch,
+            DIARIZATION_ALLOWED_MODELS=[], DIARIZATION_MODEL="p/A")
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    uid, raw = make_user_key("alice")
+    kid = first_key_id(client, h, uid)
+    body = {"models": [{"family": "diarization", "id": "p/A"}]}
+
+    def _row():
+        r = client.post(_URL, json=body, headers=bearer(raw))
+        assert r.status_code == 202, r.text
+        return r.json()["models"][0]
+
+    # The same value unlocked is a default the request may override.
+    bind_key(client, h, uid, kid, overrides={"DIARIZE": False})
+    assert _row().get("reason") != "not_allowed"
+    bind_key(client, h, uid, kid, overrides={"DIARIZE": False}, locks=["DIARIZE"])
+    row = _row()
+    assert row["state"] == "deferred" and row["reason"] == "not_allowed"
+    # Another key is not affected.
+    r = client.post(_URL, json=body, headers=h)
+    assert r.json()["models"][0].get("reason") != "not_allowed"
+
+
 def test_a_refused_whisper_id_does_not_unlock_a_locked_stage_model(
         client, app_module, monkeypatch):
     # A refused whisper id only drops the per-model layer; the caller's
