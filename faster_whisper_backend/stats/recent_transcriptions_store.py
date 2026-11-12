@@ -438,6 +438,14 @@ def append_stage(request_id: str, stage: dict, *, add_processing_s: float = 0.0)
     return True
 
 
+# Every column but the transcript ones (raw_text, final_text, steps, tokens,
+# bigrams): a row at the caps carries ~0.5 MB of text and JSON that the
+# timing-only readers (metrics.project_recent_row) never look at.
+_TIMING_COLS = ("id, request_id, created_ts, user_id, username, model, language,"
+                " source, status, audio_s, processing_s, words, kind, stages,"
+                " key_label, wait_s, error_class, error_stage")
+
+
 def list_recent(
     *,
     before_ts: float | None = None,
@@ -447,6 +455,7 @@ def list_recent(
     kind: str | Sequence[str] | None = None,
     status: str | None = None,
     slow_rtf: float | None = None,
+    with_text: bool = True,
 ) -> list[dict[str, Any]]:
     """Up to `limit` rows OLDER than `before_ts` (the newest rows when it
     is None / 0), newest-first. Every filter composes with that cursor, so
@@ -460,7 +469,11 @@ def list_recent(
       case-sensitively; acceptable for this free-text search.
     - kind: a recent-jobs kind, or a sequence of them (any of those).
     - status: 'ok' | 'error' | 'cancelled', or 'failed' = anything but ok.
-    - slow_rtf: only jobs with processing_s / audio_s > slow_rtf."""
+    - slow_rtf: only jobs with processing_s / audio_s > slow_rtf.
+
+    `with_text=False` reads only _TIMING_COLS (the /stats projections):
+    raw / final come back '' and steps / tokens / bigrams [] whatever the
+    row holds."""
     _require_conn()
     where: list[str] = []
     params: list[Any] = []
@@ -506,7 +519,7 @@ def list_recent(
         needle = query.encode("utf-8")
         params.append(needle)
         params.append(needle)
-    sql = "SELECT * FROM recent_transcriptions"
+    sql = f"SELECT {'*' if with_text else _TIMING_COLS} FROM recent_transcriptions"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_ts DESC LIMIT ?"

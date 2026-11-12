@@ -293,6 +293,25 @@ def test_snapshot_user_filter_returns_only_that_users_rows(tx_store):
     assert metrics.metrics_snapshot(user_id="nobody")["recent_transcriptions"] == []
 
 
+def test_snapshot_reads_timing_only_rows(tx_store, monkeypatch):
+    """The snapshot is rebuilt for every /stats frame and projects no text,
+    so it must not load (and JSON-decode) each row's transcript and steps."""
+    tx_store.record_trace(request_id="a1", model="m", raw="RAW", final="FIN",
+                          steps=[["s", "a", "b"]], user_id="alice")
+    metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id="a1",
+                                 user_id="alice")
+    full = [metrics.project_recent_row(r) for r in tx_store.list_recent(limit=20)]
+    real, calls = tx_store.list_recent, []
+
+    def spy(**kw):
+        calls.append(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(tx_store, "list_recent", spy)
+    assert metrics.metrics_snapshot()["recent_transcriptions"] == full
+    assert [c.get("with_text") for c in calls] == [False]
+
+
 def test_record_transcription_fans_out_wait_and_error_class(tx_store, usage_store_db):
     """wait_s / error_class / error_stage reach both stores through the one
     call the handler makes, and the recent-jobs projection carries them."""

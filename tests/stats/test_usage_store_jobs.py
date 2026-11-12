@@ -1223,3 +1223,31 @@ def test_outcome_stubs_are_capped_per_user_per_hour(us, monkeypatch):
     # A server-minted job still takes its outcome past the cap.
     _rec(us, user_id="alice", audio_s=1.0, words=3, kind="dictation", job_id="feedf00d")
     assert _outcome(us, "feedf00d", user_id="alice") == "accepted"
+
+
+def test_failed_zero_work_jobs_are_capped_per_user_per_hour(us, monkeypatch):
+    # A refused dictation handshake costs the caller nothing and mints one
+    # job row; past the cap the request still counts in the hourly rollup.
+    monkeypatch.setattr(us, "_MAX_FAILED_JOBS_PER_HOUR", 3)
+    for i in range(5):
+        _rec(us, user_id="alice", status="error", audio_s=0, words=0,
+             kind="dictation", job_id=f"{i:032x}", error_class="model",
+             stages=[{"name": "transcribing", "secs": 0.0, "error": "model"}])
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 3
+    hourly = _row(us, "SELECT requests, errors, sessions FROM usage_hourly"
+                      " WHERE user_id = 'alice'")
+    assert tuple(hourly) == (5, 5, 5)
+    # The uncounted rows leave no orphan stage rows behind.
+    assert _row(us, "SELECT COUNT(*) FROM usage_job_stages")[0] == 3
+    # Work that was done keeps its row past the cap, as does a good request,
+    # a further failure of a job that already has its row, and another user.
+    _rec(us, user_id="alice", status="error", audio_s=2.0, words=0,
+         kind="file", job_id="a" * 32)
+    _rec(us, user_id="alice", audio_s=0, words=0, kind="text", job_id="b" * 32)
+    _rec(us, user_id="alice", status="error", audio_s=0, words=0,
+         kind="dictation", job_id=f"{0:032x}")
+    _rec(us, user_id="bob", key_id="kb", status="error", audio_s=0, words=0,
+         kind="dictation", job_id="c" * 32)
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 5
+    assert _row(us, f"SELECT utterances FROM usage_jobs WHERE job_id = '{0:032x}'")[0] == 2
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'bob'")[0] == 1

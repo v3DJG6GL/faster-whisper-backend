@@ -103,6 +103,12 @@ OPEN_MODE_ID = "(open-mode)"
 # identity (~550 B each, kept until the usage retention prunes them). Past the
 # cap the answer is "duplicate", indistinguishable from a re-send.
 _MAX_STUBS_PER_HOUR = 500
+# Job rows one user may create per hour for failed requests that did no work
+# (no audio, no words): a refused dictation handshake costs its caller nothing
+# and mints one such row (~230 B, kept for the jobs retention). Far above what
+# a misconfigured client retrying all hour reaches; past the cap a request
+# still counts in the hourly rollup, only its per-job row is skipped.
+_MAX_FAILED_JOBS_PER_HOUR = 2000
 
 # Metric column names are interpolated into SQL, so they MUST come from this set.
 _METRICS: frozenset[str] = frozenset(
@@ -593,7 +599,9 @@ def record_usage(
     `job_id` groups utterances into a session: the first record under an id
     creates the job row and counts the session; later ones only add to its
     sums. Without a job id every request is its own session. `hour` lets
-    tests seed history; the job row is then stamped at that hour too.
+    tests seed history; the job row is then stamped at that hour too. A
+    failed request that did no work is recorded without its job id once its
+    user holds _MAX_FAILED_JOBS_PER_HOUR failed job rows from the last hour.
 
     `session_job_id` names the dictation session a successful follow-up
     request belongs to (a translation's client-supplied `client_job`). When
@@ -702,38 +710,47 @@ def record_usage(
                         _take_over_stub(conn, owner, jid, k, created_ts)
                     elif owner is not None and owner["reported_ts"] is not None:
                         late_outcome = owner
-                    conn.execute(
-                        "INSERT INTO usage_jobs"
-                        " (job_id, user_id, key_id, kind, created_ts, status,"
-                        "  audio_s, words, processing_s, utterances, model, language,"
-                        "  wait_s, error_class, error_stage)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
-                        " ON CONFLICT(job_id) DO UPDATE SET"
-                        "  key_id      = CASE WHEN utterances = 0"
-                        "                THEN excluded.key_id ELSE key_id END,"
-                        "  utterances  = utterances + 1,"
-                        "  audio_s     = audio_s + excluded.audio_s,"
-                        "  words       = words + excluded.words,"
-                        "  processing_s      = processing_s + excluded.processing_s,"
-                        # A dictation session's utterances share this
-                        # row: one failed utterance marks the session
-                        # failed (as error_class below is kept), a later
-                        # good one must not flip it back. A batch id is
-                        # re-posted whole, so its last run's status wins.
-                        "  status      = CASE WHEN kind = 'dictation' AND status <> 'ok'"
-                        "                THEN status ELSE excluded.status END,"
-                        "  model       = COALESCE(excluded.model, model),"
-                        "  language    = COALESCE(excluded.language, language),"
-                        "  wait_s      = wait_s + excluded.wait_s,"
-                        "  error_class = COALESCE(error_class, excluded.error_class),"
-                        "  error_stage = COALESCE(error_stage, excluded.error_stage)",
-                        # language capped like recent_transcriptions_store's
-                        # _CAP_LANGUAGE: a caller may hand a raw client value.
-                        (jid, uid, kid, k, created_ts, status, a, w, p,
-                         (model or "")[:_CAP_MODEL] or None,
-                         (language or "")[:32] or None,
-                         wt, ecls, estg),
-                    )
+                    if (owner is None and err and a == 0 and w == 0
+                            and conn.execute(
+                                "SELECT COUNT(*) FROM usage_jobs WHERE user_id = ?"
+                                " AND created_ts >= ? AND status <> 'ok'",
+                                (uid, created_ts - 3600)).fetchone()[0]
+                            >= _MAX_FAILED_JOBS_PER_HOUR):
+                        # Counted below like a request without a job id.
+                        jid = None
+                    else:
+                        conn.execute(
+                            "INSERT INTO usage_jobs"
+                            " (job_id, user_id, key_id, kind, created_ts, status,"
+                            "  audio_s, words, processing_s, utterances, model, language,"
+                            "  wait_s, error_class, error_stage)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
+                            " ON CONFLICT(job_id) DO UPDATE SET"
+                            "  key_id      = CASE WHEN utterances = 0"
+                            "                THEN excluded.key_id ELSE key_id END,"
+                            "  utterances  = utterances + 1,"
+                            "  audio_s     = audio_s + excluded.audio_s,"
+                            "  words       = words + excluded.words,"
+                            "  processing_s      = processing_s + excluded.processing_s,"
+                            # A dictation session's utterances share this
+                            # row: one failed utterance marks the session
+                            # failed (as error_class below is kept), a later
+                            # good one must not flip it back. A batch id is
+                            # re-posted whole, so its last run's status wins.
+                            "  status      = CASE WHEN kind = 'dictation' AND status <> 'ok'"
+                            "                THEN status ELSE excluded.status END,"
+                            "  model       = COALESCE(excluded.model, model),"
+                            "  language    = COALESCE(excluded.language, language),"
+                            "  wait_s      = wait_s + excluded.wait_s,"
+                            "  error_class = COALESCE(error_class, excluded.error_class),"
+                            "  error_stage = COALESCE(error_stage, excluded.error_stage)",
+                            # language capped like recent_transcriptions_store's
+                            # _CAP_LANGUAGE: a caller may hand a raw client value.
+                            (jid, uid, kid, k, created_ts, status, a, w, p,
+                             (model or "")[:_CAP_MODEL] or None,
+                             (language or "")[:32] or None,
+                             wt, ecls, estg),
+                        )
             conn.execute(
                 "INSERT INTO usage_hourly"
                 " (hour, key_id, user_id, kind, requests, errors, words,"

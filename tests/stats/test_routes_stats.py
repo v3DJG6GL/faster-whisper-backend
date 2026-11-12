@@ -1043,6 +1043,27 @@ def test_stats_jobs_pages_with_cursor_and_filters(client):
     assert row["username"] == "" and row["key_label"] == "lbl"     # open mode = admin
 
 
+def test_stats_jobs_reads_timing_only_rows(client, monkeypatch):
+    """The jobs table projects no text: a page of up to 200 rows must not
+    load each row's transcript and steps, and its rows equal the projection
+    of the full ones."""
+    _seed_jobs_pages(3, stages=[{"name": "transcribing", "secs": 1.0}])
+    rts.record_trace(request_id="ua-1", model="m", raw="RAW", final="FIN",
+                     steps=[["s", "a", "b"]], tokens=["t"], user_id="ua",
+                     created_ts=2001.0)
+    full = [metrics.project_recent_row(r, include_identity=True)
+            for r in rts.list_recent(limit=50)]
+    real, calls = rts.list_recent, []
+
+    def spy(**kw):
+        calls.append(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(rts, "list_recent", spy)
+    assert client.get("/stats/jobs").json()["jobs"] == full
+    assert [c.get("with_text") for c in calls] == [False]
+
+
 def test_stats_jobs_scope_rules(client, make_user_key):
     raw_admin, alice, raw_alice, bob, raw_bob, _ = _two_users(make_user_key)
     _seed_jobs_pages(2, user_id=alice)
@@ -1298,6 +1319,29 @@ def test_stats_usage_list_filters_kinds_users_keys(client):
     pk = client.get("/stats/pick?dim=key&users=alice").json()
     assert [r["id"] for r in pk["rows"]] == ["ka"] and pk["rows"][0]["user_label"] == "alice"
     assert client.get("/stats/pick?dim=model").status_code == 422
+
+
+def test_stats_list_filters_refuse_an_oversized_list(client, monkeypatch):
+    """Each list item becomes one bound parameter in every statement of the
+    document, so a list far longer than the pickers can offer is a 422 on
+    every route that takes one; a list at the cap still answers."""
+    _usage_now("ka", "alice", 100.0, 10, "a1", "file")
+    too_long = ",".join(f"k{i}" for i in range(stats_routes._MAX_CSV_ITEMS + 1))
+    r = client.get(f"/stats/usage?by=kind&keys={too_long}")
+    assert r.status_code == 422 and "too many list items" in r.json()["detail"]
+
+    monkeypatch.setattr(stats_routes, "_MAX_CSV_ITEMS", 4)
+    at_cap, over = "a,b,c,d", "a,b,c,d,e"
+    for url in ("/stats/usage?by=kind&keys=", "/stats/usage?by=kind&users=",
+                "/stats/tail?keys=", "/stats/tail?users=",
+                "/stats/pick?dim=key&keys=", "/stats/pick?dim=key&users=",
+                "/stats/jobs?users="):
+        assert client.get(url + over).status_code == 422, url
+        assert client.get(url + at_cap).status_code == 200, url
+    # The kind lists share the parser: refused for their length before the
+    # per-item check names an unknown kind.
+    assert "too many" in client.get("/stats/usage?kinds=" + over).json()["detail"]
+    assert "too many" in client.get("/stats/jobs?kind=" + over).json()["detail"]
 
 
 def test_stats_usage_list_filters_respect_scope(client, make_user_key):

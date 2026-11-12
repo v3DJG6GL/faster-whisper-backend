@@ -331,8 +331,18 @@ def _opaque_user_label(user_id: str) -> str:
                               hashlib.sha256).hexdigest()[:8]
 
 
+# Items one comma list may carry. Far above what the pickers can offer
+# (/stats/pick lists 500 rows); each item becomes one bound parameter in
+# every statement of the document.
+_MAX_CSV_ITEMS = 1000
+
+
 def _csv(v: str | None) -> list[str]:
-    """A comma-separated query value → de-duplicated non-empty items."""
+    """A comma-separated query value → de-duplicated non-empty items; 422
+    past _MAX_CSV_ITEMS, counted by separators so the split is never paid
+    for a refused list."""
+    if v and v.count(",") >= _MAX_CSV_ITEMS:
+        raise HTTPException(422, detail=f"too many list items (max {_MAX_CSV_ITEMS})")
     return list(dict.fromkeys(x.strip() for x in (v or "").split(",") if x.strip()))
 
 
@@ -674,7 +684,8 @@ async def stats_jobs(
         rows = recent_transcriptions_store.list_recent(
             before_ts=cursor, limit=n,
             user_id_filter=uid_filter if uid_filter is not None else scope.user_id,
-            kind=kind_list or None, status=status_q or None, slow_rtf=slow_rtf)
+            kind=kind_list or None, status=status_q or None, slow_rtf=slow_rtf,
+            with_text=False)
         out = {
             "jobs": [metrics.project_recent_row(
                 r, include_identity=scope.include_identity,

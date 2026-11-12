@@ -101,6 +101,8 @@ def test_migration_adds_columns_to_old_db(tmp_path):
         assert row["rtf"] == 2.0
         assert [r["request_id"] for r in rts.list_recent(limit=10, slow_rtf=0.4)] == ["old1"]
         assert rts.list_recent(limit=10, slow_rtf=0.6) == []
+        # The timing-only column list names migrated columns too.
+        assert rts.list_recent(limit=10, with_text=False)[0]["stages"] == []
     finally:
         _close_store(rts)
 
@@ -199,6 +201,38 @@ def test_list_recent_query_escapes_like_wildcards(ts):
     _trace(ts, "lit", raw="50% done", final="x", created_ts=1.0)
     _trace(ts, "other", raw="50 percent", final="x", created_ts=2.0)
     assert {r["request_id"] for r in ts.list_recent(query="50%", limit=10)} == {"lit"}
+
+
+def test_list_recent_without_text_reads_the_timing_columns_only(ts):
+    """The /stats callers project timing only: with_text=False leaves the
+    transcript columns unread, and every other field equals the full row's."""
+    from faster_whisper_backend.stats import metrics
+    _trace(ts, "r1", raw="RAW fieber", final="FIN", steps=[["s", "a", "b"]],
+           tokens=["t"], bigrams=["a b"], language="de", source="stream",
+           user_id="u1", username="Ann", created_ts=1000.0)
+    _timing(ts, "r1", 4.0, 2.0, words=3, user_id="u1", kind="dictate",
+            stages=[{"name": "transcribing", "secs": 2.0}], key_label="lbl",
+            wait_s=0.5)
+    _timing(ts, "r2", None, 1.0, status="error", words=0, user_id="u2",
+            created_ts=1001.0, error_class="cuda_oom", error_stage="transcribing")
+    full = ts.list_recent(limit=10)
+    slim = ts.list_recent(limit=10, with_text=False)
+    assert [r["request_id"] for r in slim] == ["r2", "r1"]
+    row = slim[1]
+    assert (row["raw"], row["final"]) == ("", "")
+    assert (row["steps"], row["tokens"], row["bigrams"]) == ([], [], [])
+    assert not {"raw_text", "final_text"} & set(row)
+    text_keys = {"raw_text", "final_text", "raw", "final", "steps", "tokens", "bigrams"}
+    for f, s in zip(full, slim):
+        assert set(s) == set(f) - {"raw_text", "final_text"}
+        assert {k: v for k, v in s.items() if k not in text_keys} == {
+            k: v for k, v in f.items() if k not in text_keys}
+        for ident in (True, False):
+            assert (metrics.project_recent_row(s, include_identity=ident)
+                    == metrics.project_recent_row(f, include_identity=ident))
+    # The filters still read the columns the slim row leaves out.
+    assert [r["request_id"] for r in ts.list_recent(
+        limit=10, query="fieber", with_text=False)] == ["r1"]
 
 
 def test_list_recent_limit_floored_to_one(ts):

@@ -578,8 +578,8 @@ def metrics_snapshot(*, include_identity: bool = False,
         try:
             from faster_whisper_backend.settings import config as cfg
             limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
-            rows = recent_transcriptions_store.list_recent(limit=max(1, limit),
-                                                    user_id_filter=user_id)
+            rows = recent_transcriptions_store.list_recent(
+                limit=max(1, limit), user_id_filter=user_id, with_text=False)
         except Exception as e:
             logger.warning("[metrics] list_recent failed: %s", e)
             rows = []
