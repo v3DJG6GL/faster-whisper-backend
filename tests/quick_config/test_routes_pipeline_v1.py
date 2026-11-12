@@ -80,6 +80,53 @@ def test_v1_get_includes_exposed_rule_with_fingerprint(client, app_module):
     assert all(r.get("type") != "terminal" for r in body["rules"])
 
 
+def test_v1_get_built_and_rendered_off_the_loop_unchanged(
+        client, app_module, monkeypatch):
+    """The visible rule set is re-validated, fingerprinted and serialised in a
+    worker thread: with the rules at their schema caps that is tens of ms and
+    megabytes per GET, and the route is not rate limited. The worker is the
+    rules pool's, so a burst of GETs queues there. FastAPI's response
+    serializer never runs; the bytes are the ones it produced (non-ASCII
+    unescaped, compact, keys in the same order)."""
+    import threading
+    from typing import Any
+
+    import fastapi.routing
+    from pydantic import TypeAdapter
+    _expose_first(app_module, "callback:map",
+                  map={"grüße 😀": "Grüße – ok", "alpha": "A"})
+    real = quick_config_routes.build_visible_rules
+    calls: list[tuple[dict, str]] = []
+
+    def _build(user):
+        calls.append((user, threading.current_thread().name))
+        return real(user)
+
+    def _no_serializer(*a, **kw):
+        raise AssertionError("response serializer ran on the loop")
+
+    monkeypatch.setattr(quick_config_routes, "build_visible_rules", _build)
+    monkeypatch.setattr(fastapi.routing, "serialize_response", _no_serializer)
+    r = client.get("/v1/pipeline-rules")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/json"
+    # One worker: the work holds the GIL, so a second thread would add no
+    # throughput, only a second competitor for the loop.
+    assert len(calls) == 1 and calls[0][1].startswith("qc-rules"), calls
+    assert quick_config_routes._RULES_VIEW_EXECUTOR._max_workers == 1
+    rules, role = real(calls[0][0])
+    assert r.content == TypeAdapter(dict[str, Any]).dump_json({
+        "rules": rules,
+        "role": role,
+        "editable_fields": quick_config_routes.editable_fields_map(),
+        "map_collapse_after": 15,
+        "map_max_entries": quick_config_routes._MAP_MAX_ENTRIES,
+    })
+    assert "grüße 😀".encode() in r.content
+    assert list(r.json()) == ["rules", "role", "editable_fields",
+                              "map_collapse_after", "map_max_entries"]
+
+
 def test_v1_patch_empty_is_noop(client):
     r = _patch_rules(client, {})
     assert r.status_code == 200

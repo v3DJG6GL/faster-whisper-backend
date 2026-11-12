@@ -80,6 +80,23 @@ _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="regex-guard",
 )
 
+# A page of full rows peaks at several times its ~64 MB body while it is
+# built; two at a time bounds that and keeps a burst of page loads off
+# asyncio's default executor (see _GUARDED_SAVE_EXECUTOR).
+_RECENT_PAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="qc-recent",
+)
+
+# The visible-rules answers (GET /state, GET /v1/pipeline-rules) are built and
+# dumped here. One worker on purpose: the work is pydantic validation and JSON
+# dumps that hold the GIL, so a second thread adds no throughput, and every
+# extra one is another competitor the event loop waits behind. Measured with
+# every exposed rule at its schema cap, 10 GETs together: loop gap ~700 ms
+# inline, ~330 ms on to_thread's pool, under 20 ms here.
+_RULES_VIEW_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="qc-rules",
+)
+
 # Ingress cap for a callback:map patch: the schema-derived value web_common
 # bakes into the shared editor, so the save path and the editor's "n / cap"
 # readout read one copy. The same bound is enforced by Pydantic inside
@@ -194,6 +211,22 @@ def build_visible_rules(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str
         rd["_fp"] = _rule_fingerprint(rd)
     role = "admin" if user.get("is_admin") else "user"
     return canonical, role
+
+
+async def _rules_answer(build_doc: Any) -> Response:
+    """`build_doc()` as a finished JSON response, built and dumped off the
+    loop on _RULES_VIEW_EXECUTOR. `build_doc` calls build_visible_rules itself:
+    with every exposed rule at its schema cap the re-validation, the
+    fingerprints and the dump are tens of ms and ~11 MB per GET, on routes
+    nothing rate limits. pydantic_core.to_json is the serializer FastAPI's
+    response model ran on the loop, so the bytes are the same (see
+    _render_recent_page)."""
+    def _render() -> Response:
+        return Response(
+            to_json(build_doc(), inf_nan_mode="null"), media_type="application/json")
+
+    return await asyncio.get_running_loop().run_in_executor(
+        _RULES_VIEW_EXECUTOR, _render)
 
 
 def editable_fields_map() -> dict[str, list[str]]:
@@ -664,23 +697,28 @@ v1_router = APIRouter(
 )
 
 
-@v1_router.get("/pipeline-rules")
+# response_model only documents the answer (unchanged in /openapi.json): the
+# handler returns a finished Response, which FastAPI passes through.
+@v1_router.get("/pipeline-rules", response_model=dict[str, Any])
 async def v1_get_pipeline_rules(
     user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
+) -> Response:
     """The post-processing (pipeline) rules THIS caller may view + edit, with
     the same `exposed` + tag gating as /quick-config. Returns
     `{rules, role, editable_fields, map_collapse_after, map_max_entries}`; each
     rule carries an `_fp` to echo back on PATCH. User-tier auth (any valid key); 403 if the caller's quick_config page
     scope is "none". No host allowlist (unlike the /quick-config WebUI)."""
-    rules, role = build_visible_rules(user)
-    return {
-        "rules": rules,
-        "role": role,
-        "editable_fields": editable_fields_map(),
-        "map_collapse_after": int(getattr(cfg, "QUICK_CONFIG_MAP_COLLAPSE_AFTER", 15)),
-        "map_max_entries": _MAP_MAX_ENTRIES,
-    }
+    def _doc() -> dict[str, Any]:
+        rules, role = build_visible_rules(user)
+        return {
+            "rules": rules,
+            "role": role,
+            "editable_fields": editable_fields_map(),
+            "map_collapse_after": int(getattr(cfg, "QUICK_CONFIG_MAP_COLLAPSE_AFTER", 15)),
+            "map_max_entries": _MAP_MAX_ENTRIES,
+        }
+
+    return await _rules_answer(_doc)
 
 
 @v1_router.patch("/pipeline-rules")
@@ -818,10 +856,12 @@ async def get_quick_config_page() -> HTMLResponse:
 @router.get(
     "/state",
     dependencies=_PAGE_API_GATE,
+    # Documents the answer only, as on GET /v1/pipeline-rules.
+    response_model=dict[str, Any],
 )
 async def get_state(
     user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
+) -> Response:
     """Return rules the caller can see on /quick-config.
 
     Visibility is a triple-AND: (a) the rule must not be the terminal
@@ -832,7 +872,6 @@ async def get_state(
     The policy lives in build_visible_rules (shared with GET
     /v1/pipeline-rules): it applies (a) and delegates (b)+(c) to
     `perms.can_see_rule()` (auth/dependencies.py)."""
-    canonical, role = build_visible_rules(user)
     # Server-authoritative "this transcription has been reported" set
     # + the user's previously-submitted chip corrections per request_id.
     # The /quick-config page reads both: badges sync from the id list;
@@ -878,22 +917,27 @@ async def get_state(
         # callers see no reported-badge state at all.
     except Exception:
         pass
-    return {
-        "rules": canonical,
-        "role": role,
-        "reported_chips": reported_chips,
-        "closed_report_ids": closed_report_ids,
-        # Keys the page's localStorage "reported" hint, so on a shared
-        # browser one account never reads another's (the same id /auth/whoami
-        # already hands this caller).
-        "user_id": user.get("user_id") or "",
-        "map_collapse_after": int(getattr(cfg, "QUICK_CONFIG_MAP_COLLAPSE_AFTER", 15)),
-        "word_suggestions_max": int(getattr(cfg, "QUICK_CONFIG_WORD_SUGGESTIONS_MAX", 200)),
-        # Schema cap on a callback:map's entry count — the page shows a
-        # "n / cap" readout so a full dictionary is visible BEFORE a save
-        # bounces off the Pydantic max_length.
-        "map_max_entries": _MAP_MAX_ENTRIES,
-    }
+
+    def _doc() -> dict[str, Any]:
+        canonical, role = build_visible_rules(user)
+        return {
+            "rules": canonical,
+            "role": role,
+            "reported_chips": reported_chips,
+            "closed_report_ids": closed_report_ids,
+            # Keys the page's localStorage "reported" hint, so on a shared
+            # browser one account never reads another's (the same id
+            # /auth/whoami already hands this caller).
+            "user_id": user.get("user_id") or "",
+            "map_collapse_after": int(getattr(cfg, "QUICK_CONFIG_MAP_COLLAPSE_AFTER", 15)),
+            "word_suggestions_max": int(getattr(cfg, "QUICK_CONFIG_WORD_SUGGESTIONS_MAX", 200)),
+            # Schema cap on a callback:map's entry count — the page shows a
+            # "n / cap" readout so a full dictionary is visible BEFORE a save
+            # bounces off the Pydantic max_length.
+            "map_max_entries": _MAP_MAX_ENTRIES,
+        }
+
+    return await _rules_answer(_doc)
 
 
 @router.get(
@@ -1068,17 +1112,21 @@ async def _recent_page(
     columns capped at 50 000 chars each, so SQLite scans every retained row.
     Measured ~30 ms per search at the shipped RECENT_TRANSCRIPTIONS_MAX of 500,
     unthrottled, and .env.example documents 0 = unbounded. The body is
-    rendered in the same thread (see _render_recent_page)."""
-    return await asyncio.to_thread(
-        _render_recent_page,
+    rendered in the same thread (see _render_recent_page), on the page pool
+    (_RECENT_PAGE_EXECUTOR)."""
+    return await asyncio.get_running_loop().run_in_executor(
+        _RECENT_PAGE_EXECUTOR,
         functools.partial(
-            recent_transcriptions_store.list_recent,
-            before_ts=before_ts if before_ts > 0 else None,
-            limit=limit,
-            user_id_filter=user_id_filter,
-            query=query or None,
+            _render_recent_page,
+            functools.partial(
+                recent_transcriptions_store.list_recent,
+                before_ts=before_ts if before_ts > 0 else None,
+                limit=limit,
+                user_id_filter=user_id_filter,
+                query=query or None,
+            ),
+            limit,
         ),
-        limit,
     )
 
 

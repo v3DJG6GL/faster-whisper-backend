@@ -313,6 +313,30 @@ def test_recent_body_rendered_off_loop_unchanged(client, monkeypatch):
         "next_before_ts"] is not None
 
 
+def test_recent_pages_render_on_their_own_bounded_pool(client, monkeypatch):
+    """A page of full rows peaks at several times its body while it is built,
+    and neither route is rate limited: the fetch + render run on a dedicated
+    two-worker pool, so a burst of page loads queues there and leaves asyncio's
+    default executor (the SSE re-auth, every other to_thread call) alone."""
+    import threading
+
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    names: list[str] = []
+
+    def _list_recent(**kw):
+        names.append(threading.current_thread().name)
+        return []
+
+    monkeypatch.setattr(recent_transcriptions_store, "list_recent", _list_recent)
+    assert client.get("/quick-config/recent").json() == {
+        "recent": [], "next_before_ts": None}
+    assert client.post(
+        "/quick-config/recent/search", json={"q": "x"}).status_code == 200
+    assert len(names) == 2
+    assert all(n.startswith("qc-recent") for n in names), names
+    assert qc._RECENT_PAGE_EXECUTOR._max_workers == 2
+
+
 def test_reapply_rules_status(client):
     r = client.get("/quick-config/reapply-rules/status")
     assert r.status_code == 200
@@ -1064,6 +1088,62 @@ def test_state_lists_the_callers_closed_reports(client, make_user_key):
     assert list(body["reported_chips"]) == ["r2"]
     other = client.get("/quick-config/state", headers=bearer(raw_b)).json()
     assert other["closed_report_ids"] == []
+
+
+def test_state_built_and_rendered_off_the_loop_unchanged(
+        client, app_module, make_user_key, monkeypatch):
+    """/state is the page's auth probe, re-issued on every save and conflict,
+    and not rate limited: the visible rule set is re-validated, fingerprinted
+    and serialised on the rules pool's worker thread. FastAPI's response
+    serializer never runs; the bytes are the ones it produced."""
+    import threading
+    from typing import Any
+
+    import fastapi.routing
+    from pydantic import TypeAdapter
+    _expose_first(app_module, "callback:map",
+                  map={"grüße 😀": "Grüße – ok", "alpha": "A"})
+    uid, raw = locked_alice(make_user_key)
+    h = bearer(raw)
+    for rid in ("r1", "r2"):
+        r = client.post("/quick-config/reports/api/submit",
+                        json={"request_id": rid, "user_comment": "Ärger – x"},
+                        headers=h)
+        assert r.status_code == 200, r.text
+    rep = reports_store.find_by_request_user("r1", uid)
+    reports_store.update_report(rep["id"], {"status": "resolved"})
+    real = qc.build_visible_rules
+    calls: list[tuple[dict, str]] = []
+
+    def _build(user):
+        calls.append((user, threading.current_thread().name))
+        return real(user)
+
+    def _no_serializer(*a, **kw):
+        raise AssertionError("response serializer ran on the loop")
+
+    monkeypatch.setattr(qc, "build_visible_rules", _build)
+    monkeypatch.setattr(fastapi.routing, "serialize_response", _no_serializer)
+    r = client.get("/quick-config/state", headers=h)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/json"
+    # One worker: the work holds the GIL, so a second thread would add no
+    # throughput, only a second competitor for the loop.
+    assert len(calls) == 1 and calls[0][1].startswith("qc-rules"), calls
+    assert qc._RULES_VIEW_EXECUTOR._max_workers == 1
+    rules, role = real(calls[0][0])
+    assert rules and role == "user"
+    assert r.content == TypeAdapter(dict[str, Any]).dump_json({
+        "rules": rules,
+        "role": role,
+        "reported_chips": {"r2": {"corrections": [], "user_comment": "Ärger – x"}},
+        "closed_report_ids": ["r1"],
+        "user_id": uid,
+        "map_collapse_after": 15,
+        "word_suggestions_max": 200,
+        "map_max_entries": qc._MAP_MAX_ENTRIES,
+    })
+    assert "grüße 😀".encode() in r.content and "Ärger – x".encode() in r.content
 
 
 def test_state_carries_the_callers_user_id(client, make_user_key):
