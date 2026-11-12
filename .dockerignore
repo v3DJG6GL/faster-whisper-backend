@@ -62,11 +62,14 @@ tmp/
 # Gitignored local data that carries transcript text or dictation audio, at
 # any depth: an in-repo DATA_DIR not named data/ keeps capture audio under
 # <dir>/captures/groups/xx/yy/ and the capture export's manifest.jsonl beside
-# it. No tracked file outside tests/ uses these names.
+# it, plus the in-flight / crash-left writes beside them (`<id>.wav.tmp`,
+# `<dst>.<rand>.tmp`, the staged config.local.json). No tracked file outside
+# tests/ uses these names.
 **/manifest.jsonl
 **/*.wav
 **/*.mp3
 **/*.m4a
+**/*.tmp
 # Retained link downloads and uploaded videos (URL_MEDIA_DIR defaults to
 # {DATA_DIR}/url_media; every extension, plus the staging/upload spools) under
 # such a DATA_DIR. Any depth is safe here, unlike `**/logs/`: a package of
