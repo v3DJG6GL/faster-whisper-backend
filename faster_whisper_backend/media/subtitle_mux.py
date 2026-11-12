@@ -42,6 +42,13 @@ MAX_TRACKS = 12
 MAX_SRT_BYTES = 2 * 1024 * 1024
 CONTAINERS = ("mkv", "mp4")
 _STDERR_TAIL_MAX = 4096
+# A stream copy is about the size of its source: the package is held to
+# 2 × the source + the subtitle files + this margin (a new container's
+# index and headers on a small source), looked at every _OUTPUT_POLL_S
+# while ffmpeg writes. The interval is what a runaway copy gets past the
+# limit: a local disk takes ~500 MB a second.
+_OUTPUT_MARGIN_BYTES = 64 * 1024 * 1024
+_OUTPUT_POLL_S = 0.25
 
 
 class PackageError(RuntimeError):
@@ -350,6 +357,18 @@ def _write_srts(workdir: str, tracks: "list[SubtitleTrack]") -> "list[str]":
     return srt_paths
 
 
+def _size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _output_limit(src: str, srt_paths: "list[str]") -> int:
+    """The most bytes a package of `src` and these subtitle files may be."""
+    return 2 * _size(src) + sum(map(_size, srt_paths)) + _OUTPUT_MARGIN_BYTES
+
+
 async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                   default_track: "int | None", timeout: float,
                   original_track: "int | None" = None,
@@ -379,6 +398,7 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                                      if video_index else {}),
                                   **({"strip_empty_captions": True} if strip else {}),
                                   **({"format_name": format_name} if format_name else {}))
+        limit = await asyncio.to_thread(_output_limit, src, srt_paths)
         t0 = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.DEVNULL,
@@ -398,17 +418,43 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                 if len(err) > _STDERR_TAIL_MAX:
                     del err[:len(err) - _STDERR_TAIL_MAX]
 
+        # A source whose sample table names one byte range again and again
+        # is a valid file that ffmpeg copies out once per entry: the output
+        # grows with the square of the source, at disk speed, for as long as
+        # the timeout allows. Stopping the child ends the wait below.
+        outgrew = False
+
+        async def _watch_output() -> None:
+            nonlocal outgrew
+            while True:
+                await asyncio.sleep(_OUTPUT_POLL_S)
+                if _size(out) > limit:
+                    outgrew = True
+                    await core_proc.terminate_then_kill(proc)
+                    return
+
         drain = asyncio.ensure_future(_drain_stderr())
+        watch = asyncio.ensure_future(_watch_output())
         try:
             await asyncio.wait_for(asyncio.gather(drain, proc.wait()), timeout)
         except asyncio.TimeoutError:
             drain.cancel()
+            watch.cancel()
             await core_proc.terminate_then_kill(proc)
             raise PackageTimeout("packaging timed out") from None
         except asyncio.CancelledError:
             drain.cancel()
+            watch.cancel()
             await core_proc.terminate_then_kill(proc)
             raise
+        finally:
+            watch.cancel()
+        # Also a child that finished between two looks: a fast disk takes
+        # hundreds of MB inside one interval.
+        if outgrew or _size(out) > limit:
+            logger.warning("[package] output passed %d bytes (%s); refused",
+                           limit, "stopped" if outgrew else "finished")
+            raise PackageError("packaging failed")
         tail = bytes(err).decode("utf-8", "replace")
         if proc.returncode != 0:
             # ffmpeg names the absolute source (the retained media id) and

@@ -160,11 +160,16 @@ def test_build_package_argv_mp4_handler_name_and_no_original():
 
 def _patch_argv(monkeypatch, script: str):
     """Swap the ffmpeg argv for a python script (same idiom as the yt-dlp
-    tests). __OUT__ / __SRT__ are replaced with the real paths."""
+    tests). __OUT__ / __SRT__ are replaced with the real paths; returns the
+    list each call's output path is appended to."""
+    outs = []
+
     def _fake(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        outs.append(out_path)
         s = script.replace("__OUT__", out_path).replace("__SRT__", srt_paths[0] if srt_paths else "")
         return [sys.executable, "-c", s]
     monkeypatch.setattr(pk, "build_package_argv", _fake)
+    return outs
 
 
 _OK = """
@@ -276,6 +281,79 @@ def test_package_no_output_is_an_error(monkeypatch):
     _patch_argv(monkeypatch, "pass")
     with pytest.raises(pk.PackageError, match="no output"):
         _run(pk.package("/x", [], container="mkv", default_track=None, timeout=10))
+
+
+# Grows the output for ~10 s (8 MB), then exits 0 like a finished mux.
+_GROWS = """
+import time
+with open(r"__OUT__", "wb", buffering=0) as f:
+    for _ in range(2000):
+        f.write(b"x" * 4096)
+        time.sleep(0.005)
+"""
+
+
+def test_package_stops_a_child_whose_output_outgrows_the_source(
+        monkeypatch, tmp_path, caplog):
+    """A stream copy is about the size of its source. A source whose sample
+    table names one byte range over and over makes ffmpeg write that range
+    out each time, so the output is watched while the child runs: past the
+    limit the child is stopped and the workdir removed."""
+    src = tmp_path / "src.mkv"
+    src.write_bytes(b"s" * 1000)
+    monkeypatch.setattr(pk, "_OUTPUT_MARGIN_BYTES", 64 * 1024)
+    monkeypatch.setattr(pk, "_OUTPUT_POLL_S", 0.05)
+    outs = _patch_argv(monkeypatch, _GROWS)
+    stopped = []
+    real = pk.core_proc.terminate_then_kill
+
+    async def _stop(proc, *a, **kw):
+        stopped.append(proc.returncode)
+        return await real(proc, *a, **kw)
+    monkeypatch.setattr(pk.core_proc, "terminate_then_kill", _stop)
+    with caplog.at_level("WARNING", logger=pk.logger.name):
+        with pytest.raises(pk.PackageError) as ei:
+            _run(pk.package(str(src), [], container="mkv", default_track=None,
+                            timeout=30))
+    assert type(ei.value) is pk.PackageError and str(ei.value) == "packaging failed"
+    assert stopped == [None]                 # stopped while it was still writing
+    assert not os.path.exists(os.path.dirname(outs[0]))
+    assert "[package] output passed" in caplog.text
+    for secret in (str(tmp_path), "fwb-pkg-"):
+        assert secret not in caplog.text, secret
+
+
+def test_package_refuses_an_output_that_outgrew_the_source_between_looks(
+        monkeypatch, tmp_path):
+    # The child can finish between two looks at the output (a fast disk
+    # writes hundreds of MB in one): the finished file is held to the limit too.
+    src = tmp_path / "src.mkv"
+    src.write_bytes(b"s" * 1000)
+    monkeypatch.setattr(pk, "_OUTPUT_MARGIN_BYTES", 64 * 1024)
+    outs = _patch_argv(monkeypatch, 'open(r"__OUT__", "wb").write(b"x" * 200_000)')
+    with pytest.raises(pk.PackageError, match="packaging failed"):
+        _run(pk.package(str(src), [], container="mkv", default_track=None, timeout=30))
+    assert not os.path.exists(os.path.dirname(outs[0]))
+
+
+def test_package_output_limit_is_twice_the_source_plus_the_subtitles(
+        monkeypatch, tmp_path):
+    # 2 x the source + the SRT files + a fixed margin (zeroed here): an
+    # output exactly at the limit is returned, one byte more is refused.
+    src = tmp_path / "src.mkv"
+    src.write_bytes(b"s" * 1000)
+    tracks = _tracks()
+    limit = 2 * 1000 + sum(len(t.srt.encode()) for t in tracks)
+    monkeypatch.setattr(pk, "_OUTPUT_MARGIN_BYTES", 0)
+    _patch_argv(monkeypatch, f'open(r"__OUT__", "wb").write(b"x" * {limit})')
+    with packaged(str(src), tracks, container="mkv", default_track=None,
+                  timeout=30) as out:
+        assert os.path.getsize(out) == limit
+    outs = _patch_argv(monkeypatch, f'open(r"__OUT__", "wb").write(b"x" * {limit + 1})')
+    with pytest.raises(pk.PackageError, match="packaging failed"):
+        _run(pk.package(str(src), tracks, container="mkv", default_track=None,
+                        timeout=30))
+    assert not os.path.exists(os.path.dirname(outs[0]))
 
 
 def test_ffmpeg_capabilities_parses_listings(monkeypatch):
