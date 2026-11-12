@@ -2262,3 +2262,101 @@ def test_deep_quantified_nest_screen_is_fast():
     t0 = time.perf_counter()
     assert g._nested_repetition(pat)
     assert time.perf_counter() - t0 < 0.5
+
+
+# Optional atoms side by side: nothing in these repeats, so no reading of
+# _nested_repetition sees them, yet k of them read a run of their character
+# 2**k ways. `[d-n]?` fifty times held re.search for 2 s on "kleine" and
+# for more than 20 s on "hingehen". Every spelling of "taken or skipped"
+# counts, a mandatory atom that takes the character too is no stop, and
+# neither is an item that may be skipped or a group that hides the atoms.
+_SIBLING_OPTIONALS = [
+    "[d-n]?" * 50 + "#", "-?" * 30 + "#", "(?:[d-n])?" * 40 + "#", "[d-n]{0,1}" * 40 + "#",
+    "(?:[d-n]|)" * 40 + "#", "[d-n]??" * 50 + "#", "e?[d-n]?" * 25 + "#",
+    "[d-n]?[d-n]" * 25 + "#", r"\s?" * 30 + "#", "[d-n]?" * 9 + "#", "(?i)" + "[D-N]?" * 9 + "#",
+    "(?:[d-n]?){50}#", "(?:[d-n]?){25,50}#", ("(?:[d-n]?){8}" + "y?") * 6 + "#",
+    ("[d-n]?" * 8 + "z*") * 6 + "#", ("[d-n]?" * 8 + "(?:zz)*") * 6 + "#",
+    ("[d-n]?" * 8 + r"\w*") * 4 + "#", "()" + ("[d-n]?" * 8 + r"\1") * 6 + "#",
+    ("[d-n]?" * 8 + "(?=)") * 6 + "#", ("(" + "[d-n]?" * 8 + ")") * 6 + "#",
+    ("(?:" + "[d-n]?" * 8 + "|q)") * 6 + "#", "(?:" + "[d-n]?" * 50 + "#|foo)",
+    "(?:[d-n][d-n])?" * 30 + "#", "(?:e|ee)" * 30 + "#", "(?:|)" * 30 + "#",
+    "(?=" + "[d-n]?" * 30 + "#)x", ".?" * 40 + "#", "[^#]?" * 40 + "#",
+]
+
+
+@pytest.mark.parametrize("pat", _SIBLING_OPTIONALS)
+def test_sibling_optional_run_is_refused(pat):
+    with pytest.raises(ValueError, match="optional items side by side"):
+        g.validate([("r", pat, "")])
+    assert g._optional_fanout(pat), pat
+
+
+# Eight is the most the count lets through. An optional group that holds a
+# stop is skipped whole on a run of one character, a possessive item or an
+# atomic group never gives a character back, and a loop is one way however
+# often it runs: all of these match in linear time.
+_SIBLING_OPTIONALS_LINEAR = [
+    r"\s?,?\s?", r"\d\d?\d?\.\d?\d?", r"(?:,? ?und )+", "[d-n]?" * 8 + "#",
+    r"\d\d?\d?(?: \d\d\d)?(?: \d\d\d)?(?: \d\d\d)?(?: \d\d\d)?",
+    r"(\d\d?)\.\s?(\d\d?)\.\s?(\d{2,4})?\s?(?:um)?\s?(\d\d?)[:.]?(\d\d)?\s?(?:Uhr)?",
+    r"(?i)\b(?:ein|zwei|drei|vier|fünf|sechs|sieben|acht|neun)?(?:und)?"
+    r"(?:zwanzig|dreißig|vierzig|fünfzig|sechzig|siebzig|achtzig|neunzig)\b",
+    r"\b(Ab(?:k(?:ü(?:r(?:z(?:ung)?)?)?)?)?)\b",
+    "[d-n]?+" * 50 + "#", "(?>[d-n]?)" * 50 + "#", ("(?:" + "[d-n]?" * 8 + ")?+") * 6 + "#",
+    "(?:[d-n]?){0,50}#", "[d-n]{0,50}#",
+]
+
+
+@pytest.mark.parametrize("pat", _SIBLING_OPTIONALS_LINEAR)
+def test_sibling_optional_count_keeps_linear_rules(pat):
+    assert not g._optional_fanout(pat), pat
+
+
+def test_sibling_optional_count_keeps_ordinary_rules_on_save():
+    g.validate([(f"r{i}", pat, "") for i, pat in enumerate(_SIBLING_OPTIONALS_LINEAR[:8])])
+
+
+def test_sibling_optional_count_is_fast_and_bounded(monkeypatch):
+    """255 optional atoms, each its own letter, are one way per letter: the
+    count must not walk the rule once per letter in full, and a rule it
+    cannot finish counting is refused, not waved through."""
+    pat = "".join(chr(0x4e00 + i) + "?" for i in range(255))
+    t0 = time.perf_counter()
+    assert not g._optional_fanout(pat)
+    assert time.perf_counter() - t0 < 2.0
+    monkeypatch.setattr(g, "_OVERLAP_WALK_CAP", 50)
+    assert g._optional_fanout(pat[:80])
+
+
+# An octal escape is a character, not a group: `\155` is `m` (not group 15
+# and a `5`) and inside a class every digit escape is octal. Read as a
+# backreference to one of the empty groups in front, the branch compared as
+# other text and its twin `m` / `-` passed as disjoint: re.search took 2.5 s
+# on 24 letters and four times that per two more.
+_OCTAL_CLASS = "".join("\\%o" % ord(c) for c in "bcdefghijklmnopqrstuvxyzBCDEFGHIJKLMNOPQRSTUVXYZ")
+
+
+@pytest.mark.parametrize("pat", [
+    "()" * 15 + r"x*(?:\155|m)+#",
+    "()" * 55 + r"x*(?:[\55]|-)+#",
+    r"(a)?(?:[\1]|\x01)+#",
+    "()" * 40 + "a*(?:[" + _OCTAL_CLASS + r"\40]|[b-vx-zB-VX-Z ](?=))+#",
+    r"(?:\141|a)+#",
+    r"(m)(?:\1|\155)+#",
+    r"(a)(?:[^\1]|\1)+#",
+])
+def test_octal_escape_is_not_a_backreference(pat):
+    assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:\101|\102)+#",
+    r"(a)(?:\1|\155)+#",
+    "()" * 9 + r"(m)(?:\100|m)+#",
+    r"(\w+)(?: \1)+",
+    r"(a)(b)(?:\1x|\2y)+",
+])
+def test_octal_escape_disjoint_from_its_siblings_passes(pat):
+    assert not g._nested_repetition(pat), pat

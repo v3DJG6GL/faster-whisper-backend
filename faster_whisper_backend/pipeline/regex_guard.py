@@ -198,6 +198,16 @@ _MAX_FIXED_COUNT = 10 ** 4
 # each holding optional atoms would otherwise hold the save lock for seconds.
 _OVERLAP_WALK_CAP = 200_000
 
+# Most ways one stretch of a pattern may read a run of a single character
+# (see _optional_fanout): 2**8, eight optional atoms side by side. Measured on
+# a 50 000-character run, `[d-n]?` eight times then `#` costs 0.2 s (0.4 s
+# with a mandatory `[d-n]` after each), nine 0.6-0.9 s, ten 0.9-1.7 s, and
+# every further one doubles it.
+_FANOUT_MAX = 2 ** 8
+
+# Where that count stops: every value past _FANOUT_MAX refuses alike.
+_FANOUT_CAP = 2 ** 16
+
 _SELF = os.path.abspath(__file__)
 
 
@@ -847,6 +857,192 @@ def _nested_repetition_scan(pat: str) -> bool:
     return False
 
 
+def _optional_fanout(pat: str) -> bool:
+    """True if some stretch of ``pat`` can read a run of one character more
+    than _FANOUT_MAX ways: `[d-n]?` fifty times in a row, then `#`.
+
+    Nothing in that pattern repeats, so _nested_repetition has nothing to
+    refuse — yet each optional atom is taken or skipped, k of them side by
+    side read a run of their character 2**k ways, and the engine walks every
+    one of them from every start position before it gives up on the `#`:
+    one eight-letter word held the engine for more than 20 s, and each
+    further letter multiplied that by five to eight. The fixtures' longest
+    run of one such character is short, so no timed probe sees it.
+
+    The ways are counted on the parsed pattern, one character at a time, as
+    the engine would walk a long run of it: an atom that takes the character
+    is one way, an atom that cannot ends the stretch, an item that may be
+    skipped (`x?`, `x??`, `x{0,1}`, `(?:x)?`) adds the way that skips it, an
+    alternation adds up its branches (`(?:x|)`, `(?:x|xx)`), a sequence
+    multiplies its items and a count `{k,…}` raises its body to the k-th
+    power: `(?:x?){50}` is fifty `x?`. A mandatory atom that takes the
+    character too is no stop (`x?x` twenty-five times), and neither is
+    anything that consumes nothing or may be skipped. An optional group that
+    holds a stop is skipped whole on such a run and adds nothing:
+    `(?: \\d\\d\\d)?` four times in a row stays one way. A possessive item
+    or an atomic group never gives a character back and passes one way; a
+    lookaround is walked once per way that reaches it. A variable repeat
+    counts as its minimum: how often a loop runs is the other screens'
+    business.
+
+    Parse-only, plus one compiled atom against one character at a time, so
+    it is safe in-process. A pattern that does not parse is left to the
+    caller's compile.
+    """
+    # Fewer than nine `?` and `|` cannot add up to more than 2**8 ways
+    # unless a count multiplies them, nor more than four where a loop lets
+    # one copy's tail meet the next one's head: most rules never reach the
+    # parser.
+    if "{" not in pat and (pat.count("?") + pat.count("|")
+                           <= (4 if "*" in pat or "+" in pat else 8)):
+        return False
+    import re
+    try:
+        parser, compiler = _sre_modules()
+        parsed = parser.parse(pat)
+    except Exception:  # noqa: BLE001 - the compile step reports a bad pattern
+        return False
+    leaves: "dict[tuple[str, int], tuple[int, tuple, int]]" = {}
+    # The leaves under each node, by id(): a character changes a node's
+    # count only through the leaves it takes there.
+    under: "dict[int, frozenset[int]]" = {}
+
+    def mk(*parts) -> tuple:
+        kids = parts[-1] if isinstance(parts[-1], list) else [parts[-1]]
+        under[id(parts)] = frozenset().union(*(under[id(k)] for k in kids))
+        return parts
+
+    def build(sub, flags: int) -> tuple:
+        seq = []
+        for op, av in sub:
+            name = str(op)
+            if name in ("LITERAL", "NOT_LITERAL", "ANY", "IN"):
+                key = (repr((op, av)), flags)
+                leaf = ("leaf", leaves.setdefault(key, (len(leaves), (op, av), flags))[0])
+                under[id(leaf)] = frozenset(leaf[1:])
+                seq.append(leaf)
+            elif name == "BRANCH":
+                seq.append(mk("alt", [build(b, flags) for b in av[1]]))
+            elif name == "SUBPATTERN":
+                seq.append(build(av[3], compiler._combine_flags(flags, av[1], av[2])))
+            elif name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"):
+                seq.append(mk("rep", av[0], av[1], name == "POSSESSIVE_REPEAT",
+                              build(av[2], flags)))
+            elif name == "ATOMIC_GROUP":
+                seq.append(mk("atomic", build(av, flags)))
+            elif name in ("ASSERT", "ASSERT_NOT"):
+                seq.append(mk("look", build(av[1], flags)))
+            elif name == "GROUPREF_EXISTS":
+                # Only the branch the condition picks is ever tried.
+                seq.append(mk("cond", [build(av[1], flags),
+                                       build(av[2], flags) if av[2] is not None
+                                       else mk("seq", [])]))
+            elif name == "FAILURE":
+                seq.append(mk("fail", []))
+            # An anchor or a backreference consumes nothing this count
+            # knows of, so it never ends a stretch.
+        return seq[0] if len(seq) == 1 else mk("seq", seq)
+
+    cap = _FANOUT_CAP
+    steps = 0
+    known: "dict[tuple[int, frozenset[int] | None], tuple[int, int, int, int]]" = {}
+
+    def ways(node: tuple, takes: "frozenset[int] | None") -> "tuple[int, int, int, int]":
+        """``(through, head, tail, most)`` for a run of the character whose
+        leaves are ``takes`` (None: every leaf): the ways across the whole
+        node, 0 when a stop is in every one of them; the most ways from its
+        start up to a stop, from a stop to its end, and of any one stretch
+        inside it. Two characters that take the same leaves under a node
+        share its count: a rule of 240 optional atoms, each its own letter,
+        is not walked 240 times over."""
+        nonlocal steps
+        steps += 1
+        if steps > _OVERLAP_WALK_CAP:
+            raise _TooWide
+        key = (id(node), takes if takes is None else takes & under[id(node)])
+        if key not in known:
+            known[key] = count(node, key[1])
+        return known[key]
+
+    def count(node: tuple, takes: "frozenset[int] | None") -> "tuple[int, int, int, int]":
+        kind = node[0]
+        if kind == "leaf":
+            return (1 if takes is None or node[1] in takes else 0), 1, 1, 1
+        if kind == "fail":
+            return 0, 1, 1, 1
+        if kind == "seq":
+            through = head = tail = most = 1
+            for child in node[1]:
+                t, h, e, m = ways(child, takes)
+                most = min(cap, max(most, m, tail * h))
+                head = min(cap, max(head, through * h))
+                tail = min(cap, max(e, tail * t))
+                through = min(cap, through * t)
+            return through, head, tail, most
+        if kind in ("alt", "cond"):
+            got = [ways(child, takes) for child in node[1]]
+            through = min(cap, (sum if kind == "alt" else max)(g[0] for g in got))
+            return (through, max(through, *(g[1] for g in got)),
+                    max(through, *(g[2] for g in got)), max(through, *(g[3] for g in got)))
+        if kind == "look":
+            _t, h, _e, m = ways(node[1], takes)
+            return 1, h, 1, m
+        if kind == "atomic":
+            t, h, _e, m = ways(node[1], takes)
+            return min(t, 1), h, 1, m
+        _kind, low, high, possessive, child = node
+        t, h, e, m = ways(child, takes)
+        if (low, high) == (0, 1):
+            through = t + 1
+        else:
+            # Past sixteen copies of two ways the count is at its cap.
+            copies = min(low, 16)
+            through = min(cap, t ** copies) if copies else 1
+            rest = min(cap, t ** max(copies - 1, 0))
+            # One copy's tail meets the next one's head.
+            wrap = min(cap, e * h * t ** max(copies - 2, 0)) if high > 1 else 1
+            h, e = max(h, min(cap, rest * h)), max(e, min(cap, rest * e))
+            m = max(m, wrap)
+        if possessive:
+            return min(through, 1), h, 1, max(m, h)
+        return through, max(h, through), max(e, through), max(m, h, e, through)
+
+    try:
+        tree = build(parsed, parsed.state.flags)
+        if ways(tree, None)[3] <= _FANOUT_MAX:
+            return False
+        # Which leaves take a character: every character a leaf names, the
+        # one past each (a negated class starts there) and the shared pool.
+        cands = set(_POOL_CHARS)
+        for _lid, (op, av), _flags in leaves.values():
+            for iop, iav in (av if str(op) == "IN" else [(op, av)]):
+                for code in (iav if isinstance(iav, tuple) else (iav,)):
+                    if isinstance(code, int) and str(iop) in ("LITERAL", "NOT_LITERAL", "RANGE"):
+                        cands.update(chr(x) for x in (code - 1, code, code + 1)
+                                     if 0 <= x <= 0x10FFFF)
+        cands |= {v for c in cands for v in (c.lower(), c.upper()) if len(v) == 1}
+        taken: "dict[str, set[int]]" = {c: set() for c in cands}
+        for lid, (op, av), flags in leaves.values():
+            if str(op) == "ANY":  # DOTALL over-approximates, as elsewhere
+                for ids in taken.values():
+                    ids.add(lid)
+            elif str(op) == "LITERAL" and not flags & re.IGNORECASE:
+                taken[chr(av)].add(lid)
+            else:
+                state = parser.State()
+                state.flags = flags  # the compiler ORs these into every atom
+                rx = compiler.compile(parser.SubPattern(state, [(op, av)]), flags)
+                for c, ids in taken.items():
+                    if rx.fullmatch(c):
+                        ids.add(lid)
+        return any(ways(tree, takes)[3] > _FANOUT_MAX
+                   for takes in {frozenset(ids) for ids in taken.values()} | {frozenset()})
+    except (_TooWide, RecursionError):
+        # Too much to count, or nested too deep to walk: refused, as
+        # _nested_repetition refuses what it cannot read.
+        return True
+
+
 def _optional_overlap(body: str, icase: bool = False) -> bool:
     """True if a branch of the group body ``body``, repeated, can split a run
     of input more than one way because of an optional ``?`` / ``{0,1}`` atom
@@ -1458,19 +1654,44 @@ def _resolve_backref(branch: str, bodies: "tuple[dict[int, str], dict[str, str]]
     """``branch`` with each backreference (``\\1``, ``(?P=name)``) replaced by
     the text of the group it names, so `(a)(?:a|\\1)+` compares `a` with `a`.
     None — refuse: more, never less — when a reference names no group in
-    ``bodies`` (see _group_bodies)."""
+    ``bodies`` (see _group_bodies).
+
+    Read left to right, as the engine reads it: an escape that is a
+    character stays one (`\\155` is `m`, not group 15 and a `5`) and a class
+    is copied whole (`[\\55]` is `[-]`: every digit escape in a class is
+    octal). Rewritten as references, both hid a branch that matches what its
+    sibling does."""
     import re
     num, name = bodies
-    missing = []
-
-    def sub(m) -> str:
-        body = num.get(int(m.group(2))) if m.group(2) else name.get(m.group(3))
+    ref = re.compile(r"\\([1-9][0-9]?)|\(\?P=(\w+)\)")
+    parts = []
+    i, n = 0, len(branch)
+    while i < n:
+        if branch[i] == "[":
+            past = max(_past_opaque(branch, i), i + 1)
+            parts.append(branch[i:past])
+            i = past
+            continue
+        if branch[i] == "\\":
+            char, end = _escape_char(branch, i)
+            m = ref.match(branch, i) if char is None else None
+            if m is None:
+                end = max(end, i + 1)
+                parts.append(branch[i:end])
+                i = end
+                continue
+        else:
+            m = ref.match(branch, i)
+        if m is None:
+            parts.append(branch[i])
+            i += 1
+            continue
+        body = num.get(int(m.group(1))) if m.group(1) else name.get(m.group(2))
         if body is None:
-            missing.append(m.group(0))
-            return m.group(0)
-        return m.group(1) + "(?:" + body + ")"
-    out = re.sub(r"((?<!\\)(?:\\\\)*)(?:\\([1-9][0-9]?)|\(\?P=(\w+)\))", sub, branch)
-    return None if missing else _strip_outer_group(out)
+            return None
+        parts.append("(?:" + body + ")")
+        i = m.end()
+    return _strip_outer_group("".join(parts))
 
 
 def _spans_overlap(pat: str, spans: "list[tuple[int, int]]", icase: bool = False) -> bool:
@@ -2491,8 +2712,10 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     PRECEDING entries rewrote it) inside a child process that is killed if it
     exceeds ``timeout`` seconds. Raises ``ValueError(f"{where}: ...")`` on a
     pattern that repeats an already-repeating group (`(x+)+`, `(a|a)*` — see
-    ``_nested_repetition``), a bad regex/replacement (e.g. a backref to a
-    non-existent group), nested fixed counts past ``_MAX_FIXED_COUNT``, a
+    ``_nested_repetition``), a pattern that reads a run of one character too
+    many ways (`x?` nine times in a row — see ``_optional_fanout``), a bad
+    regex/replacement (e.g. a backref to a non-existent group), nested fixed
+    counts past ``_MAX_FIXED_COUNT``, a
     replacement that can grow a match beyond ``_MAX_GROWTH`` (measured on the
     fixture and bounded analytically), a match time that grows superlinearly
     on the longer fixture, slow compiling (below), or a catastrophic-
@@ -2542,6 +2765,15 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
                 "ordinary input — rewrite without a repeat inside a repeat, "
                 "and make the alternatives of a repeated group mutually "
                 "exclusive."
+            )
+        if pattern and _optional_fanout(pattern):
+            raise ValueError(
+                f"{where}: regex test failed: too many optional items side by "
+                "side that can match the same character (e.g. nine `x?` in a "
+                "row) — each one doubles the ways a run of that character is "
+                "read, which causes catastrophic backtracking and can hang "
+                "the server on ordinary input. Use a counted repeat instead "
+                "(`x{0,9}`), or put a required character between them."
             )
         if _repl and _lookahead_group_refs(pattern, _repl):
             raise ValueError(
