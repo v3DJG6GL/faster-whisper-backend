@@ -214,6 +214,8 @@ def reset_budget() -> None:
     _DIALS.tls.f4m_nested = 0
     _DIALS.tls.url_bytes = 0
     _DIALS.tls.processed_formats = 0
+    _DIALS.tls.line_work = 0
+    _DIALS.tls.label_chars = 0
 
 
 def _observe(sock) -> None:
@@ -600,9 +602,16 @@ _MAX_FRAGMENT_URL_BYTES = 256 * 1024 * 1024
 _MAX_TEMPLATE_BYTES = 64 * 1024
 # The width / precision in `$Number%05d$`: real manifests pad to 5..9 digits.
 _MAX_TEMPLATE_WIDTH = 64
+# The fields, and the `%` conversions inside `$` runs, of one template: real
+# ones have one to three. Counting a 60 KiB template of 7 500 fields took
+# ~2 ms, once per representation.
+_MAX_TEMPLATE_FIELDS = 64
 # yt-dlp's two substitutions: `$Number$` -> `%(Number)d` and
 # `$Number%05d$` -> `%(Number)05d` (Time and Bandwidth likewise).
 _TEMPLATE_FIELD = re.compile(r"\$(?:Number|Bandwidth|Time)(?:%([^$]+))?\$")
+# The text between two `$` that _TEMPLATE_FIELD reads as a field.
+_TEMPLATE_FIELD_RUN = re.compile(r"(?:Number|Bandwidth|Time)(?:%[^$]+)?")
+_DIGIT_RUN = re.compile(r"\d+")
 _ISM_BITRATE = re.compile(r"{[Bb]itrate}")
 _ISM_START_TIME = re.compile(r"{start[ _]time}")
 
@@ -668,9 +677,11 @@ def _digits(value: int) -> int:
 # yt-dlp parses them and does big-integer arithmetic and a str() per fragment
 # on what it builds from them, ~1 ms a fragment at 4 000 digits. DASH's
 # @bandwidth goes into every fragment's address through $Bandwidth$; a
-# Representation's @width / @height / @audioSamplingRate and a QualityLevel's
-# sizes, sample rate, channels, bit depth and NAL length field are int()-ed once
-# per format, a cost on top of the variant cap. No real one comes near 20.
+# Representation's @width / @height / @audioSamplingRate / @frameRate (a
+# whole number reaches int(), a fraction like 30000/1001 does not) and a
+# QualityLevel's sizes, sample rate, channels, bit depth and NAL length field
+# are int()-ed once per format, a cost on top of the variant cap. No real one
+# comes near 20.
 _MAX_NUMBER_CHARS = 20
 
 
@@ -753,25 +764,59 @@ def _representation_segments(info: dict, period_duration):
     return 0, None
 
 
+def _spec_width(spec: str) -> int:
+    """The widest width / precision a conversion's text can spell: any of its
+    numbers. Refuses one past _MAX_TEMPLATE_WIDTH, and a text of more numbers
+    than _MAX_TEMPLATE_FIELDS (a real conversion has one): walking the 30 000
+    a 60 KiB template can hold took ~7 ms, once per representation."""
+    width = 0
+    for seen, match in enumerate(_DIGIT_RUN.finditer(spec)):
+        run = match.group().lstrip("0")
+        if (seen == _MAX_TEMPLATE_FIELDS or len(run) > 3
+                or int(run or 0) > _MAX_TEMPLATE_WIDTH):
+            raise _too_much_url()
+        width = max(width, int(run or 0))
+    return width
+
+
 def _template_bytes(template: str, rep_id, value_digits: int) -> int:
     """The length of one address yt-dlp builds from a DASH template for one
     representation, each field printing its padded width or `value_digits`
-    characters, whichever is more. Refuses a template that is too long or
-    pads a field too wide."""
+    characters, whichever is more. Refuses a template that is too long, has
+    too many fields or pads one too wide."""
     uses = template.count("$RepresentationID$") if rep_id is not None else 0
     length = len(template) + uses * (len(rep_id or "") - len("$RepresentationID$"))
     if length > _MAX_TEMPLATE_BYTES:
         raise _too_much_url()
     if uses:  # an @id can complete a field the template only starts
         template = template.replace("$RepresentationID$", rep_id)
+    runs = template.split("$")
+    if len(runs) > 2 * _MAX_TEMPLATE_FIELDS + 1:
+        raise _too_much_url()
     for spec in _TEMPLATE_FIELD.findall(template):
-        width = 0
-        for run in re.findall(r"\d+", spec):
-            run = run.lstrip("0")
-            if len(run) > 3 or int(run or 0) > _MAX_TEMPLATE_WIDTH:
-                raise _too_much_url()
-            width = max(width, int(run or 0))
-        length += max(width, value_digits)
+        length += max(_spec_width(spec) if spec else 0, value_digits)
+    # yt-dlp doubles a `%` only outside `$...$`: every `$` flips "inside", and
+    # a `%` inside stays a live conversion whatever its run names (`$%9s$`,
+    # an unknown name, a run nothing closes, a second `%` in a field). A
+    # keyless one prints the whole values dict, a keyed one (`%(Number)9d`)
+    # a value, each padded to its width.
+    inside = [i for i in range(1, len(runs), 2) if "%" in runs[i]]
+    if not inside:
+        return length
+    if sum(runs[i].count("%") for i in inside) > _MAX_TEMPLATE_FIELDS:
+        raise _too_much_url()
+    # A field standing outside (after a stray `$`) takes the next run's
+    # opening `$`: that run can read as a field without being one, here or to
+    # yt-dlp, so nothing in such a template counts as sized above.
+    shifted = any(_TEMPLATE_FIELD_RUN.fullmatch(run) for run in runs[2:-1:2])
+    for i in inside:
+        specs = runs[i].split("%")[1:]
+        if (not shifted and i < len(runs) - 1
+                and _TEMPLATE_FIELD_RUN.fullmatch(runs[i])):
+            specs = specs[1:]  # the field's own conversion, sized above
+        for spec in specs:
+            # 48 + 3 values: {'Time': …, 'Bandwidth': …, 'Number': …}.
+            length += max(_spec_width(spec), 48 + 3 * value_digits)
     return length
 
 
@@ -787,6 +832,12 @@ def _representation_url_bytes(info: dict, n: int, rep_id, bandwidth) -> int:
     if info.get("initialization"):
         spent += _template_bytes(info["initialization"], rep_id, digits)
     return spent
+
+
+# A Representation's attributes yt-dlp copies into its format, and how often.
+_MPD_LABEL_ATTRS = (
+    ("mimeType", 2), ("codecs", 1),
+    ("{urn:scte:dash:scte214-extensions}supplementalCodecs", 1))
 
 
 def _representation_attr(representation, adaptation, name):
@@ -819,7 +870,7 @@ def _refuse_oversized_mpd(mpd_doc, mpd_base_len: int = 0) -> None:
         found = element.find(q("BaseURL"))
         return len(found.text or "") if found is not None else 0
     mpd_duration = parse_duration(mpd_doc.get("mediaPresentationDuration"))
-    count = representations = url_bytes = 0
+    count = representations = url_bytes = label_chars = 0
     mpd_base = base_url(mpd_doc)
     for period in mpd_doc.findall(q("Period")):
         period_duration = (parse_duration(period.get("duration"))
@@ -834,17 +885,29 @@ def _refuse_oversized_mpd(mpd_doc, mpd_base_len: int = 0) -> None:
                 if representations > _MAX_MPD_REPRESENTATIONS:
                     raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
                 info = _mpd_segment_info(representation, set_info, q)
-                for name in ("bandwidth", "width", "height", "audioSamplingRate"):
+                for name in ("bandwidth", "width", "height",
+                             "audioSamplingRate", "frameRate"):
                     _refuse_long_number(
                         _representation_attr(representation, adaptation, name))
                 n, seconds = _representation_segments(info, period_duration)
                 count += n
                 if count > _MAX_MPD_SEGMENTS:
                     raise _too_many_segments()
+                rep_id = _representation_attr(representation, adaptation, "id")
+                # yt-dlp derives each format's ext and container from the
+                # @mimeType, its codecs and note from @codecs and
+                # supplementalCodecs and (under an mpd_id) its id from @id:
+                # strings of its own per Representation, at parse time,
+                # before the format pass's count.
+                label_chars += len(rep_id or "") + sum(
+                    weight * len(_representation_attr(
+                        representation, adaptation, name) or "")
+                    for name, weight in _MPD_LABEL_ATTRS)
+                if label_chars > _MAX_FORMAT_LABEL_CHARS:
+                    raise _labels_too_long()
                 url_bytes += mpd_base_len + set_base + base_url(representation)
                 url_bytes += _representation_url_bytes(
-                    info, n,
-                    _representation_attr(representation, adaptation, "id"),
+                    info, n, rep_id,
                     _representation_attr(representation, adaptation, "bandwidth"))
                 if url_bytes > _MAX_FRAGMENT_URL_BYTES:
                     raise _too_much_url()
@@ -897,11 +960,17 @@ def _refuse_oversized_ism(ism_doc, ism_base_len: int = 0) -> None:
         return  # yt-dlp returns no formats for it, before any expansion
     _refuse_long_number(ism_doc.get("Duration"))
     _refuse_long_number(ism_doc.get("TimeScale"))
-    count = variants = url_bytes = 0
+    count = variants = url_bytes = label_chars = 0
     for stream in ism_doc.findall("StreamIndex"):
         if stream.get("Type") not in ("video", "audio", "text"):
             continue
         _refuse_long_number(stream.get("TimeScale"))
+        # yt-dlp joins the stream's Name into a format_id of its own for
+        # every QualityLevel, at parse time, before the format pass's count.
+        label_chars += (len(stream.get("Name") or "")
+                        * len(stream.findall("QualityLevel")))
+        if label_chars > _MAX_FORMAT_LABEL_CHARS:
+            raise _labels_too_long()
         # Every QualityLevel counts, also one whose codec yt-dlp skips: an
         # over-count far below the cap, and a yt-dlp that learns the codec
         # stays bounded.
@@ -999,46 +1068,115 @@ _M3U8_SENTINEL = "_fwb_m3u8_bounded"
 # (leading whitespace included). Matching in C keeps a playlist of comments
 # from costing a Python step per line.
 _M3U8_BREAKS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+_M3U8_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+_M3U8_BREAK = re.compile(f"[{_M3U8_BREAKS}]")
 _M3U8_FORMAT_LINE = re.compile(
     rf"(?<![^{_M3U8_BREAKS}])(?:#EXT-X-MEDIA:"
     rf"|#EXT-X-STREAM-INF:[^{_M3U8_BREAKS}]*?PROGRESSIVE-URI"
     rf"|[^\s#]|[^\S{_M3U8_BREAKS}]+\S)")
 
 
+# yt-dlp also runs backtracking regexes over single lines, each quadratic in
+# the line: parse_m3u8_attributes over every #EXT-X-MEDIA / #EXT-X-STREAM-INF
+# line and a width-x-height search over its RESOLUTION (~5e-9 s x length^2,
+# the GIL held throughout: one 30 kB line ~5 s, a 1 MB line hours), and an
+# `audio.*?=` search over every variant's joined address (occurrences of
+# "audio" x its length: 20 variants under a 60 kB redirect address of
+# "audio" took 74 s). The work is counted before the parse, per extraction:
+# length^2 for an attribute line, (line + master address) x ("audio" + 1) for
+# a variant line. At the cap one line holds the GIL ~0.1 s and a whole
+# extraction spends ~3 s; sixteen masters of 300 variants under 300-byte
+# signed addresses spend a sixth of it, a master of 100 renditions and 200
+# variants with 1.5 kB tokens on every line about half.
+_MAX_M3U8_LINE_CHARS = 4096
+_MAX_M3U8_LINE_WORK = 2 ** 29
+# The tag wherever it stands, through the end of its line: a literal lead
+# keeps the search of a 64 MiB document at memchr speed, and the caller
+# drops a match that does not start its line.
+_M3U8_ATTR_LINE = re.compile(
+    rf"#EXT-X-(?:MEDIA|STREAM-INF):[^{_M3U8_BREAKS}]*")
+# HlsFD._has_drm (run on master and media playlists alike) scans from every
+# "#EXT-X-KEY:" / "#EXT-X-SESSION-KEY:" to the end of its line, three times:
+# quadratic only when one line (to yt-dlp's `.`: up to a "\n") holds the tag
+# more than once, which no playlist does. Checked only when tags x length
+# could cost over ~0.2 s.
+_MAX_M3U8_KEY_WORK = 2 ** 24
+_M3U8_KEY_TWICE = re.compile(
+    r"#EXT-X-(?:SESSION-)?KEY:[^\n]*#EXT-X-(?:SESSION-)?KEY:")
+
+
+def _line_too_long():
+    from yt_dlp.utils import ExtractorError
+    return ExtractorError("a line in the playlist is too long", expected=True)
+
+
 def _line_breaks(doc: str) -> int:
     """How many lines str.splitlines() would end in `doc`, counted in C."""
-    return (sum(doc.count(b) for b in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
-            - doc.count("\r\n"))
+    return sum(doc.count(b) for b in _M3U8_BREAK_CHARS) - doc.count("\r\n")
 
 
-def _refuse_oversized_m3u8(m3u8_doc, url_len: int = 0) -> None:
+def _refuse_oversized_m3u8(m3u8_doc, url_len: int = 0, url_audio: int = 0) -> None:
     """`url_len`: the length of the master's own (post-redirect) URL, which
-    yt-dlp urljoins each variant and rendition line onto."""
+    yt-dlp urljoins each variant and rendition line onto; `url_audio`: how
+    often that URL says "audio"."""
     from yt_dlp.utils import ExtractorError
-    if not isinstance(m3u8_doc, str) or "#EXT-X-TARGETDURATION" in m3u8_doc:
+    if not isinstance(m3u8_doc, str):
+        return
+    if (m3u8_doc.count("KEY:") * len(m3u8_doc) > _MAX_M3U8_KEY_WORK
+            and _M3U8_KEY_TWICE.search(m3u8_doc)):
+        raise _line_too_long()
+    if "#EXT-X-TARGETDURATION" in m3u8_doc:
         return
     if _line_breaks(m3u8_doc) > _MAX_M3U8_MASTER_LINES:
         raise ExtractorError(
             "the playlist has too many lines (more than "
             f"{_MAX_M3U8_MASTER_LINES})", expected=True)
+    # Before the format count: at most one step per line the cap above let
+    # through, and it stops at the budget.
+    work = getattr(_DIALS.tls, "line_work", 0)
+    for match in _M3U8_ATTR_LINE.finditer(m3u8_doc):
+        start = match.start()
+        if start and m3u8_doc[start - 1] not in _M3U8_BREAK_CHARS:
+            continue  # inside a line: text to yt-dlp
+        length = match.end() - start
+        if length > _MAX_M3U8_LINE_CHARS:
+            raise _line_too_long()
+        work += length * length
+        if work > _MAX_M3U8_LINE_WORK:
+            raise _line_too_long()
     count = 0
-    for count, _match in enumerate(_M3U8_FORMAT_LINE.finditer(m3u8_doc), 1):
+    for count, match in enumerate(_M3U8_FORMAT_LINE.finditer(m3u8_doc), 1):
         if count > _MAX_M3U8_FORMATS:
             raise ExtractorError(
                 f"the stream lists too many variants (more than {_MAX_M3U8_FORMATS})",
                 expected=True)
+        start = match.start()
+        if m3u8_doc[start] == "#":
+            continue  # a rendition or PROGRESSIVE-URI tag, sized above
+        # A variant line, through its end: the `audio` search over its
+        # joined address.
+        end = _M3U8_BREAK.search(m3u8_doc, match.end())
+        end = end.start() if end else len(m3u8_doc)
+        scan = ((end - start + url_len)
+                * (m3u8_doc.count("audio", start, end) + url_audio + 1))
+        work += scan
+        if scan > _MAX_M3U8_LINE_CHARS ** 2 or work > _MAX_M3U8_LINE_WORK:
+            raise _line_too_long()
     # A page (or a set-level F4M) can hand one extraction many masters, each
     # within the cap: every variant is a format from the extraction's budget,
     # like a DASH representation, and its address a fresh urljoin(master URL,
     # line) (an absolute line a slice of the document instead).
     _charge(0, count, len(m3u8_doc) + count * (url_len + 1))
+    _DIALS.tls.line_work = work
 
 
 def _bounded_m3u8(original):
     def _parse_m3u8_formats_and_subtitles(self, m3u8_doc, *args, **kwargs):
         # yt-dlp's signature: (m3u8_doc, m3u8_url=None, ...).
         url = args[0] if args else kwargs.get("m3u8_url")
-        _refuse_oversized_m3u8(m3u8_doc, len(url) if isinstance(url, str) else 0)
+        if not isinstance(url, str):
+            url = ""
+        _refuse_oversized_m3u8(m3u8_doc, len(url), url.count("audio"))
         return original(self, m3u8_doc, *args, **kwargs)
     setattr(_parse_m3u8_formats_and_subtitles, _M3U8_SENTINEL, True)
     return _parse_m3u8_formats_and_subtitles
@@ -1083,11 +1221,31 @@ _HLS_URL_LINE = re.compile(
     r"(?:[^\s#]|#EXT-X-MAP|#EXT-X-KEY)")
 
 
+# HlsFD int()s #EXT-X-MEDIA-SEQUENCE and both sides of #EXT-X-BYTERANGE's
+# `n@o`, then keeps a number of its own per fragment (the sequence + 1, the
+# running range end): one 4 299-digit number makes every fragment ~1.8 kB
+# heavier, 2.2 GB instead of 0.4 GB at the segment cap. Both are 64-bit at
+# most (_MAX_NUMBER_CHARS). Matched wherever the tag stands, not only at a
+# line start: a literal prefix keeps the scan of a real playlist at memchr
+# speed, and the tag mid-line before a 21-character token is no playlist.
+# The skip to a later token stops at a "#" (int() takes none, so no number
+# HlsFD reads lies past one): a line of many tags is then searched once, not
+# once per tag.
+_HLS_LONG_NUMBER = re.compile(
+    rf"#EXT-X-(?:MEDIA-SEQUENCE|BYTERANGE)[^{_M3U8_BREAKS}]"
+    rf"(?:[^#{_M3U8_BREAKS}]*?(?:@|[^\S{_M3U8_BREAKS}]))?"
+    rf"[^@\s]{{{_MAX_NUMBER_CHARS + 1}}}")
+
+
 def _refuse_oversized_hls_media(manifest, url_len: int = 0) -> None:
     """`url_len`: the length of the URL HlsFD joins the playlist's lines
     onto."""
     if not isinstance(manifest, str):
         return
+    if _HLS_LONG_NUMBER.search(manifest):
+        from yt_dlp.utils import ExtractorError
+        raise ExtractorError("a number in the stream manifest is too long",
+                             expected=True)
     breaks = _line_breaks(manifest)
     # A playlist with no more lines than the cap cannot list more fragments:
     # every real one pays only the C-level line count.
@@ -1494,7 +1652,64 @@ def _smil_formats_are_bounded() -> bool:
 # the manifest formats were already charged where they were parsed, and a
 # DASH stream of up to _MAX_MPD_REPRESENTATIONS must still pass.
 _MAX_EXTRACTION_FORMATS = _MAX_MPD_REPRESENTATIONS
+# The pass also rebuilds every format's label (`<format_id>-<n>` when ids
+# collide, `format` = "<format_id> - <resolution> (<format_note>)") and
+# renders the formats table several times, each row padded to the widest
+# cell of every column: text a manifest states once (an AdaptationSet @id or
+# @lang every Representation inherits, a rendition NAME every variant of its
+# group takes, a StreamIndex Name), or states for ONE format, costs its
+# length per format. A 290 kB MPD with a 100 000-character id and 2 000
+# Representations peaked at 1 GB, and so did one such id among 2 000 short
+# ones. What one extraction hands the pass is sized first, as rows x the
+# widest of each label: 20 000 formats with 200 characters of labels fit,
+# and at the cap a table is ~4 MB.
+_MAX_FORMAT_LABEL_CHARS = 4 * 1024 * 1024
+# The text cells of yt-dlp's formats table.
+_FORMAT_LABELS = ("format_id", "format_note", "format", "ext", "container",
+                  "resolution", "dynamic_range", "audio_channels", "protocol",
+                  "vcodec", "acodec", "language")
+# yt-dlp's determine_ext: what follows the last "." of an address, if it is
+# letters and digits.
+_URL_EXT = re.compile(r"[A-Za-z0-9]+$")
 _FORMAT_PASS_SENTINEL = "_fwb_format_pass_bounded"
+
+
+def _labels_too_long():
+    from yt_dlp.utils import ExtractorError
+    return ExtractorError("the stream's format names are too long",
+                          expected=True)
+
+
+def _format_label_chars(formats) -> int:
+    """The characters of the table yt-dlp renders for `formats`: its rows x
+    the widest label of each kind (never less than the labels' sum)."""
+    if not isinstance(formats, (list, tuple)):
+        return 0  # yt-dlp fails on its own
+    widest = dict.fromkeys(_FORMAT_LABELS, 0)
+    rows = 0
+    for fmt in formats:
+        if not isinstance(fmt, dict):
+            continue
+        rows += 1
+        for key in _FORMAT_LABELS:
+            value = fmt.get(key)
+            if isinstance(value, str) and len(value) > widest[key]:
+                widest[key] = len(value)
+        # What the pass fills in for a format that states none: the
+        # resolution from its sizes, the ext and the protocol from its
+        # address (yt-dlp's determine_ext and the URL's scheme).
+        chars = sum(_digits(fmt[key]) for key in ("width", "height")
+                    if isinstance(fmt.get(key), int))
+        widest["resolution"] = max(widest["resolution"], chars)
+        url = fmt.get("url")
+        if isinstance(url, str):
+            if not fmt.get("ext"):
+                ext = url.partition("?")[0].rpartition(".")[2]
+                if _URL_EXT.match(ext):
+                    widest["ext"] = max(widest["ext"], len(ext))
+            if not fmt.get("protocol"):
+                widest["protocol"] = max(widest["protocol"], url.find(":"))
+    return rows * sum(widest.values())
 
 
 def _bounded_process_video_result(original):
@@ -1509,7 +1724,12 @@ def _bounded_process_video_result(original):
         total = getattr(_DIALS.tls, "processed_formats", 0) + count
         if total > _MAX_EXTRACTION_FORMATS:
             raise _too_many_variants(_MAX_EXTRACTION_FORMATS)
+        chars = (getattr(_DIALS.tls, "label_chars", 0)
+                 + _format_label_chars(formats))
+        if chars > _MAX_FORMAT_LABEL_CHARS:
+            raise _labels_too_long()
         _DIALS.tls.processed_formats = total
+        _DIALS.tls.label_chars = chars
         return original(self, info_dict, *args, **kwargs)
     setattr(process_video_result, _FORMAT_PASS_SENTINEL, True)
     return process_video_result

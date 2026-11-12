@@ -1385,6 +1385,12 @@ def _ism_url(url, chunks, *, bitrate="128000"):
             'AudioTag="255" CodecPrivateData="1190"/>' + chunks + "</StreamIndex>")
 
 
+def _live_template(media, initialization=None):
+    init = f' initialization="{initialization}"' if initialization else ""
+    return (f'<SegmentTemplate media="{media}"{init} timescale="1" '
+            'duration="1"/>')
+
+
 @pytest.mark.parametrize("parse,xml", [
     # A 300-byte MPD: fifty segments of ten million characters each.
     (_parse_mpd, _mpd(_adaptation(
@@ -1424,9 +1430,40 @@ def _ism_url(url, chunks, *, bitrate="128000"):
     # {start time} repeated, each replaced by a 4 000-digit chunk time.
     (_parse_ism, _ism(_ism_url("{start time}" * 1000,
                                f'<c t="{"9" * 4000}" d="1" r="100"/>'))),
+    # yt-dlp keeps every `%` after an odd `$` live, whatever the run names:
+    # a width in a run that is no field prints the whole values dict.
+    (_parse_mpd, _mpd(_adaptation(_live_template("s$%2000000s$Number$.m4s")),
+                      duration="PT3S")),
+    (_parse_mpd, _mpd(_adaptation(_live_template("$x%2000000s$$Number$")),
+                      duration="PT3S")),
+    # ... also in a run nothing closes,
+    (_parse_mpd, _mpd(_adaptation(_live_template(
+        "s$Number$.m4s", initialization="i$%2000000s")), duration="PT3S")),
+    # ... as a precision, on a conversion that names its own key,
+    (_parse_mpd, _mpd(_adaptation(_live_template("$%(Number).2000000d$")),
+                      duration="PT3S")),
+    # ... and in a run that reads as a field whose opening `$` the field
+    # before it took (yt-dlp substitutes $Bandwidth$ alone in @initialization).
+    (_parse_mpd, _mpd(_adaptation(_live_template(
+        "a$b$Number$Number%(Number)2000000d$")), duration="PT3S")),
+    (_parse_mpd, _mpd(_adaptation(_live_template(
+        "s$Number$.m4s", initialization="a$b$Number$Number%2000000s$")),
+        duration="PT3S")),
+    # More fields, or more conversions inside one, than any real template.
+    (_parse_mpd, _mpd(_adaptation(_live_template("$Number$" * 65)),
+                      duration="PT3S")),
+    (_parse_mpd, _mpd(_adaptation(_live_template(
+        "$Number%5d" + "%(Number)64d" * 65 + "$")), duration="PT3S")),
+    # More numbers in one conversion's text than the width check walks.
+    (_parse_mpd, _mpd(_adaptation(_live_template(
+        "$Number%05d" + "a1" * 65 + "$")), duration="PT3S")),
 ], ids=["mpd-width", "mpd-init-width", "mpd-representation-id",
         "mpd-width-across-id", "mpd-start-number", "mpd-base-url", "ism-long-url",
-        "ism-bitrate", "ism-start-time"])
+        "ism-bitrate", "ism-start-time", "mpd-width-outside-field",
+        "mpd-width-unknown-name", "mpd-init-width-unterminated",
+        "mpd-keyed-precision", "mpd-width-after-a-shifted-field",
+        "mpd-init-width-after-a-shifted-field", "mpd-field-count",
+        "mpd-conversion-count", "mpd-conversion-numbers"])
 def test_guard_refuses_absurd_fragment_url_bytes(parse, xml):
     import time
     t0 = time.monotonic()
@@ -1477,17 +1514,21 @@ def _ism_level_number(name, value=_BIG):
     (_parse_mpd, _timeline().replace('bandwidth="1"', f'bandwidth="1" height="{_BIG}"')),
     (_parse_mpd, _timeline().replace(
         'bandwidth="1"', f'bandwidth="1" audioSamplingRate="{_BIG}"')),
+    (_parse_mpd, _timeline().replace(
+        'bandwidth="1"', f'bandwidth="1" frameRate="{_BIG}"')),
     # yt-dlp overlays the Representation on its AdaptationSet's attributes.
     (_parse_mpd, _timeline().replace("<AdaptationSet ", f'<AdaptationSet bandwidth="{_BIG}" ')
      .replace(' bandwidth="1"', "")),
     (_parse_mpd, _timeline().replace("<AdaptationSet ", f'<AdaptationSet height="{_BIG}" ')),
+    (_parse_mpd, _timeline().replace("<AdaptationSet ", f'<AdaptationSet frameRate="{_BIG}" ')),
     *((_parse_ism, _ism_level_number(name))
       for name in ("MaxWidth", "Width", "MaxHeight", "Height", "SamplingRate",
                    "Channels", "BitsPerSample", "NALUnitLengthField")),
 ], ids=["ism-duration", "ism-timescale", "ism-stream-timescale", "ism-t", "ism-d",
         "ism-r", "ism-bitrate", "mpd-t", "mpd-d", "mpd-r", "mpd-timescale",
         "mpd-start-number", "mpd-bandwidth", "mpd-width", "mpd-height",
-        "mpd-audio-sampling-rate", "mpd-set-bandwidth", "mpd-set-height",
+        "mpd-audio-sampling-rate", "mpd-frame-rate", "mpd-set-bandwidth",
+        "mpd-set-height", "mpd-set-frame-rate",
         "ism-max-width", "ism-width", "ism-max-height", "ism-height",
         "ism-sampling-rate", "ism-channels", "ism-bits-per-sample",
         "ism-nal-unit-length-field"])
@@ -1524,9 +1565,11 @@ def test_guard_admits_manifest_numbers_at_uint64_width():
     _reset_budget()
     fmts, _subs = _parse_mpd(_timeline().replace(
         'bandwidth="1"',
-        f'bandwidth="{top}" width="3840" height="2160" audioSamplingRate="44100 48000"'))
+        f'bandwidth="{top}" width="3840" height="2160" '
+        'audioSamplingRate="44100 48000" frameRate="30000/1001"'))
     assert (fmts[0]["tbr"], fmts[0]["width"], fmts[0]["height"]) == (
         int(top) / 1000, 3840, 2160)
+    assert fmts[0]["fps"] is None  # yt-dlp reads only a whole-number rate
     _reset_budget()
     fmts, _subs = _parse_ism(_ism_level_number("SamplingRate", top))
     assert fmts[0]["asr"] == int(top)
@@ -1559,6 +1602,76 @@ def test_guard_parses_real_template_widths_unchanged():
     guard = _registered_guard()
     guard["_refuse_oversized_mpd"](compat_etree_fromstring(vod.encode()))
     assert 0 < guard["_DIALS"].tls.url_bytes < guard["_MAX_FRAGMENT_URL_BYTES"]
+
+
+def test_guard_leaves_percent_escapes_outside_a_field_alone():
+    """A `%` outside a `$...$` run (the escapes of a signed query) is text to
+    yt-dlp, whatever digits follow it: it expands byte for byte."""
+    fmts, _subs = _parse_mpd(_mpd(_adaptation(_live_template(
+        "seg-$Number%05d$.m4s?sig=%3D1234567&amp;p=a%2Fb&amp;w=%2000000s")),
+        duration="PT3S"))
+    assert [f["path"] for f in fmts[0]["fragments"]] == [
+        f"seg-{i:05d}.m4s?sig=%3D1234567&p=a%2Fb&w=%2000000s" for i in (1, 2, 3)]
+
+
+@pytest.mark.parametrize("media,initialization", [
+    ("$Number$" * 64, None),
+    ("$RepresentationID$/$Number%05d$_$Bandwidth$.m4s", "$Bandwidth%05d$.mp4"),
+    ("p$$q$Number$", None),
+    ("s$%64s$Number$.m4s", None),
+    ("$x%60r$$Number$", None),
+    ("$%(Number)64d%(Number)64d$", None),
+    ("$Number%5d%(Number)64d%(Number)64d$", None),
+    ("$Number%s$Number$", None),
+    ("a$b$Number$Number%(Number)64d$", None),
+    ("s$Number$.m4s", "a$b$Number$Number%64s$"),
+], ids=["64-fields", "real", "escaped-dollar", "keyless", "unknown-name",
+        "keyed", "conversions-in-a-field", "field-before-a-bare-field",
+        "shifted-field", "init-shifted-field"])
+def test_guard_charges_every_live_template_conversion(media, initialization):
+    """An admitted template, however odd, is charged at least the bytes
+    yt-dlp builds from it: a live `%` conversion prints up to its width, the
+    values dict or a value."""
+    fmts, _subs = _parse_mpd(_mpd(_adaptation(
+        _live_template(media, initialization)), duration="PT3S"))
+    frags = fmts[0]["fragments"]
+    assert len(frags) == (4 if initialization else 3)
+    built = sum(len(f.get("path") or f.get("url")) for f in frags)
+    assert built <= _registered_guard()["_DIALS"].tls.url_bytes
+
+
+def test_guard_charges_real_template_fields_as_before():
+    """yt-dlp's own fields cost their padded width or the value's digits,
+    nothing more: a real manifest spends what it always did."""
+    guard = _registered_guard()
+    for template, extra in (("seg-$Number%05d$.m4s", 5),
+                            ("$RepresentationID$/$Time$-$Bandwidth%09d$.m4s", 4 + 9),
+                            ("a?b=%2F$$c$Number$", 4)):
+        length = len(template.replace("$RepresentationID$", "r0"))
+        assert guard["_template_bytes"](template, "r0", 4) == length + extra
+
+
+@pytest.mark.parametrize("media", [
+    "$Number$" * 7500,
+    "$Number%" + "1a" * 30000 + "$",
+], ids=["fields", "numbers-in-a-conversion"])
+def test_guard_refuses_a_dense_template_on_the_first_representation(media):
+    """A 60 KiB template of 7 500 fields, or of one field followed by 30 000
+    numbers, cost the count itself 2-7 ms per Representation: ten seconds
+    and more for 5 000 of them."""
+    import time
+    from yt_dlp.utils import compat_etree_fromstring
+    xml = _mpd('<Period><AdaptationSet mimeType="video/mp4"><SegmentTemplate '
+               f'media="{media}" timescale="1" duration="1"/>'
+               + "".join(f'<Representation id="r{i}" bandwidth="{i + 1}"/>'
+                         for i in range(5000))
+               + "</AdaptationSet></Period>", duration="PT1S")
+    doc = compat_etree_fromstring(xml.encode())
+    refuse = _registered_guard()["_refuse_oversized_mpd"]
+    t0 = time.process_time()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too long"):
+        refuse(doc)
+    assert time.process_time() - t0 < 1.0
 
 
 def test_guard_charges_fragment_url_bytes_across_manifests(monkeypatch):
@@ -1894,6 +2007,110 @@ def test_guard_refuses_a_large_comment_only_hls_master_quickly():
     assert time.monotonic() - t0 < 1.0
 
 
+# yt-dlp runs backtracking regexes over single lines of a master, each
+# quadratic in the line and holding the GIL throughout: the attribute parse
+# of an EXT-X-MEDIA / EXT-X-STREAM-INF line, the size search in its
+# RESOLUTION, an `audio...=` search over each variant's joined address, and
+# the DRM search from every key tag to the end of its line.
+_SLOW_PLAYLISTS = {
+    "resolution": lambda: ("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION="
+                           + "1" * 20_000 + "\nv.m3u8\n"),
+    "stream-inf": lambda: "#EXTM3U\n#EXT-X-STREAM-INF:" + "A" * 20_000 + "\nv.m3u8\n",
+    "media": lambda: ("#EXTM3U\n#EXT-X-MEDIA:" + "A=" * 10_000 + '"\n'
+                      "#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n"),
+    # No line is long and none lists a format: the squares add up.
+    "many-short": lambda: ("#EXTM3U\n"
+                           + ("#EXT-X-STREAM-INF:" + "A" * 238 + "\n") * 60_000),
+    "audio-uri": lambda: ("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n"
+                          + "audio" * 20_000 + "\n"),
+    "key-master": lambda: ("#EXTM3U\n#" + "#EXT-X-KEY:" * 3000 + "\n"
+                           "#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n"),
+    # The DRM search runs before yt-dlp tells a media playlist apart.
+    "key-media": lambda: (_HLS_HEAD + "#EXT-X-KEY:" * 3000 + "\na.ts\n"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SLOW_PLAYLISTS))
+def test_guard_refuses_hls_lines_that_cost_quadratic_regex_time(shape):
+    import time
+    doc = _SLOW_PLAYLISTS[shape]()
+    _parse_m3u8("#EXTM3U\n")  # the guard is loaded: not part of the timing
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError,
+                       match="line in the playlist is too long"):
+        _parse_m3u8(doc)
+    assert time.monotonic() - t0 < 0.5
+
+
+def test_guard_charges_the_audio_scan_against_the_master_address():
+    """The `audio` search runs over urljoin(master URL, line): twenty
+    ordinary variants under a redirect-sized address made of the word cost
+    over a minute."""
+    import time
+    master = "#EXTM3U\n" + "#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n" * 20
+    url = "http://cdn.example/" + "audio" * 12_000 + "/master.m3u8"
+    _parse_m3u8("#EXTM3U\n")
+    t0 = time.monotonic()
+    with pytest.raises(yt_dlp.utils.ExtractorError,
+                       match="line in the playlist is too long"):
+        _parse_m3u8_at(master, url, positional=True)
+    assert time.monotonic() - t0 < 0.5
+    # The same redirect-sized address without the word costs nothing extra.
+    _reset_budget()
+    plain = "http://cdn.example/" + "p" * 60_000 + "/master.m3u8"
+    assert len(_parse_m3u8_at(master, plain, positional=True)[0]) == 20
+
+
+def test_guard_admits_real_hls_lines():
+    """A master of 100 renditions and 200 variants with a 1.5 kB token on
+    every line under a 2 kB address spends about half the line budget, and a
+    media playlist that rotates its key on each of 20 000 segments (one tag a
+    line) is not taken for the many-keys-on-one-line shape."""
+    guard = _registered_guard()
+    token = "?token=" + "x" * 1500
+    master = ("#EXTM3U\n" + "".join(
+        f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",LANGUAGE="l{i}",NAME="Audio {i}",'
+        f'AUTOSELECT=YES,DEFAULT=NO,CHANNELS="2",'
+        f'URI="https://cdn.example/audio/a{i}/audio_{i}.m3u8{token}"\n'
+        for i in range(100)) + "".join(
+        f'#EXT-X-STREAM-INF:BANDWIDTH={i + 1}000,AVERAGE-BANDWIDTH={i + 1}000,'
+        'CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,FRAME-RATE=25.000,'
+        'AUDIO="audio",CLOSED-CAPTIONS=NONE\n'
+        f"https://cdn.example/video/audio-video/v{i}.m3u8{token}\n"
+        for i in range(200)))
+    url = "https://cdn.example/audio/master.m3u8?" + "t" * 2000
+    assert len(_parse_m3u8_at(master, url, positional=True)[0]) == 300
+    assert 0 < guard["_DIALS"].tls.line_work < guard["_MAX_M3U8_LINE_WORK"] * 0.6
+    media = _HLS_HEAD + "".join(
+        f'#EXT-X-KEY:METHOD=AES-128,URI="https://k.example/key{i}",IV=0x{i:032x}\n'
+        f"#EXTINF:6,\ns{i}.ts\n" for i in range(20_000))
+    assert media.count("KEY:") * len(media) > guard["_MAX_M3U8_KEY_WORK"]
+    assert len(_parse_m3u8(media)[0]) == 1
+    # A tag inside a line is text to yt-dlp, whatever follows it.
+    _reset_budget()
+    note = "## not a tag: #EXT-X-STREAM-INF:" + "A" * 5000 + "\n"
+    assert len(_parse_m3u8("#EXTM3U\n" + note + "v.m3u8\n")[0]) == 1
+    assert guard["_DIALS"].tls.line_work < 1000
+
+
+def test_guard_charges_hls_line_work_across_manifests(monkeypatch):
+    """Like the counts, the line work of every master one extraction parses
+    comes from one budget; a refused master spends none of it."""
+    guard = _registered_guard()
+    master = ("#EXTM3U\n" + ("#EXT-X-STREAM-INF:BANDWIDTH=1," + "A" * 71
+                             + "\nv.m3u8\n") * 10)
+    assert len(_parse_m3u8(master)[0]) == 10
+    spent = guard["_DIALS"].tls.line_work
+    assert spent >= 10 * 100 * 100
+    monkeypatch.setitem(guard, "_MAX_M3U8_LINE_WORK", 2 * spent - 1)
+    with pytest.raises(yt_dlp.utils.ExtractorError,
+                       match="line in the playlist is too long"):
+        _parse_m3u8(master)
+    assert guard["_DIALS"].tls.line_work == spent
+    _inproc_guard().observe_dials(None)
+    assert len(_parse_m3u8(master)[0]) == 10
+
+
 # ---- HLS media playlists: the download child's HlsFD turns every segment
 # line into a fragment dict before it fetches any, bounded only by the 64 MiB
 # body cap (~33 M lines, ~12 GB). The guard counts them, against the DASH
@@ -2026,6 +2243,55 @@ def test_guard_charges_hls_lines_against_the_redirected_playlist_url(
         monkeypatch.setattr(_RedirectedPlaylist, "long_path", "/vod/a.m3u8")
         assert _hls_download(monkeypatch, tmp_path, None, url=short,
                              params=proxy) == [100]
+
+
+@pytest.mark.parametrize("line", [
+    "#EXT-X-MEDIA-SEQUENCE:" + "9" * 4299,
+    "#EXT-X-MEDIA-SEQUENCE:" + "9" * 21,
+    " \t#EXT-X-MEDIA-SEQUENCE:" + "9" * 21,
+    "#EXT-X-BYTERANGE:1@" + "9" * 4299,
+    "#EXT-X-BYTERANGE:" + "9" * 21 + "@0",
+    "#EXT-X-BYTERANGE:" + "9" * 21,
+], ids=["sequence", "sequence-21", "indented", "offset", "length", "bare-length"])
+def test_guard_refuses_an_hls_media_playlist_with_an_overlong_number(
+        monkeypatch, tmp_path, line):
+    """HlsFD int()s the media sequence and both sides of a byte range and
+    keeps a number built from them per fragment: one 4 299-digit number makes
+    every fragment ~1.8 kB heavier."""
+    built = []
+    with pytest.raises(yt_dlp.utils.ExtractorError,
+                       match="number in the stream manifest is too long"):
+        built = _hls_download(monkeypatch, tmp_path,
+                              _HLS_HEAD + line + "\na\n" * 3)
+    assert built == []
+
+
+@pytest.mark.parametrize("tag", ["#EXT-X-BYTERANGE: ", "#EXT-X-BYTERANGE:@"])
+def test_guard_searches_a_line_of_hls_number_tags_once(tag):
+    """The search for an overlong number looks from each tag to the next
+    "#", not to the end of its line: 8 000 tags on one line took 13 s when
+    every one of them scanned the rest."""
+    import time
+    refuse = _registered_guard()["_refuse_oversized_hls_media"]
+    doc = _HLS_HEAD + tag * 8000 + "\na.ts\n"
+    t0 = time.process_time()
+    refuse(doc, 100)
+    assert time.process_time() - t0 < 0.5
+
+
+def test_guard_downloads_hls_playlists_with_64_bit_numbers_unchanged(
+        monkeypatch, tmp_path):
+    """Numbers at UINT64's 20 digits pass, as do the long things next to them
+    that are no number: a segment name on the line after a byte range, a
+    title, a date's fraction."""
+    big = "9" * 20
+    doc = (_HLS_HEAD + f"#EXT-X-MEDIA-SEQUENCE:{big} \r\n"
+           + '#EXT-X-MAP:URI="init.mp4",BYTERANGE="720@0"\n'
+           + f"#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00.{'0' * 30}Z\n"
+           + f"#EXTINF:6,{'t' * 500}\n#EXT-X-BYTERANGE:{big}@{big}\n"
+           + "https://cdn.example/" + "s" * 300 + ".mp4\n"
+           + "#EXTINF:6,\n#EXT-X-BYTERANGE: 1048576 @ 720\nb.mp4\n")
+    assert _hls_download(monkeypatch, tmp_path, doc) == [3]
 
 
 def test_guard_is_not_installed_without_the_hls_fragment_bound(monkeypatch):
@@ -2822,6 +3088,187 @@ def test_guard_counts_url_only_entries_in_the_format_pass(monkeypatch):
     with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
         ydl.process_ie_result(_url_only_videos(1)["entries"][0], download=False)
     assert _registered_guard()["_DIALS"].tls.processed_formats == 1
+
+
+def _labelled(kind, chars, n):
+    """`n` formats that all take their name from one `chars`-long attribute
+    (an AdaptationSet @id, a StreamIndex Name, the NAME of the rendition
+    group every variant names), through the real parser and format pass."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    name = "i" * chars
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        ie = InfoExtractor(ydl)
+        if kind == "mpd":
+            fmts, _ = ie._parse_mpd_formats_and_subtitles(compat_etree_fromstring(_mpd(
+                f'<Period><AdaptationSet mimeType="audio/mp4" id="{name}">' + "".join(
+                    f'<Representation bandwidth="{i + 1}" codecs="mp4a.40.2">'
+                    f"<BaseURL>a{i}.m4a</BaseURL></Representation>" for i in range(n))
+                + "</AdaptationSet></Period>").encode()),
+                mpd_base_url="http://cdn.example/", mpd_url="http://cdn.example/m.mpd")
+        elif kind == "ism":
+            fmts, _ = ie._parse_ism_formats_and_subtitles(compat_etree_fromstring(_ism(
+                _ism_audio('<c t="0" d="20000000"/>', levels=n).replace(
+                    'Name="audio"', f'Name="{name}"')).encode()),
+                "http://cdn.example/x.ism/Manifest")
+        else:
+            fmts, _ = ie._parse_m3u8_formats_and_subtitles(
+                f'#EXTM3U\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="g",NAME="{name}"\n'
+                + "".join(f'#EXT-X-STREAM-INF:BANDWIDTH={i + 1},VIDEO="g"\nv{i}.m3u8\n'
+                          for i in range(n)),
+                "http://cdn.example/master.m3u8", ext="mp4")
+        return ydl.process_ie_result({
+            "id": "x", "title": "t", "formats": fmts, "extractor": "generic",
+            "extractor_key": "Generic", "webpage_url": "http://cdn.example/m"},
+            download=False)["formats"]
+
+
+@pytest.mark.parametrize("kind", ["mpd", "ism", "hls"])
+def test_guard_caps_the_labels_one_extraction_copies_per_format(kind):
+    """The format pass rebuilds every format's id and label, ~5 copies of
+    text the manifest states once: 3 000 characters x 1 500 formats are ~22 MB
+    of copies unguarded. The refusal comes before any of them."""
+    import tracemalloc
+    guard = _registered_guard()
+    assert guard["_MAX_FORMAT_LABEL_CHARS"] >= 20_000 * 200
+    tracemalloc.start()
+    try:
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            _labelled(kind, 3000, 1500)
+        assert tracemalloc.get_traced_memory()[1] < 16 * 1024 * 1024
+    finally:
+        tracemalloc.stop()
+    _reset_budget()
+    assert len(_labelled(kind, 60, 300)) == 300
+
+
+def _plain_formats(n, **first):
+    """`n` direct-link formats as a scrape builds them; `first` overrides the
+    first one's fields."""
+    formats = [{"url": f"http://cdn.example/{i}.mp4", "format_id": f"f{i}",
+                "ext": "mp4", "protocol": "https"} for i in range(n)]
+    formats[0].update(first)
+    return [{k: v for k, v in f.items() if v is not None} for f in formats]
+
+
+@pytest.mark.parametrize("first", [
+    {"format_id": "i" * 10_000},
+    {"language": "l" * 10_000},
+    {"vcodec": "avc1." + "c" * 10_000},
+    {"width": 10 ** 4_000, "height": 10 ** 4_000},
+    # Fields the pass derives from the address when a format has none.
+    {"ext": None, "url": "http://cdn.example/a." + "x" * 10_000},
+    {"protocol": None, "url": "x" * 10_000 + "://cdn.example/a.mp4"},
+], ids=["format-id", "language", "codec", "resolution", "url-ext", "url-scheme"])
+def test_guard_caps_the_widest_label_times_the_formats(first):
+    """yt-dlp renders its formats table on every pass and pads each row to
+    the widest cell of every column: ONE 200 000-character id among 2 000
+    formats peaked at 1.2 GB. The budget is rows x widest, not the sum."""
+    guard = _registered_guard()
+    info = {"id": "x", "title": "t", "extractor": "generic",
+            "extractor_key": "Generic", "webpage_url": "http://cdn.example/m",
+            "formats": _plain_formats(1000, **first)}
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            ydl.process_ie_result(info, download=False)
+    assert guard["_DIALS"].tls.label_chars == 0
+    # The same thousand formats without the long one pass.
+    info["formats"] = _plain_formats(1000)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        assert len(ydl.process_ie_result(info, download=False)["formats"]) == 1000
+
+
+def test_guard_admits_the_labels_of_real_formats_at_the_variant_cap():
+    """20 000 formats with ordinary ids, codecs, notes and signed addresses
+    spend about a third of the label budget."""
+    guard = _registered_guard()
+    formats = [{
+        "format_id": f"video=4500000-{i:05d}", "ext": "mp4",
+        "container": "mp4_dash", "width": 3840, "height": 2160,
+        "vcodec": "hvc1.2.4.L153.B0", "acodec": "mp4a.40.2", "language": "en-US",
+        "format_note": "DASH video", "protocol": "http_dash_segments",
+        "url": f"https://cdn.example/v/{i}/seg.m4s?sig=" + "s" * 300,
+    } for i in range(guard["_MAX_EXTRACTION_FORMATS"])]
+    chars = guard["_format_label_chars"](formats)
+    assert 0 < chars < guard["_MAX_FORMAT_LABEL_CHARS"] * 0.6
+    # A format with no ext / protocol of its own gets them from its address.
+    bare = [{"url": "https://cdn.example/v/a.webm?sig=" + "s" * 300}]
+    assert guard["_format_label_chars"](bare) == len("webm") + len("https")
+
+
+_SCTE214 = "urn:scte:dash:scte214-extensions"
+
+
+@pytest.mark.parametrize("attrs", [
+    'mimeType="audio/{big}" codecs="mp4a.40.2"',
+    'mimeType="audio/mp4" codecs="mp4a.{big}"',
+    f'mimeType="audio/mp4" codecs="mp4a.40.2" xmlns:s="{_SCTE214}" '
+    's:supplementalCodecs="{big}"',
+], ids=["mime-type", "codecs", "supplemental-codecs"])
+def test_guard_charges_the_text_a_dash_parse_copies_per_representation(attrs):
+    """yt-dlp derives every Representation's ext, container, codecs and note
+    afresh from attributes its AdaptationSet states once: 100 000 characters
+    x 2 000 Representations were 200-470 MB before the format pass saw any."""
+    import tracemalloc
+    xml = _mpd('<Period><AdaptationSet ' + attrs.replace("{big}", "x" * 3000)
+               + ">" + "".join(
+                   f'<Representation id="r{i}" bandwidth="{i + 1}">'
+                   f"<BaseURL>a{i}.m4a</BaseURL></Representation>"
+                   for i in range(1500))
+               + "</AdaptationSet></Period>")
+    udl.guard_self_check(force=True)
+    tracemalloc.start()
+    try:
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            _parse_mpd(xml)
+        assert tracemalloc.get_traced_memory()[1] < 16 * 1024 * 1024
+    finally:
+        tracemalloc.stop()
+
+
+def test_guard_admits_the_text_of_real_dash_representations_at_the_cap():
+    from yt_dlp.utils import compat_etree_fromstring
+    guard = _registered_guard()
+    xml = _mpd('<Period><AdaptationSet mimeType="video/mp4" '
+               'codecs="hvc1.2.4.L153.B0" lang="en-US">' + "".join(
+                   f'<Representation id="video=4500000-{i:05d}" '
+                   f'bandwidth="{i + 1}"/>'
+                   for i in range(guard["_MAX_MPD_REPRESENTATIONS"]))
+               + "</AdaptationSet></Period>")
+    guard["_refuse_oversized_mpd"](compat_etree_fromstring(xml.encode()))
+    assert guard["_DIALS"].tls.variants == guard["_MAX_MPD_REPRESENTATIONS"]
+
+
+def test_guard_charges_labels_across_one_extraction(monkeypatch):
+    """A playlist's entries each run the format pass: their labels come from
+    one budget, and a refused entry spends none of it."""
+    guard = _registered_guard()
+    monkeypatch.setitem(guard, "_MAX_FORMAT_LABEL_CHARS", 1000)
+    info = {"_type": "playlist", "id": "p", "title": "p", "extractor": "generic",
+            "extractor_key": "Generic", "webpage_url": "http://cdn.example/p",
+            "entries": [
+                {"id": f"v{e}", "title": "t", "extractor": "generic",
+                 "extractor_key": "Generic", "webpage_url": "http://cdn.example/v",
+                 "formats": [{"url": f"http://cdn.example/{e}-{i}.mp4",
+                              "format_id": "i" * 60, "format_note": "n" * 60}
+                             for i in range(5)]}
+                for e in range(2)]}
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        # yt-dlp reports a failed entry as a DownloadError.
+        with pytest.raises(yt_dlp.utils.DownloadError,
+                           match="format names are too long"):
+            ydl.process_ie_result(info, download=False)
+    # The first entry's five formats: id, note, and the ext and protocol
+    # their addresses spell.
+    assert guard["_DIALS"].tls.label_chars == 5 * (60 + 60 + len("mp4") + len("http"))
+    assert guard["_DIALS"].tls.processed_formats == 5
+
 
 def test_guard_does_not_charge_the_format_pass_to_the_manifest_budget(monkeypatch):
     """DASH and HLS formats are charged once, where their manifest is parsed:
