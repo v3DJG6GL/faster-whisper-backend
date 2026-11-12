@@ -65,6 +65,27 @@ def test_undecodable_file_warning_carries_no_secret_bytes(
     assert "0x" not in warning and "position" not in warning
 
 
+@pytest.mark.parametrize("data", [b"", b"  \n", b"\xef\xbb\xbf\r\n"],
+                         ids=["empty", "blank", "bom-only"])
+def test_an_empty_file_warns_that_the_secret_is_not_set(
+        monkeypatch, tmp_path, data, restore_config):
+    """An empty secret file read like a set one and said nothing; for the
+    bootstrap key that leaves the server in OPEN mode with no line naming
+    the file."""
+    _reload_with_secret_file(monkeypatch, tmp_path, data)
+    assert config.BOOTSTRAP_ADMIN_KEY is None
+    warning = [m for m in config._ENV_WARNINGS if m.startswith(_VAR + "_FILE=")]
+    assert len(warning) == 1, config._ENV_WARNINGS
+    assert "is empty" in warning[0] and "OPEN mode" in warning[0]
+    # The restart still drops the var so the next process reads the file again.
+    assert _VAR in config._ENV_FROM_SECRET_FILES
+
+
+def test_a_filled_file_adds_no_warning(monkeypatch, tmp_path, restore_config):
+    _reload_with_secret_file(monkeypatch, tmp_path, b"sk-from-file\n")
+    assert not [m for m in config._ENV_WARNINGS if m.startswith(_VAR + "_FILE=")]
+
+
 def test_helper_leaves_no_secret_behind(tmp_path):
     before = os.environ.get(_VAR)
     with pytest.MonkeyPatch.context() as mp:

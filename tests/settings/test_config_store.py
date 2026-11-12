@@ -897,6 +897,42 @@ def test_load_overrides_non_object_returns_empty(tmp_path):
     assert cs.load_overrides(str(p)) == {}
 
 
+_HF_TOKEN = "hf_" + "AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+
+
+@pytest.mark.parametrize("stored, named", [
+    # A whole-file validator reports the stored document as its input.
+    ({"HF_TOKEN": _HF_TOKEN, "SESSION_COOKIE_NAME": "a",
+      "SESSION_CSRF_COOKIE_NAME": "a"}, "SESSION_COOKIE_NAME"),
+    ({"CAPTURES_SAMPLE_MAX_DURATION_S": 1, "DIARIZATION_ENABLED": True,
+      "HF_TOKEN": _HF_TOKEN}, "CAPTURES_SAMPLE_MAX_DURATION_S"),
+    # A field error on the token itself reports the value whole.
+    ({"HF_TOKEN": [_HF_TOKEN]}, "HF_TOKEN:"),
+], ids=["whole-file-head", "whole-file-tail", "token-field"])
+def test_load_overrides_validation_failure_prints_no_stored_values(
+        tmp_path, capsys, stored, named):
+    """The stderr block names the key and the reason; pydantic's own text
+    appends an excerpt of the input, which for a whole-file validator is the
+    stored document with HF_TOKEN in it."""
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps(stored, sort_keys=True), encoding="utf-8")
+    assert cs.load_overrides(str(p)) == {}
+    err = capsys.readouterr().err
+    assert "failed validation; ignoring overrides" in err and named in err
+    assert "input_value" not in err
+    assert not any(part in err for part in (_HF_TOKEN[:11], _HF_TOKEN[-22:]))
+
+
+def test_load_overrides_whole_file_failure_is_labelled(tmp_path, capsys):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"SESSION_COOKIE_NAME": "a",
+                             "SESSION_CSRF_COOKIE_NAME": "a"}), encoding="utf-8")
+    assert cs.load_overrides(str(p)) == {}
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0].endswith("failed validation; ignoring overrides:")
+    assert lines[1].startswith("  (whole file): ") and "SESSION_COOKIE_NAME" in lines[1]
+
+
 @pytest.mark.parametrize("rules", [
     [{"name": ["x"], "type": "regex-list", "entries": []}],
     [{"name": "r", "type": "regex-list",

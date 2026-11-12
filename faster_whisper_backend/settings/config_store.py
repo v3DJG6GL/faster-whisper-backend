@@ -319,7 +319,12 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     try:
         validated = settings_schema.AdminConfig.model_validate(raw)
     except ValidationError as e:
-        print(f"[config_store] {path} failed validation; ignoring overrides:\n{e}",
+        # Key and reason only: str(e) appends an excerpt of the input, which
+        # for a whole-file validator is the stored document, HF_TOKEN included.
+        detail = "\n".join(
+            f"  {x['loc'] or '(whole file)'}: {x['msg']}"
+            for x in settings_schema.format_validation_errors(e))
+        print(f"[config_store] {path} failed validation; ignoring overrides:\n{detail}",
               file=sys.stderr)
         return {}
     out = validated.model_dump(exclude_none=True)

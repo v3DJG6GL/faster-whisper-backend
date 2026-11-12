@@ -1619,6 +1619,14 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
                     else "utf-8-sig")
             os.environ[_secret] = _buf.decode(_enc).strip()
             _ENV_FROM_SECRET_FILES.add(_secret)
+            if not os.environ[_secret]:
+                # An empty file reads like an unset variable: say so, or an
+                # empty bootstrap-key secret leaves OPEN mode unexplained.
+                _ENV_WARNINGS.append(
+                    f"{_secret}_FILE={_path!r} is empty; {_secret} is NOT set"
+                    + (" - no admin key is created from it; while no admin key "
+                       "exists the server runs in OPEN mode"
+                       if _secret.endswith("BOOTSTRAP_ADMIN_KEY") else ""))
         except (OSError, ValueError) as _exc:
             # A codec error's text names the offending byte and its offset,
             # i.e. part of the secret: only the encoding tried is reported.
