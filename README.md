@@ -637,6 +637,8 @@ The 15 seeded cards handle orthography normalization (`ß`→`ss`), Whisper nois
 
 **Ordering invariants:** `de-dictation-map` multi-word phrases must precede their single-word components (the alternation regex is rebuilt longest-first, so the longest phrase wins); the `terminal` trim rule is always last.
 
+**Time limit:** the rules run in three small helper processes, one round trip per transcript, with a deadline of 2 s plus 0.2 ms per input character (at most 60 s). Saving a rule already refuses patterns that look slow, but that check can only predict; a rule that still does not finish in time on some text is skipped from then on, named in a `[pipeline]` WARNING and shown in the trace as `[TIME LIMIT — not applied]`, and the transcript is formatted without it. It runs again once the rules are saved or the server restarts. If the helper processes cannot be started, the rules run inside the server process as before, and the log says so. `PIPELINE_RULE_ISOLATION` (`/settings` → Server, restart required; default on) switches the helper processes off.
+
 **Editing — the dedicated editor at `/settings/pipeline`** (`/settings` keeps every
 other section and links there in its place). One rule list
 shows the **effective** pipeline (config.json overlaid by config.local.json). Edits

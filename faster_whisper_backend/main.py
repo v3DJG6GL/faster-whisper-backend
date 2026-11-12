@@ -199,6 +199,7 @@ from faster_whisper_backend.admin import restart_service
 # log_setup.install(), because its import compiles the rules and logs any bad
 # regex — see pipeline/engine.py.
 from faster_whisper_backend.pipeline import engine as pl_engine
+from faster_whisper_backend.pipeline import rule_helper as pl_rule_helper
 
 
 # The per-request receipt, the post-decode guard helpers and the whisper model
@@ -650,6 +651,13 @@ async def lifespan(app: FastAPI):
             logger.warning("Startup jobs reconcile failed: %s", _je)
         _startup_step(_jobs_store.sweep_retention, "jobs sweep")
 
+    # The helper processes the pipeline rules run in under a time limit.
+    # start() only launches them; a walk that comes first waits for one, and
+    # if none can be started the rules run in this process as before. Last
+    # before serving, so a startup that fails above leaves no child behind.
+    if getattr(cfg, "PIPELINE_RULE_ISOLATION", True):
+        pl_rule_helper.start()
+
     yield
 
     _cancel = loop_lock.cancel_and_wait
@@ -695,6 +703,8 @@ async def lifespan(app: FastAPI):
     # Best-effort NVML shutdown so the service exit doesn't leak driver
     # handles. Safe to call when NVML didn't init.
     system_stats.shutdown()
+    # Last: nothing above walks rules any more. Kills and reaps the helpers.
+    await asyncio.to_thread(pl_rule_helper.shutdown)
 
 
 # docs_url/redoc_url/openapi_url=None disables FastAPI's built-in (unauthenticated)

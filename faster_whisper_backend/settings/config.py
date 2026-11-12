@@ -363,6 +363,13 @@ MEDIA_MAX_BYTES = _D("MEDIA_MAX_BYTES")
 # non-JSON bodies at 256 MiB and JSON bodies at MAX_JSON_BODY_BYTES. 10 GiB.
 MAX_REQUEST_BYTES = _D("MAX_REQUEST_BYTES")
 
+# Run the post-processing rules in a small pool of helper processes with a
+# time limit per transcript (pipeline/rule_helper.py), so a rule that never
+# finishes on some text is skipped and logged instead of freezing the server.
+# Off = the rules run inside the server process, without a limit. Read at
+# startup.
+PIPELINE_RULE_ISOLATION: bool = _D("PIPELINE_RULE_ISOLATION")
+
 
 # =============================================================================
 # Whisper transcribe defaults (passed to WhisperModel.transcribe)

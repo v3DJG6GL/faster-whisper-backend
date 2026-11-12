@@ -135,6 +135,7 @@
   "OUTPUT_SUFFIX": "",
   "OVERRIDE_PROFILES": {},
   "PATIENCE": 1.0,
+  "PIPELINE_RULE_ISOLATION": true,
   "PRELOAD_MODELS": [
     "Systran/faster-whisper-large-v2",
     "Systran/faster-whisper-large-v3"

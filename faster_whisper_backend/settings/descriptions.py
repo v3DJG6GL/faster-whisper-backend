@@ -673,6 +673,13 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Content-Length before the body is read. Keep it above "
         "MEDIA_MAX_BYTES so uploads hit their own cap first. Other non-JSON "
         "bodies keep a 256 MiB backstop regardless. Default 10 GiB.",
+    "PIPELINE_RULE_ISOLATION":
+        "Run the post-processing rules in a few small helper processes with "
+        "a time limit per transcript. A rule that does not finish in time is "
+        "skipped from then on (until the rules are saved again or the server "
+        "restarts) and named in the log, instead of freezing the whole "
+        "server. Off: the rules run inside the server process, without a "
+        "time limit. Default on.",
 
     "ADMIN_WEBUI_ALLOWED_HOSTS":
         "IP/CIDR allowlist for the admin pages (/settings, /settings/api-keys, "

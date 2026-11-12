@@ -76,6 +76,14 @@ with open(os.path.join(os.path.dirname(os.path.dirname(
 for _k in _DATA_PATH_ENV:
     os.environ[_k] = ""
 
+# The app's lifespan starts the pipeline's rule helper processes
+# (pipeline/rule_helper.py) unless this is off. Hundreds of tests run a
+# TestClient lifespan, and three child interpreters each would cost the suite
+# minutes of CPU; with it off the rules run in-process, the same walk code.
+# The helper path has its own tests (tests/pipeline/test_rule_time_limit.py),
+# which start a pool themselves.
+os.environ["WHISPER_PIPELINE_RULE_ISOLATION"] = "false"
+
 RATE = 16000
 
 

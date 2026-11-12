@@ -6,14 +6,22 @@ them to a transcript
 seam_culprit that read the same rule selection. Callers go through the module
 attribute (``pl_engine._postprocess_text(...)``): rebuild_caches rebinds
 _COMPILED_RULES, so a ``from ... import`` of it would go stale.
+
+Once the app has started the helper pool (pipeline/rule_helper.py), every
+walk that executes rule patterns on request text (_postprocess_text,
+seam_culprit) runs in a helper process under a deadline: see "Time limit"
+below. Without a pool the same walk runs in this process.
 """
 import functools
 import itertools
 import logging
+import pickle
 import re
 import threading
 
+from faster_whisper_backend.core.store_common import log_safe as _log_safe
 from faster_whisper_backend.pipeline import dictation_map as _dictation_map
+from faster_whisper_backend.pipeline import rule_helper as _rule_helper
 from faster_whisper_backend.pipeline import seam_holdback as _seam_holdback
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import schema as settings_schema
@@ -78,6 +86,11 @@ class _CompiledRule:
     # regex-list only: the parsed replacement template, [literal, group,
     # literal, ...] (re._parser.parse_template), for that exact count.
     template: "list | None" = _dc_field(default=None, compare=False)
+    # What a callback replacer was built from, when it is a closure: the map
+    # (callback:map) or the lower-cased wordlist (callback:lowercase-wordlist).
+    # A helper process rebuilds the replacer from it (_rule_spec): a closure
+    # cannot cross a process boundary.
+    source: object = _dc_field(default=None, compare=False)
 
 
 _COMPILED_RULES: list[_CompiledRule] = []
@@ -250,7 +263,7 @@ def rebuild_caches() -> None:
 
 def _rebuild_caches_locked() -> None:
     global _COMPILED_RULES, _TERMINAL_NAME, _TERMINAL_LABEL, _TERMINAL_CARD_NO, _RULES_GEN
-    global _WARM_SPECS
+    global _WARM_SPECS, _QUARANTINE
     compiled: list[_CompiledRule] = []
     terminal_name = _TERMINAL_NAME
     terminal_label = _TERMINAL_LABEL
@@ -299,6 +312,7 @@ def _rebuild_caches_locked() -> None:
             continue
 
         map_lookup = None
+        source = None
         try:
             if rtype == "callback:map":
                 # Alternation regex from the map keys, longest-first,
@@ -310,6 +324,9 @@ def _rebuild_caches_locked() -> None:
                 if not m:
                     continue
                 cre, payload, map_lookup = _dictation_map.compile_map(m)
+                # A copy: the helper's replacer is built from it later, and
+                # must be built from what this compile saw.
+                source = dict(m)
             else:
                 pattern = rule.get("pattern", "")
                 if not pattern:
@@ -318,6 +335,7 @@ def _rebuild_caches_locked() -> None:
                 if rtype == "callback:lowercase-wordlist":
                     wordlist = frozenset(w.lower() for w in (rule.get("wordlist", []) or []))
                     payload = _make_lowercase_wordlist_replacer(wordlist)
+                    source = wordlist
                 elif rtype == "callback:dedup":
                     payload = _dedup_callback
                 elif rtype == "callback:upper":
@@ -334,7 +352,8 @@ def _rebuild_caches_locked() -> None:
                                        rtype, cre, payload, rule_enabled, card_no,
                                        languages=rule_langs, repeat=rule_repeat,
                                        map_lookup=map_lookup,
-                                       max_growth=_callback_growth(rtype, map_lookup)))
+                                       max_growth=_callback_growth(rtype, map_lookup),
+                                       source=source))
     warm = _warm_holdback_specs(compiled)
     # Publish order: warm specs, rules, gen. holdback_start reads the gen,
     # then the rules, then the warm specs, so a caller that sees the new rules
@@ -348,6 +367,9 @@ def _rebuild_caches_locked() -> None:
     _TERMINAL_LABEL = terminal_label
     _TERMINAL_CARD_NO = terminal_card_no
     _RULES_GEN = new_gen
+    # A quarantine names rows of the rule set it was made for (_quarantine):
+    # the new set starts without one, and the old list is let go.
+    _QUARANTINE = (None, frozenset())
     _dictation_map.retain_live_maps(
         r.pattern for r in compiled if r.type == "callback:map")
     # Older-gen specs are never hit again but hold MBs each on a large map;
@@ -611,6 +633,8 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     The output is bounded by output_bound(len(text)): the rule that would
     pass it is not applied (traced "[OUTPUT BOUND — not applied]") and the
     remaining rules are skipped. `bound` tightens that bound further.
+    A rule quarantined for running past the time limit (see "Time limit"
+    below) is traced "[TIME LIMIT — not applied]"; the rules after it run.
     `budget` does too, for a caller walking many pieces of one text
     separately (one walk per word or per cue): every walk gets the same
     WalkBudget, is bounded by what is left of it and is charged the longest
@@ -646,20 +670,44 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     """
     exclude, include = _scoping(model_name, ident, extra_excludes)
     bound = output_bound(len(text)) if bound is None else min(bound, output_bound(len(text)))
+    if budget is not None:
+        bound = min(bound, budget.left)
+    rules = _COMPILED_RULES
+    terminal = (_TERMINAL_NAME, _TERMINAL_LABEL, _TERMINAL_CARD_NO)
+    pool = _rule_helper._POOL
+    if pool is not None:
+        out = _walk_isolated(pool, text, rules, terminal, exclude, include,
+                             model_name, language, bound, trace, budget)
+        if out is not _IN_PROCESS:
+            return out
+    return _walk(text, rules, terminal, exclude, include, model_name, language,
+                 bound, trace, budget, _skip_for(rules), None, logger.warning)
+
+
+def _walk(text: str, rules: "list[_CompiledRule]", terminal: "tuple[str, str, int]",
+          exclude: "set[str]", include: "set[str]", model_name: "str | None",
+          language: "str | None", bound: int, trace: "list | None",
+          budget: "WalkBudget | None", skip: "frozenset[int]", mark, warn) -> str:
+    """The walk behind _postprocess_text, on an explicit rule set: this
+    process's (_COMPILED_RULES) or, in a helper process, the one its parent
+    sent. `skip` holds the indices into `rules` of the quarantined rows (see
+    _quarantine); `mark` is the helper's progress slot, written with the
+    index of each row before it runs, or None in-process; `warn` takes what
+    the walk would log (a helper hands it to its parent to log)."""
     peak = len(text)
     if budget is not None:
         # Charged as the walk grows, so a rule that raises mid-walk leaves
         # what was built paid for.
-        bound = min(bound, budget.left)
         budget.left -= peak
     capped = False
     memo = [None, False, None] if trace is not None else None
-    for card in _cards(_COMPILED_RULES):
+    base = 0
+    for card in _cards(rules):
         # A skipped card changes nothing, so it is traced once and left
         # after its first pass.
         for pass_no in range(1, _card_passes(card) + 1):
             card_in = text
-            for rule in card:
+            for idx, rule in enumerate(card, base):
                 # Step number mirrors the /settings/pipeline card position
                 # (`#P` / `#P.S`), NOT the flat index over the expanded
                 # compiled list; the label of a repeat pass names the pass.
@@ -678,6 +726,16 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                         _trace_push(trace, _trace_row(
                             f"{ordinal} {label} [{why}]", text, text, memo))
                     continue
+                if idx in skip:
+                    # Quarantined (_quarantine): it ran past the time limit
+                    # on an earlier walk of this rule set.
+                    if trace is not None and pass_no == 1:
+                        _trace_push(trace, _trace_row(
+                            f"{ordinal} {label} [TIME LIMIT — not applied]",
+                            text, text, memo))
+                    continue
+                if mark is not None:
+                    mark[0] = idx
                 forced_in = rule.name in include
                 before = text
                 out = _apply_bounded(rule, before, bound)
@@ -685,7 +743,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                     # This rule would pass the output bound (see below): it
                     # is not applied, and the pipeline stops on the text it
                     # was handed.
-                    logger.warning(
+                    warn(
                         "[pipeline] output would exceed %d chars at rule %r — it and "
                         "the remaining rules skipped", bound, rule.name)
                     if trace is not None:
@@ -715,7 +773,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                 # _apply_bounded refuses the rule that would pass it; this
                 # length check is the backstop. No real rule set comes near it.
                 if len(text) > bound:
-                    logger.warning(
+                    warn(
                         "[pipeline] output exceeded %d chars at rule %r — remaining "
                         "rules skipped", bound, rule.name)
                     capped = True
@@ -724,18 +782,22 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                 break
         if capped:
             break
-    term_ordinal = _rule_ordinal(_TERMINAL_CARD_NO)
-    if _TERMINAL_NAME in exclude:
+        base += len(card)
+    if mark is not None:
+        mark[0] = -1
+    terminal_name, terminal_label, terminal_card_no = terminal
+    term_ordinal = _rule_ordinal(terminal_card_no)
+    if terminal_name in exclude:
         if trace is not None:
             _trace_push(trace, _trace_row(
-                f"{term_ordinal} {_TERMINAL_LABEL} [EXCLUDED for {model_name}]",
+                f"{term_ordinal} {terminal_label} [EXCLUDED for {model_name}]",
                 text, text, memo))
     else:
         before_trim = text
         text = text.lstrip(" \t\r").rstrip(" \t\r")
         if trace is not None and before_trim != text:
             _trace_push(trace, _trace_row(
-                f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text, memo))
+                f"{term_ordinal} {terminal_label}", before_trim, text, memo))
     return text
 
 
@@ -818,14 +880,33 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
     either text past its output_bound (where the pipeline itself stops), so
     a compounding rule set cannot run on unbounded strings here."""
     exclude, include = _scoping(model_name, ident)
+    rules = _COMPILED_RULES
+    bounds = (output_bound(len(prefix_raw)), output_bound(len(full_raw)))
+    pool = _rule_helper._POOL
+    if pool is not None:
+        out = _seam_isolated(pool, prefix_raw, full_raw, bounds, rules, exclude,
+                             include, language)
+        if out is not _IN_PROCESS:
+            return out
+    return _seam_walk(prefix_raw, full_raw, bounds, rules, exclude, include, language,
+                      _skip_for(rules), None)
+
+
+def _seam_walk(prefix_raw: str, full_raw: str, bounds: "tuple[int, int]",
+               rules: "list[_CompiledRule]", exclude: "set[str]", include: "set[str]",
+               language: "str | None", skip: "frozenset[int]", mark) -> str:
+    """The walk behind seam_culprit on an explicit rule set; `bounds` are the
+    two texts' output bounds, `skip` and `mark` as in _walk."""
     a, b = prefix_raw, full_raw
-    ba, bb = output_bound(len(prefix_raw)), output_bound(len(full_raw))
+    ba, bb = bounds
 
     def extends(pa: str, pb: str) -> bool:
         return pb.lstrip(" \t\r").startswith(pa.lstrip(" \t\r").rstrip(" \t\r"))
 
     ok = extends(a, b)
-    for card in _cards(_COMPILED_RULES):
+    base = 0
+    for card in _cards(rules):
+        first, base = base, base + len(card)
         if not _rule_runs(card[0], exclude, include, language):
             continue
         # Both texts get the passes _postprocess_text gives each: a pass that
@@ -833,7 +914,11 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
         # so walking both until neither changes equals two separate walks.
         for _pass in range(_card_passes(card)):
             a_in, b_in = a, b
-            for rule in card:
+            for idx, rule in enumerate(card, first):
+                if idx in skip:
+                    continue
+                if mark is not None:
+                    mark[0] = idx
                 na, nb = _apply_bounded(rule, a, ba), _apply_bounded(rule, b, bb)
                 if na is None or nb is None or len(na) > ba or len(nb) > bb:
                     return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label} (output bound hit)"
@@ -847,16 +932,437 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
     return "none found" if ok else "raw text already diverges"
 
 
-# Compile the configured rules once at import (callers never see an empty list).
-rebuild_caches()
+# ---------------------------------------------------------------------------
+# Time limit: walks in a helper process
+# ---------------------------------------------------------------------------
+#
+# A rule pattern is user-editable, `re` cannot be interrupted, and the
+# save-time screen (pipeline/regex_guard.py) only predicts from a pattern's
+# shape whether it can be slow. So with the helper pool running, a walk is one
+# round trip to a helper process (pipeline/rule_helper.py) with a deadline:
+#
+#   * Scoping, the output bound and the WalkBudget are resolved here; the
+#     helper gets plain values and sends back the text, the trace rows, what
+#     to charge the budget and what to log. It runs the same _walk on the same
+#     rules, so a walk that finishes in time gives what the in-process walk
+#     gives.
+#   * The helper's rules are this process's compiled rules, sent over the
+#     connection (_shipment) and named by a token every request carries: a
+#     helper that holds another rule set is sent the current one first, in
+#     the same exchange, so no walk runs on stale rules and no helper reads
+#     the config files for them.
+#   * Before each rule the helper writes the rule's index into a shared slot.
+#     A walk past its deadline has its helper killed, the rule in the slot
+#     quarantined (_quarantine: skipped by every later walk of this rule set,
+#     logged once, traced "[TIME LIMIT — not applied]") and is redone without
+#     it, at most _WALK_ATTEMPTS times in all.
+#   * No pool, no free helper, or a rule set that cannot be sent: the walk
+#     runs in this process as it always did (logged where it is a fault).
+#
+# In-process on purpose: holdback_start (no rule pattern runs there, only the
+# map keys are read) and rebuild_caches (it compiles, it does not match).
+
+# A walk's deadline: a floor plus an allowance per input character, capped.
+# Measured in a helper, the factory rules take about 0.5 µs per character
+# (median 0.16 / 1.1 / 10 / 26 ms at 200 / 2 000 / 20 000 / 50 000
+# characters); with every core of the box busy at the same time the slowest
+# walk seen took 20 / 18 / 88 / 256 ms. The deadline (2.0 / 2.4 / 6 / 12 s at
+# those sizes) is 47x or more above that worst case, so only a rule that
+# would not finish at all is cut: a quarantined rule changes what users get
+# until the rules are next saved, and must not come from a busy box.
+_DEADLINE_FLOOR_S = 2.0
+_DEADLINE_PER_CHAR_S = 2e-4
+_DEADLINE_MAX_S = 60.0
+# How long a helper may take to compile a rule set it is sent.
+_LOAD_TIMEOUT_S = 60.0
+# Most attempts one walk makes in a helper. Each attempt that passes the
+# deadline quarantines one rule, so a walk waits for at most this many
+# deadlines; past them it returns its input, traced.
+_WALK_ATTEMPTS = 3
+
+# How many helpers one walk may lose (dead, not timed out) before it stops
+# asking for another.
+_LOST_HELPER_RETRIES = 6
+
+# Returned by the isolated runners for "run it in this process".
+_IN_PROCESS = object()
+_NO_SKIP: "frozenset[int]" = frozenset()
+# Guards _QUARANTINE and _SHIPPED updates (reads go without it).
+_ISOLATION_LOCK = threading.Lock()
+# (rule set, indices of its quarantined rows). The rule set is the
+# _COMPILED_RULES list object itself: a rebuild binds a new list, which ends
+# the quarantine without anything to clear.
+_QUARANTINE: "tuple[list | None, frozenset[int]]" = (None, frozenset())
+# The rule set last prepared for the helpers: (rules, terminal, token, load
+# request), the request None when the set cannot be sent (_shipment).
+_SHIPPED: "tuple | None" = None
+_SHIP_TOKENS = itertools.count(1)
+# Helper process only: (token, rules, terminal) of the rule set it holds.
+_HELPER_SET: "tuple | None" = None
+
+
+def walk_deadline(n: int) -> float:
+    """Seconds a walk over `n` input characters may take in a helper. The
+    constants are read at call time."""
+    return min(_DEADLINE_MAX_S, _DEADLINE_FLOOR_S + _DEADLINE_PER_CHAR_S * n)
+
+
+def _skip_for(rules: "list[_CompiledRule]") -> "frozenset[int]":
+    """The quarantined row indices of `rules` (empty for any other rule set
+    than the one the quarantine was made for)."""
+    q_rules, q = _QUARANTINE
+    return q if q_rules is rules else _NO_SKIP
+
+
+def _quarantine(rules: "list[_CompiledRule]", idx: int, why: str) -> None:
+    """Skip row `idx` of `rules` in every later walk of this rule set, and
+    log it once. The quarantine lasts until the rules are compiled again (any
+    save of the pipeline rules, or a restart)."""
+    global _QUARANTINE
+    if not 0 <= idx < len(rules):
+        return
+    with _ISOLATION_LOCK:
+        q = _skip_for(rules)
+        if idx in q:
+            return
+        _QUARANTINE = (rules, q | {idx})
+    rule = rules[idx]
+    logger.warning(
+        "[pipeline] rule %s %r (%s) %s — it is skipped from now on, until the "
+        "pipeline rules are saved again or the server restarts",
+        _rule_ordinal(rule.card_no, rule.sub_no), _log_safe(rule.name),
+        _log_safe(rule.label), why)
+
+
+def _rule_spec(rule: _CompiledRule) -> tuple:
+    """`rule` as plain values a helper rebuilds it from (_rule_from_spec).
+    ValueError for a replacer that cannot be rebuilt there (a callable that
+    is neither one of this module's nor built from `rule.source`)."""
+    payload = rule.payload
+    if isinstance(payload, str):
+        how, src = "template", payload
+    elif payload is _dedup_callback:
+        how, src = "dedup", None
+    elif payload is _upper_callback:
+        how, src = "upper", None
+    elif rule.type == "callback:map" and isinstance(rule.source, dict):
+        how, src = "map", rule.source
+    elif rule.type == "callback:lowercase-wordlist" and isinstance(rule.source, frozenset):
+        how, src = "wordlist", rule.source
+    else:
+        raise ValueError(f"rule {rule.name!r} has a replacer a helper cannot rebuild")
+    return (how, src, rule.pattern.pattern, rule.pattern.flags, rule.name, rule.label,
+            rule.type, rule.enabled, rule.card_no, rule.sub_no, rule.languages,
+            rule.repeat, rule.max_growth, rule.template)
+
+
+def _rule_from_spec(spec: tuple) -> _CompiledRule:
+    """Helper side of _rule_spec. The pattern is compiled from the parent's
+    pattern source and flags, and a map's pattern must come out as the
+    parent's did: the two processes run the same module, so anything else
+    is refused rather than run."""
+    (how, src, source, flags, name, label, rtype, enabled, card_no, sub_no,
+     languages, repeat, max_growth, template) = spec
+    payload: object
+    if how == "map":
+        pattern, payload, _lookup = _dictation_map.compile_map(src)
+    else:
+        pattern = re.compile(source, flags)
+        if how == "template":
+            payload = src
+        elif how == "dedup":
+            payload = _dedup_callback
+        elif how == "upper":
+            payload = _upper_callback
+        elif how == "wordlist":
+            payload = _make_lowercase_wordlist_replacer(src)
+        else:
+            raise ValueError(f"rule {name!r}: unknown replacer kind {how!r}")
+    if pattern.pattern != source or pattern.flags != flags:
+        raise ValueError(f"rule {name!r} compiles differently in the helper")
+    return _CompiledRule(name, label, rtype, pattern, payload, enabled, card_no, sub_no,
+                         languages, repeat, max_growth=max_growth, template=template)
+
+
+def _shipment(rules: "list[_CompiledRule]",
+              terminal: "tuple[str, str, int]") -> "tuple[int, bytes] | None":
+    """(token, load request) for this rule set, built once per set; None when
+    it cannot be sent, and its walks run in-process."""
+    global _SHIPPED
+    shipped = _SHIPPED
+    if shipped is None or shipped[0] is not rules or shipped[1] != terminal:
+        with _ISOLATION_LOCK:
+            shipped = _SHIPPED
+            if shipped is None or shipped[0] is not rules or shipped[1] != terminal:
+                token = next(_SHIP_TOKENS)
+                try:
+                    request = pickle.dumps(
+                        ("load", token, terminal, [_rule_spec(r) for r in rules]), 5)
+                except Exception as exc:  # noqa: BLE001 - unsendable -> in-process
+                    request = None
+                    logger.warning(
+                        "[pipeline] the rules cannot be sent to a helper process (%s) — "
+                        "they run inside the server process without a time limit", exc)
+                shipped = _SHIPPED = (rules, terminal, token, request)
+    return None if shipped[3] is None else (shipped[2], shipped[3])
+
+
+def _unshippable(rules: "list[_CompiledRule]", terminal: "tuple[str, str, int]",
+                 why: str) -> None:
+    """Stop sending this rule set to helpers: one refused or failed to load
+    it. Its walks run in-process."""
+    global _SHIPPED
+    with _ISOLATION_LOCK:
+        shipped = _SHIPPED
+        if (shipped is None or shipped[0] is not rules or shipped[1] != terminal
+                or shipped[3] is None):
+            return
+        _SHIPPED = (rules, terminal, shipped[2], None)
+    logger.warning(
+        "[pipeline] a helper process could not load the rules (%s) — they run "
+        "inside the server process without a time limit", _log_safe(why))
+
+
+def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, int]",
+               n_chars: int, request):
+    """Run one request in a helper under walk_deadline(n_chars).
+
+    `request(token, skip)` builds the request tuple; it is rebuilt for every
+    attempt because a timed-out attempt adds to the quarantine. Returns the
+    helper's reply tuple, _IN_PROCESS when the caller has to run the walk
+    itself, or None when no attempt finished. Never raises."""
+    shipment = _shipment(rules, terminal)
+    if shipment is None:
+        return _IN_PROCESS
+    token, load_request = shipment
+    deadline = walk_deadline(n_chars)
+    died_at = None
+    in_rule = False
+    stale = lost = attempts = 0
+    while attempts < _WALK_ATTEMPTS:
+        helper = pool.acquire()
+        if helper is None:
+            # A pool shut down under this walk took its helper mid-rule: the
+            # rule may be one that never finishes, so the walk is not redone
+            # in a process that is about to stop (or in the next test).
+            return None if in_rule and pool.closed else _IN_PROCESS
+        loaded = helper.token == token
+        try:
+            if not loaded:
+                reply = pickle.loads(_rule_helper.call(helper, load_request, _LOAD_TIMEOUT_S))
+                if reply[0] != "ok":
+                    pool.release(helper)
+                    _unshippable(rules, terminal, str(reply[-1]))
+                    return _IN_PROCESS
+                helper.token = token
+                loaded = True
+            helper.mark[0] = -1
+            reply = pickle.loads(_rule_helper.call(
+                helper, pickle.dumps(request(token, _skip_for(rules)), 5), deadline))
+        except _rule_helper.HelperTimeout:
+            at = helper.mark[0]
+            pool.discard(helper)
+            if not loaded:
+                _unshippable(rules, terminal, f"no answer in {_LOAD_TIMEOUT_S:g} s")
+                return _IN_PROCESS
+            attempts += 1
+            if at >= 0:
+                in_rule = True
+                _quarantine(rules, at, f"ran past the {deadline:.3g} s time limit")
+            else:
+                logger.warning(
+                    "[pipeline] a rule walk passed its %.3g s time limit outside "
+                    "any rule", deadline)
+            continue
+        except _rule_helper.HelperGone as exc:
+            # A helper that died between walks (or was killed from outside)
+            # is replaced and the walk redone. One that dies twice in the
+            # same rule of this walk is that rule's doing.
+            at = helper.mark[0] if loaded else -1
+            pool.discard(helper)
+            in_rule = in_rule or at >= 0
+            if at >= 0 and at == died_at:
+                attempts += 1
+                _quarantine(rules, at, "ended its helper process twice")
+            else:
+                lost += 1
+                logger.warning("[pipeline] a rule helper process was lost (%s) — "
+                               "replaced", exc)
+                if lost > _LOST_HELPER_RETRIES:
+                    # Helpers do not stay up. Outside any rule that is the
+                    # platform's doing and the walk runs here; inside one it
+                    # may be the rules', which then must not run here either.
+                    return None if in_rule else _IN_PROCESS
+            died_at = at
+            continue
+        except Exception as exc:  # noqa: BLE001 - plumbing fault -> in-process
+            pool.discard(helper)
+            logger.warning("[pipeline] rule helper request failed (%r) — this walk "
+                           "runs inside the server process", exc)
+            return _IN_PROCESS
+        if reply[0] == "stale":
+            # The helper lost its rule set (it cannot, short of a bug): send
+            # it again, but not forever.
+            helper.token = None
+            pool.release(helper)
+            stale += 1
+            if stale > 2:
+                return _IN_PROCESS
+            continue
+        pool.release(helper)
+        if reply[0] == "error":
+            logger.warning("[pipeline] rule helper request failed (%s) — this walk "
+                           "runs inside the server process", _log_safe(str(reply[-1])))
+            return _IN_PROCESS
+        return reply
+    return None
+
+
+def _walk_isolated(pool, text: str, rules: "list[_CompiledRule]",
+                   terminal: "tuple[str, str, int]", exclude: "set[str]",
+                   include: "set[str]", model_name: "str | None",
+                   language: "str | None", bound: int, trace: "list | None",
+                   budget: "WalkBudget | None"):
+    """_walk in a helper process: its result, or _IN_PROCESS. The helper's
+    trace rows are pushed onto `trace` here (_trace_push, so the window over
+    the caller's whole list is the in-process one), its warnings logged here
+    and `budget` charged here."""
+    limits = (_REPEAT_MAX_PASSES, _TRACE_TEXT_MAX, _TRACE_MAX_ROWS)
+    reply = _in_helper(
+        pool, rules, terminal, len(text),
+        lambda token, skip: ("walk", token, text, exclude, include, model_name,
+                             language, bound, trace is not None, skip, limits))
+    if reply is _IN_PROCESS:
+        return _IN_PROCESS
+    if reply is None:
+        # Out of attempts (or of helpers, at shutdown): the text goes on as
+        # it came in. Charged like a walk that changed nothing.
+        logger.warning(
+            "[pipeline] a rule walk did not finish in a helper process — the "
+            "text is returned without the rules applied")
+        if budget is not None:
+            budget.left -= len(text)
+        if trace is not None:
+            _trace_push(trace, _trace_row(
+                "pipeline [TIME LIMIT — rules not applied]", text, text))
+        return text
+    status, value, rows, charged, logs = reply
+    for fmt, args in logs:
+        logger.warning(fmt, *args)
+    if budget is not None:
+        budget.left -= charged
+    if trace is not None:
+        for row in rows:
+            _trace_push(trace, row)
+    if status == "raise":
+        raise value
+    return value
+
+
+def _seam_isolated(pool, prefix_raw: str, full_raw: str, bounds: "tuple[int, int]",
+                   rules: "list[_CompiledRule]", exclude: "set[str]",
+                   include: "set[str]", language: "str | None"):
+    """_seam_walk in a helper process: its result, or _IN_PROCESS."""
+    # The terminal step plays no part in the seam walk, but the rule set a
+    # helper holds is named together with it.
+    terminal = (_TERMINAL_NAME, _TERMINAL_LABEL, _TERMINAL_CARD_NO)
+    limits = (_REPEAT_MAX_PASSES, _TRACE_TEXT_MAX, _TRACE_MAX_ROWS)
+    reply = _in_helper(
+        pool, rules, terminal, len(prefix_raw) + len(full_raw),
+        lambda token, skip: ("seam", token, prefix_raw, full_raw, bounds, exclude,
+                             include, language, skip, limits))
+    if reply is _IN_PROCESS:
+        return _IN_PROCESS
+    if reply is None:
+        return "not determined (time limit hit)"
+    status, value = reply[0], reply[1]
+    if status == "raise":
+        raise value
+    return value
+
+
+def _helper_handle(request: bytes, mark) -> bytes:
+    """Helper process: answer one request of _in_helper. Every outcome is a
+    reply; nothing a rule does may end the serving loop."""
+    global _HELPER_SET, _REPEAT_MAX_PASSES, _TRACE_TEXT_MAX, _TRACE_MAX_ROWS
+    try:
+        req = pickle.loads(request)
+        op = req[0]
+        if op == "load":
+            _op, token, terminal, specs = req
+            # Dropped first: a failed load must not leave the previous set
+            # answering under a token the parent no longer uses.
+            _HELPER_SET = None
+            _HELPER_SET = (token, [_rule_from_spec(spec) for spec in specs], terminal)
+            return pickle.dumps(("ok",), 5)
+        held = _HELPER_SET
+        if held is None or held[0] != req[1]:
+            return pickle.dumps(("stale",), 5)
+        _token, rules, terminal = held
+        if op == "walk":
+            (_op, _tok, text, exclude, include, model_name, language, bound,
+             want_trace, skip, limits) = req
+            # The parent's values (tests lower them); read by _card_passes
+            # and the trace helpers.
+            _REPEAT_MAX_PASSES, _TRACE_TEXT_MAX, _TRACE_MAX_ROWS = limits
+            trace: "list | None" = [] if want_trace else None
+            logs: list = []
+            # Starts at 0 and is charged by _walk: what it is down by is
+            # what the parent's budget owes.
+            charge = WalkBudget.__new__(WalkBudget)
+            charge.left = 0
+            try:
+                out = _walk(text, rules, terminal, exclude, include, model_name,
+                            language, bound, trace, charge, skip, mark,
+                            lambda fmt, *args: logs.append((fmt, args)))
+                reply = ("ok", out, trace, -charge.left, logs)
+            except Exception as exc:  # noqa: BLE001 - the parent re-raises it
+                reply = ("raise", _sendable(exc), trace, -charge.left, logs)
+        elif op == "seam":
+            (_op, _tok, prefix_raw, full_raw, bounds, exclude, include, language,
+             skip, limits) = req
+            _REPEAT_MAX_PASSES, _TRACE_TEXT_MAX, _TRACE_MAX_ROWS = limits
+            try:
+                reply = ("ok", _seam_walk(prefix_raw, full_raw, bounds, rules, exclude,
+                                          include, language, skip, mark))
+            except Exception as exc:  # noqa: BLE001 - the parent re-raises it
+                reply = ("raise", _sendable(exc))
+        else:
+            reply = ("error", f"unknown request {op!r}")
+        mark[0] = -1
+        return pickle.dumps(reply, 5)
+    except Exception as exc:  # noqa: BLE001 - reported, the loop goes on
+        return pickle.dumps(("error", repr(exc)), 5)
+
+
+def _sendable(exc: Exception) -> Exception:
+    """`exc` if it survives a pickle round trip, else a RuntimeError naming
+    it."""
+    try:
+        pickle.loads(pickle.dumps(exc, 5))
+        return exc
+    except Exception:  # noqa: BLE001 - any pickling fault
+        return RuntimeError(f"{type(exc).__name__}: {exc}")
+
+
+# Compile the configured rules once at import (callers never see an empty
+# list). A helper process is sent its rules instead.
+if not _rule_helper.IN_HELPER:
+    rebuild_caches()
 
 
 def _reset_for_tests() -> None:
     """Drop the hold-back spec cache and rebind _REBUILD_LOCK, so a lock a
     previous test's rebuild thread still holds cannot block the next test.
     The compiled rules themselves are rebuilt by the app_module fixture
-    (rebuild_caches after reloading config)."""
-    global _REBUILD_LOCK
+    (rebuild_caches after reloading config). Also stops the helper pool a
+    test (or a TestClient lifespan) started, and forgets the quarantine and
+    the prepared rule set."""
+    global _REBUILD_LOCK, _ISOLATION_LOCK, _QUARANTINE, _SHIPPED
     _holdback_spec.cache_clear()
     _WARM_SPECS.clear()
     _REBUILD_LOCK = threading.Lock()
+    _rule_helper.shutdown()
+    _ISOLATION_LOCK = threading.Lock()
+    _QUARANTINE = (None, frozenset())
+    _SHIPPED = None

@@ -1300,6 +1300,9 @@ class AdminConfig(BaseModel):
         "MEDIA_MAX_BYTES", scope="server", group="Server")
     MAX_REQUEST_BYTES: Annotated[int, Field(ge=1024, le=50_000_000_000)] | None = _F(
         "MAX_REQUEST_BYTES", scope="server", group="Server")
+    PIPELINE_RULE_ISOLATION: bool | None = _F(
+        "PIPELINE_RULE_ISOLATION", scope="server", group="Server",
+        restart=True)
 
     # Each entry must be parseable by ipaddress.ip_network(strict=False) — bare
     # IPs (v4 or v6) and CIDRs are both accepted. See _validate_hosts below.
