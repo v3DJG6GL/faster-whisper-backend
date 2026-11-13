@@ -338,6 +338,33 @@ def test_attached_targets_past_the_cap_count_once(us):
     assert _row(us, "SELECT SUM(runs) FROM usage_target_hourly")[0] == cap
 
 
+def test_hourly_targets_per_user_are_capped(us):
+    """Every request is its own job, so the per-job union does not bound the
+    distinct codes one user sends in an hour: past the hourly cap a new code
+    counts under one overflow row instead of adding a row of its own."""
+    cap = us._MAX_TARGETS_PER_HOUR
+    tr = lambda cs: [{"name": "translate", "secs": 1.0, "targets": cs}]
+    for i in range(cap + 40):
+        _rec(us, audio_s=0.0, words=0, kind="text", job_id=f"{i:032x}",
+             stages=tr([f"x{i:03d}"]))
+    assert _row(us, "SELECT COUNT(*) FROM usage_target_hourly")[0] == cap + 1
+    assert _row(us, "SELECT runs FROM usage_target_hourly WHERE target = '(other)'")[0] == 40
+    assert _row(us, "SELECT SUM(runs) FROM usage_target_hourly")[0] == cap + 40
+    # A code the user already holds keeps counting on its own row.
+    _rec(us, audio_s=0.0, words=0, kind="text", job_id="a" * 32, stages=tr(["x000"]))
+    assert _row(us, "SELECT runs FROM usage_target_hourly WHERE target = 'x000'")[0] == 2
+    # The cap is per user: someone else's code still gets its row.
+    _rec(us, user_id="v", key_id="kv", audio_s=0.0, words=0, kind="text",
+         job_id="b" * 32, stages=tr(["de"]))
+    assert _row(us, "SELECT runs FROM usage_target_hourly"
+                    " WHERE user_id = 'v' AND target = 'de'")[0] == 1
+    # A request without a job id repeats a code: one run, as with a job id.
+    _rec(us, user_id="w", key_id="kw", audio_s=0.0, words=0, kind="text",
+         stages=tr(["fr", "fr"]))
+    assert _row(us, "SELECT runs FROM usage_target_hourly"
+                    " WHERE user_id = 'w' AND target = 'fr'")[0] == 1
+
+
 def test_translating_kept_original_is_the_segment_count_on_both_paths(us):
     """The translating stage's kept_original is the guard's segment fallback
     count on both paths, never the dictation outcome's kept-original jobs."""

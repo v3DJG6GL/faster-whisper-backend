@@ -147,6 +147,12 @@ _STAGE_ALIASES = {"translate": "translating"}
 # session translated into several languages); cap it so a client looping
 # through codes cannot grow one row without bound.
 _JOB_TARGETS_MAX = 32
+# Distinct targets one user may hold per hour and stage in
+# usage_target_hourly: every request is its own job, so the per-job cap
+# above does not bound them. Further new codes of that hour count under
+# _TARGET_OVERFLOW, a name the route's language-code pattern cannot produce.
+_MAX_TARGETS_PER_HOUR = 64
+_TARGET_OVERFLOW = "(other)"
 
 # usage_jobs.model cap; matches jobs_store._CAP_MODEL. A refused stream
 # handshake hands its raw client `model` string through record_usage.
@@ -874,13 +880,28 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
          (st["retained"] or 0.0) if count_run else 0.0, st["kept_original"],
          1 if err else 0),
     )
-    for target in new_targets:
+    targets = list(dict.fromkeys(t[:16] for t in new_targets))
+    if not targets:
+        return
+    # One read of the primary key's prefix, stopped at the cap; only a stage
+    # that carries targets (a translation) pays for it.
+    held = {r[0] for r in conn.execute(
+        "SELECT target FROM usage_target_hourly"
+        " WHERE hour = ? AND user_id = ? AND stage = ? LIMIT ?",
+        (hour, uid, st["stage"], _MAX_TARGETS_PER_HOUR + 1))}
+    held.discard(_TARGET_OVERFLOW)
+    for target in targets:
+        if target not in held:
+            if len(held) >= _MAX_TARGETS_PER_HOUR:
+                target = _TARGET_OVERFLOW
+            else:
+                held.add(target)
         conn.execute(
             "INSERT INTO usage_target_hourly (hour, user_id, stage, target, runs)"
             " VALUES (?, ?, ?, ?, 1)"
             " ON CONFLICT(hour, user_id, stage, target) DO UPDATE SET"
             "  runs = runs + 1",
-            (hour, uid, st["stage"], target[:16]),
+            (hour, uid, st["stage"], target),
         )
 
 
