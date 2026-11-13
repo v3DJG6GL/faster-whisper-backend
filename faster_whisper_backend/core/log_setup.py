@@ -47,8 +47,8 @@ class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
     # SQLite stores. The stdlib open would create the file at the process umask
     # (0644 typical) and leave it readable until the chmod lands, so the file
     # is created 0600 first — at start and at every rollover (doRollover comes
-    # back through here). The chmod stays for a file, and the pass in __init__
-    # for the backups, an older build left wider.
+    # back through here). The chmod stays for a regular file, and the pass in
+    # __init__ for the backups, an older build left wider.
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # A rollover only renames a backup, and a rename keeps the mode, so a
@@ -71,7 +71,15 @@ class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
         except OSError:
             pass  # the stdlib open below reports the real error
         stream = super()._open()
-        store_common.secure_file(self.baseFilename)
+        try:
+            # Only a regular file is ours to narrow: LOG_FILE may name a
+            # device or a pipe (/dev/null, /dev/stdout), and chmod 0600 on
+            # that takes it away from every other user of the host.
+            regular = stat.S_ISREG(os.fstat(stream.fileno()).st_mode)
+        except (OSError, ValueError):
+            regular = False
+        if regular:
+            store_common.secure_file(self.baseFilename)
         return stream
 
 

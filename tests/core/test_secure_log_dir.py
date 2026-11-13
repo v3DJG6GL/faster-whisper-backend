@@ -109,6 +109,45 @@ def test_log_file_left_wider_by_an_older_build_is_still_narrowed(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file modes")
+def test_log_file_that_is_a_device_is_not_chmodded(monkeypatch):
+    """LOG_FILE may name a device (/dev/null to switch the file off): a
+    server running as root would take it away from every other user."""
+    import logging
+
+    from faster_whisper_backend.core import log_setup
+
+    seen = []
+    monkeypatch.setattr(log_setup.store_common, "secure_file", seen.append)
+    handler = log_setup._SecureRotatingFileHandler(
+        os.devnull, maxBytes=200, backupCount=1, encoding="utf-8")
+    try:
+        handler.emit(logging.LogRecord(
+            "t", logging.INFO, __file__, 0, "x" * 60, None, None))
+    finally:
+        handler.close()
+    assert seen == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file modes")
+def test_log_file_reached_through_a_link_is_still_narrowed(tmp_path):
+    """A LOG_FILE that links to a regular file: the target is where the
+    transcripts go, so it is the file to narrow."""
+    import stat
+
+    from faster_whisper_backend.core import log_setup
+
+    target = tmp_path / "real.log"
+    target.write_text("earlier line\n", encoding="utf-8")
+    target.chmod(0o644)
+    (tmp_path / "link.log").symlink_to(target)
+    handler = log_setup._SecureRotatingFileHandler(
+        str(tmp_path / "link.log"), maxBytes=10_000, backupCount=0,
+        encoding="utf-8")
+    handler.close()
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file modes")
 def test_log_backups_left_wider_by_an_older_build_are_narrowed(tmp_path):
     """A rollover only renames a backup, and a rename keeps the mode: without
     a pass at start an old 0644 backup stays readable until it falls off the
