@@ -1435,6 +1435,11 @@ def _refuse_input(path: str) -> None:
     import av
     # Also for the reopen below and faster-whisper's own open after it.
     audio_ffmpeg.cap_libav_alloc()
+    # libavformat opens a decoder for every stream while it probes: the two
+    # reopens below take audio decoders only, like the strict open. Omitted
+    # when the list is empty, as an empty whitelist refuses every decoder.
+    decoders = audio_ffmpeg.pyav_audio_decoders()
+    audio_only = {"codec_whitelist": decoders} if decoders else {}
     try:
         container, _stream = _transcode._open_audio(path)
     except av.FFmpegError:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
@@ -1443,8 +1448,9 @@ def _refuse_input(path: str) -> None:
         # file-only one: an HLS playlist decrypting a sibling segment fails
         # only the latter, and must not reach them.
         try:
-            container = av.open(path, options=audio_ffmpeg.pyav_stream_limit(),
-                                metadata_errors="ignore")
+            container = av.open(
+                path, options={**audio_ffmpeg.pyav_stream_limit(), **audio_only},
+                metadata_errors="ignore")
         except av.FFmpegError as e:
             # Those fallbacks open without the stream limit: a file that
             # runs into it here is refused, not left to them.
@@ -1452,9 +1458,11 @@ def _refuse_input(path: str) -> None:
                 raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
             # Not every demuxer answers the limit that way (wtv: invalid
             # data), so ask the fallbacks' question itself: does the file
-            # open without it?
+            # open without it? No stream limit, but still no video decoder
+            # for any of the streams it then lists.
             try:
-                unlimited = av.open(path, metadata_errors="ignore")
+                unlimited = av.open(path, options=dict(audio_only),
+                                    metadata_errors="ignore")
             except av.FFmpegError:
                 return      # opens for nobody: left to the decoder
             unlimited.close()

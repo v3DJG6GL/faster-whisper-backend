@@ -3,6 +3,9 @@ derived from free RAM, before Whisper sees it: only the byte size was capped
 before, and a small file of compressed silence decodes to gigabytes."""
 
 import asyncio
+import os
+import subprocess
+import sys
 import threading
 import time
 
@@ -189,7 +192,7 @@ def test_a_file_only_the_stream_limit_keeps_shut_is_refused(
     invalid data) where MP4 answers out of memory. The fallback decoders
     set no limit and open such a file, so it is refused here like an MP4
     of as many tracks; the open that tells it from a file nothing reads has
-    no limit either, and is closed again."""
+    no limit either, opens audio decoders only, and is closed again."""
     from faster_whisper.audio import decode_audio
     limit = audio_ffmpeg.PYAV_MAX_STREAMS
     at_limit = write_tracks(str(tmp_path / "at.wtv"), limit)
@@ -200,7 +203,8 @@ def test_a_file_only_the_stream_limit_keeps_shut_is_refused(
     with pytest.raises(ValueError) as refused:
         app_module._refuse_input(over)
     assert str(refused.value) == audio_ffmpeg.TOO_MUCH_TO_OPEN
-    assert opened == [None] and len(closed) == 1
+    assert opened == [{"codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}]
+    assert len(closed) == 1
 
 
 def test_an_upload_only_the_stream_limit_keeps_shut_is_a_400(
@@ -213,6 +217,69 @@ def test_an_upload_only_the_stream_limit_keeps_shut_is_a_400(
     assert r.status_code == 400, r.text
     assert "more than 20 tracks" in r.json()["detail"]
     assert fake_model.last_audio is None
+
+
+def _wtv_of_video_tracks(path, n, side):
+    """A WTV of `n` H.264 video tracks, one flat `side` x `side` frame each.
+    Skips where this PyAV has no libx264."""
+    try:
+        av.Codec("libx264", "w")
+    except Exception:  # noqa: BLE001 — a build without the encoder
+        pytest.skip("PyAV has no libx264 encoder")
+    with av.open(path, "w", format="wtv") as out:
+        streams = []
+        for _ in range(n):
+            stream = out.add_stream("libx264", rate=25)
+            stream.width = stream.height = side
+            stream.pix_fmt = "yuv420p"
+            stream.options = {"preset": "ultrafast"}
+            streams.append(stream)
+        frame = av.VideoFrame(side, side, "yuv420p")
+        for plane in frame.planes:
+            plane.update(bytes(plane.buffer_size))
+        for stream in streams:
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                out.mux(packet)
+    return path
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="reads the child's peak RSS in Linux's unit")
+def test_the_check_opens_no_video_decoder_for_a_file_past_the_stream_limit(
+        tmp_path):
+    """libavformat opens a decoder for every stream while it probes, and an
+    H.264 one holds a decoded frame: the open without the stream limit took
+    ~3 MB per 1024 x 1024 track of a 140 KB file (16 MB per 2560 x 2560
+    one) before the refusal. Held to audio decoders it takes none of it."""
+    src = _wtv_of_video_tracks(str(tmp_path / "video.wtv"),
+                               audio_ffmpeg.PYAV_MAX_STREAMS + 2, 1024)
+    junk = tmp_path / "junk.bin"
+    junk.write_bytes(b"RIFFxxxxWAVE")
+    # VmHWM, not ru_maxrss: the latter survives the exec. The junk file
+    # takes the same three opens first, so the growth is the video file's.
+    code = ("import re, sys\n"
+            "from faster_whisper_backend import main\n"
+            "def peak_kb():\n"
+            "    with open('/proc/self/status') as f:\n"
+            "        return int(re.search(r'VmHWM:\\s+(\\d+) kB',\n"
+            "                             f.read()).group(1))\n"
+            "main._refuse_input(sys.argv[2])\n"
+            "before = peak_kb()\n"
+            "try:\n"
+            "    main._refuse_input(sys.argv[1])\n"
+            "    how = 'ok'\n"
+            "except ValueError as e:\n"
+            "    how = str(e)\n"
+            "print(peak_kb() - before)\n"
+            "print(how)\n")
+    r = subprocess.run([sys.executable, "-c", code, src, str(junk)],
+                       capture_output=True, text=True, timeout=120,
+                       cwd=os.path.dirname(os.path.dirname(
+                           os.path.dirname(os.path.abspath(__file__)))))
+    assert r.returncode == 0, r.stderr[-2000:]
+    grown_kb, how = r.stdout.strip().split("\n")
+    assert how == audio_ffmpeg.TOO_MUCH_TO_OPEN
+    assert int(grown_kb) < 30 * 1024
 
 
 def _overlap_spy(monkeypatch, app_module):
