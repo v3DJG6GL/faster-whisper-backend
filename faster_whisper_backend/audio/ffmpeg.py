@@ -1,12 +1,16 @@
 """Locate the ffmpeg executable, shared by the streaming transport and the
 media package (download, captions, subtitle muxing), name the demuxers a
-client-supplied file must never open as, and list the audio decoders of
-the binary and of PyAV."""
+client-supplied file must never open as, list the audio decoders of the
+binary and of PyAV, and cap what PyAV's libav allocates in one piece."""
 
+import ctypes
 import functools
+import glob
 import logging
+import os
 import shutil
 import subprocess
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,73 @@ def pyav_audio_decoders() -> str:
         except Exception:  # noqa: BLE001 — a name PyAV cannot open as a decoder
             continue
     return ",".join(names)
+
+
+# The largest single allocation PyAV's libav makes in this process. A
+# container's header is trusted for sizes inside av.open, ahead of every
+# decode budget: the mov demuxer builds its index for as many samples as the
+# sample table (or a fragment's track run) DECLARES, ~36 bytes of RAM each,
+# so a file of under 5 KB costs 3 GB per track at libav's own limit
+# (INT_MAX). A real file needs little: four hours of 48 kHz AAC in an m4a
+# decode in full from 32 MiB up — and SHORT, without an error, below that, so
+# the cap stays far above it (~32 h of such audio). One track under the cap
+# still costs up to ~1.5x the cap, and tracks add up.
+_LIBAV_MAX_ALLOC = 256 * 1024 * 1024
+
+_libav_alloc_lock = threading.Lock()
+_libav_alloc_capped: "bool | None" = None      # None: not tried yet
+
+
+def _libavutil_paths() -> "list[str]":
+    """The libavutil files the installed PyAV wheel bundles — the library
+    its extension modules loaded: next to the package in av.libs (Linux,
+    Windows) or inside it in .dylibs (macOS)."""
+    import av  # noqa: PLC0415 — optional dependency; callers import it first
+    package = os.path.dirname(os.path.abspath(av.__file__))
+    libs = os.path.join(os.path.dirname(package), "av.libs")
+    found = set()
+    for pattern in (os.path.join(libs, "libavutil*.so*"),
+                    os.path.join(libs, "avutil*.dll"),
+                    os.path.join(package, ".dylibs", "libavutil*.dylib")):
+        found.update(glob.glob(pattern))
+    return sorted(found)
+
+
+def _set_libav_max_alloc() -> bool:
+    try:
+        paths = _libavutil_paths()
+        if len(paths) != 1:
+            # None: a PyAV built against system libraries, or a new wheel
+            # layout. Several: capping one of them may cap the wrong one.
+            raise LookupError(f"{len(paths)} libavutil libraries found")
+        # Loading by the path PyAV loaded it from yields that same library,
+        # not a second copy with a limit of its own.
+        av_max_alloc = ctypes.CDLL(paths[0]).av_max_alloc
+        av_max_alloc.argtypes = [ctypes.c_size_t]
+        av_max_alloc.restype = None
+        av_max_alloc(_LIBAV_MAX_ALLOC)
+    except Exception as exc:  # noqa: BLE001 — fail open: decoding goes on uncapped
+        logger.warning("[ffmpeg] could not set PyAV's allocation cap (%s: %s); "
+                       "a crafted container can make an open allocate "
+                       "gigabytes.", type(exc).__name__, exc)
+        return False
+    return True
+
+
+def cap_libav_alloc() -> bool:
+    """Limit a single allocation of PyAV's libav to _LIBAV_MAX_ALLOC, for
+    the whole process (av_max_alloc is a libavutil global, shared by PyAV's
+    own opens and faster-whisper's). Call it ahead of every in-process open
+    of client-supplied bytes; the work is done once, later calls only read
+    the result. False when the library was not found or did not take the
+    call: logged once, and decoding goes on without the cap."""
+    global _libav_alloc_capped
+    if _libav_alloc_capped is None:
+        with _libav_alloc_lock:
+            if _libav_alloc_capped is None:
+                _libav_alloc_capped = _set_libav_max_alloc()
+    return _libav_alloc_capped
+
 
 def format_whitelist_args(format_name: "str | None") -> "list[str]":
     """The ffmpeg CLI input options ahead of a client file's `-i`: file

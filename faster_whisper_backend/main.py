@@ -1423,6 +1423,8 @@ def _refuse_input(path: str) -> None:
     the real decoder raises the av error, answered as undecodable — unless
     FFmpeg's default open reads it as a playlist (see below)."""
     import av
+    # Also for the reopen below and faster-whisper's own open after it.
+    audio_ffmpeg.cap_libav_alloc()
     try:
         container, _stream = _transcode._open_audio(path)
     except av.FFmpegError:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal

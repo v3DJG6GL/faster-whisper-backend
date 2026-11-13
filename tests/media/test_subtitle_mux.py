@@ -790,6 +790,30 @@ def test_probe_streams_records_the_demuxer_name(tmp_path):
     assert pk.unreadable_streams().format_name is None
 
 
+def test_probe_streams_caps_the_allocation_before_it_opens(tmp_path, monkeypatch):
+    """The probe opens a client file in-process, where a few KB of sample
+    table can declare an index of gigabytes: the libav allocation cap is
+    set before the open, whichever open of the process comes first."""
+    av = pytest.importorskip("av")
+    import wave
+    src = str(tmp_path / "a.wav")
+    with wave.open(src, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(bytes(3200))
+    events, real_open = [], av.open
+    monkeypatch.setattr(pk.audio_ffmpeg, "cap_libav_alloc",
+                        lambda: events.append("cap") or True, raising=False)
+
+    def spy_open(*args, **kwargs):
+        events.append("open")
+        return real_open(*args, **kwargs)
+    monkeypatch.setattr(av, "open", spy_open)
+    assert pk.probe_streams(src).audio_codec == "pcm_s16le"
+    assert events == ["cap", "open"]
+
+
 def test_package_argv_pins_the_probed_demuxer():
     argv = argv_for(_tracks(), format_name="matroska,webm")
     src = argv.index("/m/src.mkv")

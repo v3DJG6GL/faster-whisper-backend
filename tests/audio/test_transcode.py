@@ -1564,3 +1564,207 @@ def test_open_audio_refuses_to_open_the_video_decoder(tmp_path, caplog):
         av.logging.set_level(None)
     assert any("not on whitelist" in r.getMessage() for r in caplog.records), \
         [r.getMessage() for r in caplog.records]
+
+
+_MP4_UNITY = (b"\x00\x01\x00\x00" + bytes(12) + b"\x00\x01\x00\x00"
+              + bytes(12) + b"\x40\x00\x00\x00")
+
+
+def _mp4_full_box(kind, payload, flags=0):
+    return _mp4_box(kind, flags.to_bytes(4, "big") + payload)
+
+
+def _mp4_u32(*values):
+    return b"".join(v.to_bytes(4, "big") for v in values)
+
+
+def _pcm_movie(tables, *, ticks, extra=b""):
+    """A 'moov' box of one 16-bit PCM track (44.1 kHz mono) whose sample
+    table is its sample description plus `tables`."""
+    full, u32 = _mp4_full_box, _mp4_u32
+    mvhd = full(b"mvhd", u32(0, 0, 1000, 1000, 0x10000) + b"\x01\x00"
+                + bytes(10) + _MP4_UNITY + bytes(24) + u32(2))
+    tkhd = full(b"tkhd", u32(0, 0, 1, 0, ticks) + bytes(8)
+                + b"\x00\x00\x00\x00\x01\x00\x00\x00" + _MP4_UNITY + bytes(8),
+                flags=7)
+    mdhd = full(b"mdhd", u32(0, 0, 44100, ticks) + b"\x55\xc4\x00\x00")
+    hdlr = full(b"hdlr", bytes(4) + b"soun" + bytes(12) + b"snd\x00")
+    dinf = _mp4_box(b"dinf", full(b"dref", u32(1) + full(b"url ", b"", 1)))
+    sowt = _mp4_box(b"sowt", bytes(6) + b"\x00\x01" + bytes(8)
+                    + b"\x00\x01\x00\x10" + bytes(4) + u32(44100 << 16))
+    stbl = _mp4_box(b"stbl", full(b"stsd", u32(1) + sowt) + tables)
+    minf = _mp4_box(b"minf", full(b"smhd", bytes(4)) + dinf + stbl)
+    trak = _mp4_box(b"trak", tkhd + _mp4_box(b"mdia", mdhd + hdlr + minf))
+    return _mp4_box(b"moov", mvhd + trak + extra)
+
+
+def _mov_declaring_samples(path, n):
+    """A 4.6 KB QuickTime file whose sample table DECLARES `n` two-byte
+    samples in one chunk (a uniform stsz, one stts run, one stsc and one
+    stco entry) over 4 KB of data."""
+    full, u32 = _mp4_full_box, _mp4_u32
+    ftyp = _mp4_box(b"ftyp", b"qt  " + bytes(4) + b"qt  ")
+
+    def moov(offset):
+        return _pcm_movie(
+            full(b"stts", u32(1, n, 2)) + full(b"stsc", u32(1, 1, n, 1))
+            + full(b"stsz", u32(2, n)) + full(b"stco", u32(1, offset)),
+            ticks=2 * n)
+
+    offset = len(ftyp) + len(moov(0)) + 8
+    with open(path, "wb") as f:
+        f.write(ftyp + moov(offset) + _mp4_box(b"mdat", bytes(4096)))
+    return path
+
+
+def _fragmented_mp4_declaring_samples(path, n):
+    """The fragmented sibling: an empty sample table and one movie fragment
+    whose track run declares `n` samples, none of them listed."""
+    full, u32 = _mp4_full_box, _mp4_u32
+    empty = (full(b"stts", u32(0)) + full(b"stsc", u32(0))
+             + full(b"stsz", u32(0, 0)) + full(b"stco", u32(0)))
+    moov = _pcm_movie(empty, ticks=0, extra=_mp4_box(
+        b"mvex", full(b"trex", u32(1, 1, 2, 2, 0))))
+    # tfhd: default-base-is-moof, with a default sample duration and size.
+    traf = _mp4_box(b"traf", full(b"tfhd", u32(1, 2, 2), 0x020018)
+                    + full(b"trun", u32(n)))
+    with open(path, "wb") as f:
+        f.write(_mp4_box(b"ftyp", b"isom" + bytes(4) + b"isomiso5") + moov
+                + _mp4_box(b"moof", full(b"mfhd", u32(1)) + traf)
+                + _mp4_box(b"mdat", bytes(4096)))
+    return path
+
+
+def test_cap_libav_alloc_finds_the_libavutil_pyav_loaded():
+    """On every platform the suite runs on: a PyAV wheel that lays its
+    libraries out differently would leave the cap off without an error."""
+    assert audio_ffmpeg.cap_libav_alloc() is True
+    assert audio_ffmpeg._LIBAV_MAX_ALLOC == 256 * 1024 * 1024
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="reads the child's peak RSS in Linux's unit")
+@pytest.mark.parametrize("build", [_mov_declaring_samples,
+                                   _fragmented_mp4_declaring_samples])
+def test_open_audio_bounds_a_declared_sample_count(build, tmp_path):
+    """A file of under 5 KB that declares 16 million samples makes the mov
+    demuxer build its index for all of them inside av.open, ahead of every
+    decode budget: ~36 bytes of RAM per declared sample (600 MB here, 3 GB
+    at the most one track can name). Under the allocation cap the index is
+    refused; the file opens without one or fails as out of memory."""
+    import subprocess
+    src = build(str(tmp_path / "declared.mov"), 16_000_000)
+    assert os.path.getsize(src) < 5000
+    code = ("import resource, sys\n"
+            "from faster_whisper_backend.audio import transcode\n"
+            "try:\n"
+            "    transcode._open_audio(sys.argv[1])[0].close()\n"
+            "    how = 'ok'\n"
+            "except MemoryError:\n"
+            "    how = 'MemoryError'\n"
+            "print(how, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n")
+    # A fresh interpreter, so the peak is this open's own.
+    r = subprocess.run([sys.executable, "-c", code, src],
+                       capture_output=True, text=True, timeout=120,
+                       cwd=os.path.dirname(os.path.dirname(
+                           os.path.dirname(os.path.abspath(__file__)))))
+    assert r.returncode == 0, r.stderr[-2000:]
+    how, peak_kb = r.stdout.split()
+    assert how in ("ok", "MemoryError")
+    assert int(peak_kb) < 300 * 1024
+
+
+class _FakeLibavutil:
+    """Stands in for the ctypes handle of a libavutil; records the cap."""
+
+    def __init__(self):
+        self.caps = []
+        self.av_max_alloc = lambda size: self.caps.append(size)
+
+
+def test_cap_libav_alloc_sets_the_cap_once(monkeypatch):
+    lib = _FakeLibavutil()
+    loaded = []
+    monkeypatch.setattr(audio_ffmpeg, "_libav_alloc_capped", None)
+    monkeypatch.setattr(audio_ffmpeg, "_libavutil_paths",
+                        lambda: ["/wheel/av.libs/libavutil-1.so.60"])
+    monkeypatch.setattr(audio_ffmpeg.ctypes, "CDLL",
+                        lambda path: loaded.append(path) or lib)
+    assert audio_ffmpeg.cap_libav_alloc() is True
+    assert audio_ffmpeg.cap_libav_alloc() is True
+    assert loaded == ["/wheel/av.libs/libavutil-1.so.60"]
+    assert lib.caps == [256 * 1024 * 1024]
+
+
+@pytest.mark.parametrize("paths", [
+    [],                                                   # another layout
+    ["/wheel/av.libs/libavutil-1.so.60",                  # which one is it?
+     "/wheel/av.libs/libavutil-2.so.61"],
+    ["/nonexistent/av.libs/libavutil-1.so.60"],           # does not load
+], ids=["none", "several", "unloadable"])
+def test_cap_libav_alloc_fails_open_with_one_warning(paths, monkeypatch,
+                                                     caplog):
+    """Without exactly one loadable libavutil nothing is capped — decoding
+    goes on as before — and the log says so once, not once per open."""
+    import logging
+    monkeypatch.setattr(audio_ffmpeg, "_libav_alloc_capped", None)
+    monkeypatch.setattr(audio_ffmpeg, "_libavutil_paths", lambda: paths)
+    with caplog.at_level(logging.WARNING):
+        assert audio_ffmpeg.cap_libav_alloc() is False
+        assert audio_ffmpeg.cap_libav_alloc() is False
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "allocation cap" in warnings[0].getMessage()
+
+
+def test_cap_libav_alloc_fails_open_on_a_library_without_the_symbol(
+        monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr(audio_ffmpeg, "_libav_alloc_capped", None)
+    monkeypatch.setattr(audio_ffmpeg, "_libavutil_paths",
+                        lambda: ["/wheel/av.libs/libavutil-1.so.60"])
+    monkeypatch.setattr(audio_ffmpeg.ctypes, "CDLL", lambda path: object())
+    with caplog.at_level(logging.WARNING):
+        assert audio_ffmpeg.cap_libav_alloc() is False
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+def _spy_alloc_cap(monkeypatch):
+    """The order of cap_libav_alloc calls and av.open calls from here on."""
+    events, real_open = [], av.open
+    monkeypatch.setattr(audio_ffmpeg, "cap_libav_alloc",
+                        lambda: events.append("cap") or True)
+
+    def spy_open(*args, **kwargs):
+        events.append("open")
+        return real_open(*args, **kwargs)
+    monkeypatch.setattr(av, "open", spy_open)
+    return events
+
+
+def test_every_open_of_a_client_file_caps_the_allocation_first(
+        tmp_path, monkeypatch):
+    src = _write_src_wav(str(tmp_path / "a.wav"), rate=RATE, nchannels=1)
+    events = _spy_alloc_cap(monkeypatch)
+    audio_transcode._open_audio(src)[0].close()
+    assert events[:2] == ["cap", "open"]
+
+    events.clear()
+    audio_transcode.refuse_multi_input(src)
+    assert events[:2] == ["cap", "open"]
+
+
+def test_refuse_input_caps_the_allocation_ahead_of_its_own_reopen(
+        app_module, tmp_path, monkeypatch):
+    """_refuse_input reopens a file _open_audio could not open with FFmpeg's
+    default whitelist, and faster-whisper's decode_audio opens it after
+    that: both go through the same libavutil, so the cap is set before
+    either, whatever the first open did."""
+    src = _write_src_wav(str(tmp_path / "a.wav"), rate=RATE, nchannels=1)
+    events = _spy_alloc_cap(monkeypatch)
+
+    def no_open(path):
+        raise av.error.InvalidDataError(1094995529, "Invalid data found")
+    monkeypatch.setattr(audio_transcode, "_open_audio", no_open)
+    app_module._refuse_input(src)
+    assert events == ["cap", "open"]

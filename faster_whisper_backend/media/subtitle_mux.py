@@ -171,6 +171,8 @@ def probe_streams(path: str) -> MediaStreams:
     comes before one opens a single entry."""
     import av  # optional dependency; the route maps ImportError to 503
 
+    # A sample table can declare an index of gigabytes that av.open builds.
+    audio_ffmpeg.cap_libav_alloc()
     # metadata_errors="replace": PyAV's default "strict" raises
     # UnicodeDecodeError on a non-UTF-8 tag (an AVI with a cp1252 RIFF INFO
     # title), and the route would cache a playable video as unreadable.

@@ -89,6 +89,9 @@ def _av():
         import av
     except ImportError as e:
         raise RuntimeError("PyAV (av) not installed; cannot transcode") from e
+    # Ahead of every open below: a container can declare an index of
+    # gigabytes that av.open builds before any decode budget runs.
+    audio_ffmpeg.cap_libav_alloc()
     return av
 
 
