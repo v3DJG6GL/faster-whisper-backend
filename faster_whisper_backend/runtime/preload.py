@@ -583,6 +583,24 @@ def register_plan(user_id: "str | None",
         }
 
 
+def _withdraw_denied_locked(plan: Plan, denied: dict) -> None:
+    """Take the entries the caller's fresh verdict denies out of `plan`.
+
+    Such an entry can only ever answer `deferred`, and left in place every
+    restamp would renew its warm lease, while a queued item of it would load
+    under the policy its earlier registration carried. An entry the call does
+    not name is not judged here (see Plan.policies). Caller holds _lock and
+    rebuilds _warm."""
+    gone = [e for e in plan.entries if e in denied]
+    if not gone:
+        return
+    for e in gone:
+        plan.entries.remove(e)
+        plan.policies.pop(e, None)
+    plan.stages = [_FAMILY_STAGE.get(f, 99) for f, _ in plan.entries]
+    plan.warmed -= {stats_key(f, m) for f, m in gone}
+
+
 def _deferred_row(fam: str, mid: str, reason: str) -> dict:
     return {"family": fam, "id": mid, "state": "deferred", "reason": reason}
 
@@ -599,6 +617,13 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
     # must be re-keyed here already, not only on the Plan-building path.
     with _lock:
         pid = _owned_pid_locked(user_id, pid, kept)
+        # Before the early returns: a repeat POST whose every entry is denied
+        # keeps nothing, and must still take those entries (and their warm
+        # leases) out of the caller's same-id plan.
+        plan = _plans.get(pid)
+        if denied and plan is not None and plan.user_id == (user_id or ""):
+            _withdraw_denied_locked(plan, denied)
+            _recompute_warm_locked()
 
     if not _enabled():
         # The master switch: no Plan, no warm lease, no /stats row. Anything
@@ -660,14 +685,8 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
             # gets server-driven warming, while a later client POST can never
             # switch it off under a running job.
             plan.stage_ahead = plan.stage_ahead or stage_ahead
-            # An entry this call names and the caller's fresh verdict denies
-            # leaves the plan: it can only ever answer `deferred`, and left in
-            # place every restamp would renew its warm lease. An entry the
-            # call does not name is not judged here (see Plan.policies).
-            # (Its warmed key goes with the rebuild of plan.warmed below.)
-            for e in [e for e in plan.entries if e in denied]:
-                plan.entries.remove(e)
-                plan.policies.pop(e, None)
+            # Again for a plan the re-derive above landed on.
+            _withdraw_denied_locked(plan, denied)
             for f, m in kept:
                 if len(plan.entries) >= _MAX_PLAN_ENTRIES:
                     break

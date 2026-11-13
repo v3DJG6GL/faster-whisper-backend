@@ -592,3 +592,36 @@ def test_a_denied_repeat_registration_withdraws_the_entry(monkeypatch):
     preload.register_plan("u", [w, d], plan_id=pid, policy=_GLOBAL_POLICY)
     assert preload._plans[pid].entries == [w, d]
     assert preload.is_warm("pyannote:p/x") is True
+
+
+def test_a_repeat_registration_denied_for_every_entry_withdraws_them(
+        monkeypatch):
+    """The client-driven pipeline re-POSTs only the step's own model. With
+    that one entry denied nothing is kept, and the early return left the
+    entry, its warm lease and its old policy in the same-id plan: a queued
+    item of it still loaded."""
+    _enable(monkeypatch, DIARIZATION_ALLOWED_MODELS={"p/x"},
+            DIARIZATION_MODEL="p/x")
+    _fits(monkeypatch, (None, "size_unknown"))     # nothing enqueues
+    loaded = []
+
+    async def _load(fam, mid):
+        loaded.append((fam, mid))
+    monkeypatch.setattr(preload, "_load", _load)
+    pid = "e" * 8
+    w, d = ("whisper", "large-v3"), ("diarization", "p/x")
+    preload.register_plan("u", [w, d], plan_id=pid, policy=_GLOBAL_POLICY)
+    assert preload.is_warm("pyannote:p/x") is True
+
+    r = preload.register_plan("u", [d], plan_id=pid, denied={d: "not_allowed"},
+                              policy=({}, frozenset({"DIARIZE"})))
+    assert [(m["state"], m["reason"]) for m in r["models"]] == [
+        ("deferred", "not_allowed")]
+    plan = preload._plans[pid]
+    assert plan.entries == [w] and plan.stages == [preload._FAMILY_STAGE["whisper"]]
+    assert d not in plan.policies
+    assert preload.is_warm("pyannote:p/x") is False
+    assert preload.is_warm("large-v3") is True
+    _fits(monkeypatch, (True, None))
+    asyncio.run(preload._handle((pid, *d)))
+    assert loaded == []
