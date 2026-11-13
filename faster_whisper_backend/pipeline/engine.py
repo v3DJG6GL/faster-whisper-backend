@@ -623,7 +623,8 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                        ident=None,
                        language: "str | None" = None,
                        bound: "int | None" = None,
-                       budget: "WalkBudget | None" = None) -> str:
+                       budget: "WalkBudget | None" = None, *,
+                       must_finish: bool = False) -> str:
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
     each rule that changes the text, is skipped, or is force-included appends
     `(label_with_ordinal, before, after)` so the per-request log block can
@@ -640,6 +641,10 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     separately (one walk per word or per cue): every walk gets the same
     WalkBudget, is bounded by what is left of it and is charged the longest
     text it built.
+    `must_finish` is for a caller that stores the result over an earlier
+    one: a walk no helper process finished (see "Time limit" below) raises
+    WalkUnfinished there instead of returning its input, so the stored text
+    stays. Without it that walk returns `text` as it came in.
 
     Per-model scoping (precedence top-down):
       1. PIPELINE_RULES_EXCLUDE — force-DISABLE for this model (highest priority).
@@ -678,7 +683,7 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     pool = _rule_helper._POOL
     if pool is not None:
         out = _walk_isolated(pool, text, rules, terminal, exclude, include,
-                             model_name, language, bound, trace, budget)
+                             model_name, language, bound, trace, budget, must_finish)
         if out is not _IN_PROCESS:
             return out
     return _walk(text, rules, terminal, exclude, include, model_name, language,
@@ -1027,6 +1032,12 @@ def walk_deadline(n: int) -> float:
     return min(_DEADLINE_MAX_S, _DEADLINE_FLOOR_S + _DEADLINE_PER_CHAR_S * n)
 
 
+class WalkUnfinished(RuntimeError):
+    """No helper attempt finished a walk whose caller stores the result
+    (`must_finish`): the text it has stored must not be replaced by the
+    walk's input."""
+
+
 class _WalkTimeout(_rule_helper.HelperTimeout):
     """A walk passed its deadline. `blame` is the row to quarantine, -1 when
     the helper was outside any rule, None when no single row held the walk
@@ -1309,11 +1320,13 @@ def _walk_isolated(pool, text: str, rules: "list[_CompiledRule]",
                    terminal: "tuple[str, str, int]", exclude: "set[str]",
                    include: "set[str]", model_name: "str | None",
                    language: "str | None", bound: int, trace: "list | None",
-                   budget: "WalkBudget | None"):
+                   budget: "WalkBudget | None", must_finish: bool = False):
     """_walk in a helper process: its result, or _IN_PROCESS. The helper's
     trace rows are pushed onto `trace` here (_trace_push, so the window over
     the caller's whole list is the in-process one), its warnings logged here
-    and `budget` charged here."""
+    and `budget` charged here. A walk no attempt finished returns `text`, or
+    raises WalkUnfinished for a caller that stores the result
+    (`must_finish`)."""
     limits = (_REPEAT_MAX_PASSES, _TRACE_TEXT_MAX, _TRACE_MAX_ROWS)
     reply = _in_helper(
         pool, rules, terminal, len(text),
@@ -1333,6 +1346,8 @@ def _walk_isolated(pool, text: str, rules: "list[_CompiledRule]",
         if trace is not None:
             _trace_push(trace, _trace_row(
                 "pipeline [TIME LIMIT — rules not applied]", text, text))
+        if must_finish:
+            raise WalkUnfinished("the rule walk did not finish in a helper process")
         return text
     status, value, rows, charged, logs = reply
     for fmt, args in logs:

@@ -72,9 +72,12 @@ def final_text(raw: str, *, model: Any, ident: Any, language: Any) -> str:
     pipeline (`ident`) scoped by the TEXT language
     (captures_store.text_language). One recompute rule for the three
     callers: this job, the /reprocess route and the on-read self-heal in
-    captures/routes.py — each keeps its own error handling."""
+    captures/routes.py — each keeps its own error handling. All three store
+    the result over the row's text, so a walk the engine could not finish
+    raises (pl_engine.WalkUnfinished) instead of handing `raw` back as if it
+    were the formatted text: each caller's error arm keeps what is stored."""
     return pl_engine._postprocess_text(
-        raw, model_name=model, ident=ident, language=language,
+        raw, model_name=model, ident=ident, language=language, must_finish=True,
     )
 
 
@@ -82,12 +85,13 @@ def training_text(raw: str, final: str, *, model: Any, ident: Any,
                   language: Any, excludes: Any) -> str:
     """`text_for_training`: the same pass minus the captures-specific
     `excludes` (CAPTURES_PIPELINE_RULES_EXCLUDE). With no excludes it is
-    byte-identical to `final`, so the second pipeline pass is skipped."""
+    byte-identical to `final`, so the second pipeline pass is skipped.
+    Raises as final_text does for a walk that did not finish."""
     if not excludes:
         return final
     return pl_engine._postprocess_text(
         raw, model_name=model, extra_excludes=excludes, ident=ident,
-        language=language,
+        language=language, must_finish=True,
     )
 
 

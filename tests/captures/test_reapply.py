@@ -13,6 +13,7 @@ tests, which restores the canonical idle state.
 
 import contextlib
 import logging
+import re
 import types
 
 import pytest
@@ -20,6 +21,7 @@ import pytest
 from faster_whisper_backend.captures import reapply as captures_reapply
 from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.pipeline import engine as pl_engine
+from faster_whisper_backend.pipeline import rule_helper
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
 from tests.captures._store_helpers import insert_capture, insert_sample
@@ -285,6 +287,96 @@ def test_run_skips_a_row_whose_owner_identity_fails_to_resolve(
     assert "reapplyi skipped" in caplog.text
     assert cs.get_capture("reapplyid001")["final"] == "hello"
     assert cs.get_capture("reapplyid002")["final"] == "HELLO [final]"
+
+
+class _HeldPool:
+    """A helper pool as the engine meets it when slow rules hold every helper
+    (acquire answers BUSY). `free_first` walks get no pool at all first, and
+    run in-process."""
+
+    def __init__(self, free_first=0):
+        self.free = free_first
+
+    def acquire(self, timeout=None):
+        if self.free > 0:
+            self.free -= 1
+            return None
+        return rule_helper.BUSY
+
+    def shutdown(self):
+        pass
+
+
+@pytest.fixture
+def one_rule(monkeypatch):
+    """The real engine with one rule ("komma" -> ","), no key store."""
+    cre = re.compile(" komma")
+    monkeypatch.setattr(pl_engine, "_COMPILED_RULES", [pl_engine._CompiledRule(
+        "comma", "Comma", "regex-list", cre, ",", True, 1, 1)])
+    monkeypatch.setattr(pl_engine, "_TERMINAL_CARD_NO", 2)
+    monkeypatch.setattr(effective_config, "build_ident", lambda who, model_id: None)
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None, raising=False)
+
+
+def test_pass_skips_rows_whose_walk_did_not_finish(
+        captures_store_db, groups_store_db, one_rule, monkeypatch, caplog):
+    """A walk the helpers could not run hands its input back; taken as the
+    result, a pass rewrote every formatted row (and its sample's transcript)
+    with the raw text."""
+    cs, gs = captures_store_db, groups_store_db
+    conn = cs._require_conn()
+    _insert(conn, "reapplybusy1", language="de", raw="hello komma",
+            final="hello,", text_for_training="hello,")
+    _join_sample(conn, gs, "reapplybusysid01", "reapplybusy1")
+    monkeypatch.setattr(rule_helper, "_POOL", _HeldPool())
+
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert st["status"] == "done" and st["error"] is None
+    assert st["processed"] == 1
+    assert st["captures_updated"] == 0 and st["groups_updated"] == 0
+    row = cs.get_capture("reapplybusy1")
+    assert row["final"] == "hello," and row["text_for_training"] == "hello,"
+    assert gs.get_sample("reapplybusysid01")["transcript"] == "old"
+    assert "reapplyb skipped" in caplog.text
+
+
+def test_pass_keeps_the_training_text_when_only_its_walk_did_not_finish(
+        captures_store_db, one_rule, monkeypatch, caplog):
+    cs = captures_store_db
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", {"other-rule"},
+                        raising=False)
+    _insert(cs._require_conn(), "reapplybusy2", language="de", raw="hello komma",
+            final="stale", text_for_training="hello,")
+    monkeypatch.setattr(rule_helper, "_POOL", _HeldPool(free_first=1))
+
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        captures_reapply._run()
+
+    row = cs.get_capture("reapplybusy2")
+    assert row["final"] == "hello," and row["text_for_training"] == "hello,"
+    assert "reapplyb training-form skipped" in caplog.text
+
+
+def test_the_self_heal_keeps_the_stored_text_when_the_walk_did_not_finish(
+        captures_store_db, one_rule, monkeypatch):
+    """The read-time recompute (final_text's second caller) stored the raw
+    text over a formatted row the same way."""
+    from faster_whisper_backend.captures import routes as captures_routes
+
+    cs = captures_store_db
+    _insert(cs._require_conn(), "reapplybusy3", language="de", raw="hello komma",
+            final="hello,", text_for_training="hello,")
+    row = cs.get_capture("reapplybusy3")
+    monkeypatch.setattr(rule_helper, "_POOL", _HeldPool())
+
+    captures_routes._refresh_final_if_stale(row)
+
+    assert row["final"] == "hello," and row["text_for_training"] == "hello,"
+    stored = cs.get_capture("reapplybusy3")
+    assert stored["final"] == "hello," and stored["text_for_training"] == "hello,"
 
 
 def test_run_reapplies_rules_saved_while_a_pass_was_running(

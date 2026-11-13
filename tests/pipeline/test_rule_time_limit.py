@@ -628,6 +628,38 @@ def test_a_pool_with_every_helper_held_answers_busy_and_says_so_once(pool, caplo
     pool.release(got)
 
 
+class _HeldPool:
+    """A pool whose helpers are all held: every acquire answers BUSY."""
+
+    def acquire(self, timeout=None):
+        return rule_helper.BUSY
+
+    def shutdown(self):
+        pass
+
+
+def test_an_unfinished_walk_raises_only_for_a_caller_that_asks(monkeypatch, caplog):
+    _install_rows(monkeypatch, [_row("card", "Card · x", "x", "y", 1)])
+    monkeypatch.setattr(rule_helper, "_POOL", _HeldPool())
+    # A request path gets its text back unformatted, and answers.
+    assert pl_engine._postprocess_text("x x") == "x x"
+    # A caller that stores the result is told instead, after the same log
+    # line, budget charge and trace row.
+    trace: list = []
+    budget = pl_engine.WalkBudget(3)
+    left = budget.left
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        with pytest.raises(pl_engine.WalkUnfinished):
+            pl_engine._postprocess_text("x x", trace=trace, budget=budget, must_finish=True)
+    assert trace == [("pipeline [TIME LIMIT — rules not applied]", "x x", "x x")]
+    assert budget.left == left - 3
+    assert caplog.text.count("without the rules applied") == 1
+    # A walk that finishes is the same walk with or without the keyword.
+    monkeypatch.setattr(rule_helper, "_POOL", None)
+    assert pl_engine._postprocess_text("x x", must_finish=True) == "y y"
+
+
 def test_helpers_that_never_start_in_time_still_mean_in_process(monkeypatch, caplog):
     gate = threading.Event()
 
