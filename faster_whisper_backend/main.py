@@ -1460,6 +1460,16 @@ def _refuse_input(path: str) -> None:
     container.close()
 
 
+async def _refuse_input_gated(path: str) -> None:
+    """_refuse_input(path) on the one worker every header open of a client
+    file shares (audio_ffmpeg.client_open_pool): the check runs ahead of the
+    inference semaphore, so uploads arriving together would otherwise open
+    side by side, as many as the default executor has threads. Raises what
+    _refuse_input raises."""
+    await asyncio.get_running_loop().run_in_executor(
+        audio_ffmpeg.client_open_pool(), _refuse_input, path)
+
+
 # The BGM separator loads its whole input as float32 44.1 kHz stereo: twice
 # the s16 WAV the pre-separation transcode writes. Capping that s16 size at a
 # quarter of available RAM keeps the float32 load at half of it, leaving the
@@ -2137,7 +2147,7 @@ async def transcribe(
             # One refusal here, before any stage, covers every later consumer
             # (and a file with no audio stream, which they cannot decode).
             try:
-                await asyncio.to_thread(_refuse_input, tmp_path)
+                await _refuse_input_gated(tmp_path)
             except ValueError as _ce:
                 raise HTTPException(status_code=400, detail=str(_ce))
 

@@ -2,6 +2,10 @@
 derived from free RAM, before Whisper sees it: only the byte size was capped
 before, and a small file of compressed silence decodes to gigabytes."""
 
+import asyncio
+import threading
+import time
+
 import av
 import numpy as np
 import psutil
@@ -209,3 +213,53 @@ def test_an_upload_only_the_stream_limit_keeps_shut_is_a_400(
     assert r.status_code == 400, r.text
     assert "more than 20 tracks" in r.json()["detail"]
     assert fake_model.last_audio is None
+
+
+def _overlap_spy(monkeypatch, app_module):
+    """Stand in for _refuse_input; ([most calls running at once], the names
+    of the threads they ran on)."""
+    lock, running, most, threads = threading.Lock(), [0], [0], []
+
+    def _refuse(path):
+        with lock:
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+            threads.append(threading.current_thread().name)
+        time.sleep(0.02)
+        with lock:
+            running[0] -= 1
+        if path == "refused":
+            raise ValueError("unsupported container")
+    monkeypatch.setattr(app_module, "_refuse_input", _refuse)
+    return most, threads
+
+
+def test_input_checks_of_parallel_uploads_do_not_overlap(app_module,
+                                                         monkeypatch):
+    """The check opens the file, and one open may hold gigabytes while it
+    lasts: uploads arriving together are checked one after the other, on
+    the worker the other header opens of client files share, and a refusal
+    still reaches the caller."""
+    most, threads = _overlap_spy(monkeypatch, app_module)
+
+    async def _six():
+        return await asyncio.gather(
+            *(app_module._refuse_input_gated(p)
+              for p in ["a", "b", "refused", "c", "d", "e"]),
+            return_exceptions=True)
+    results = asyncio.run(_six())
+    assert most == [1] and len(threads) == 6
+    assert set(threads) == {threads[0]}
+    assert threads[0].startswith("client-open")
+    assert [type(r) for r in results] == [
+        type(None), type(None), ValueError, type(None), type(None),
+        type(None)]
+
+
+def test_the_upload_route_checks_its_input_on_the_shared_worker(
+        client, app_module, fake_model, monkeypatch):
+    most, threads = _overlap_spy(monkeypatch, app_module)
+    r = post_transcription(client, files={
+        "file": ("a.wav", wav_bytes(seconds=1.0), "audio/wav")})
+    assert r.status_code == 200, r.text
+    assert len(threads) == 1 and threads[0].startswith("client-open")
