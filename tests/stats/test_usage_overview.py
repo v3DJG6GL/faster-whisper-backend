@@ -185,6 +185,21 @@ def test_overview_compare_others_line_sums_prev_tail(us):
     assert sum(sum(v) for v in cmp.values()) == c["totals"]["all"]["audio_s"] == 50.0
 
 
+def test_overview_compare_keeps_entities_active_only_in_prev(us):
+    """With no current "others" bucket, a kind / user active only in the
+    compare window lands in one compare-only entry, so the compare lines
+    (the page's dashed line) still sum to compare.totals."""
+    _rec(us, key_id="k3", user_id="bob", audio_s=10.0, words=1, kind="dictation",
+         hour=_hour("2025-06-04"), processing_s=1.0, job_id="c1")
+    _rec(us, key_id="k1", user_id="alice", audio_s=600.0, words=1, kind="file",
+         hour=_hour("2025-05-25"), processing_s=1.0, job_id="p1")
+    for by in ("kind", "user"):
+        c = _ov(us, **_WIN, by=by, compare="prev")["compare"]
+        cmp = {ln["id"]: ln for ln in c["lines"]}
+        assert sum(cmp["__prev_only__"]["values"]) == 600.0 and cmp["__prev_only__"]["compare_only"]
+        assert sum(sum(ln["values"]) for ln in c["lines"]) == c["totals"]["all"]["audio_s"]
+
+
 def test_overview_unknown_params_fall_back(us):
     o = _ov(us, by="zzz", metric="zzz", bucket="zzz", compare="zzz")
     assert (o["by"], o["metric"], o["bucket"], o["compare"]) == ("kind", "audio_s", "day", None)

@@ -1089,8 +1089,10 @@ function prepareLines() {
     const n = xs.length;
     const tot = new Array(n).fill(0);
     const keep = new Set(visibleLines().map(ln => ln.id));
+    // The compare-only entry (entities active only in the compare window)
+    // has no legend button: it counts while no current line is hidden.
     j.compare.lines.forEach(ln => {
-      if (!keep.has(ln.id)) return;
+      if (ln.compare_only ? hidden.size > 0 : !keep.has(ln.id)) return;
       for (let i = 0; i < n; i++) tot[i] += Number(ln.values[i] || 0);
     });
     cmpTotal = tot;

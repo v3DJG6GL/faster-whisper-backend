@@ -2012,6 +2012,17 @@ def overview(
             else:
                 rebucket(by_id.get(ln["id"], []), acc)
             cmp_lines.append({"id": ln["id"], "values": [round(v, 3) for v in acc]})
+        if not any(ln.get("others") for ln in lines):
+            # No current "others" bucket to absorb them: entities active only
+            # in prev go into one anonymous compare-only entry, or the dashed
+            # compare line drops them and disagrees with compare.totals.
+            acc = [0.0] * n
+            for pl in prev["lines"]:
+                if pl["id"] not in top_ids:
+                    rebucket(pl["values"], acc)
+            if any(v > 0 for v in acc):
+                cmp_lines.append({"id": "__prev_only__", "compare_only": True,
+                                  "values": [round(v, 3) for v in acc]})
         out["compare"] = {"mode": compare,
                           "range": {"from": pf, "to": pt, "days": pt - pf + 1},
                           "totals": prev["totals"], "lines": cmp_lines,
