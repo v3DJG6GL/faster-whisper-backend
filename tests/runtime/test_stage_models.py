@@ -19,6 +19,7 @@ from tests.conftest import bearer
 from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import watch_progress as _watch_progress
+from tests.main._stage_helpers import diar_copy_made
 from tests.runtime.test_preload_registry import _FakeQueue
 from tests.runtime.test_routes_preload import _enable as _routes_enable
 
@@ -36,6 +37,7 @@ def _stub_diarize(app_module, monkeypatch, **cfg):
         calls.append({"model_id": model_id})
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake)
+    diar_copy_made(monkeypatch, app_module)
     return calls
 
 

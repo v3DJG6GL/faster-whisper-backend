@@ -15,7 +15,7 @@ from tests._transcription_helpers import (
     fail_model_load, get_progress, post_cancel, post_verbose as _post,
     post_verbose_ok as _post_ok, record_runs)
 from tests._translation_helpers import enable_translation, stub_translate
-from tests.main._stage_helpers import must_not_run, stage_raises
+from tests.main._stage_helpers import diar_copy_made, must_not_run, stage_raises
 
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 
@@ -68,6 +68,7 @@ def test_bgm_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
 def test_diarize_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
     stage_raises(monkeypatch, diarization, "diarize", diarization.DiarizeCancelled())
+    diar_copy_made(monkeypatch, app_module)
     r = _post(client, diarize="1", progress_id=_PID)
     assert r.status_code == 499, r.text
 

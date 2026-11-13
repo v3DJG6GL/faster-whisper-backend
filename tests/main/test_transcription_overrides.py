@@ -10,6 +10,7 @@ from tests._translation_helpers import enable_translation, stub_translate
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.translation import gating as tr_gating
+from tests.main._stage_helpers import diar_copy_made
 from tests._transcription_helpers import (
     bind_profile, post_json_ok, post_transcription, post_verbose_ok)
 OV = "/settings/overrides"
@@ -347,6 +348,7 @@ def _record_diarize(monkeypatch, app_module) -> list:
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake_diarize)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    diar_copy_made(monkeypatch, app_module)
     return calls
 
 

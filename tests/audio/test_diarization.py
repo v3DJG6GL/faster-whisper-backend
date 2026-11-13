@@ -26,12 +26,13 @@ from tests._transcription_helpers import (
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import record_loads as _record_loads
 from tests.conftest import record_calls
-from tests.main._stage_helpers import stage_raises
+from tests.main._stage_helpers import diar_copy_made, stage_raises
 
 
 @pytest.fixture
 def diar_on(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
+    diar_copy_made(monkeypatch, app_module)
 
 
 def _seed(monkeypatch, pipe=None, key=None, leases=None, orphans=None):

@@ -16,7 +16,8 @@ from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
 from tests._transcription_helpers import (
     post_verbose as _post, post_verbose_ok as _post_ok, serve_model, wav_bytes as _wav_bytes)
-from tests.main._stage_helpers import capture_receipt, must_not_run, transcode_raises
+from tests.main._stage_helpers import (
+    capture_receipt, diar_copy_made, must_not_run, transcode_raises)
 from tests.main.test_transcription_overrides import _record_diarize
 
 
@@ -83,6 +84,7 @@ def test_diarization_block_present_when_stage_labels_nobody(
     async def _no_turns(path, **kw):
         return []
     monkeypatch.setattr(diarization, "diarize", _no_turns)
+    diar_copy_made(monkeypatch, app_module)
     seen = capture_receipt(monkeypatch)
     _post_ok(client, diarize="true")
     assert any(s["name"] == "diarizing" for s in seen["stages"])

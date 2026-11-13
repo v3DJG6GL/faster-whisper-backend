@@ -1552,18 +1552,18 @@ def _new_diar_dst() -> str:
 
 
 def _diar_input_wav(src_path: str, decoded_s: "float | None",
-                    dst: str) -> "str | None":
+                    dst: str) -> str:
     """`dst` (from _new_diar_dst; the caller unlinks it) filled with a 16 kHz
-    mono WAV of `src_path` for pyannote, or None to hand it `src_path` as
-    before. pyannote decodes its whole input as float32 at the file's native
-    rate and channel count before it downmixes and resamples to 16 kHz mono
-    itself, so 8 channels at 192 kHz cost it nearly 100x what the
-    transcription's own 16 kHz mono decode costs; this copy costs what that
-    decode does. Bounded by the temp dir's free space minus a margin, like
-    the separation transcode; a failed copy keeps the original, except a
-    refusal by the transcode itself (a plain ValueError, not an av error),
-    which raises DiarizationError instead: pyannote's own decoder has no such
-    refusal, so that input is not handed to it.
+    mono WAV of `src_path` for pyannote. pyannote decodes its whole input as
+    float32 at the file's native rate and channel count before it downmixes
+    and resamples to 16 kHz mono itself, so 8 channels at 192 kHz cost it
+    nearly 100x what the transcription's own 16 kHz mono decode costs; this
+    copy costs what that decode does. Bounded by the temp dir's free space
+    minus a margin, like the separation transcode. A copy that cannot be made
+    raises DiarizationError: `src_path` itself is never pyannote's input.
+    pyannote's decoder has none of the transcode's refusals, and the copy
+    reads past where Whisper's decode stopped, so a damaged tail the
+    transcription never met would otherwise choose the raw file.
     `decoded_s`, the seconds Whisper decoded, ends the copy 5 s past them:
     Whisper's decode stops at an mp3's first invalid packet, the transcode
     reads on past it, and speaker turns past the transcript label nothing."""
@@ -1578,19 +1578,12 @@ def _diar_input_wav(src_path: str, decoded_s: "float | None",
             stop_at_bytes=(int((decoded_s + 5.0) * 32000)  # 16 kHz s16 mono
                            if decoded_s else None))
         return dst
-    except Exception as e:  # noqa: BLE001 — pyannote reports its own decode error
-        import av
+    except Exception as e:  # noqa: BLE001 — whatever failed, no raw input
         store_common.unlink_quietly(dst)
-        # PyAV's errors subclass ValueError too; the same predicate as the
-        # separation transcode's refusal.
-        if isinstance(e, ValueError) and not isinstance(e, av.FFmpegError):
-            logger.warning("[diarize] input refused (%s); skipping "
-                           "diarization", _log_safe(str(e)))
-            raise _diarization.DiarizationError(
-                "diarization skipped: the file could not be prepared") from e
-        logger.warning("[diarize] 16 kHz input copy failed (%s); diarizing "
-                       "the original", _log_safe(str(e)))
-        return None
+        logger.warning("[diarize] 16 kHz input copy failed (%s); skipping "
+                       "diarization", _log_safe(str(e)))
+        raise _diarization.DiarizationError(
+            "diarization skipped: the file could not be prepared") from e
 
 
 def _form_bool(value: "str | None") -> "bool | None":
@@ -3261,7 +3254,7 @@ async def transcribe(
                             async with tx_models.get_inference_semaphore():
                                 tx_progress._check_cancelled(_pid)
                                 _turns = await _diarization.diarize(
-                                    _diar_wav or tmp_path,
+                                    _diar_wav,
                                     num_speakers=_spk.get("num_speakers"),
                                     min_speakers=_spk.get("min_speakers"),
                                     max_speakers=_spk.get("max_speakers"),

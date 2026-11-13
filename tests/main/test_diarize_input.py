@@ -89,11 +89,15 @@ def test_the_separation_stem_is_downmixed_too(
     assert shape == (16000, 1, 16000)
 
 
-def test_a_failed_downmix_keeps_the_original_path(
+_NOT_PREPARED = "diarization skipped: the file could not be prepared"
+
+
+def test_a_copy_the_disk_has_no_room_for_skips_diarization(
         client, fake_model, diarize_seen, monkeypatch, tmp_path):
-    """Nothing new is refused: when the 16 kHz copy cannot be written
-    (here, a disk with no room for it), pyannote reads the upload as
-    before."""
+    """pyannote reads the private 16 kHz copy or nothing: when the copy
+    cannot be written (here, a disk with no room for it) the upload itself
+    is not handed to it at its native rate and channel count. The
+    transcript is answered without speaker labels, with the reason."""
     real = shutil.disk_usage
 
     def _usage(path):
@@ -105,21 +109,24 @@ def test_a_failed_downmix_keeps_the_original_path(
     with open(src, "rb") as f:
         body = _post_ok(client, diarize="true",
                         files={"file": ("a.wav", f.read(), "audio/wav")})
-    assert "warnings" not in body
-    [(path, shape)] = diarize_seen
-    assert shape == (48000, 2, 48000)
-    assert os.path.basename(path).startswith("whisperup-")
-    assert not os.path.basename(path).startswith("whisperup-diar-")
+    assert diarize_seen == []
+    assert _NOT_PREPARED in body["warnings"]
+    assert body["text"] and "speakers" not in body
 
 
-def test_an_undecodable_upload_keeps_the_original_path(
+def test_a_copy_that_fails_for_any_reason_skips_diarization(
         client, fake_model, diarize_seen, monkeypatch):
+    made = []
+
     def _boom(src, dst, *, rate, layout, **_kw):
+        made.append(dst)
         raise RuntimeError("no decoder")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
-    _post_ok(client, diarize="true")
-    [(path, _shape)] = diarize_seen
-    assert not os.path.basename(path).startswith("whisperup-diar-")
+    body = _post_ok(client, diarize="true")
+    assert diarize_seen == []
+    assert _NOT_PREPARED in body["warnings"]
+    assert body["text"]
+    assert made and not os.path.exists(made[0])
 
 
 def test_a_refused_input_is_not_handed_to_pyannote(
@@ -136,24 +143,27 @@ def test_a_refused_input_is_not_handed_to_pyannote(
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _refuse)
     body = _post_ok(client, diarize="true")
     assert diarize_seen == []
-    assert ("diarization skipped: the file could not be prepared"
-            in body["warnings"])
+    assert _NOT_PREPARED in body["warnings"]
     assert made and not os.path.exists(made[0])
 
 
-def test_an_av_error_keeps_the_original_path(
-        client, fake_model, diarize_seen, monkeypatch):
-    """PyAV's errors subclass ValueError too: a decoder error is no
-    refusal, and pyannote still gets the upload, as before."""
+@pytest.mark.parametrize("error", ["InvalidDataError", "PermissionError"])
+def test_an_av_error_in_the_copy_skips_diarization_too(
+        client, fake_model, diarize_seen, monkeypatch, error):
+    """The copy reads on past the packet Whisper's decode stopped at, so a
+    damaged tail the transcription never met can fail it with a decoder
+    error (a truncated AAC element answers "operation not permitted"). The
+    client chooses those bytes: they do not choose the raw upload as
+    pyannote's input."""
     import av
 
     def _bad(src, dst, *, rate, layout, **_kw):
-        raise av.error.InvalidDataError(1094995529, "Invalid data")
+        raise getattr(av.error, error)(1, "avcodec_send_packet()")
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _bad)
     body = _post_ok(client, diarize="true")
-    assert "warnings" not in body
-    [(path, _shape)] = diarize_seen
-    assert not os.path.basename(path).startswith("whisperup-diar-")
+    assert diarize_seen == []
+    assert _NOT_PREPARED in body["warnings"]
+    assert body["text"]
 
 
 def test_a_cancel_during_the_copy_leaves_no_copy(

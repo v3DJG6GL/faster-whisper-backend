@@ -33,6 +33,14 @@ def must_not_run(monkeypatch, module, name, msg):
     stage_raises(monkeypatch, module, name, AssertionError(msg))
 
 
+def diar_copy_made(monkeypatch, app_module):
+    """Stand in for the private 16 kHz copy diarization reads. The stub
+    upload these tests post does not decode, and with no copy the stage is
+    skipped: diarize() never gets the upload itself."""
+    monkeypatch.setattr(app_module, "_diar_input_wav",
+                        lambda src, decoded_s, dst: dst)
+
+
 def transcode_raises(monkeypatch, exc):
     """Replace the synchronous audio_transcode.transcode_to_wav with one that
     raises `exc`. Keeps the real signature: the route's fallback arm would
