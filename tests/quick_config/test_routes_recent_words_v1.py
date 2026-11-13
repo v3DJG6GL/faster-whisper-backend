@@ -43,6 +43,35 @@ def test_v1_recent_words_case_insensitive_dedup(client):
     assert sum(1 for w in words if w.lower() == "komma") == 1
 
 
+def test_v1_recent_words_reads_on_the_recent_page_pool(client, monkeypatch):
+    """The suggestions are built from the same page of full rows as
+    /quick-config/recent and the route is not rate limited: the read runs on
+    that page's two-worker pool, in one of the caller's own view slots, and
+    not on asyncio's default executor where a burst ran 32 reads at once."""
+    import threading
+
+    from faster_whisper_backend.quick_config import routes as qc
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    seen: list[tuple[str, list[int]]] = []
+
+    def _list_recent(**kw):
+        seen.append((threading.current_thread().name,
+                     [e[1] for e in list(qc._view_slots.values())]))
+        return []
+
+    monkeypatch.setattr(recent_transcriptions_store, "list_recent", _list_recent)
+    assert client.get("/v1/recent-words").json() == {"words": [], "max": 200}
+    assert len(seen) == 1
+    name, holding = seen[0]
+    assert name.startswith("qc-recent"), name
+    assert holding == [1]               # the caller's slot, held for the read
+    assert qc._view_slots == {}
+    # Nothing to build: still no read.
+    assert client.get("/v1/recent-words", params={"limit": 0}).json() == {
+        "words": [], "max": 200}
+    assert len(seen) == 1
+
+
 def test_v1_recent_words_cap_honored(client, app_module):
     app_module.cfg.QUICK_CONFIG_WORD_SUGGESTIONS_MAX = 2
     _seed("u1", ["a-word", "b-word", "c-word", "d-word"], request_id="r1")

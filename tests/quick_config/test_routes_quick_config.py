@@ -424,6 +424,42 @@ def test_recent_pages_of_one_identity_wait_for_their_own_slots(monkeypatch):
     assert qc._view_slots == {}
 
 
+def test_recent_words_of_one_identity_wait_for_their_own_slots(monkeypatch):
+    """GET /v1/recent-words reads the same page of full rows for its
+    suggestions: same pool, same per-identity slots."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="t-recent")
+    monkeypatch.setattr(qc, "_RECENT_PAGE_EXECUTOR", pool)
+    gate, started, order, names = threading.Event(), threading.Event(), [], set()
+
+    def _list_recent(**kw):
+        started.set()
+        gate.wait(10)
+        order.append(kw["user_id_filter"])
+        names.add(threading.current_thread().name.rsplit("_", 1)[0])
+        return []
+
+    class _OwnRows:
+        def effective_user_id_for(self, page, user_id):
+            return user_id
+
+    monkeypatch.setattr(recent_transcriptions_store, "list_recent", _list_recent)
+    held, tracked = _drive_view_flood(
+        pool,
+        lambda who: qc.v1_get_recent_words(
+            user={"user_id": who, "permissions": _OwnRows()}, limit=None),
+        started, gate.set)
+    assert names == {"t-recent"}, names
+    assert held <= 3, held
+    assert tracked == {"a": 6, "b": 1}
+    assert sorted(order) == ["a"] * 6 + ["b"]
+    assert order.index("b") <= 2, order
+    assert qc._view_slots == {}
+
+
 def test_view_slots_are_per_identity_and_shared_by_both_pools():
     """A third view of the same identity waits whichever pool it is for; a
     key without a user is its own identity; nothing is left behind when a

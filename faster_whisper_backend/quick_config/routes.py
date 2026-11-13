@@ -813,8 +813,13 @@ async def v1_get_recent_words(
     if limit is not None:
         # FastAPI already rejected a non-integer `limit` with a 422.
         max_words = max(0, min(cap, limit))
-    words = await asyncio.to_thread(
-        functools.partial(build_word_suggestions, user, max_words=max_words))
+    # The suggestions come from the same page of full rows as the /recent
+    # page (several times its body while it is read), and this route is not
+    # rate limited either: same two-worker pool, same per-identity slots.
+    async with _identity_view_slot(user):
+        words = await asyncio.get_running_loop().run_in_executor(
+            _RECENT_PAGE_EXECUTOR,
+            functools.partial(build_word_suggestions, user, max_words=max_words))
     return {"words": words, "max": cap}
 
 
