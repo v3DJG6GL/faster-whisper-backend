@@ -2971,6 +2971,19 @@ async def transcribe(
                 except Exception as _dec_err:
                     # An error from before the first frame — the open's, in
                     # practice; a failed decode is one of the arms above.
+                    import av as _av
+                    if (isinstance(_dec_err, ValueError)
+                            and not isinstance(_dec_err, _av.FFmpegError)):
+                        # The open's own refusal (fixed texts, no path), of a
+                        # file the check ahead of every stage admitted: an
+                        # allocation the server could make then and cannot
+                        # now. transcribe() would open it with no stream
+                        # limit and decode it under no ceiling.
+                        logger.warning(
+                            "[decode] upload refused at the decode's open: "
+                            "%s", _log_safe(str(_dec_err)))
+                        raise HTTPException(status_code=400,
+                                            detail=str(_dec_err))
                     # transcribe() opens the path itself and raises the
                     # decoder's own error for the undecodable arm; what its
                     # open must not read (a playlist, a file past the stream

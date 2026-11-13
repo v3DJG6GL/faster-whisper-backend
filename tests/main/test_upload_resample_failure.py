@@ -7,6 +7,7 @@ group, and first buffers a whole 500 000-sample group of every channel
 import av
 import pytest
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from tests._transcription_helpers import post_transcription, wav_bytes
 from tests.audio.test_transcode import two_rate_flac
 
@@ -53,6 +54,24 @@ def test_other_decode_failures_still_hand_transcribe_the_path(
         "file": ("a.wav", wav_bytes(seconds=1.0), "audio/wav")})
     assert r.status_code == 200, r.text
     assert isinstance(fake_model.last_audio, str)
+
+
+def test_a_refusal_from_the_decode_open_is_not_handed_over(
+        client, app_module, fake_model, monkeypatch):
+    """The decode opens the file again, later and under the inference slot:
+    its open may refuse what the check ahead of every stage admitted (an
+    allocation the server could make then and not now). A refusal is a plain
+    ValueError with a fixed text, and transcribe(path) would open the file
+    with no stream limit and no decode ceiling: it is answered, not handed
+    over."""
+    def _decode(path, *, max_seconds):
+        raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN)
+    monkeypatch.setattr(app_module._transcode, "decode_16k_bounded", _decode)
+    r = post_transcription(client, files={
+        "file": ("a.wav", wav_bytes(seconds=1.0), "audio/wav")})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == audio_ffmpeg.TOO_MUCH_TO_OPEN
+    assert fake_model.last_audio is None
 
 
 def _g726_wav_refusing_its_decoder() -> bytes:
