@@ -2519,7 +2519,8 @@ async function _pollStripOnce() {
   fill.style.width = pct + '%';
   stats.textContent = (s.processed || 0) + ' / ' + (s.total || 0)
     + ' · ' + (s.captures_updated || 0) + ' updated · '
-    + (s.groups_updated || 0) + ' groups';
+    + (s.groups_updated || 0) + ' groups'
+    + (s.skipped ? ' · ' + s.skipped + ' skipped' : '');
   if (s.status === 'running') {
     label.textContent = 'Re-applying rules…';
   } else if (s.status === 'done') {

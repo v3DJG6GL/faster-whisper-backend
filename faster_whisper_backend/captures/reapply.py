@@ -52,6 +52,12 @@ _IDLE_STATE: dict[str, Any] = {
     "processed":        0,
     "captures_updated": 0,
     "groups_updated":   0,
+    # Rows of the last pass the rules could not be applied to (a walk that
+    # did not finish, an owner that did not resolve): they keep their stored
+    # text and the job still ends "done", so this is what tells such a pass
+    # from one that reached every row. Members of a locked sample are kept
+    # by design and not counted.
+    "skipped":          0,
     "error":            None,
 }
 _state: dict[str, Any] = dict(_IDLE_STATE)
@@ -145,16 +151,26 @@ def _run() -> None:
                     summary = (_state["processed"], _state["total"],
                                _state["captures_updated"],
                                _state["groups_updated"])
+                    skipped = _state["skipped"]
                     break
                 # Rules changed mid-pass: walk every row again with a fresh
-                # snapshot. The progress bar restarts for this pass; the
-                # updated totals keep counting for the whole job.
+                # snapshot. The progress bar restarts for this pass, and so
+                # does the skipped count (a row this pass walks is no longer
+                # kept); the updated totals keep counting for the whole job.
                 _rerun_requested = False
-                _state.update({"total": 0, "processed": 0})
+                _state.update({"total": 0, "processed": 0, "skipped": 0})
             logger.info("[reapply] rules changed mid-run: re-applying again")
         logger.info(
             "[reapply] done: %d/%d captures, %d updated, %d groups", *summary,
         )
+        if skipped:
+            # The per-row lines are far above by now; "done" alone reads as
+            # if every row had the current rules.
+            logger.warning(
+                "[reapply] %d capture(s) kept their stored text: the rules "
+                "could not be applied to them — run \"Reprocess all · "
+                "Pipeline rules\" again", skipped,
+            )
     except Exception as e:
         logger.exception("[reapply] job failed")
         with _state_lock:
@@ -235,6 +251,7 @@ def _run_pass() -> None:
             )
             with _state_lock:
                 _state["processed"] += 1
+                _state["skipped"] += 1
             continue
         try:
             new_training = training_text(
@@ -247,6 +264,9 @@ def _run_pass() -> None:
                 cid[:8], e,
             )
             new_training = None
+            # Once per row: the arm above `continue`s.
+            with _state_lock:
+                _state["skipped"] += 1
         patch = text_patch(r["final"], r["text_for_training"], new_final, new_training)
         if patch:
             # Re-read the capture's CURRENT sample and its lock at the write,

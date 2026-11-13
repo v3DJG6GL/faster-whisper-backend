@@ -10,7 +10,7 @@ import pytest
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.quick_config import routes as qc
 from faster_whisper_backend.reports import store as reports_store
-from tests._page_helpers import js_upto
+from tests._page_helpers import js_upto, needs_node, node_file_json
 from tests.conftest import bearer, fake_request, locked_alice, schema_map_cap
 from tests.quick_config._rules_helpers import assert_saved
 from tests.quick_config._rules_helpers import expose_first as _expose_first
@@ -874,6 +874,44 @@ def test_quick_config_page_failure_paths_recover(client):
     assert probe.index("await api('GET', '/quick-config/recent?limit=1');") < probe.index(
         "if (!_recoveryTimer) return;") < probe.index("if (r.ok) {")
     assert "if (!_recoveryTimer) return;   // onopen cancelled it meanwhile" in probe
+
+
+@needs_node
+def test_quick_config_reapply_strip_names_the_rows_that_kept_their_text(
+        client, tmp_path):
+    """The silent re-apply after a save ends "done" even when rows kept
+    their stored text (the rules could not be applied to them): the strip's
+    counters say how many, and say nothing extra for a pass that kept none."""
+    html = client.get("/quick-config").text
+    poll = js_upto(html, "async function _pollStripOnce()",
+                   "async function startReapplyJobSilent(")
+    out = node_file_json(tmp_path, r"""
+let next = null, _stripPoll = null;
+const els = { '.r-fill': { style: {} }, '.r-stats': {}, '.r-label': {} };
+const strip = { querySelector: (sel) => els[sel], classList: { add() {} } };
+const document = { getElementById: () => strip };
+function _hideStripSoon() {}
+function _stripErr() {}
+async function api() { return { ok: true, json: async () => next }; }
+""" + poll + r"""
+(async () => {
+  const seen = [];
+  for (const s of [
+      { status: 'running', processed: 3, total: 9, captures_updated: 2, groups_updated: 1, skipped: 0 },
+      { status: 'done', processed: 9, total: 9, captures_updated: 4, groups_updated: 1 },
+      { status: 'done', processed: 9, total: 9, captures_updated: 4, groups_updated: 1, skipped: 5 }]) {
+    next = s;
+    const status = await _pollStripOnce();
+    seen.push([status, els['.r-stats'].textContent]);
+  }
+  console.log(JSON.stringify(seen));
+})();
+""")
+    assert out == [
+        ["running", "3 / 9 · 2 updated · 1 groups"],
+        ["done", "9 / 9 · 4 updated · 1 groups"],
+        ["done", "9 / 9 · 4 updated · 1 groups · 5 skipped"],
+    ]
 
 
 def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client):

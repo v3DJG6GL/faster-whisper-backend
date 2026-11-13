@@ -2922,6 +2922,7 @@
       _pollJob('/captures/api/reprocess-all/status', function(s) {
         return 'Pipeline rules: ' + (s.processed || 0) + '/' + (s.total || 0)
           + ' · ' + (s.captures_updated || 0) + ' updated'
+          + (s.skipped ? ', ' + s.skipped + ' skipped' : '')
           + (s.status === 'running' ? '…' : (s.status === 'error' ? ' — failed' : ' — done'));
       });
     } catch (e) {

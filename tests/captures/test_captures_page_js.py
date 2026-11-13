@@ -2644,3 +2644,33 @@ setTimeout(function() {
 """)
     # Word 0 (content row 510) back at the strip's inner top (501).
     assert out == [9, 9]
+
+
+@needs_node
+def test_pipeline_rules_progress_line_names_the_rows_that_kept_their_text(
+        page, tmp_path):
+    """A row the rules could not be applied to keeps its stored text and the
+    job still ends "done": the progress line says how many, as the VAD line
+    does, and says nothing extra for a pass that kept none."""
+    out = _run_node(tmp_path, _js_function(page, "onReprocessAll") + r"""
+var render = null;
+function _closeAdvMenu() {}
+async function _confirm() { return true; }
+async function api() { return {}; }
+function _pollJob(url, fn) { render = fn; }
+function toast() {}
+(async function() {
+  await onReprocessAll();
+  console.log(JSON.stringify([
+    render({ status: 'running', processed: 3, total: 9, captures_updated: 2, skipped: 0 }),
+    render({ status: 'done', processed: 9, total: 9, captures_updated: 4 }),
+    render({ status: 'running', processed: 3, total: 9, captures_updated: 0, skipped: 3 }),
+    render({ status: 'done', processed: 9, total: 9, captures_updated: 4, skipped: 5 })]));
+})();
+""")
+    assert out == [
+        "Pipeline rules: 3/9 · 2 updated…",
+        "Pipeline rules: 9/9 · 4 updated — done",
+        "Pipeline rules: 3/9 · 0 updated, 3 skipped…",
+        "Pipeline rules: 9/9 · 4 updated, 5 skipped — done",
+    ]

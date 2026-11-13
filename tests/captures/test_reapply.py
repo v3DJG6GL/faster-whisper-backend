@@ -35,6 +35,7 @@ _IDLE = {
     "processed": 0,
     "captures_updated": 0,
     "groups_updated": 0,
+    "skipped": 0,
     "error": None,
 }
 
@@ -84,13 +85,14 @@ def test_start_spawns_one_worker(fake_thread):
 def test_start_resets_counters(fake_thread):
     captures_reapply._state.update({
         "status": "done", "processed": 99, "captures_updated": 5,
-        "groups_updated": 3, "error": "old",
+        "groups_updated": 3, "skipped": 7, "error": "old",
     })
     state = captures_reapply.start()
     assert state["status"] == "running"
     assert state["processed"] == 0
     assert state["captures_updated"] == 0
     assert state["groups_updated"] == 0
+    assert state["skipped"] == 0
     assert state["error"] is None
     assert state["finished_ts"] is None
 
@@ -200,8 +202,9 @@ def test_run_passes_the_row_language_and_updates_the_capture(
     st = captures_reapply.status()
     assert st["status"] == "done" and st["error"] is None
     assert st["total"] == 2 and st["processed"] == 2
-    assert st["captures_updated"] == 2
+    assert st["captures_updated"] == 2 and st["skipped"] == 0
     assert "skipped" not in caplog.text
+    assert "kept their stored text" not in caplog.text
     assert sorted(str(c["language"]) for c in fake_pipeline.calls) == ["None", "de"]
     row = cs.get_capture("reapply00001")
     assert row["final"] == "HELLO [final]"
@@ -284,7 +287,9 @@ def test_run_skips_a_row_whose_owner_identity_fails_to_resolve(
     st = captures_reapply.status()
     assert st["status"] == "done" and st["error"] is None
     assert st["processed"] == 2 and st["captures_updated"] == 1
+    assert st["skipped"] == 1
     assert "reapplyi skipped" in caplog.text
+    assert "1 capture(s) kept their stored text" in caplog.text
     assert cs.get_capture("reapplyid001")["final"] == "hello"
     assert cs.get_capture("reapplyid002")["final"] == "HELLO [final]"
 
@@ -322,7 +327,9 @@ def test_pass_skips_rows_whose_walk_did_not_finish(
         captures_store_db, groups_store_db, one_rule, monkeypatch, caplog):
     """A walk the helpers could not run hands its input back; taken as the
     result, a pass rewrote every formatted row (and its sample's transcript)
-    with the raw text."""
+    with the raw text. The row keeps its stored text and the job still ends
+    "done" — with the row counted, so a pass that applied the rules to
+    nothing does not read like one that applied them to everything."""
     cs, gs = captures_store_db, groups_store_db
     conn = cs._require_conn()
     _insert(conn, "reapplybusy1", language="de", raw="hello komma",
@@ -335,12 +342,15 @@ def test_pass_skips_rows_whose_walk_did_not_finish(
 
     st = captures_reapply.status()
     assert st["status"] == "done" and st["error"] is None
-    assert st["processed"] == 1
+    assert st["processed"] == 1 and st["skipped"] == 1
     assert st["captures_updated"] == 0 and st["groups_updated"] == 0
     row = cs.get_capture("reapplybusy1")
     assert row["final"] == "hello," and row["text_for_training"] == "hello,"
     assert gs.get_sample("reapplybusysid01")["transcript"] == "old"
     assert "reapplyb skipped" in caplog.text
+    kept = [r for r in caplog.records if "kept their stored text" in r.getMessage()]
+    assert len(kept) == 1 and kept[0].levelno == logging.WARNING
+    assert kept[0].getMessage().startswith("[reapply] 1 capture(s) kept")
 
 
 def test_pass_keeps_the_training_text_when_only_its_walk_did_not_finish(
@@ -358,6 +368,13 @@ def test_pass_keeps_the_training_text_when_only_its_walk_did_not_finish(
     row = cs.get_capture("reapplybusy2")
     assert row["final"] == "hello," and row["text_for_training"] == "hello,"
     assert "reapplyb training-form skipped" in caplog.text
+    # The final was rewritten, the training text was not: the row counts as
+    # updated AND as one the rules were not fully applied to.
+    st = captures_reapply.status()
+    assert st["status"] == "done" and st["error"] is None
+    assert st["processed"] == 1 and st["captures_updated"] == 1
+    assert st["skipped"] == 1
+    assert "1 capture(s) kept their stored text" in caplog.text
 
 
 def test_the_self_heal_keeps_the_stored_text_when_the_walk_did_not_finish(
@@ -436,6 +453,70 @@ def test_rerun_keeps_the_job_totals_of_the_earlier_pass(
     assert cs.get_capture("reapplyrt001")["final"] == "hello [A]"
 
 
+def test_rerun_reports_the_rows_its_last_pass_kept(
+        captures_store_db, fake_pipeline, monkeypatch, fake_thread, caplog):
+    """A queued rerun walks every row again, so the rows the job reports as
+    kept are the last pass's: a row pass 1 could not walk and pass 2 did is
+    not kept, and a queued rerun is still run after a pass that kept rows."""
+    cs = captures_store_db
+    conn = cs._require_conn()
+    _insert(conn, "reapplysk001", language="de")
+    _insert(conn, "reapplysk002", language="de")
+    captures_reapply.start()
+    calls, seen = [], []
+
+    def _postprocess_text(text, **kw):
+        calls.append(text)
+        if len(calls) == 1:
+            # A save lands while pass 1 is mid-walk, with every helper held.
+            captures_reapply.start()
+        if len(calls) <= 2:
+            seen.append(captures_reapply.status()["skipped"])
+            raise pl_engine.WalkUnfinished("helpers held")
+        seen.append(captures_reapply.status()["skipped"])
+        return f"{text} [B]"
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _postprocess_text)
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert len(calls) == 4                      # both passes walked both rows
+    assert seen == [0, 1, 0, 0]                 # pass 2 starts from zero
+    assert st["status"] == "done" and st["error"] is None
+    assert st["processed"] == 2 and st["captures_updated"] == 2
+    assert st["skipped"] == 0
+    assert captures_reapply._rerun_requested is False
+    assert cs.get_capture("reapplysk001")["final"] == "hello [B]"
+    assert cs.get_capture("reapplysk002")["final"] == "hello [B]"
+    assert "kept their stored text" not in caplog.text
+
+
+def test_rerun_counts_a_row_both_passes_kept_once(
+        captures_store_db, fake_pipeline, monkeypatch, fake_thread, caplog):
+    cs = captures_store_db
+    _insert(cs._require_conn(), "reapplysk003", language="de")
+    captures_reapply.start()
+    calls = []
+
+    def _postprocess_text(text, **kw):
+        calls.append(text)
+        if len(calls) == 1:
+            captures_reapply.start()
+        raise pl_engine.WalkUnfinished("helpers held")
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _postprocess_text)
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert len(calls) == 2
+    assert st["status"] == "done" and st["error"] is None
+    assert st["processed"] == 1 and st["skipped"] == 1
+    assert caplog.text.count("kept their stored text") == 1
+    assert cs.get_capture("reapplysk003")["final"] == "hello"
+
+
 def test_run_rebuilds_a_group_transcript_with_chips_on_their_aligned_word(
         captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
     """The group rebuild placed a chip by the nearest text-token match, so
@@ -477,6 +558,8 @@ def test_run_leaves_the_members_of_a_locked_sample_alone(
 
     st = captures_reapply.status()
     assert st["processed"] == 2 and st["captures_updated"] == 1
+    # Kept by design, not a row the rules could not be applied to.
+    assert st["skipped"] == 0
     row = captures_store_db.get_capture("reapplylock1")
     assert row["final"] == "old"
     assert not row["text_for_training"]
