@@ -1489,9 +1489,22 @@ _ENV_UNPARSED: "set[str]" = set()
 def _truthy(s: str) -> bool:
     return s.strip().lower() in ("1", "true", "yes", "on", "y", "t", "enabled")
 
+# A second NAME= inside one value: two .env / env_file lines run together.
+_RUN_ON_RE = re.compile(r"\s[A-Za-z_][A-Za-z0-9_]*=")
+
+def _shown(raw: str) -> str:
+    """repr of a mistyped scalar for a warning. A longer value, or one
+    holding a second NAME=, cannot be the setting — it is two .env lines run
+    together or a pasted secret, and these warnings reach the served log —
+    so only its length is given."""
+    v = raw.strip()
+    if len(v) <= 16 and not _RUN_ON_RE.search(v):
+        return repr(raw)
+    return f"<a value of {len(raw)} characters, not shown>"
+
 def _env_unparsed(name: str, raw: str, current, what: str):
     """Warn that `name` is not a valid `what`, mark it unparsed, keep `current`."""
-    _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid {what}; keeping {current!r}")
+    _ENV_WARNINGS.append(f"{name}={_shown(raw)} is not a valid {what}; keeping {current!r}")
     _ENV_UNPARSED.add(name)
     return current
 
@@ -2128,7 +2141,7 @@ for _k, _v in os.environ.items():
     _coerced = _env_guard_off(_k, _field, _coerce_override_value(_field, _v))
     if _coerced is _UNPARSED:
         _ENV_WARNINGS.append(
-            f"{_k}={_v!r} is not a valid boolean; ignoring it for {_model_id}")
+            f"{_k}={_shown(_v)} is not a valid boolean; ignoring it for {_model_id}")
         continue
     # Only now: an ignored value must not leave a phantom empty entry that
     # the per-model editor would round-trip into config.local.json.
@@ -2162,9 +2175,14 @@ try:
         """Put the pre-env value back, record the rejection, and warn.
         The kept value is redacted for _SECRET_FIELDS (e.g. the stored
         HF_TOKEN): _ENV_WARNINGS is drained into the log served by /logs and
-        /logs/stream."""
+        /logs/stream. For the same reason a rejected value holding a second
+        NAME= is not quoted through the validator's message. That test is by
+        shape, not length: a bad host or origin entry stays readable."""
         globals()[_field] = _ENV_PRE[_field]
         _ENV_REJECTED.add(_field)
+        if _RUN_ON_RE.search(os.environ.get(_ENV_VAR_MAPPING.get(_field, ""), "") or ""):
+            _reason = ("the value holds a second NAME= (two settings on one "
+                       "line?) and is not shown")
         _kept = ("<redacted>" if _field in _SECRET_FIELDS
                  else repr(_ENV_PRE[_field]))
         _ENV_WARNINGS.append(

@@ -389,6 +389,59 @@ def test_bad_scalar_records_warning(monkeypatch, restore_config):
     _assert_warned("WHISPER_BEAM_SIZE")
 
 
+def test_run_on_scalar_value_is_not_echoed(monkeypatch, restore_config):
+    """Two .env assignments on one line give the first variable the second
+    one's name and value. The warning names the variable and the value's
+    length, not the text: startup warnings reach the served log."""
+    raw = "5 WHISPER_BOOTSTRAP_ADMIN_KEY=wk_0123456789abcdefghijSECRET"
+    _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE=raw)
+    assert config.BEAM_SIZE == 10   # default kept
+    _assert_warned("WHISPER_BEAM_SIZE=", "not a valid integer",
+                   f"{len(raw)} characters, not shown", "keeping 10")
+    _assert_not_warned("wk_0123", "SECRET", "BOOTSTRAP_ADMIN_KEY")
+
+
+def test_run_on_boolean_value_is_not_echoed_even_when_short(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_VAD_FILTER="1 A_KEY=hf_AB")
+    _assert_warned("WHISPER_VAD_FILTER=", "not a valid boolean", "not shown")
+    _assert_not_warned("hf_AB", "A_KEY")
+
+
+def test_run_on_value_is_not_echoed_through_the_validator_message(monkeypatch, restore_config):
+    """A value the reader takes (a host list) and the schema then refuses is
+    quoted by the validator's own message; the field is reverted as before."""
+    kept = config.ADMIN_WEBUI_ALLOWED_HOSTS
+    _reload_with_env(monkeypatch, WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS=
+                     "10.0.0.0/8 WHISPER_HF_TOKEN=hf_HOSTSSECRET")
+    assert config.ADMIN_WEBUI_ALLOWED_HOSTS == kept
+    assert "ADMIN_WEBUI_ALLOWED_HOSTS" in config._ENV_REJECTED
+    _assert_warned("WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS is not a valid", "not shown",
+                   "keeping ")
+    _assert_not_warned("hf_HOSTS", "SECRET", "WHISPER_HF_TOKEN")
+
+
+def test_run_on_per_model_boolean_is_not_echoed(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__DIARIZE=
+                     "maybe WHISPER_HF_TOKEN=hf_X1")
+    assert "DIARIZE" not in config.MODEL_OVERRIDES.get("tiny", {})
+    _assert_warned("DIARIZE=", "not a valid boolean", "not shown", "for tiny")
+    _assert_not_warned("hf_X1", "WHISPER_HF_TOKEN")
+
+
+def test_plausible_mistyped_values_are_still_printed(monkeypatch, restore_config):
+    """A short value that could be the setting stays in the warning: that is
+    what makes it actionable."""
+    _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="ten",
+                     WHISPER_VAD_FILTER="True#x",
+                     WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS="10.0.0.0/33",
+                     WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="maybe")
+    _assert_warned("WHISPER_BEAM_SIZE='ten' is not a valid integer")
+    _assert_warned("WHISPER_VAD_FILTER='True#x' is not a valid boolean")
+    _assert_warned("WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS is not a valid", "'10.0.0.0/33'")
+    _assert_warned("DIARIZE='maybe' is not a valid boolean")
+    _assert_not_warned("not shown")
+
+
 def test_secret_file_indirection(monkeypatch, tmp_path):
     secret = tmp_path / "key"
     secret.write_text("  sk-from-file  \n", encoding="utf-8")
