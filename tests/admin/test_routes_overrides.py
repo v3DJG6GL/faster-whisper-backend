@@ -705,6 +705,37 @@ console.log(JSON.stringify({ tag: el.tag, maxlen: el.maxLength, got: got }));
     assert out == {"tag": "textarea", "maxlen": 4000, "got": "a = b\nc = d\ne = f"}
 
 
+@needs_node
+def test_page_guard403_refreshes_whoami_and_lands_only_a_non_admin(client):
+    """guard403 drew the no-access landing on any 403 from the page-load
+    window.__whoami: a 403 that beat the banner's whoami fetch listed no
+    reachable pages, and the CSRF gate's 403 on an admin's save (revoked
+    session) wiped the unsaved editor. It refreshes whoami first and lands
+    only a caller who is not an admin."""
+    html = client.get(OV).text
+    js = js_fn(html, "  async function guard403(") + r"""
+var who = null, seen = [];
+async function _refreshWhoami() { var j = who; window.__whoami = j; return j; }
+function _renderNoAccessLanding(o) { seen.push(window.__whoami); }
+var window = {};
+(async function () {
+  var r403 = { status: 403 };
+  var out = { ok: await guard403({ status: 200 }) };
+  who = { is_admin: false, pages: { stats: 'own' } };
+  out.non_admin = await guard403(r403);
+  who = { is_admin: true };
+  out.admin = await guard403(r403);
+  who = null;                                   // whoami 401: session gone
+  out.no_session = await guard403(r403);
+  out.seen = seen;
+  console.log(JSON.stringify(out));
+})();
+"""
+    out = node_json(js)
+    assert out == {"ok": False, "non_admin": True, "admin": False, "no_session": False,
+                   "seen": [{"is_admin": False, "pages": {"stats": "own"}}]}
+
+
 @pytest.mark.parametrize("writer", ["post_state", "rename_profile"])
 def test_cancelled_profiles_save_still_finishes_under_the_lock(monkeypatch, writer):
     """A dropped connection cancels the handler inside the offloaded save,
