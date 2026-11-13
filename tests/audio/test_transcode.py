@@ -1875,14 +1875,17 @@ def test_open_audio_bounds_a_declared_sample_count(build, tmp_path):
     import subprocess
     src = build(str(tmp_path / "declared.mov"), 16_000_000)
     assert os.path.getsize(src) < 5000
-    code = ("import resource, sys\n"
+    # VmHWM, not ru_maxrss: the latter survives the exec, so it is never
+    # below what this test's own (large) process held when it forked.
+    code = ("import re, sys\n"
             "from faster_whisper_backend.audio import transcode\n"
             "try:\n"
             "    transcode._open_audio(sys.argv[1])[0].close()\n"
             "    how = 'ok'\n"
             "except MemoryError:\n"
             "    how = 'MemoryError'\n"
-            "print(how, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n")
+            "status = open('/proc/self/status').read()\n"
+            "print(how, re.search(r'VmHWM:\\s+(\\d+) kB', status).group(1))\n")
     # A fresh interpreter, so the peak is this open's own.
     r = subprocess.run([sys.executable, "-c", code, src],
                        capture_output=True, text=True, timeout=120,
