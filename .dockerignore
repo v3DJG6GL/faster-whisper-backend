@@ -53,6 +53,7 @@ SIMPLIFY_NOTES.md
 # Per-run review work dirs (full slice diffs, prompts, findings).
 .review-run*/
 .coverage
+.coverage.*
 .pytest_cache/
 .ruff_cache/
 htmlcov/

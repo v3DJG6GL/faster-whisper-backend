@@ -439,6 +439,32 @@ def test_gpu_loader_path_matches_the_python_base_image():
     assert cpu_from == gpu_from
 
 
+def test_images_disable_the_user_site_under_the_writable_home():
+    """Both images run a non-root UID on the system interpreter with
+    HOME=/tmp, so CPython's per-user site-packages resolves to a directory
+    the runtime UID can create (/tmp/.local/lib/pythonX.Y/site-packages); a
+    *.pth file there runs at the start of the server and of every child
+    interpreter it spawns. PYTHONNOUSERSITE keeps it off the import path."""
+    for name in ("Dockerfile", "Dockerfile.gpu"):
+        runtime = _read(name).rpartition("\nUSER ")[2]
+        assert "HOME=/tmp" in runtime, f"{name}: HOME=/tmp not set after USER"
+        assert "PYTHONNOUSERSITE=1" in runtime, (
+            f"{name}: PYTHONNOUSERSITE=1 missing beside the writable HOME")
+
+
+def test_dockerignore_keeps_xdist_coverage_data_out_of_the_image():
+    """pytest-xdist workers write `.coverage.<host>.<pid>.<rand>` beside
+    `.coverage`; a killed run leaves them in the checkout, and `COPY . .`
+    of a local build would bake the host name and source paths in."""
+    import fnmatch
+
+    for name in (".dockerignore", ".gitignore"):
+        lines = [ln.strip() for ln in _read(name).splitlines()]
+        assert ".coverage.*" in lines, f"{name}: .coverage.* missing"
+    # The tracked coverage config must stay in the image's build context.
+    assert not fnmatch.fnmatch(".coveragerc", ".coverage.*")
+
+
 def test_python_base_image_minor_bumps_need_approval():
     rules = json.loads(_read("renovate.json"))["packageRules"]
     hits = [r for r in rules if r.get("matchPackageNames") == ["python"]

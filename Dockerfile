@@ -94,7 +94,12 @@ EXPOSE 8000
 # stray ~/.cache writers need somewhere writable — the model cache itself
 # lands on the persistent /models volume (config defaults + compose's HF_HOME).
 USER ${PUID}:${PGID}
-ENV HOME=/tmp
+# HOME is writable by the runtime UID, so the per-user site-packages
+# under it (/tmp/.local/lib/pythonX.Y/site-packages, whose *.pth files run at
+# interpreter start) must not be an import root of the server or of the child
+# interpreters it starts: everything the image needs is in /usr/local.
+ENV HOME=/tmp \
+    PYTHONNOUSERSITE=1
 
 # `python main.py` is the shim over faster_whisper_backend/main.py; it's also what the
 # cross-platform self-restart (os.execv) re-execs.
