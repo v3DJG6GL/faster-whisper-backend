@@ -125,6 +125,28 @@ def test_a_download_start_whose_match_does_not_end_is_stopped(start, monkeypatch
     assert pool.pids() == [pool.spare_pid()]
 
 
+def test_a_download_start_queued_behind_busy_probes_keeps_its_whole_time_limit(
+        monkeypatch):
+    """Every probe-pool thread is busy with other links' checks for longer
+    than the policy's time limit; the policy check, milliseconds of work
+    once a thread is free, still answers."""
+    monkeypatch.setattr(udl, "_POLICY_TIMEOUT_S", 0.5)
+    pool = udl.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(udl, "_PROBE_POOL", pool)
+    monkeypatch.setattr(lh, "active", lambda: True)
+    monkeypatch.setattr(lh, "run", lambda payload, timeout: json.dumps(
+        {"ok": [["Youtube"], None], "log": []}).encode("ascii"))
+    busy = threading.Event()
+    try:
+        pool.submit(busy.wait, 5.0)
+        threading.Timer(1.0, busy.set).start()
+        assert _run(udl._extractor_policy_for("https://example.com/a.mp4")) == \
+            (["Youtube"], None)
+    finally:
+        busy.set()
+        pool.shutdown(wait=True)
+
+
 # --- same answers as in-process ----------------------------------------------
 
 def test_the_helper_answers_as_the_in_process_match_under_the_live_settings(

@@ -1752,9 +1752,13 @@ def helper_handle(payload: bytes) -> bytes:
     return json.dumps(reply).encode("ascii")
 
 
-def _helper_call(op: str, url: str, settings: dict, deadline: float) -> dict:
+def _helper_call(op: str, url: str, settings: dict, deadline: "float | None",
+                 budget: float = 0.0) -> dict:
     """Blocking half of _in_helper, on the probe pool: one helper, one
-    request, its reply parsed here (it is as large as the site made it)."""
+    request, its reply parsed here (it is as large as the site made it).
+    `deadline` None: `budget` seconds from when this thread took it up."""
+    if deadline is None:
+        deadline = time.monotonic() + budget
     left = deadline - time.monotonic()
     if left <= 0:  # waited for a pool thread past the deadline: no helper is spent
         raise _link_helper.HelperTimeout
@@ -1814,12 +1818,14 @@ def _relay_helper_log(reply: dict) -> None:
                        _store_common._LOG_UNSAFE_RE.sub("?", line[1][:_HELPER_LOG_LINE_MAX]))
 
 
-async def _in_helper(op: str, url: str, deadline: float, *,
-                     too_slow: "str | None" = None):
+async def _in_helper(op: str, url: str, deadline: "float | None", *,
+                     budget: float = 0.0, too_slow: "str | None" = None):
     """Run `op` ("probe": _probe_info, "policy": _extractor_policy) for
     `url` in a link helper of its own and return what the op returns. The
     helper is killed at `deadline` (UrlTimeoutError(`too_slow`), by default
-    the probe's "too long to answer"): that is
+    the probe's "too long to answer"), or with `deadline` None `budget`
+    seconds after a pool thread took the check up (the wait for a free
+    thread behind other links' checks spends none of it): that is
     the whole point, a pattern match that does not end stops there and
     never in this process. A helper that cannot be started or dies is a
     refusal (client-safe, the cause in the log), never a reason to run the
@@ -1831,8 +1837,9 @@ async def _in_helper(op: str, url: str, deadline: float, *,
         # grace only covers a thread that was not free in time.
         reply = await asyncio.wait_for(
             loop.run_in_executor(_PROBE_POOL, _helper_call, op, url, settings,
-                                 deadline),
-            max(0.0, deadline - time.monotonic()) + 1.0)
+                                 deadline, budget),
+            None if deadline is None
+            else max(0.0, deadline - time.monotonic()) + 1.0)
         _relay_helper_log(reply)
         return _helper_result(op, reply)
     except (asyncio.TimeoutError, _link_helper.HelperTimeout):
@@ -2264,7 +2271,8 @@ def _extractor_policy(url: str) -> "tuple[list[str] | None, list[str] | None]":
 # How long a download start waits for the offline match of its URL in a
 # helper: milliseconds of work, most of a second when the helper has to be
 # started first. The probe matched the same URL before, inside its own
-# deadline.
+# deadline. Counted from when a probe-pool thread takes the check up: the
+# wait behind other links' probes would otherwise fail the download.
 _POLICY_TIMEOUT_S = 10.0
 
 
@@ -2274,7 +2282,7 @@ async def _extractor_policy_for(url: str) -> "tuple[list[str] | None, list[str] 
     else on the probe pool."""
     if _link_helper.active():
         pin, filters = await _in_helper(
-            "policy", url, time.monotonic() + _POLICY_TIMEOUT_S,
+            "policy", url, None, budget=_POLICY_TIMEOUT_S,
             too_slow="this link could not be checked in time")
         return pin, filters
     return await asyncio.get_running_loop().run_in_executor(
