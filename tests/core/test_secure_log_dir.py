@@ -55,3 +55,54 @@ def test_unwritable_existing_log_dir_degrades_to_stderr(monkeypatch, tmp_path,
         for h in list(log_setup._root.handlers):
             log_setup._root.removeHandler(h)
             h.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file modes")
+def test_log_file_is_never_wider_than_0600_at_create(monkeypatch, tmp_path):
+    """The file carries transcript text, so it is born owner-only — at start
+    and at every rollover — instead of at the umask until the chmod lands."""
+    import logging
+    import stat
+
+    from faster_whisper_backend.core import log_setup
+
+    seen = []
+    real_secure_file = store_common.secure_file
+
+    def record_then_secure(path):
+        # The mode the stdlib open left behind, before the chmod narrows it.
+        seen.append(stat.S_IMODE(os.stat(path).st_mode))
+        real_secure_file(path)
+
+    monkeypatch.setattr(log_setup.store_common, "secure_file", record_then_secure)
+    old_umask = os.umask(0o022)
+    handler = None
+    try:
+        handler = log_setup._SecureRotatingFileHandler(
+            str(tmp_path / "w.log"), maxBytes=200, backupCount=2, encoding="utf-8")
+        for _ in range(12):
+            handler.emit(logging.LogRecord(
+                "t", logging.INFO, __file__, 0, "x" * 60, None, None))
+    finally:
+        os.umask(old_umask)
+        if handler is not None:
+            handler.close()
+    assert len(seen) >= 3, seen          # the first open + at least two rollovers
+    assert set(seen) == {0o600}, [oct(m) for m in seen]
+    assert stat.S_IMODE(os.stat(tmp_path / "w.log").st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file modes")
+def test_log_file_left_wider_by_an_older_build_is_still_narrowed(tmp_path):
+    import stat
+
+    from faster_whisper_backend.core import log_setup
+
+    path = tmp_path / "old.log"
+    path.write_text("earlier line\n", encoding="utf-8")
+    path.chmod(0o644)
+    handler = log_setup._SecureRotatingFileHandler(
+        str(path), maxBytes=10_000, backupCount=1, encoding="utf-8")
+    handler.close()
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert path.read_text(encoding="utf-8") == "earlier line\n"

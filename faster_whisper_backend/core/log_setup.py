@@ -43,9 +43,16 @@ class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
     # Every request block written here carries RAW WHISPER / FINAL transcript
     # text, the upload filename, the username and the key label — the same
     # plaintext dictation store_common.secure_db_file() keeps at 0600 in the
-    # SQLite stores. The handler would otherwise create the file at the process
-    # umask (0644 typical), so tighten it on open and after every rollover.
+    # SQLite stores. The stdlib open would create the file at the process umask
+    # (0644 typical) and leave it readable until the chmod lands, so the file
+    # is created 0600 first — at start and at every rollover (doRollover comes
+    # back through here). The chmod stays for a file an older build left wider.
     def _open(self):  # type: ignore[override]
+        try:
+            os.close(os.open(self.baseFilename,
+                             os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+        except OSError:
+            pass  # the stdlib open below reports the real error
         stream = super()._open()
         store_common.secure_file(self.baseFilename)
         return stream
