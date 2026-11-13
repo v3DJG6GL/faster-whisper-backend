@@ -176,6 +176,24 @@ def test_recent_reports_for_user(reports_store_db):
     assert rs.recent_reports_for_user("") == []
 
 
+def test_recent_reports_for_user_reads_no_transcript_columns(reports_store_db):
+    # /quick-config/state re-reads this on every save and uses the chips and
+    # the comment only; the transcript and step columns of 100 reports are the
+    # caller's own submit and would be loaded and decoded for nothing.
+    rs = reports_store_db
+    corrections = [{"wrong": "a", "correct": "b", "idx": 0}]
+    rid, _ = _submit(rs, raw="raw " * 50, final="final " * 50,
+                     steps=[{"name": "s", "before": "x", "after": "y"}],
+                     corrections=corrections, intended_text="intended",
+                     user_comment="note")
+    (rep,) = rs.recent_reports_for_user("u1")
+    assert set(rep) == {"id", "request_id", "corrections", "user_comment"}
+    assert rep["id"] == rid and rep["request_id"] == "req1"
+    assert rep["user_comment"] == "note"
+    assert rep["corrections"] == rs.get_report(rid)["corrections"]
+    assert [(c["wrong"], c["correct"]) for c in rep["corrections"]] == [("a", "b")]
+
+
 def test_counts_by_status(reports_store_db):
     rs = reports_store_db
     a, _ = _submit(rs, request_id="r1")

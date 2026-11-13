@@ -461,10 +461,14 @@ def get_report(rid: str) -> dict[str, Any] | None:
 def recent_reports_for_user(
     user_id: str, limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Return up to `limit` of the caller's most-recent open reports as
-    full row dicts (includes corrections + intended_text). Newest-
-    created-first. Feeds /quick-config so the page can re-render chips
-    the user previously submitted, even after a hard reload.
+    """Return the id, request_id, corrections and comment of up to `limit`
+    of the caller's most-recent open reports. Newest-created-first. Feeds
+    /quick-config so the page can re-render chips the user previously
+    submitted, even after a hard reload.
+
+    The transcript and step columns stay unread: the page re-issues this
+    read on every save, and those columns hold whatever the caller's own
+    submits put there.
 
     Filtered by user_id so other users' reports never leak into a
     different user's /quick-config view. status='open' is what the
@@ -475,13 +479,18 @@ def recent_reports_for_user(
     conn = _require_conn()
     with _lock:
         rows = conn.execute(
-            "SELECT * FROM reports"
+            "SELECT id, request_id, corrections, user_comment FROM reports"
             " WHERE user_id = ? AND status = 'open' AND request_id IS NOT NULL"
             " ORDER BY created_ts DESC"
             " LIMIT ?",
             (user_id, int(limit)),
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [{
+        "id": r["id"],
+        "request_id": r["request_id"],
+        "corrections": store_common.json_column(r["corrections"], "[]"),
+        "user_comment": r["user_comment"] or "",
+    } for r in rows]
 
 
 def recent_closed_request_ids_for_user(
