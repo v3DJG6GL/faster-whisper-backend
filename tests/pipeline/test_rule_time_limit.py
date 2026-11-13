@@ -880,6 +880,75 @@ def test_a_starter_thread_that_cannot_start_leaves_the_walks_in_process(monkeypa
     assert rule_helper._POOL.acquire() is None
 
 
+def test_a_pool_that_lost_its_helpers_to_the_time_limit_never_walks_in_the_server(
+        monkeypatch, caplog):
+    real_spawn = rule_helper._spawn
+    rule_helper.start(1)
+    pool = rule_helper._POOL
+    assert pool.wait_ready(30)
+    rows = _install_rows(monkeypatch, [_row("card", "Card · slow", _SLOW, "", 1),
+                                       _row("tail", "Tail · b", "b", "c", 2)])
+    monkeypatch.setattr(pl_engine, "_DEADLINE_FLOOR_S", 0.3)
+    monkeypatch.setattr(rule_helper, "_RETRY_AFTER_S", 0.05)
+    monkeypatch.setattr(rule_helper, "_ACQUIRE_TIMEOUT_S", 0.1)
+
+    def no_helper(register):
+        raise OSError(24, "Too many open files")
+
+    gate = threading.Event()
+
+    def stuck(register):
+        gate.wait(20)
+        raise OSError("stuck start")
+
+    in_server: list = []
+
+    def recorded(text, rules, *args, **kwargs):
+        # In place of the in-process walk, which would never return on
+        # _SLOW_TEXT.
+        in_server.append([rule.label for rule in rules])
+        return text
+
+    def starts_over():
+        for starter in list(pool._starters):
+            starter.join(30)
+        time.sleep(0.1)                       # past the retry time
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="whisper-api"):
+            # The slow rule costs the pool its helper, and no other starts.
+            monkeypatch.setattr(rule_helper, "_spawn", no_helper)
+            assert pl_engine._postprocess_text(_SLOW_TEXT) == _SLOW_TEXT
+            starts_over()
+            assert pool._alive == 0 and pl_engine._skip_for(rows) == {0}
+            # The rules are saved again: that rule is in no quarantine now.
+            _install_rows(monkeypatch, list(rows))
+            monkeypatch.setattr(pl_engine, "_walk", recorded)
+            assert pl_engine._postprocess_text(_SLOW_TEXT) == _SLOW_TEXT
+            assert in_server == []
+            # Nor while a start is in flight that does not come up in time
+            # (the first walk sets it off, the second waits for it).
+            monkeypatch.setattr(rule_helper, "_spawn", stuck)
+            starts_over()
+            assert pl_engine._postprocess_text("x b") == "x b"
+            assert pl_engine._postprocess_text("x b") == "x b"
+            assert in_server == []
+            gate.set()
+            # A helper that starts ends it: the walks are run again.
+            monkeypatch.setattr(rule_helper, "_spawn", real_spawn)
+            starts_over()
+            assert pl_engine._postprocess_text("x b") == "x b"    # sets the start off
+            assert pool.wait_ready(30)
+            assert pl_engine._postprocess_text("x b") == "x c"
+            assert in_server == []
+    finally:
+        gate.set()
+    said = [r.getMessage() for r in caplog.records if "could not be started" in r.getMessage()]
+    assert len(said) == 1 and "Too many open files" in said[0]
+    assert "without the rules applied" in said[0]
+    assert "inside the server process" not in caplog.text
+
+
 # --- the switch --------------------------------------------------------------------
 
 @pytest.mark.parametrize("on", [True, False])

@@ -161,11 +161,11 @@ class WalkBudget:
     the whole text may. `left` (what remains, negative once overspent) is
     for the caller to skip a piece the budget no longer covers.
 
-    A walk that could not be run at all (the helper processes all held, or a
-    deadline passed with no rule to blame, see "Time limit") ends the
-    budget's walks: `gave_up` is set, and the later pieces come back as they
-    are without another wait. The pieces are one request's, and each would
-    otherwise wait as long as the first did."""
+    A walk that was given up with nothing learnt for the next one (no helper
+    process to be had, or a deadline passed with no rule to blame, see "Time
+    limit") ends the budget's walks: `gave_up` is set, and the later pieces
+    come back as they are without another wait. The pieces are one
+    request's, and each could otherwise wait as long as the first did."""
 
     __slots__ = ("left", "gave_up")
 
@@ -984,12 +984,15 @@ def _seam_walk(prefix_raw: str, full_raw: str, bounds: "tuple[int, int]",
 #     sent: the walk runs in this process as it always did (logged where it
 #     is a fault). Helpers that are up but all held for the whole wait
 #     (rule_helper.BUSY) are the slow rules' doing: the text is returned
-#     without the rules applied, never walked in this process.
-#   * A walk given up because the helpers were all held, or because its
-#     deadline passed with no rule to blame, would end the same way for the
-#     next piece of the same text. It closes its WalkBudget (gave_up): the
-#     request's other pieces are returned as they are, without a wait or a
-#     lost helper each.
+#     without the rules applied, never walked in this process. The same
+#     holds while no helper can be started after one was killed for the time
+#     limit (the pool answers BUSY then too): the rule that passed the limit
+#     may be in no quarantine by the next walk.
+#   * A walk given up because no helper was to be had (BUSY), or because
+#     its deadline passed with no rule to blame, closes its WalkBudget
+#     (gave_up): the other pieces of that request's text are returned as
+#     they are. Each would otherwise wait for a helper again, or could pass
+#     its deadline the same way and cost another helper.
 #
 # In-process on purpose: holdback_start (no rule pattern runs there, only the
 # map keys are read) and rebuild_caches (it compiles, it does not match).
@@ -1023,8 +1026,9 @@ _LOST_HELPER_RETRIES = 6
 
 # Returned by the isolated runners for "run it in this process".
 _IN_PROCESS = object()
-# Returned by _in_helper when no attempt can finish for now, whatever the
-# text: the helpers are all held, or a deadline passed with no rule to blame.
+# Returned by _in_helper when no attempt finished and the walk asked again
+# would end the same way: no helper is to be had (rule_helper.BUSY), or its
+# deadline passed with no rule to blame.
 _GAVE_UP = object()
 _NO_SKIP: "frozenset[int]" = frozenset()
 # Guards _QUARANTINE and _SHIPPED updates (reads go without it).
@@ -1221,8 +1225,8 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
     attempt because a timed-out attempt adds to the quarantine. Returns the
     helper's reply tuple, _IN_PROCESS when the caller has to run the walk
     itself, and one of two answers when no attempt finished: _GAVE_UP where
-    the same walk asked again would end the same way (the helpers all held
-    for the whole wait, or a deadline passed with no rule to blame), None
+    the same walk asked again would end the same way (no helper to be had,
+    rule_helper.BUSY, or a deadline passed with no rule to blame), None
     otherwise (the rules that held this walk up are quarantined by now, or
     its helpers were lost). Never raises."""
     shipment = _shipment(rules, terminal)
@@ -1244,8 +1248,9 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
         helper = pool.acquire(max(0.0, wait_left))
         wait_left -= time.monotonic() - asked
         if helper is _rule_helper.BUSY:
-            # Slow rules hold every helper. Walked here instead, the same
-            # rules would hold the whole server, with no deadline at all.
+            # Slow rules hold every helper, or cost the pool the helpers it
+            # cannot replace for now. Walked here instead, the same rules
+            # would hold the whole server, with no deadline at all.
             return _GAVE_UP
         if helper is None:
             # No helper can be had (pool shut down under this walk, or none
@@ -1268,7 +1273,9 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
                 helper, pickle.dumps(request(token, _skip_for(rules) | timed_out), 5),
                 deadline))
         except _rule_helper.HelperTimeout as exc:
-            pool.discard(helper)
+            # A walk past its deadline tells the pool so (a load that timed
+            # out does not: that rule set goes in-process below).
+            pool.discard(helper, timed_out=loaded)
             if not loaded:
                 _unshippable(rules, terminal, f"no answer in {_LOAD_TIMEOUT_S:g} s")
                 return _IN_PROCESS

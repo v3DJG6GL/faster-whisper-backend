@@ -66,10 +66,12 @@ _START_TIMEOUT_S = 30.0
 _ACQUIRE_TIMEOUT_S = 30.0
 # What acquire() answers when helpers are up but none came free in the wait:
 # the walk must not run in the server process instead (the rules that hold
-# the helpers would hold every thread of the server there).
+# the helpers would hold every thread of the server there). Also its answer
+# while a helper was killed for the time limit and none has started since.
 BUSY = object()
 # After a helper failed to start, how long until the pool makes the start up
-# (with none left, walks run in-process meanwhile).
+# (with none left, walks run in-process meanwhile, unless the time limit
+# cost the pool a helper: see _Pool).
 _RETRY_AFTER_S = 60.0
 # How long a helper may stay inside one request before it ends itself. The
 # parent enforces the real deadline and kills the helper; this only covers a
@@ -260,7 +262,11 @@ class _Pool:
     `_idle` (last in, first out: the warmest helper serves next). `_up` says
     that a helper has started since the pool was last without any: it tells
     helpers that are all held (by slow rules) from helpers the platform does
-    not start."""
+    not start. `_cut` says that a helper was killed for the time limit and
+    none has started since: with no helper to be had then, the rules that
+    passed the limit must not run in the server process instead, where
+    nothing can stop them (a quarantine does not outlast the next save of
+    the rules, and some slow walks have no rule to quarantine)."""
 
     def __init__(self, size: int) -> None:
         self._size = size
@@ -270,6 +276,7 @@ class _Pool:
         self._starters: list[threading.Thread] = []
         self._alive = 0
         self._up = False
+        self._cut = False
         self._closed = False
         self._retry_at = 0.0
         self._down_logged = False
@@ -303,17 +310,25 @@ class _Pool:
     def _start_failed_locked(self, exc: BaseException) -> None:
         """One helper start failed (its count is already taken back). The
         pool makes it up after _RETRY_AFTER_S (acquire); with no helper left
-        the walks run in-process until then."""
+        the walks run in-process until then, or not at all when the time
+        limit cost the pool a helper (`_cut`)."""
         if self._alive == 0:
             self._up = False
         if not self._closed:
             self._retry_at = time.monotonic() + _RETRY_AFTER_S
             if self._alive == 0 and not self._down_logged:
                 self._down_logged = True
-                logger.warning(
-                    "[pipeline] rule helper process could not be started (%s) — "
-                    "rules run inside the server process without a time limit; "
-                    "retrying every %g s", exc, _RETRY_AFTER_S)
+                if self._cut:
+                    logger.warning(
+                        "[pipeline] rule helper process could not be started (%s) "
+                        "after a rule ran past its time limit — texts are returned "
+                        "without the rules applied; retrying every %g s",
+                        exc, _RETRY_AFTER_S)
+                else:
+                    logger.warning(
+                        "[pipeline] rule helper process could not be started (%s) — "
+                        "rules run inside the server process without a time limit; "
+                        "retrying every %g s", exc, _RETRY_AFTER_S)
         self._cond.notify_all()
 
     def _register(self, proc) -> None:
@@ -337,6 +352,7 @@ class _Pool:
                     self._down_logged = False
                     logger.info("[pipeline] rule helper processes are back")
                 self._up = True
+                self._cut = False
                 self._idle.append(helper)
                 self._cond.notify()
                 return
@@ -347,7 +363,9 @@ class _Pool:
         when None) for one if all are busy or still starting. BUSY when
         helpers are up but none came free in that time: the caller gives the
         walk up. None when the walk has to run in-process: the pool is shut
-        down, no helper could be started, or none has started in that time."""
+        down, no helper could be started, or none has started in that time.
+        The last two answer BUSY instead while `_cut` is set: no helper is
+        there because of the time limit, and the walk is given up."""
         end = time.monotonic() + (_ACQUIRE_TIMEOUT_S if timeout is None else timeout)
         with self._cond:
             while True:
@@ -361,19 +379,24 @@ class _Pool:
                 if self._idle:
                     return self._idle.pop()
                 if down:
-                    return None
+                    return BUSY if self._cut else None
                 left = end - time.monotonic()
                 if left <= 0:
-                    busy = self._up
+                    busy = self._up or self._cut
                     now = time.monotonic()
                     if now - self._busy_logged_at > _RETRY_AFTER_S:
                         self._busy_logged_at = now
-                        if busy:
+                        if self._up:
                             logger.warning(
                                 "[pipeline] no rule helper process came free in %g s "
                                 "(rules running past their time limit hold them) — the "
                                 "text is returned without the rules applied",
                                 _ACQUIRE_TIMEOUT_S)
+                        elif busy:
+                            logger.warning(
+                                "[pipeline] no rule helper process has started in %g s "
+                                "after a rule ran past its time limit — the text is "
+                                "returned without the rules applied", _ACQUIRE_TIMEOUT_S)
                         else:
                             logger.warning(
                                 "[pipeline] no rule helper process has started in %g s "
@@ -391,11 +414,15 @@ class _Pool:
                 return
         self._close(helper)
 
-    def discard(self, helper: _Helper) -> None:
-        """Kill a helper that timed out or died, and start its replacement."""
+    def discard(self, helper: _Helper, timed_out: bool = False) -> None:
+        """Kill a helper that timed out or died, and start its replacement.
+        `timed_out`: it is killed for the time limit, inside a walk (`_cut`
+        until a helper starts)."""
         self._close(helper)
         with self._cond:
             self._alive -= 1
+            if timed_out:
+                self._cut = True
             if not self._closed:
                 self._start_locked(1)
             self._cond.notify_all()
@@ -412,7 +439,8 @@ class _Pool:
 
     def shutdown(self) -> None:
         """Kill every helper, the busy and the starting ones included. A walk
-        in flight sees its helper gone and finishes in-process."""
+        in flight sees its helper gone and finishes in-process, unless it
+        was inside a rule: that one ends without its rules (the engine)."""
         with self._cond:
             self._closed = True
             idle, self._idle = self._idle, []
@@ -455,7 +483,8 @@ def start(size: int = POOL_SIZE) -> None:
     """Start the helper pool (idempotent). Returns at once: the helpers come
     up in the background, and a walk that arrives first waits for one. Never
     raises: helpers that cannot be started are logged and retried by the pool,
-    and the walks run in-process meanwhile."""
+    and the walks run in-process meanwhile (not so once a helper was killed
+    for the time limit: see _Pool)."""
     global _POOL, _atexit_registered
     with _POOL_LOCK:
         if _POOL is None:
