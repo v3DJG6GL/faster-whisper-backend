@@ -102,12 +102,16 @@ def _open_client_file(av, path: str):
     decoders only (audio_ffmpeg.pyav_audio_decoders). A
     playlist fails that allowlist with EINVAL before it opens a single
     entry; it is answered ValueError("unsupported container") — a plain
-    ValueError, the refusal callers tell apart from an av decode error."""
+    ValueError, the refusal callers tell apart from an av decode error. So
+    is a file with more streams than audio_ffmpeg.PYAV_MAX_STREAMS whose
+    demuxer fails on the one past it, or one whose open asks for more than
+    the allocation cap (audio_ffmpeg.TOO_MUCH_TO_OPEN)."""
     # metadata_errors="ignore" as in faster-whisper's decode_audio: PyAV's
     # default "strict" raises UnicodeDecodeError (a ValueError — read as a
     # refusal upstream) on a non-UTF-8 tag, e.g. a cp1252 RIFF INFO title.
     options = {"protocol_whitelist": "file",
-               "format_whitelist": audio_ffmpeg.single_input_demuxers()}
+               "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+               **audio_ffmpeg.pyav_stream_limit()}
     # Audio decoders only: stream probing would otherwise open the decoder
     # of a (crafted) video track that nothing here reads. The video stream
     # is still listed, just never decoded.
@@ -118,6 +122,8 @@ def _open_client_file(av, path: str):
     except av.FFmpegError as e:
         if getattr(e, "errno", None) == errno.EINVAL:
             raise ValueError("unsupported container") from e
+        if audio_ffmpeg.refused_as_too_much(e):
+            raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
         raise
 
 

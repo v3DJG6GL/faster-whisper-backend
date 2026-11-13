@@ -425,6 +425,24 @@ def write_wav(path, pcm, *, nchannels=1, sampwidth=2, rate=RATE):
     return path
 
 
+def write_tracks(path, n):
+    """A real media file (the container is `path`'s extension) of `n` mono
+    16 kHz PCM audio tracks, a tenth of a second each."""
+    import av
+    import numpy as np
+    with av.open(path, "w") as container:
+        streams = [container.add_stream("pcm_s16le", rate=RATE, layout="mono")
+                   for _ in range(n)]
+        for i, stream in enumerate(streams):
+            frame = av.AudioFrame.from_ndarray(
+                np.full((1, RATE // 10), 100 * (i + 1), dtype=np.int16),
+                format="s16", layout="mono")
+            frame.sample_rate = RATE
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                container.mux(packet)
+    return path
+
+
 def read_wav_params(path):
     with wave.open(path, "rb") as w:
         return (w.getnchannels(), w.getsampwidth(), w.getframerate(),

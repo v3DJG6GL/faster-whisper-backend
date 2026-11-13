@@ -1,9 +1,11 @@
 """Locate the ffmpeg executable, shared by the streaming transport and the
 media package (download, captions, subtitle muxing), name the demuxers a
 client-supplied file must never open as, list the audio decoders of the
-binary and of PyAV, and cap what PyAV's libav allocates in one piece."""
+binary and of PyAV, and cap what PyAV's libav allocates in one piece and
+how many streams it takes of one file."""
 
 import ctypes
+import errno
 import functools
 import glob
 import logging
@@ -84,8 +86,36 @@ def pyav_audio_decoders() -> str:
 # (INT_MAX). A real file needs little: four hours of 48 kHz AAC in an m4a
 # decode in full from 32 MiB up — and SHORT, without an error, below that, so
 # the cap stays far above it (~32 h of such audio). One track under the cap
-# still costs up to ~1.5x the cap, and tracks add up.
+# still costs up to ~1.5x the cap, and tracks add up: PYAV_MAX_STREAMS bounds
+# how many.
 _LIBAV_MAX_ALLOC = 256 * 1024 * 1024
+
+# The streams (video, audio, subtitle, attachment: every kind counts) an
+# in-process open of a client-supplied file takes, libav's `max_streams`
+# (its own default is 1000). Each track of an MP4 / MOV can cost ~1.5x
+# _LIBAV_MAX_ALLOC at open, so forty tracks in 20 KB were 14 GB under that
+# cap alone; with this the worst file costs twenty tracks. What a file with
+# more streams gets is the demuxer's choice: mov fails the open (ENOMEM,
+# answered as TOO_MUCH_TO_OPEN), Matroska opens with its first twenty and
+# leaves the rest out. A recording has one to three streams; a film rip
+# lists its video and audio first, ahead of the subtitles and fonts that
+# make it long.
+PYAV_MAX_STREAMS = 20
+TOO_MUCH_TO_OPEN = (f"unsupported container: more than {PYAV_MAX_STREAMS} "
+                    "tracks, or more than the server opens of one file")
+
+
+def pyav_stream_limit() -> "dict[str, str]":
+    """The av.open option that holds a client-supplied file to
+    PYAV_MAX_STREAMS streams."""
+    return {"max_streams": str(PYAV_MAX_STREAMS)}
+
+
+def refused_as_too_much(exc: BaseException) -> bool:
+    """True when an av.open failed for lack of memory: a stream past
+    PYAV_MAX_STREAMS (mov), or an allocation past _LIBAV_MAX_ALLOC. A refusal
+    of the file, not a fault of the server."""
+    return getattr(exc, "errno", None) == errno.ENOMEM
 
 _libav_alloc_lock = threading.Lock()
 _libav_alloc_capped: "bool | None" = None      # None: not tried yet

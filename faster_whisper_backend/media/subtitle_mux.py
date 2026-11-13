@@ -168,7 +168,9 @@ def probe_streams(path: str) -> MediaStreams:
     listing another retained video would otherwise probe as that video and
     stream-copy it N times past MEDIA_MAX_BYTES) — the route caches that as
     unreadable. Those demuxers are off the open's allowlist, so the refusal
-    comes before one opens a single entry."""
+    comes before one opens a single entry. At most
+    audio_ffmpeg.PYAV_MAX_STREAMS streams are taken: an MP4 / MOV with more
+    is a ValueError too, a Matroska file reports its first ones."""
     import av  # optional dependency; the route maps ImportError to 503
 
     # A sample table can declare an index of gigabytes that av.open builds.
@@ -179,11 +181,14 @@ def probe_streams(path: str) -> MediaStreams:
     try:
         c = av.open(path, options={
             "protocol_whitelist": "file",
-            "format_whitelist": audio_ffmpeg.single_input_demuxers()},
+            "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+            **audio_ffmpeg.pyav_stream_limit()},
             metadata_errors="replace")
     except av.FFmpegError as e:
         if getattr(e, "errno", None) == errno.EINVAL:
             raise ValueError("unsupported container") from e
+        if audio_ffmpeg.refused_as_too_much(e):
+            raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
         raise
     with c:
         format_name = getattr(c.format, "name", None) or None

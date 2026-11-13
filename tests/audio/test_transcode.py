@@ -14,7 +14,7 @@ import pytest
 
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.audio import transcode as audio_transcode
-from tests.conftest import write_wav
+from tests.conftest import write_tracks, write_wav
 
 RATE = 16000
 
@@ -193,6 +193,7 @@ def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch
     assert in_opens[0].get("options") == {
         "protocol_whitelist": "file",
         "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+        "max_streams": "20",
         "codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}
     assert in_opens[0].get("metadata_errors") == "ignore"
 
@@ -279,6 +280,7 @@ def test_decode_pieces_refuses_non_file_protocols(tmp_path, monkeypatch):
     assert [kw.get("options") for f, kw in opens if f == src] == [
         {"protocol_whitelist": "file",
          "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+         "max_streams": "20",
          "codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}]
 
 
@@ -373,6 +375,7 @@ def test_open_audio_pins_the_single_input_demuxer_allowlist(tmp_path,
     assert [kw.get("options") for f, kw in opens if f == src] == [
         {"protocol_whitelist": "file",
          "format_whitelist": audio_ffmpeg.single_input_demuxers(),
+         "max_streams": "20",
          "codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}] * 2
 
 
@@ -1798,13 +1801,19 @@ def _mp4_u32(*values):
     return b"".join(v.to_bytes(4, "big") for v in values)
 
 
-def _pcm_movie(tables, *, ticks, extra=b""):
-    """A 'moov' box of one 16-bit PCM track (44.1 kHz mono) whose sample
-    table is its sample description plus `tables`."""
+def _pcm_movie(tables, *, ticks, extra=b"", tracks=1):
+    """A 'moov' box of `tracks` 16-bit PCM tracks (44.1 kHz mono), each with
+    the sample table of its sample description plus `tables`."""
     full, u32 = _mp4_full_box, _mp4_u32
     mvhd = full(b"mvhd", u32(0, 0, 1000, 1000, 0x10000) + b"\x01\x00"
-                + bytes(10) + _MP4_UNITY + bytes(24) + u32(2))
-    tkhd = full(b"tkhd", u32(0, 0, 1, 0, ticks) + bytes(8)
+                + bytes(10) + _MP4_UNITY + bytes(24) + u32(tracks + 1))
+    return _mp4_box(b"moov", mvhd + b"".join(
+        _pcm_trak(tables, ticks, n + 1) for n in range(tracks)) + extra)
+
+
+def _pcm_trak(tables, ticks, track_id):
+    full, u32 = _mp4_full_box, _mp4_u32
+    tkhd = full(b"tkhd", u32(0, 0, track_id, 0, ticks) + bytes(8)
                 + b"\x00\x00\x00\x00\x01\x00\x00\x00" + _MP4_UNITY + bytes(8),
                 flags=7)
     mdhd = full(b"mdhd", u32(0, 0, 44100, ticks) + b"\x55\xc4\x00\x00")
@@ -1814,14 +1823,13 @@ def _pcm_movie(tables, *, ticks, extra=b""):
                     + b"\x00\x01\x00\x10" + bytes(4) + u32(44100 << 16))
     stbl = _mp4_box(b"stbl", full(b"stsd", u32(1) + sowt) + tables)
     minf = _mp4_box(b"minf", full(b"smhd", bytes(4)) + dinf + stbl)
-    trak = _mp4_box(b"trak", tkhd + _mp4_box(b"mdia", mdhd + hdlr + minf))
-    return _mp4_box(b"moov", mvhd + trak + extra)
+    return _mp4_box(b"trak", tkhd + _mp4_box(b"mdia", mdhd + hdlr + minf))
 
 
-def _mov_declaring_samples(path, n):
+def _mov_declaring_samples(path, n, tracks=1):
     """A 4.6 KB QuickTime file whose sample table DECLARES `n` two-byte
     samples in one chunk (a uniform stsz, one stts run, one stsc and one
-    stco entry) over 4 KB of data."""
+    stco entry) over 4 KB of data; `tracks` of them at ~390 bytes each."""
     full, u32 = _mp4_full_box, _mp4_u32
     ftyp = _mp4_box(b"ftyp", b"qt  " + bytes(4) + b"qt  ")
 
@@ -1829,7 +1837,7 @@ def _mov_declaring_samples(path, n):
         return _pcm_movie(
             full(b"stts", u32(1, n, 2)) + full(b"stsc", u32(1, 1, n, 1))
             + full(b"stsz", u32(2, n)) + full(b"stco", u32(1, offset)),
-            ticks=2 * n)
+            ticks=2 * n, tracks=tracks)
 
     offset = len(ftyp) + len(moov(0)) + 8
     with open(path, "wb") as f:
@@ -1871,10 +1879,18 @@ def test_open_audio_bounds_a_declared_sample_count(build, tmp_path):
     demuxer build its index for all of them inside av.open, ahead of every
     decode budget: ~36 bytes of RAM per declared sample (600 MB here, 3 GB
     at the most one track can name). Under the allocation cap the index is
-    refused; the file opens without one or fails as out of memory."""
-    import subprocess
+    refused; the file opens without one or is refused."""
     src = build(str(tmp_path / "declared.mov"), 16_000_000)
     assert os.path.getsize(src) < 5000
+    how, peak_kb = _open_audio_in_a_child(src)
+    assert how in ("ok", "refused")
+    assert peak_kb < 300 * 1024
+
+
+def _open_audio_in_a_child(src):
+    """("ok" | "refused", peak resident kB) of transcode._open_audio(src)
+    in a fresh interpreter, so the peak is that open's own."""
+    import subprocess
     # VmHWM, not ru_maxrss: the latter survives the exec, so it is never
     # below what this test's own (large) process held when it forked.
     code = ("import re, sys\n"
@@ -1882,19 +1898,90 @@ def test_open_audio_bounds_a_declared_sample_count(build, tmp_path):
             "try:\n"
             "    transcode._open_audio(sys.argv[1])[0].close()\n"
             "    how = 'ok'\n"
-            "except MemoryError:\n"
-            "    how = 'MemoryError'\n"
+            "except ValueError as e:\n"
+            "    assert 'tracks' in str(e), e\n"
+            "    how = 'refused'\n"
             "status = open('/proc/self/status').read()\n"
             "print(how, re.search(r'VmHWM:\\s+(\\d+) kB', status).group(1))\n")
-    # A fresh interpreter, so the peak is this open's own.
     r = subprocess.run([sys.executable, "-c", code, src],
                        capture_output=True, text=True, timeout=120,
                        cwd=os.path.dirname(os.path.dirname(
                            os.path.dirname(os.path.abspath(__file__)))))
     assert r.returncode == 0, r.stderr[-2000:]
     how, peak_kb = r.stdout.split()
-    assert how in ("ok", "MemoryError")
-    assert int(peak_kb) < 300 * 1024
+    return how, int(peak_kb)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="reads the child's peak RSS in Linux's unit")
+def test_open_audio_bounds_the_tracks_that_declare_a_sample_count(tmp_path):
+    """The allocation cap bounds one track's index, and tracks add up: forty
+    of them, 500 000 declared samples each, are 20 KB of file and 750 MB of
+    index. The open takes PYAV_MAX_STREAMS tracks and refuses the file at
+    the one past them."""
+    src = _mov_declaring_samples(str(tmp_path / "tracks.mov"), 500_000,
+                                 tracks=40)
+    assert os.path.getsize(src) < 25_000
+    how, peak_kb = _open_audio_in_a_child(src)
+    assert how == "refused"
+    assert peak_kb < 500 * 1024
+
+
+@pytest.mark.parametrize("ext", ["mov", "mp4"])
+def test_open_audio_refuses_a_file_with_more_tracks_than_the_limit(
+        ext, tmp_path):
+    limit = audio_ffmpeg.PYAV_MAX_STREAMS
+    assert limit == 20
+    at_limit = write_tracks(str(tmp_path / f"at.{ext}"), limit)
+    container, stream = audio_transcode._open_audio(at_limit)
+    try:
+        assert len(container.streams) == limit and stream.index == 0
+    finally:
+        container.close()
+    over = write_tracks(str(tmp_path / f"over.{ext}"), limit + 1)
+    with pytest.raises(ValueError, match="more than 20 tracks") as refused:
+        audio_transcode._open_audio(over)
+    # The plain refusal callers answer as a bad input, not PyAV's
+    # MemoryError (a ValueError-free av error class).
+    assert type(refused.value) is ValueError
+    assert str(refused.value) == audio_ffmpeg.TOO_MUCH_TO_OPEN
+
+
+def test_a_matroska_file_past_the_stream_limit_opens_with_its_first_streams(
+        tmp_path):
+    """Matroska does not fail at the stream past the limit: the file opens
+    with its first PYAV_MAX_STREAMS streams and decodes as before (a film
+    rip lists its audio ahead of its many subtitle and font streams)."""
+    src = write_tracks(str(tmp_path / "rip.mkv"),
+                       audio_ffmpeg.PYAV_MAX_STREAMS + 4)
+    container, stream = audio_transcode._open_audio(src)
+    try:
+        assert len(container.streams) == audio_ffmpeg.PYAV_MAX_STREAMS
+        assert stream.index == 0
+    finally:
+        container.close()
+    audio = audio_transcode.decode_16k_bounded(src, max_seconds=None)
+    assert audio.size == RATE // 10
+
+
+def test_refuse_input_refuses_a_file_with_more_tracks_than_the_limit(
+        app_module, tmp_path, monkeypatch):
+    """Ahead of every later consumer, some of which open the file without
+    the limit: from the guarded open, and from the default-whitelist reopen
+    of a file the guarded open could not read."""
+    over = write_tracks(str(tmp_path / "over.mov"),
+                        audio_ffmpeg.PYAV_MAX_STREAMS + 1)
+    with pytest.raises(ValueError, match="more than 20 tracks"):
+        app_module._refuse_input(over)
+
+    def no_open(path):
+        raise av.error.InvalidDataError(1094995529, "Invalid data found")
+    monkeypatch.setattr(audio_transcode, "_open_audio", no_open)
+    with pytest.raises(ValueError, match="more than 20 tracks"):
+        app_module._refuse_input(over)
+    at_limit = write_tracks(str(tmp_path / "at.mov"),
+                            audio_ffmpeg.PYAV_MAX_STREAMS)
+    assert app_module._refuse_input(at_limit) is None
 
 
 class _FakeLibavutil:

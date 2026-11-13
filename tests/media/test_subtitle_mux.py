@@ -14,7 +14,7 @@ import tempfile
 import pytest
 
 from faster_whisper_backend.media import subtitle_mux as pk
-from tests.conftest import wait_until
+from tests.conftest import wait_until, write_tracks
 
 
 @contextlib.contextmanager
@@ -812,6 +812,19 @@ def test_probe_streams_caps_the_allocation_before_it_opens(tmp_path, monkeypatch
     monkeypatch.setattr(av, "open", spy_open)
     assert pk.probe_streams(src).audio_codec == "pcm_s16le"
     assert events == ["cap", "open"]
+
+
+def test_probe_streams_takes_no_more_streams_than_the_limit(tmp_path):
+    """An MP4 / MOV with more tracks than the limit is refused (the route
+    caches it as unreadable); a Matroska file reports its first ones."""
+    pytest.importorskip("av")
+    limit = pk.audio_ffmpeg.PYAV_MAX_STREAMS
+    assert pk.probe_streams(
+        write_tracks(str(tmp_path / "at.mov"), limit)).audio_codec == "pcm_s16le"
+    with pytest.raises(ValueError, match="more than 20 tracks"):
+        pk.probe_streams(write_tracks(str(tmp_path / "over.mov"), limit + 1))
+    rip = pk.probe_streams(write_tracks(str(tmp_path / "rip.mkv"), limit + 4))
+    assert rip.audio_codec == "pcm_s16le" and rip.format_name == "matroska,webm"
 
 
 def test_package_argv_pins_the_probed_demuxer():

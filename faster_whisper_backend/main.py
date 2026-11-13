@@ -1433,8 +1433,13 @@ def _refuse_input(path: str) -> None:
         # file-only one: an HLS playlist decrypting a sibling segment fails
         # only the latter, and must not reach them.
         try:
-            container = av.open(path, metadata_errors="ignore")
-        except av.FFmpegError:
+            container = av.open(path, options=audio_ffmpeg.pyav_stream_limit(),
+                                metadata_errors="ignore")
+        except av.FFmpegError as e:
+            # Those fallbacks open without the stream limit: a file that
+            # runs into it here is refused, not left to them.
+            if audio_ffmpeg.refused_as_too_much(e):
+                raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
             return
         try:
             if audio_ffmpeg.is_multi_input_format(
