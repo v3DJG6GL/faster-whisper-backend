@@ -1563,6 +1563,31 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
                                    and sets[x] & sets[y])
         return got
 
+    # Whether a position trades with the one `d` places after it (round the
+    # branch: a stretch may wrap into the next repetition) is the same in
+    # every stretch that holds both, and the first pair that trades ends the
+    # test. So each position remembers how far ahead of it has been asked
+    # without finding one (`asked`): a pair is tested once, not once per
+    # stretch, and only a pair with an optional atom is tested at all.
+    # Scanning each stretch pair by pair was quadratic in its length, and
+    # nine by nine distinct 400-atom stretches under fourteen plain wrappers
+    # held a save thread for 14 s. No pair outside a stretch is ever tested,
+    # so this never costs more than that scan did.
+    loose = [bool(a and a[1]) for a in atoms]
+    asked = [0] * m
+
+    def holds_pair(s: int, e: int) -> bool:
+        """True if two positions strictly between ``s`` and ``e`` trade."""
+        for a in range(s + 1, e - 1):
+            x = a % m
+            stop = e - a
+            for d in range(asked[x] + 1, stop):
+                if (loose[x] or loose[(a + d) % m]) and trades(x, (a + d) % m):
+                    return True
+            if asked[x] < stop - 1:
+                asked[x] = stop - 1
+        return False
+
     seen_cuts: "set[tuple[int, ...]]" = set()
     seen_seg: "set[tuple[int, int]]" = set()
     for c in set().union(*(sets[x] for x in optional)):
@@ -1594,7 +1619,7 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
             seg = [x % m for x in range(s + 1, e)]
             if sum(x in free for x in seg) < 2:
                 continue
-            if any(trades(x, y) for p, x in enumerate(seg) for y in seg[p + 1:]):
+            if holds_pair(s, e):
                 return True
     return False
 

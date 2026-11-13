@@ -2236,6 +2236,48 @@ def test_wide_optional_alternation_under_plain_wrappers_screens_fast():
     assert time.perf_counter() - t0 < 3.0
 
 
+# Nine classes that each leave out their own nine characters, then nine that
+# leave out one of each: every one of the 81 characters is stopped at a
+# different pair of pins, so the branch falls into 81 different stretches of
+# about 400 atoms. Scanning each stretch pair by pair for two atoms that
+# trade was quadratic in its length and ran again at every enclosing group:
+# one 450-char entry held a save thread and the save lock for about 14 s
+# before the budget refused it; it must be screened, not timed out.
+def test_wide_stretches_between_many_pins_are_screened_fast():
+    k = 9
+
+    def ch(i, j):
+        return chr(0x4e00 + i * k + j)
+
+    rows = ["[^a-h" + "".join(ch(i, j) for j in range(k)) + "]" for i in range(k)]
+    cols = ["[^a-h" + "".join(ch(i, j) for i in range(k)) + "]" for j in range(k)]
+    big = "(?:(?:[^a-h]){8}){8}"
+    p = ("(" * 14 + "abcdefgh[^a-h]?a" + "".join(rows) + big * 3
+         + "a?b?c?d?e?f?g?h?" + big * 3 + "".join(cols) + ")" * 14)
+    assert len(p) == 450
+    t0 = time.perf_counter()
+    assert g._nested_repetition(p) is False
+    assert time.perf_counter() - t0 < 3.0
+    g.validate([("r", p, "")])
+
+
+# The stretch between two pins is asked for a trading pair by one look-up,
+# a stretch that wraps into the next repetition included.
+@pytest.mark.parametrize("pat,refused", [
+    (r"(?:n?n?nx)+", True), (r"(?:n?nxn?n)+", True),
+    (r"(?:nxn?n?)+", True), (r"(?:n?xyn?n)+", True),
+    (r"(?:\d?\d\.)+", False), (r"(?:,? ?und )+", False),
+    (r"(?:1?2?Z1Z2Z)+", False), (r"(?:n?xn?y)+", False),
+])
+def test_stretch_between_pins_is_answered_as_before(pat, refused):
+    assert g._nested_repetition(pat) is refused, pat
+    if refused:
+        with pytest.raises(ValueError, match="nested repetition"):
+            g.validate([("r", pat, "")])
+    else:
+        g.validate([("r", pat, "")])
+
+
 # A branch that consumes nothing (`(?!)`, `\b`, `$`, `(?=x)`) or is one
 # optional atom (`x?`) only makes its alternation optional: `(?:– ?|(?!))`
 # is `(?:– ?)?`. Read as one "can match empty" atom it hid the `– ?` that
