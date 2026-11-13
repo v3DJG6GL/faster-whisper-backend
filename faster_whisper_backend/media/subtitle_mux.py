@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 
+from faster_whisper_backend.audio import decode_helper
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.core import proc as core_proc
 from faster_whisper_backend.core.languages import iso639_2t, language_label
@@ -171,7 +172,80 @@ def probe_streams(path: str) -> MediaStreams:
     comes before one opens a single entry. At most
     audio_ffmpeg.PYAV_MAX_STREAMS streams are taken: an MP4 / MOV with more
     is a ValueError too, a Matroska file reports its first ones. So is a
-    file whose open takes longer than audio_ffmpeg.HEADER_OPEN_BUDGET_S."""
+    file whose open takes longer than audio_ffmpeg.HEADER_OPEN_BUDGET_S.
+
+    Runs in a decode helper once the app has started them
+    (audio/decode_helper.py): a file whose open passes the helper's memory
+    budget, or ends the helper, is a ValueError as well."""
+    if not decode_helper.routed():
+        return _probe_streams(path)
+    try:
+        said = decode_helper.run("probe_streams", {"path": path},
+                                 timeout=_PROBE_OP_TIMEOUT_S)
+    except decode_helper.NotStarted:
+        return _probe_streams(path)
+    except decode_helper.HelperTimeout:
+        raise ValueError(audio_ffmpeg.TOO_SLOW_TO_OPEN) from None
+    except decode_helper.HelperOutOfMemory:
+        raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from None
+    except decode_helper.HelperDied:
+        raise ValueError(audio_ffmpeg.STOPS_THE_DECODER) from None
+    return _streams_said(said)
+
+
+# A helper's deadline for the probe: the open's own budget (granted to each
+# of its two phases) and a margin.
+_PROBE_OP_TIMEOUT_S = 2 * audio_ffmpeg.HEADER_OPEN_BUDGET_S + 30.0
+# What a helper's answer may carry per field of MediaStreams: the names are
+# libav's own short ones.
+_SAID_TEXT_MAX = 256
+_SAID_NAME_RE = re.compile(r"\A[A-Za-z0-9_.,\- ]*\Z")
+
+
+def _streams_said(said) -> MediaStreams:
+    """MediaStreams from a helper's answer, each field checked for its type:
+    the helper read a client's file, and what it says is data. The verdict
+    on the MP4 container is the helper's own (mp4_compatibility there)."""
+    def text(key: str) -> "str | None":
+        value = said.get(key)
+        if value is None:
+            return None
+        if not (isinstance(value, str) and len(value) <= _SAID_TEXT_MAX):
+            raise ValueError("unsupported container")
+        return value
+
+    def whole(key: str) -> "int | None":
+        value = said.get(key)
+        ok = (isinstance(value, int) and not isinstance(value, bool)
+              and 0 <= value < 1 << 31)
+        if value is not None and not ok:
+            raise ValueError("unsupported container")
+        return value
+
+    if not isinstance(said, dict):
+        raise ValueError("unsupported container")
+    duration = said.get("duration")
+    if duration is not None and not (
+            isinstance(duration, (int, float)) and not isinstance(duration, bool)
+            and -1e15 < duration < 1e15):    # finite: a NaN compares false
+        raise ValueError("unsupported container")
+    format_name = text("format_name")
+    # The name goes on the packaging ffmpeg's command line as its only
+    # allowed demuxer.
+    if format_name is not None and (
+            not _SAID_NAME_RE.match(format_name)
+            or audio_ffmpeg.is_multi_input_format(format_name)):
+        raise ValueError("unsupported container")
+    return MediaStreams(
+        video_codec=text("video_codec"), audio_codec=text("audio_codec"),
+        width=whole("width"), height=whole("height"),
+        duration=None if duration is None else float(duration),
+        mp4_ok=said.get("mp4_ok") is True, mp4_reason=text("mp4_reason"),
+        cover_art_only=said.get("cover_art_only") is True,
+        video_index=whole("video_index") or 0, format_name=format_name)
+
+
+def _probe_streams(path: str) -> MediaStreams:
     import av  # optional dependency; the route maps ImportError to 503
 
     # A sample table can declare an index of gigabytes that av.open builds.
@@ -237,6 +311,13 @@ def probe_streams(path: str) -> MediaStreams:
                         duration=duration, mp4_ok=ok, mp4_reason=reason,
                         cover_art_only=cover_only, video_index=video_index,
                         format_name=format_name)
+
+
+# The decode helper's side (audio/decode_helper.py): operation name ->
+# handler(send, **args), the answer as JSON scalars.
+HELPER_OPS = {
+    "probe_streams": lambda send, *, path: _probe_streams(path).as_dict(),
+}
 
 
 def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleTrack]",

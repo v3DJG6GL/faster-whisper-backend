@@ -33,6 +33,7 @@ from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.audio import decode_helper as _decode_helper
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.audio import transcode as _transcode
 from faster_whisper_backend.media import download as _udl
@@ -656,7 +657,8 @@ _PROBE_FAULT_RETRIES = 2
 def _is_server_fault(exc: BaseException) -> bool:
     if audio_ffmpeg.refused_as_too_much(exc):
         return False
-    return (isinstance(exc, MemoryError)
+    # HelperFailed: no decode helper could be had for the probe.
+    return (isinstance(exc, (MemoryError, _decode_helper.HelperFailed))
             or getattr(exc, "errno", None) in _PROBE_SERVER_FAULTS)
 
 

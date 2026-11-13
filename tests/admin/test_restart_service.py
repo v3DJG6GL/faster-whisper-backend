@@ -313,7 +313,9 @@ def test_winsw_restart_bang_flushes_before_exit(monkeypatch):
 def test_flush_before_exit_swallows_failures(monkeypatch):
     """A broken flush must never block the restart itself: every duty is
     attempted in order (held receipts, stats samples, NVML, rule helpers,
-    link helpers), and a failing one must not skip the ones after it."""
+    link helpers, decode helpers), and a failing one must not skip the ones
+    after it."""
+    from faster_whisper_backend.audio import decode_helper
     from faster_whisper_backend.media import link_helper
     from faster_whisper_backend.pipeline import rule_helper
     from faster_whisper_backend.runtime import system_stats
@@ -342,6 +344,10 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
         reached.append("link helpers")
         raise RuntimeError("link helpers exploded")
 
+    def _boom_decode_helpers():
+        reached.append("decode helpers")
+        raise RuntimeError("decode helpers exploded")
+
     monkeypatch.setattr(receipt_hold, "flush_all", _boom_flush)
     monkeypatch.setattr(sampler, "flush", _boom_sampler)
     monkeypatch.setattr(system_stats, "shutdown", _boom_shutdown)
@@ -350,8 +356,10 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
         # through the same function.
         scoped.setattr(rule_helper, "shutdown", _boom_helpers)
         scoped.setattr(link_helper, "shutdown", _boom_link_helpers)
+        scoped.setattr(decode_helper, "shutdown", _boom_decode_helpers)
         _REAL_FLUSH()  # must not raise
-    assert reached == ["flush", "sampler", "shutdown", "helpers", "link helpers"]
+    assert reached == ["flush", "sampler", "shutdown", "helpers", "link helpers",
+                       "decode helpers"]
 
 
 def test_flush_before_exit_stops_the_rule_helpers(monkeypatch):
@@ -412,6 +420,36 @@ def test_flush_before_exit_stops_the_link_helpers(monkeypatch):
         if busy is not None:
             pool.end(busy)
         link_helper.reset()
+
+
+def test_flush_before_exit_stops_the_decode_helpers(monkeypatch):
+    """And for the helpers client audio is decoded in: the idle ones, and
+    one inside a decode, whose answer nobody would collect."""
+    from faster_whisper_backend.audio import decode_helper
+    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.stats import sampler
+    from faster_whisper_backend.transcription import receipt_hold
+
+    monkeypatch.setattr(receipt_hold, "flush_all", lambda: [])
+    monkeypatch.setattr(sampler, "flush", lambda: None)
+    monkeypatch.setattr(system_stats, "shutdown", lambda: None)
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    # The suite decodes in-process (tests/conftest.py); the real helpers
+    # are what a restart has to stop.
+    monkeypatch.setattr(decode_helper, "ISOLATE", True)
+    decode_helper.start()
+    pool = decode_helper._POOL
+    try:
+        busy = pool.acquire()             # as a decode holds one
+        assert pool.wait_idle(1, 60)      # and its spare is up
+        procs = list(pool._procs)
+        assert len(procs) == 2 and busy.proc in procs
+        assert all(p.poll() is None for p in procs)
+        _REAL_FLUSH()
+        assert all(p.poll() is not None for p in procs)      # killed and reaped
+        assert pool.pids() == []
+    finally:
+        decode_helper.reset()
 
 
 @pytest.fixture

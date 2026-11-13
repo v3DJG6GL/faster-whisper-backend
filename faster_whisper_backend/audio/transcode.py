@@ -16,12 +16,20 @@ into memory for a link's language check, and decode_16k_bounded reads the
 whole upload for Whisper under a duration ceiling; all open the source
 through _open_audio. refuse_multi_input applies the same demuxer refusal to a path
 headed for a decoder that does not (faster-whisper, pyannote).
+
+Once the app has started its decode helpers (audio/decode_helper.py) every
+function here that opens or decodes a file runs in one of them, under a
+memory limit: the public name sends the request and reads the answer, the
+underscore twin below it is the work itself (run in the helper, or right
+here while no helpers run — the test suite, a platform that starts none).
 """
 from __future__ import annotations
 
 import errno
 import os
+import time
 
+from faster_whisper_backend.audio import decode_helper as _decode_helper
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.core import store_common
 
@@ -98,6 +106,63 @@ class TranscodeBudgetExceeded(RuntimeError):
     RuntimeError, so a caller that only knows the base class still reads it
     as a failed transcode; one that passed a budget for a reason of its own
     (main.py's BGM RAM cap) can tell it apart."""
+
+
+# The helper process an operation ran in ended without an answer while it
+# read the file: the decoder crashed on it, or the process was killed. Never
+# raised while the operations run in-process — there the same file ends the
+# server.
+DecoderEnded = _decode_helper.HelperDied
+
+# This module's own exceptions, which a helper's error comes back as.
+_HELPER_ERRORS = {c.__name__: c for c in (
+    DecodeTooLong, ResampleFailed, DecodeFailed, TranscodeBudgetExceeded)}
+
+# How long a helper gets for an operation that only opens the file: the
+# opens' own budget (granted to each of an open's two phases) and a margin.
+# Past it the helper is killed, which also ends an index build no read
+# timeout interrupts.
+_OPEN_OP_TIMEOUT_S = 2 * audio_ffmpeg.HEADER_OPEN_BUDGET_S + 30.0
+# The same for a link's language-check pieces: each is held to the discard
+# budget (see _DISCARD_MAX_FRAMES), seconds of one thread at its worst.
+_PIECE_OP_TIMEOUT_S = 60.0
+_PIECE_OP_TIMEOUT_EACH_S = 30.0
+TOO_SLOW_TO_DECODE = "unsupported audio: the piece takes too long to decode"
+
+# What _helped answers when the caller is to do the work in this process.
+_LOCAL = object()
+
+
+def _helped(op: str, args: dict, *, opens: bool = False,
+            timeout: "float | None" = None, long: bool = False, on_data=None):
+    """The answer of operation `op` run in a decode helper, or _LOCAL when
+    it is to run in this process (no helpers started, or this is one).
+    Raises what the operation raised there. A helper that passed its memory
+    budget is a MemoryError, one that ended on the file DecoderEnded — for
+    an operation that only `opens` the file both are the open's own plain
+    ValueError (a refusal of the file), and so is the deadline."""
+    if not _decode_helper.routed():
+        return _LOCAL
+    try:
+        return _decode_helper.run(op, args, timeout=timeout, long=long,
+                                  on_data=on_data, classes=_HELPER_ERRORS)
+    except _decode_helper.NotStarted:
+        return _LOCAL
+    except _decode_helper.HelperTimeout:
+        raise ValueError(audio_ffmpeg.TOO_SLOW_TO_OPEN if opens
+                         else TOO_SLOW_TO_DECODE) from None
+    except _decode_helper.HelperOutOfMemory:
+        if opens:
+            raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from None
+        raise
+    except DecoderEnded:
+        if opens:
+            raise ValueError(audio_ffmpeg.STOPS_THE_DECODER) from None
+        raise
+
+
+def _unreadable_answer() -> DecoderEnded:
+    return DecoderEnded(None, "the decode helper sent an unreadable answer")
 
 
 def _frame_too_big(frame) -> bool:
@@ -198,6 +263,26 @@ def declared_shape(src_path: str) -> "tuple[float | None, int | None, int | None
     stream) declares for `src_path`; None for any it does not declare — PyAV
     reports 0 channels for a WAV of more than 64. Header data only: nothing
     is decoded. Raises what _open_audio raises."""
+    said = _helped("declared_shape", {"src": src_path}, opens=True,
+                   timeout=_OPEN_OP_TIMEOUT_S)
+    if said is _LOCAL:
+        return _declared_shape(src_path)
+    if not (isinstance(said, list) and len(said) == 3):
+        raise _unreadable_answer()
+    secs, rate, channels = said
+    return (float(secs) if _is_measure(secs) else None,
+            int(rate) if _is_measure(rate) else None,
+            int(channels) if _is_measure(channels) else None)
+
+
+def _is_measure(value) -> bool:
+    """Whether a helper's answer is a positive number of ordinary size (a
+    duration, a rate, a channel count)."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 < value < 1e15)
+
+
+def _declared_shape(src_path: str):
     container, stream = _open_audio(src_path)
     try:
         if container.duration and container.duration > 0:
@@ -225,6 +310,12 @@ def is_pcm_wav_or_flac(src_path: str) -> bool:
     _wav_fmt_shape); an RF64 or an fmt the RIFF walk cannot read goes the
     transcode way. An unknown pcm_* codec fails closed. Raises what
     _open_audio raises."""
+    said = _helped("is_pcm_wav_or_flac", {"src": src_path}, opens=True,
+                   timeout=_OPEN_OP_TIMEOUT_S)
+    return _is_pcm_wav_or_flac(src_path) if said is _LOCAL else said is True
+
+
+def _is_pcm_wav_or_flac(src_path: str) -> bool:
     container, stream = _open_audio(src_path)
     try:
         fmt = getattr(container.format, "name", None) or ""
@@ -286,6 +377,26 @@ def _wav_fmt_shape(src_path: str) -> "tuple[int, int] | None":
         return None
 
 
+# The BGM separator loads its whole input as float32 44.1 kHz stereo; its RAM
+# cap is counted in the bytes of that audio as s16 (main._sep_ram_cap).
+SEP_S16_BYTES_PER_S = 44100 * 2 * 2
+
+
+def separator_bytes_per_s(rate: int, channels: int) -> float:
+    """What a second of `rate`/`channels` audio handed over as is costs the
+    separator, in the cap's 44.1 kHz stereo s16 bytes. It reads the file
+    whole at its native rate and channel count before resampling, so more
+    channels or a higher rate scale the charge; mono or stereo at 48 kHz or
+    below costs what the transcoded WAV would."""
+    return (SEP_S16_BYTES_PER_S * max(1.0, channels / 2)
+            * max(1.0, rate / 48000))
+
+
+# The cost functions decoded_cost_within takes by name when it runs in a
+# helper: a function of the caller's does not exist there.
+COST_FUNCTIONS = {"separator": separator_bytes_per_s}
+
+
 def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
     """Whether `src_path`, decoded to its end, costs at most `max_cost`: each
     frame is charged its duration times cost_per_s(rate, channels) at its own
@@ -294,7 +405,23 @@ def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
     end (see _decoded_frames): what lies behind was not measured, and another
     decoder may read it. Unlike declared_shape this does not trust the
     header, which the uploader wrote: a Matroska Segment Duration can declare
-    a second for hours of audio. Raises what the decode raises."""
+    a second for hours of audio. Raises what the decode raises. While decode
+    helpers run `cost_per_s` must be one of COST_FUNCTIONS (TypeError)."""
+    if _decode_helper.routed():
+        name = next((n for n, f in COST_FUNCTIONS.items() if f is cost_per_s), None)
+        if name is None:
+            raise TypeError("decoded_cost_within: cost_per_s is not one of "
+                            "COST_FUNCTIONS, which a decode helper needs")
+        said = _helped("decoded_cost_within",
+                       {"src": src_path, "cost": name, "max_cost": max_cost},
+                       long=True)
+        if said is not _LOCAL:
+            return said is True
+    return _decoded_cost_within(src_path, cost_per_s=cost_per_s,
+                                max_cost=max_cost)
+
+
+def _decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
     container, stream = _open_audio(src_path)
     try:
         cost, state = 0.0, {}
@@ -422,18 +549,56 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
     The steps mirror faster_whisper/audio.py 1.2.1 (s16 mono resampler,
     500 000-sample groups, flush, s16 -> float32 / 32768);
     tests/audio/test_decode_bounded.py compares the two on every format the
-    server takes, so a faster-whisper upgrade that changes them shows up."""
-    import gc
+    server takes, so a faster-whisper upgrade that changes them shows up.
+
+    In a decode helper the samples come back as they are resampled, so the
+    helper holds one group whatever the file's length; MemoryError when it
+    passed its budget all the same, DecoderEnded when it ended on the
+    file."""
     import io
-    import itertools
 
     import numpy as np
+
+    raw_buffer = io.BytesIO()
+    # What the helper may send: the ceiling's own samples and a margin for
+    # the resampler's rounding. A helper is no more trusted with the
+    # server's memory than the file it reads.
+    most = (None if max_seconds is None
+            else int(max_seconds * 16000 * 2 * 1.05) + (1 << 20))
+
+    def _take(chunk) -> None:
+        if most is not None and raw_buffer.tell() + len(chunk) > most:
+            raise DecodeTooLong(
+                f"audio runs past {max_seconds:.0f} s of decoded input")
+        raw_buffer.write(chunk)
+
+    said = _helped("decode_16k", {"src": src_path, "max_seconds": max_seconds},
+                   long=True, on_data=_take)
+    if said is not _LOCAL:
+        got = raw_buffer.getbuffer()
+        audio = np.frombuffer(got[:len(got) - len(got) % 2], dtype=np.int16)
+        return audio.astype(np.float32) / 32768.0
+    dtype = None
+
+    def _keep(array) -> None:
+        nonlocal dtype
+        dtype = array.dtype
+        raw_buffer.write(array)
+
+    _decode_16k_frames(src_path, max_seconds, _keep)
+    audio = np.frombuffer(raw_buffer.getbuffer(), dtype=dtype)
+    return audio.astype(np.float32) / 32768.0
+
+
+def _decode_16k_frames(src_path: str, max_seconds: "float | None", sink) -> None:
+    """decode_16k_bounded's decode: every resampled frame (s16 mono 16 kHz,
+    as an ndarray) goes to `sink` in order."""
+    import gc
+    import itertools
 
     av = _av()
     resampler = av.audio.resampler.AudioResampler(
         format="s16", layout="mono", rate=16000)
-    raw_buffer = io.BytesIO()
-    dtype = None
     container, stream = _open_audio(src_path)
     try:
         try:
@@ -447,9 +612,7 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
                 except Exception as e:
                     raise ResampleFailed(str(e)) from e
                 for frame in resampled:
-                    array = frame.to_ndarray()
-                    dtype = array.dtype
-                    raw_buffer.write(array)
+                    sink(frame.to_ndarray())
         except (DecodeTooLong, ResampleFailed, MemoryError):
             # MemoryError ahead of the wrap: PyAV's error for a libav ENOMEM
             # is an av error and a MemoryError, and the caller answers the
@@ -465,8 +628,98 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
     # As in decode_audio: resampler objects are only freed by a collection.
     del resampler
     gc.collect()
-    audio = np.frombuffer(raw_buffer.getbuffer(), dtype=dtype)
-    return audio.astype(np.float32) / 32768.0
+
+
+def refuse_input(path: str) -> None:
+    """ValueError when `path` opens but is no input for faster-whisper: a
+    playlist container, or one with no audio stream (a video-only clip, a
+    text file the tty demuxer opens) — decode_audio raises a bare IndexError
+    on that, a 500. A file that does not open at all is not refused here:
+    the real decoder raises the av error, answered as undecodable — unless
+    FFmpeg's default open reads it as a playlist, reads it only without the
+    stream limit, or finds audio in a channel order this PyAV cannot release
+    safely (see below; _open_audio refuses that one itself). The opens share
+    one time budget (audio_ffmpeg.HEADER_OPEN_BUDGET_S): a file that uses it
+    up is refused as well. In a decode helper, so is a file whose opens pass
+    the helper's memory budget (audio_ffmpeg.TOO_MUCH_TO_OPEN) or end the
+    helper (audio_ffmpeg.STOPS_THE_DECODER)."""
+    if _helped("refuse_input", {"path": path}, opens=True,
+               timeout=_OPEN_OP_TIMEOUT_S) is _LOCAL:
+        _refuse_input(path)
+
+
+def _refuse_input(path: str) -> None:
+    av = _av()   # caps libav's allocations: also for the reopens below
+    # libavformat opens a decoder for every stream while it probes: the two
+    # reopens below take audio decoders only, like the strict open. Omitted
+    # when the list is empty, as an empty whitelist refuses every decoder.
+    decoders = audio_ffmpeg.pyav_audio_decoders()
+    audio_only = {"codec_whitelist": decoders} if decoders else {}
+    # This runs on the one worker every upload's check waits for, and an
+    # open that finds no header reads the whole file looking for one. Each
+    # open gets what is left of the budget; PyAV stops its reads then, and
+    # the open comes back with its ordinary error or — the stop read as the
+    # end of the file — with a container, so only the clock tells. Either
+    # way the check is unfinished: a refusal, never "left to the decoder",
+    # which would read the same bytes again without a limit.
+    deadline = time.monotonic() + audio_ffmpeg.HEADER_OPEN_BUDGET_S
+
+    def _left() -> float:
+        return max(0.1, deadline - time.monotonic())
+
+    def _refuse_when_out_of_time(cause: "BaseException | None" = None) -> None:
+        if time.monotonic() >= deadline:
+            raise ValueError(audio_ffmpeg.TOO_SLOW_TO_OPEN) from cause
+
+    try:
+        container, _stream = _open_audio(path, timeout=_left())
+    except av.FFmpegError as e:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
+        _refuse_when_out_of_time(e)
+        # The fallbacks — transcribe(path), pyannote, the separator — open
+        # with FFmpeg's default nested whitelist (file,crypto,data), not the
+        # file-only one: an HLS playlist decrypting a sibling segment fails
+        # only the latter, and must not reach them.
+        try:
+            container = av.open(
+                path, options={**audio_ffmpeg.pyav_stream_limit(), **audio_only},
+                metadata_errors="ignore", timeout=(_left(), None))
+        except av.FFmpegError as e:
+            _refuse_when_out_of_time(e)
+            # Those fallbacks open without the stream limit: a file that
+            # runs into it here is refused, not left to them.
+            if audio_ffmpeg.refused_as_too_much(e):
+                raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
+            # Not every demuxer answers the limit that way (wtv: invalid
+            # data), so ask the fallbacks' question itself: does the file
+            # open without it? No stream limit, but still no video decoder
+            # for any of the streams it then lists.
+            try:
+                unlimited = av.open(path, options=dict(audio_only),
+                                    metadata_errors="ignore",
+                                    timeout=(_left(), None))
+            except av.FFmpegError as unopened:
+                _refuse_when_out_of_time(unopened)
+                return      # opens for nobody: left to the decoder
+            unlimited.close()
+            _refuse_when_out_of_time(e)
+            raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
+        try:
+            _refuse_when_out_of_time()
+            if audio_ffmpeg.is_multi_input_format(
+                    getattr(container.format, "name", None)):
+                raise ValueError("unsupported container")
+            # The fallback decoders release PyAV's layout wrappers like any
+            # other reader: a custom channel order must not reach them.
+            for stream in container.streams:
+                context = stream.codec_context if stream.type == "audio" else None
+                if context is not None and audio_ffmpeg.holds_custom_channel_map(
+                        context.layout):
+                    raise ValueError(audio_ffmpeg.CUSTOM_CHANNEL_ORDER)
+        finally:
+            container.close()
+        return
+    container.close()
+    _refuse_when_out_of_time()
 
 
 def refuse_multi_input(path: str) -> None:
@@ -788,6 +1041,39 @@ def decode_pieces_16k(src_path: str, starts: "list[float]",
     Seeks instead of decoding the whole file; a piece past the end comes
     back empty. ValueError when a seek lands so far ahead of its piece that
     reaching it passes the discard budget (see _DISCARD_MAX_FRAMES)."""
+    starts = [float(start) for start in starts]
+    pieces, take = _piece_taker(len(starts), seconds)
+    said = _helped(
+        "decode_pieces_16k",
+        {"src": src_path, "starts": starts, "seconds": float(seconds)},
+        timeout=_PIECE_OP_TIMEOUT_S + _PIECE_OP_TIMEOUT_EACH_S * len(starts),
+        on_data=take)
+    if said is _LOCAL:
+        return _decode_pieces_16k(src_path, starts, seconds)
+    if len(pieces) != len(starts):
+        raise _unreadable_answer()
+    return pieces
+
+
+def _piece_taker(count: int, seconds: float):
+    """([], take) — `take` appends each piece a helper sends (float32
+    sample bytes) to the list as an array of its own, and refuses more
+    pieces than `count` or one longer than `seconds`."""
+    import numpy as np
+
+    pieces: list = []
+    most = int(seconds * 16000) * 4
+
+    def take(chunk) -> None:
+        if len(pieces) >= count or len(chunk) > most or len(chunk) % 4:
+            raise _unreadable_answer()
+        pieces.append(np.frombuffer(chunk, dtype=np.float32).copy())
+
+    return pieces, take
+
+
+def _decode_pieces_16k(src_path: str, starts: "list[float]",
+                       seconds: float) -> list:
     want = int(seconds * 16000)
     pieces = []
     container, stream = _open_audio(src_path)
@@ -813,6 +1099,19 @@ def decode_span_16k(src_path: str, skip: float, seconds: float):
     piece) carries the stream's own timestamps, which neither start at 0
     nor need be continuous. ValueError when the skip takes more decoding
     than the discard budget (see _DISCARD_MAX_FRAMES)."""
+    pieces, take = _piece_taker(1, seconds)
+    said = _helped(
+        "decode_span_16k",
+        {"src": src_path, "skip": float(skip), "seconds": float(seconds)},
+        timeout=_PIECE_OP_TIMEOUT_S + _PIECE_OP_TIMEOUT_EACH_S, on_data=take)
+    if said is _LOCAL:
+        return _decode_span_16k(src_path, skip, seconds)
+    if len(pieces) != 1:
+        raise _unreadable_answer()
+    return pieces[0]
+
+
+def _decode_span_16k(src_path: str, skip: float, seconds: float):
     container, stream = _open_audio(src_path)
     try:
         return _read_16k(container, stream, int(seconds * 16000),
@@ -857,6 +1156,28 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
     PCM: for a copy of what another decode already read. That decode
     (faster-whisper's) stops at an mp3's first invalid packet, while this
     one skips the packet and reads on, possibly for hours of audio."""
+    try:
+        said = _helped(
+            "transcode_to_wav",
+            {"src": src_path, "dst": dst_path, "rate": rate, "layout": layout,
+             "max_bytes": max_bytes, "stop_at_bytes": stop_at_bytes},
+            long=True)
+    except BaseException:
+        # The helper unlinks what it wrote when the transcode fails; one
+        # that was killed, or ended on the file, did not get to.
+        store_common.unlink_quietly(dst_path)
+        raise
+    if said is _LOCAL:
+        return _transcode_to_wav(src_path, dst_path, rate=rate, layout=layout,
+                                 max_bytes=max_bytes,
+                                 stop_at_bytes=stop_at_bytes)
+    return os.path.getsize(dst_path)
+
+
+def _transcode_to_wav(src_path: str, dst_path: str, *,
+                      rate: int, layout: str,
+                      max_bytes: "int | None" = None,
+                      stop_at_bytes: "int | None" = None) -> int:
     av = _av()
     in_container = None
     out_container = None
@@ -901,3 +1222,52 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
         _close_quietly(in_container)
 
     return os.path.getsize(dst_path)
+
+
+# --------------------------------------------------------------------------
+# The decode helper's side (audio/decode_helper.py)
+# --------------------------------------------------------------------------
+
+def helper_warm() -> None:
+    """Load PyAV and numpy, cap libav's allocations and fill the demuxer and
+    decoder lists: a helper does it once at its start, not inside its first
+    request's memory budget."""
+    import numpy  # noqa: F401, PLC0415 - loaded for the operations below
+
+    _av()
+    audio_ffmpeg.single_input_demuxers()
+    audio_ffmpeg.pyav_audio_decoders()
+
+
+def _op_decode_16k(send, *, src, max_seconds):
+    _decode_16k_frames(src, max_seconds, lambda array: send(array.tobytes()))
+
+
+def _op_decode_pieces_16k(send, *, src, starts, seconds):
+    for piece in _decode_pieces_16k(src, starts, seconds):
+        send(piece.astype("float32", copy=False).tobytes())
+
+
+def _op_decode_span_16k(send, *, src, skip, seconds):
+    send(_decode_span_16k(src, skip, seconds).astype(
+        "float32", copy=False).tobytes())
+
+
+# Operation name -> handler(send, **args): the work of the public function
+# of that name, run in a helper. `send` takes sample bytes for the parent;
+# the return value is the answer (JSON scalars).
+HELPER_OPS = {
+    "refuse_input": lambda send, *, path: _refuse_input(path),
+    "declared_shape": lambda send, *, src: list(_declared_shape(src)),
+    "is_pcm_wav_or_flac": lambda send, *, src: bool(_is_pcm_wav_or_flac(src)),
+    "decoded_cost_within": lambda send, *, src, cost, max_cost: bool(
+        _decoded_cost_within(src, cost_per_s=COST_FUNCTIONS[cost],
+                             max_cost=max_cost)),
+    "decode_16k": _op_decode_16k,
+    "decode_pieces_16k": _op_decode_pieces_16k,
+    "decode_span_16k": _op_decode_span_16k,
+    "transcode_to_wav": lambda send, *, src, dst, rate, layout, max_bytes,
+    stop_at_bytes: _transcode_to_wav(
+        src, dst, rate=rate, layout=layout, max_bytes=max_bytes,
+        stop_at_bytes=stop_at_bytes),
+}

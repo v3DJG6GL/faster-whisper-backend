@@ -84,6 +84,11 @@ def _flush_before_exit() -> None:
         _link_helper.shutdown()
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from faster_whisper_backend.audio import decode_helper as _decode_helper
+        _decode_helper.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def trigger_self_restart(delay_sec: float = 1.5) -> str:

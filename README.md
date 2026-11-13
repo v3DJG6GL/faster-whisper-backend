@@ -364,6 +364,33 @@ script / accidental double-click / one client starving the others", not a
 motivated attacker spreading load across workers; anything stronger needs
 shared state (Redis) and does not belong in-process.
 
+**Memory limit on decoding.** A media file is opened and decoded by FFmpeg's
+libraries, and how much memory that takes is the file's choice: a few
+kilobytes can be written so that they unpack into gigabytes before any of the
+server's own length checks sees a sample. Every open and decode of a client's
+file (an upload, a link's download, a file in the media store) therefore runs
+in a small helper process with a memory budget of 1 GiB per file — half of the
+free memory when less than 2 GiB is free, never under 256 MiB. A file that
+needs more is refused (`413` "too long to decode in this server's free
+memory", or `400` "unsupported container" when its header alone is too much),
+a file that crashes the decoder is answered `400` "could not be decoded", and
+in both cases only the helper ends: the server and every other request go on.
+A real recording needs a small fraction of the budget whatever its length,
+because the decoded samples leave the helper as they are made.
+
+Helpers are reused, so a request pays about a millisecond per step for the
+hop. Two idle helpers (about 25 MB each) are kept, more are started under
+load (eight at most, six of them for whole-file decodes, so an upload's
+header check never queues behind long transcodes) and retire after two idle
+minutes. On Linux the kernel enforces the budget; on Windows and macOS a
+watchdog inside the helper checks its memory every 5 ms. If no helper can
+be started at all, files are opened and decoded inside the server process as
+before and the log says so once (`[decode] … inside the server process,
+without a memory limit`); once helpers have run, a failed start fails the
+request instead. With `SERVER_WORKERS > 1` each worker has its own helpers.
+Live streaming is not part of this: its audio already goes through an ffmpeg
+child process.
+
 ### Model preloading
 
 `POST /v1/models/preload` asks the server to warm the models a job is about to

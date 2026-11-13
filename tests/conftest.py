@@ -92,6 +92,15 @@ from faster_whisper_backend.media import link_helper as _link_helper  # noqa: E4
 
 _link_helper.ISOLATE = False
 
+# And for the helper processes client audio is opened and decoded in
+# (audio/decode_helper.py): thousands of tests post a stub upload and patch
+# the decode functions in this process. Off, every open and decode runs
+# in-process, the same code; tests/audio/test_decode_helper.py turns it on
+# for itself.
+from faster_whisper_backend.audio import decode_helper as _decode_helper  # noqa: E402
+
+_decode_helper.ISOLATE = False
+
 RATE = 16000
 
 

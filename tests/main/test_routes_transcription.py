@@ -11,6 +11,7 @@ from tests.conftest import FakeModel, FakeSegment, bearer, on_event_loop, record
 from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import capture_receipt, transcode_raises
 from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.media import media_store
 from faster_whisper_backend.runtime import model_registry
@@ -725,6 +726,62 @@ def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
                            files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")})
     assert calls == []
     assert any("music separation skipped" in w
+               for w in body.get("warnings") or [])
+
+
+@pytest.mark.parametrize("ended", [
+    MemoryError("the file needs more memory than a decode gets"),
+    audio_transcode.DecoderEnded(-11),
+])
+def test_a_transcode_that_ended_its_decode_helper_never_reaches_the_separator(
+        client, app_module, monkeypatch, ended):
+    """A file that passed the decode helper's memory budget, or ended the
+    helper, is no input for the separator's own decoders, which have
+    neither bound: separation is skipped like for a refused container."""
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
+                        raising=False)
+    calls = []
+
+    async def _separate(path, **kw):
+        calls.append(path)
+        raise AssertionError("separator reached")
+    monkeypatch.setattr(bgm_separation, "separate", _separate)
+    transcode_raises(monkeypatch, ended)
+    body = post_verbose_ok(client, separate_bgm="true",
+                           files={"file": ("a.mp3", wav_bytes(), "audio/mpeg")})
+    assert calls == []
+    assert any("music separation skipped" in w
+               for w in body.get("warnings") or [])
+
+
+@pytest.mark.parametrize("ended", [
+    MemoryError("the file needs more memory than a decode gets"),
+    audio_transcode.DecoderEnded(-11),
+])
+def test_a_fallback_original_that_ends_its_measuring_decode_is_skipped(
+        client, app_module, monkeypatch, ended):
+    """The original the separator would decode after a failed transcode is
+    measured by decoding it; when that decode ends its helper the same way,
+    the file was not measured and is not handed over."""
+    import av
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
+                        raising=False)
+    calls = []
+
+    async def _separate(path, **kw):
+        calls.append(path)
+        raise AssertionError("separator reached")
+    monkeypatch.setattr(bgm_separation, "separate", _separate)
+    transcode_raises(monkeypatch, av.error.InvalidDataError(
+        1094995529, "Invalid data", "avcodec_send_packet()"))
+
+    def _ends(src, *, cost_per_s, max_cost):
+        raise ended
+    monkeypatch.setattr(audio_transcode, "decoded_cost_within", _ends)
+    body = post_verbose_ok(client, separate_bgm="true",
+                           files={"file": ("a.mp3", wav_bytes(), "audio/mpeg")})
+    assert calls == []
+    assert any("could not be prepared" in w
                for w in body.get("warnings") or [])
 
 

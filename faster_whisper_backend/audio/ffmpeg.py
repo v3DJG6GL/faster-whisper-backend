@@ -269,6 +269,10 @@ def client_open_pool() -> concurrent.futures.ThreadPoolExecutor:
 HEADER_OPEN_BUDGET_S = 30.0
 TOO_SLOW_TO_OPEN = ("unsupported container: the file's header takes too long "
                     "to read")
+# The answer for a file whose open ended the decode helper it ran in
+# (audio/decode_helper.py): the decoder crashed on it.
+STOPS_THE_DECODER = ("unsupported container: this server's decoder cannot "
+                     "read the file")
 
 
 def max_alloc_args() -> "list[str]":

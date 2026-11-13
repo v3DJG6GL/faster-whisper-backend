@@ -214,6 +214,7 @@ from faster_whisper_backend.transcription import receipt as tx_receipt
 # the link-download + media-retention helpers and the 1 Hz sampler. None of
 # them imports main, so they load at module level like the rest.
 from faster_whisper_backend.audio import bgm_separation as _bgm_separation
+from faster_whisper_backend.audio import decode_helper as _decode_helper
 from faster_whisper_backend.audio import diarization as _diarization
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.audio import transcode as _transcode
@@ -664,6 +665,10 @@ async def lifespan(app: FastAPI):
     # live toggle, and the first check after it is turned on starts its own.
     url_link_helper.start(spare=bool(
         getattr(cfg, "URL_DOWNLOAD_ENABLED", False) and url_download.yt_dlp_version()))
+    # And a client's audio is opened and decoded in helper processes that
+    # hold each file to a memory budget (audio/decode_helper.py). If none
+    # can be started the opens and decodes run in this process as before.
+    _decode_helper.start()
 
     yield
 
@@ -713,6 +718,7 @@ async def lifespan(app: FastAPI):
     # Last: nothing above walks rules any more. Kills and reaps the helpers.
     await asyncio.to_thread(pl_rule_helper.shutdown)
     await asyncio.to_thread(url_link_helper.shutdown)
+    await asyncio.to_thread(_decode_helper.shutdown)
 
 
 # docs_url/redoc_url/openapi_url=None disables FastAPI's built-in (unauthenticated)
@@ -1428,89 +1434,11 @@ async def _unlink_off_loop(*paths: "str | None", job_dir: "str | None" = None) -
 
 
 def _refuse_input(path: str) -> None:
-    """ValueError when `path` opens but is no input for faster-whisper: a
-    playlist container, or one with no audio stream (a video-only clip, a
-    text file the tty demuxer opens) — decode_audio raises a bare IndexError
-    on that, a 500. A file that does not open at all is not refused here:
-    the real decoder raises the av error, answered as undecodable — unless
-    FFmpeg's default open reads it as a playlist, reads it only without the
-    stream limit, or finds audio in a channel order this PyAV cannot release
-    safely (see below; transcode._open_audio refuses that one itself). The
-    opens share one time budget (audio_ffmpeg.HEADER_OPEN_BUDGET_S): a file
-    that uses it up is refused as well."""
-    import av
-    # Also for the reopen below and faster-whisper's own open after it.
-    audio_ffmpeg.cap_libav_alloc()
-    # libavformat opens a decoder for every stream while it probes: the two
-    # reopens below take audio decoders only, like the strict open. Omitted
-    # when the list is empty, as an empty whitelist refuses every decoder.
-    decoders = audio_ffmpeg.pyav_audio_decoders()
-    audio_only = {"codec_whitelist": decoders} if decoders else {}
-    # This runs on the one worker every upload's check waits for, and an
-    # open that finds no header reads the whole file looking for one. Each
-    # open gets what is left of the budget; PyAV stops its reads then, and
-    # the open comes back with its ordinary error or — the stop read as the
-    # end of the file — with a container, so only the clock tells. Either
-    # way the check is unfinished: a refusal, never "left to the decoder",
-    # which would read the same bytes again without a limit.
-    deadline = time.monotonic() + audio_ffmpeg.HEADER_OPEN_BUDGET_S
-
-    def _left() -> float:
-        return max(0.1, deadline - time.monotonic())
-
-    def _refuse_when_out_of_time(cause: "BaseException | None" = None) -> None:
-        if time.monotonic() >= deadline:
-            raise ValueError(audio_ffmpeg.TOO_SLOW_TO_OPEN) from cause
-
-    try:
-        container, _stream = _transcode._open_audio(path, timeout=_left())
-    except av.FFmpegError as e:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
-        _refuse_when_out_of_time(e)
-        # The fallbacks — transcribe(path), pyannote, the separator — open
-        # with FFmpeg's default nested whitelist (file,crypto,data), not the
-        # file-only one: an HLS playlist decrypting a sibling segment fails
-        # only the latter, and must not reach them.
-        try:
-            container = av.open(
-                path, options={**audio_ffmpeg.pyav_stream_limit(), **audio_only},
-                metadata_errors="ignore", timeout=(_left(), None))
-        except av.FFmpegError as e:
-            _refuse_when_out_of_time(e)
-            # Those fallbacks open without the stream limit: a file that
-            # runs into it here is refused, not left to them.
-            if audio_ffmpeg.refused_as_too_much(e):
-                raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
-            # Not every demuxer answers the limit that way (wtv: invalid
-            # data), so ask the fallbacks' question itself: does the file
-            # open without it? No stream limit, but still no video decoder
-            # for any of the streams it then lists.
-            try:
-                unlimited = av.open(path, options=dict(audio_only),
-                                    metadata_errors="ignore",
-                                    timeout=(_left(), None))
-            except av.FFmpegError as unopened:
-                _refuse_when_out_of_time(unopened)
-                return      # opens for nobody: left to the decoder
-            unlimited.close()
-            _refuse_when_out_of_time(e)
-            raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
-        try:
-            _refuse_when_out_of_time()
-            if audio_ffmpeg.is_multi_input_format(
-                    getattr(container.format, "name", None)):
-                raise ValueError("unsupported container")
-            # The fallback decoders release PyAV's layout wrappers like any
-            # other reader: a custom channel order must not reach them.
-            for stream in container.streams:
-                context = stream.codec_context if stream.type == "audio" else None
-                if context is not None and audio_ffmpeg.holds_custom_channel_map(
-                        context.layout):
-                    raise ValueError(audio_ffmpeg.CUSTOM_CHANNEL_ORDER)
-        finally:
-            container.close()
-        return
-    container.close()
-    _refuse_when_out_of_time()
+    """ValueError when `path` opens but is no input for faster-whisper, or
+    when its opens take more time or memory than the server gives them: see
+    audio.transcode.refuse_input, which this is. A file that does not open
+    at all is not refused here."""
+    _transcode.refuse_input(path)
 
 
 async def _refuse_input_gated(path: str) -> None:
@@ -1528,17 +1456,10 @@ async def _refuse_input_gated(path: str) -> None:
 # quarter of available RAM keeps the float32 load at half of it, leaving the
 # other half for the separator's chunk buffers and normalised copies.
 _SEP_RAM_DIVISOR = 4
-_SEP_S16_BYTES_PER_S = 44100 * 2 * 2
-
-
-def _sep_bytes_per_s(rate: int, channels: int) -> float:
-    """What a second of `rate`/`channels` audio handed over as is costs the
-    separator, in the cap's 44.1 kHz stereo s16 bytes. It reads the file
-    whole at its native rate and channel count before resampling, so more
-    channels or a higher rate scale the charge; mono or stereo at 48 kHz or
-    below costs what the transcoded WAV would."""
-    return (_SEP_S16_BYTES_PER_S * max(1.0, channels / 2)
-            * max(1.0, rate / 48000))
+# The charge per second of audio lives in audio/transcode.py: the measuring
+# decode (decoded_cost_within) takes it by name when it runs in a helper.
+_SEP_S16_BYTES_PER_S = _transcode.SEP_S16_BYTES_PER_S
+_sep_bytes_per_s = _transcode.separator_bytes_per_s
 
 
 # Peak bytes per second of upload audio while it is decoded to 16 kHz: the
@@ -2744,9 +2665,15 @@ async def transcribe(
                                 # either. A disk-budget overrun keeps the
                                 # fallback.
                                 import av as _av
+                                # So is a file that passed the decode
+                                # helper's memory budget or ended the
+                                # helper: the separator's own decoders have
+                                # neither bound.
                                 _refused = (
                                     (isinstance(_te, ValueError)
                                      and not isinstance(_te, _av.FFmpegError))
+                                    or isinstance(_te, (MemoryError,
+                                                        _transcode.DecoderEnded))
                                     or (isinstance(
                                             _te, _transcode.TranscodeBudgetExceeded)
                                         and _sep_cap is not None
@@ -2799,7 +2726,9 @@ async def transcribe(
                                     cost_per_s=_sep_bytes_per_s,
                                     max_cost=_sep_cap)
                             except Exception as _me:  # noqa: BLE001
-                                if not _sep_opened:
+                                if (not _sep_opened or isinstance(
+                                        _me, (MemoryError,
+                                              _transcode.DecoderEnded))):
                                     _ps(step=None)
                                     raise _bgm_separation.BgmSeparationError(
                                         "music separation skipped: the file "
@@ -2971,7 +2900,9 @@ async def transcribe(
                 try:
                     _audio = _transcode.decode_16k_bounded(
                         _path, max_seconds=_upload_decode_cap_s())
-                except _transcode.DecodeTooLong:
+                except (_transcode.DecodeTooLong, _transcode.DecoderEnded):
+                    # DecoderEnded: the helper process ended on the file.
+                    # Answered as undecodable; never decoded again here.
                     raise
                 except MemoryError as _mem:
                     # Not a property of a frame transcribe() would meet the
@@ -3006,6 +2937,13 @@ async def transcribe(
                             "%s", _log_safe(str(_dec_err)))
                         raise HTTPException(status_code=400,
                                             detail=str(_dec_err))
+                    if _decode_helper.routed():
+                        # The open ran in a decode helper and this is its
+                        # error (or no helper could be had): transcribe()
+                        # would open and decode the path in this process,
+                        # with no bound on its memory, only to raise the
+                        # same error. Answer it now.
+                        raise
                     # transcribe() opens the path itself and raises the
                     # decoder's own error for the undecodable arm; what its
                     # open must not read (a playlist, a file past the stream
@@ -3922,8 +3860,10 @@ async def transcribe(
             _status = "error"
             _exc = e
             import av as _av
-            if isinstance(e, _av.error.InvalidDataError):
-                # The upload (or the linked media) is not decodable audio:
+            if isinstance(e, (_av.error.InvalidDataError,
+                              _transcode.DecoderEnded)):
+                # The upload (or the linked media) is not decodable audio —
+                # DecoderEnded: it ended the helper process that decoded it —
                 # the caller's input, not a server fault, so a 400 a client
                 # will not retry and no ERROR line. Classify HERE, while the
                 # av error is in hand (decode_failed); _exc becomes the 400 so
