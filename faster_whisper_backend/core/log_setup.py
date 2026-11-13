@@ -12,6 +12,7 @@ import logging
 import logging.handlers
 import os
 import re
+import stat
 import sys
 import time
 
@@ -46,7 +47,23 @@ class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
     # SQLite stores. The stdlib open would create the file at the process umask
     # (0644 typical) and leave it readable until the chmod lands, so the file
     # is created 0600 first — at start and at every rollover (doRollover comes
-    # back through here). The chmod stays for a file an older build left wider.
+    # back through here). The chmod stays for a file, and the pass in __init__
+    # for the backups, an older build left wider.
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # A rollover only renames a backup, and a rename keeps the mode, so a
+        # wide one would stay wide until it falls off the end of the chain.
+        for i in range(1, self.backupCount + 1):
+            backup = f"{self.baseFilename}.{i}"
+            try:
+                # lstat, regular files only: chmod follows a symlink, and a
+                # link in a backup slot points at a file that is not ours.
+                if not stat.S_ISREG(os.lstat(backup).st_mode):
+                    continue
+            except OSError:
+                continue  # no backup in this slot
+            store_common.secure_file(backup)
+
     def _open(self):  # type: ignore[override]
         try:
             os.close(os.open(self.baseFilename,

@@ -106,3 +106,63 @@ def test_log_file_left_wider_by_an_older_build_is_still_narrowed(tmp_path):
     handler.close()
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert path.read_text(encoding="utf-8") == "earlier line\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file modes")
+def test_log_backups_left_wider_by_an_older_build_are_narrowed(tmp_path):
+    """A rollover only renames a backup, and a rename keeps the mode: without
+    a pass at start an old 0644 backup stays readable until it falls off the
+    end of the chain."""
+    import stat
+
+    from faster_whisper_backend.core import log_setup
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    base = logs / "old.log"
+    names = ("old.log", "old.log.1", "old.log.2")
+    for name in names:
+        (logs / name).write_text(f"{name} line\n", encoding="utf-8")
+        (logs / name).chmod(0o644)
+    # Slot 3 is a link out of the log directory: its target is not ours.
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not a log\n", encoding="utf-8")
+    outside.chmod(0o644)
+    (logs / "old.log.3").symlink_to(outside)
+    # Slots 4 and 6 are missing, slot 5 is a directory, slot 7 is beyond
+    # backupCount: none of them is a backup of this chain.
+    (logs / "old.log.5").mkdir(mode=0o755)
+    beyond = logs / "old.log.7"
+    beyond.write_text("beyond the chain\n", encoding="utf-8")
+    beyond.chmod(0o644)
+
+    handler = log_setup._SecureRotatingFileHandler(
+        str(base), maxBytes=10_000, backupCount=6, encoding="utf-8")
+    handler.close()
+
+    for name in names:
+        assert stat.S_IMODE(os.stat(logs / name).st_mode) == 0o600, name
+        assert (logs / name).read_text(encoding="utf-8") == f"{name} line\n"
+    assert stat.S_IMODE(os.stat(outside).st_mode) == 0o644
+    assert (logs / "old.log.3").is_symlink()
+    assert stat.S_IMODE(os.stat(logs / "old.log.5").st_mode) == 0o755
+    assert stat.S_IMODE(os.stat(beyond).st_mode) == 0o644
+
+
+def test_log_backup_pass_never_raises(monkeypatch, tmp_path):
+    """Best-effort like every other mode fix: a slot that cannot be examined
+    (or, on Windows, a chmod that means nothing) must not cost the log file."""
+    from faster_whisper_backend.core import log_setup
+
+    base = tmp_path / "w.log"
+    (tmp_path / "w.log.1").write_text("backup\n", encoding="utf-8")
+
+    def refuse(path, *a, **kw):
+        raise PermissionError(13, "denied", str(path))
+
+    monkeypatch.setattr(log_setup.os, "lstat", refuse)
+    handler = log_setup._SecureRotatingFileHandler(
+        str(base), maxBytes=10_000, backupCount=3, encoding="utf-8")
+    handler.close()
+    assert base.exists()
+    assert (tmp_path / "w.log.1").read_text(encoding="utf-8") == "backup\n"
