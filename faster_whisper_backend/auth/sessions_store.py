@@ -114,12 +114,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_ts);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, created_ts);
--- Revoked rows stay until the hourly purge (or the cap's own reap); the
+-- Revoked rows stay until the hourly purge (or the owner's next login); the
 -- per-user cap's eviction scan walks this partial index so its cost tracks
 -- live rows only.
 CREATE INDEX IF NOT EXISTS idx_sessions_user_live ON sessions(user_id, created_ts)
   WHERE revoked_ts IS NULL;
--- The per-user cap reaps its own revoked rows on each eviction; this
+-- Each login reaps its user's older revoked rows (see create_session); this
 -- keeps that delete a range seek instead of a walk over the user's rows.
 CREATE INDEX IF NOT EXISTS idx_sessions_user_revoked ON sessions(user_id, revoked_ts)
   WHERE revoked_ts IS NOT NULL;
@@ -340,18 +340,17 @@ def create_session(user_id: str, ttl_s: float,
              _MAX_SESSIONS_PER_USER),
         )]
         evicted = bool(excess) and _revoke_hashes_locked(conn, excess, now)
-        if excess:
-            # Past the cap every login leaves one revoked row until the
-            # hourly purge; reap this user's older ones here. The minute
-            # keeps a just-revoked row for a sibling inside its refresh
-            # throttle.
-            try:
-                conn.execute(
-                    "DELETE FROM sessions WHERE user_id = ?"
-                    " AND revoked_ts IS NOT NULL AND revoked_ts <= ?",
-                    (user_id, now - 60.0))
-            except sqlite3.Error:
-                pass  # cleanup is non-fatal, as in _purge_expired_locked
+        # A logout, like an eviction past the cap, leaves one revoked row
+        # until the hourly purge, and a login + logout loop never reaches the
+        # cap: every login reaps this user's older ones here. The minute
+        # keeps a just-revoked row for a sibling inside its refresh throttle.
+        try:
+            conn.execute(
+                "DELETE FROM sessions WHERE user_id = ?"
+                " AND revoked_ts IS NOT NULL AND revoked_ts <= ?",
+                (user_id, now - 60.0))
+        except sqlite3.Error:
+            pass  # cleanup is non-fatal, as in _purge_expired_locked
     logger.info("[auth] session created user=%s ttl=%.0fs", user_id[:8], ttl_s)
     if evicted:
         logger.info("[auth] revoked %d oldest session(s) user=%s (cap %d)",

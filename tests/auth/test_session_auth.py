@@ -837,7 +837,7 @@ def test_session_cap_does_not_count_revoked_or_expired(tmp_path, monkeypatch):
 
 def test_session_cap_reaps_the_users_older_revoked_rows(tmp_path, monkeypatch):
     """Past the cap every login leaves one revoked row until the hourly purge,
-    and a login is not throttled: the eviction reaps that user's revoked rows
+    and a login is not throttled: the login reaps that user's revoked rows
     older than a minute, so a login loop holds a minute of dead rows, not an
     hour. A row revoked within the minute, and another user's, stay."""
     clock = [1_000_000.0]
@@ -872,16 +872,52 @@ def test_session_cap_reaps_the_users_older_revoked_rows(tmp_path, monkeypatch):
     assert w.lookup_session(toks[3]) is not None
     assert w.lookup_session(toks[4]) is not None
     assert _rows("v") == [(w.hash_token(gone), True)]
-    # A login that evicts nothing reaps nothing.
+    # A login that evicts nothing reaps its own user's rows all the same.
     clock[0] += 120.0
     w.create_session("v", 3600.0)
-    assert len(_rows("v")) == 2 and len(_rows("u")) == 3
+    assert len(_rows("v")) == 1 and len(_rows("u")) == 3
+
+
+def test_login_reaps_the_users_revoked_rows_below_the_cap(tmp_path, monkeypatch):
+    """A logout leaves one revoked row until the hourly purge, as an eviction
+    does, and a login + logout loop never reaches the cap: every login reaps
+    that user's revoked rows older than a minute. A row revoked within the
+    minute, and another user's, stay."""
+    clock = [1_000_000.0]
+    w = _clocked_worker(tmp_path, monkeypatch, "sessions_store_login_reap", clock)
+    conn = w._require_conn()
+
+    def _rows(user):
+        return [(r[0], r[1] is not None) for r in conn.execute(
+            "SELECT token_hash, revoked_ts FROM sessions WHERE user_id = ?"
+            " ORDER BY created_ts", (user,))]
+
+    gone, _ = w.create_session("v", 3600.0)
+    w.revoke_session(gone)
+    for _ in range(5):
+        clock[0] += 1.0
+        tok, _ = w.create_session("u", 3600.0)
+        w.revoke_session(tok)
+    assert len(_rows("u")) == 5
+    clock[0] += 120.0
+    kept, _ = w.create_session("u", 3600.0)
+    assert _rows("u") == [(w.hash_token(kept), False)]
+    assert w.lookup_session(kept) is not None
+    assert _rows("v") == [(w.hash_token(gone), True)]
+    # Inside the minute the row just revoked stays for a sibling worker.
+    clock[0] += 1.0
+    out, _ = w.create_session("u", 3600.0)
+    w.revoke_session(out)
+    clock[0] += 30.0
+    last, _ = w.create_session("u", 3600.0)
+    assert _rows("u") == [(w.hash_token(kept), False), (w.hash_token(out), True),
+                          (w.hash_token(last), False)]
 
 
 def test_session_cap_reap_uses_the_revoked_index(tmp_path):
-    """The reap runs on every login past the cap, on the event loop: it must
-    seek the user's revoked rows by age (the partial index), never walk every
-    row the user holds."""
+    """The reap runs on every login, on the event loop: it must seek the
+    user's revoked rows by age (the partial index), never walk every row the
+    user holds."""
     w = _worker("sessions_store_reap_plan", str(tmp_path / "sessions.db"))
     plan = w._require_conn().execute(
         "EXPLAIN QUERY PLAN DELETE FROM sessions WHERE user_id = ?"
