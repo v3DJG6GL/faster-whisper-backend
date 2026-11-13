@@ -498,6 +498,54 @@ def test_deeply_nested_segment_id_is_refused_before_the_work(
     assert r.json()["segments"][0]["id"] == at_cap
 
 
+def _nested(kind, depth):
+    """`depth` containers of `kind` inside each other; the innermost is empty."""
+    value = [] if kind == "list" else {}
+    for _ in range(depth - 1):
+        value = [value] if kind == "list" else {"k": value}
+    return value
+
+
+@pytest.mark.parametrize("kind", ["list", "dict"])
+@pytest.mark.parametrize("limit", [1, 3, tr_routes._ID_MAX_DEPTH])
+def test_too_deep_verdict_at_the_cap_and_one_past_it(kind, limit):
+    at_cap, past_cap = _nested(kind, limit), _nested(kind, limit + 1)
+    assert tr_routes._too_deep(at_cap, limit) is False
+    assert tr_routes._too_deep(past_cap, limit) is True
+    # The deep branch counts wherever it sits among flat siblings, and
+    # siblings add no depth of their own.
+    assert tr_routes._too_deep([1, "x", at_cap, None], limit + 1) is False
+    assert tr_routes._too_deep([past_cap, 1, "x"], limit + 1) is True
+    assert tr_routes._too_deep({"a": 1, "b": at_cap, "c": [2]}, limit + 1) is False
+    assert tr_routes._too_deep({"a": 1, "b": [], "c": past_cap}, limit + 1) is True
+    assert tr_routes._too_deep([[at_cap], [past_cap]], limit + 2) is True
+    assert tr_routes._too_deep(7, limit) is False
+    # Far past the interpreter's recursion limit the walk still answers.
+    assert tr_routes._too_deep(_nested(kind, 5000), limit) is True
+
+
+@pytest.mark.parametrize("wide", [
+    lambda: list(range(200_000)),
+    lambda: [[] for _ in range(200_000)],
+    lambda: {str(i): {} for i in range(100_000)},
+], ids=["ints", "lists", "dicts"])
+def test_too_deep_walk_does_not_copy_a_wide_id(wide):
+    # A flat id filling the 4 MiB body is a couple of million children: the
+    # walk must not build a second structure of that width beside the body.
+    import tracemalloc
+
+    value = wide()
+    tracemalloc.start()
+    try:
+        before = tracemalloc.get_traced_memory()[0]
+        tracemalloc.reset_peak()
+        assert tr_routes._too_deep(value) is False
+        grown = tracemalloc.get_traced_memory()[1] - before
+    finally:
+        tracemalloc.stop()
+    assert grown < 1 << 20, grown
+
+
 def test_body_nested_past_the_encoder_is_a_422_not_a_500(
         client, app_module, monkeypatch):
     """Tens of thousands of nested OBJECTS still parse, but the body screen's

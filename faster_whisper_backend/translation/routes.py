@@ -78,6 +78,8 @@ _WARN_ID_MAX = 64
 # would fail both only after the translation ran. Any realistic list /
 # object id is a few levels deep.
 _ID_MAX_DEPTH = 32
+# What _too_deep's walk reads from an exhausted level.
+_WALK_END = object()
 # While the request queues for the GPU slot or its model loads, nothing
 # reports progress — this keeps a held dictation receipt's idle timer fresh
 # meanwhile (LOG_RECEIPT_HOLD_S is at least 5 s).
@@ -88,14 +90,18 @@ def _too_deep(value, limit: int = _ID_MAX_DEPTH) -> bool:
     """True when ``value`` nests lists / objects more than ``limit`` levels
     deep. Iterative, and it stops descending at the limit: the value may be
     nested far past the recursion limit."""
-    stack = [(value, 1)]
+    # One iterator per open level, never more than limit + 1 of them: a
+    # flat id of a million children costs no memory beside the body. The
+    # stack's length is the depth of the item just taken (the root: 1).
+    stack = [iter((value,))]
     while stack:
-        item, depth = stack.pop()
-        if isinstance(item, (list, dict)):
-            if depth > limit:
+        item = next(stack[-1], _WALK_END)
+        if item is _WALK_END:
+            stack.pop()
+        elif isinstance(item, (list, dict)):
+            if len(stack) > limit:
                 return True
-            stack.extend((c, depth + 1) for c in
-                         (item.values() if isinstance(item, dict) else item))
+            stack.append(iter(item.values() if isinstance(item, dict) else item))
     return False
 
 
