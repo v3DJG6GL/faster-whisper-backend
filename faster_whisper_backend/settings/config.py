@@ -360,8 +360,9 @@ MEDIA_MAX_BYTES = _D("MEDIA_MAX_BYTES")
 # before the body is read. Deliberately ABOVE MEDIA_MAX_BYTES so the more
 # specific media cap is what an oversized upload hits. Only multipart uploads
 # to /v1/audio/transcriptions and /translations get this full ceiling;
-# main._max_body_mw caps the raw video upload at MEDIA_MAX_BYTES, other
-# non-JSON bodies at 256 MiB and JSON bodies at MAX_JSON_BODY_BYTES. 10 GiB.
+# main._max_body_mw caps the raw video upload at MEDIA_MAX_BYTES, any other
+# non-JSON body to those routes at 4 MiB and JSON bodies at
+# MAX_JSON_BODY_BYTES. 10 GiB.
 MAX_REQUEST_BYTES = _D("MAX_REQUEST_BYTES")
 
 # Run the post-processing rules in a small pool of helper processes with a

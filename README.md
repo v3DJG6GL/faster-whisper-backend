@@ -434,7 +434,7 @@ from the feature doing nothing.
 
 WebUI access is gated by two IP/CIDR allowlists, bucketed by **privilege tier** — each is the outer (host) layer; an API key is still required on the data layer.
 
-- **`ADMIN_WEBUI_ALLOWED_HOSTS`** — admin pages (`/settings`, `/settings/api-keys`, `/docs`). Default `["127.0.0.1", "::1"]` (loopback only); data also requires an **admin** key.
+- **`ADMIN_WEBUI_ALLOWED_HOSTS`** — admin pages (`/settings`, `/settings/api-keys`, `/docs`). Default `["127.0.0.1", "::1"]` (loopback only); data also requires an **admin** key once one exists. Until the first admin key is created (OPEN mode), every host on this list is admin without a key, so create the admin key before you widen the list.
 - **`USER_WEBUI_ALLOWED_HOSTS`** — user pages (`/`, `/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/dictate`, `/sev`). Default `["0.0.0.0/0", "::/0"]` (**open**) — the per-page API key is the real gate; narrow this to restrict which networks may even reach the pages.
 
 Loopback is *always* implicitly allowed regardless of the configured list, so a typo can never lock you out from the box itself.
@@ -557,7 +557,7 @@ WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrite
 - `GET  /dictate` — browser demo for the streaming endpoint.
 - `GET  /sev` — tiny JSON severity counts powering the nav pills.
 
-**Admin pages** (host-gated by `ADMIN_WEBUI_ALLOWED_HOSTS`, loopback always allowed; data endpoints require an **admin** key):
+**Admin pages** (host-gated by `ADMIN_WEBUI_ALLOWED_HOSTS`, loopback always allowed; data endpoints require an **admin** key once one exists):
 
 - `GET  /settings` — admin WebUI; `GET/POST /settings/state`, `POST /settings/restart`.
 - `GET  /settings/pipeline` — pipeline-rule editor; `GET/POST /settings/factory-rules` (+ `/clear-local-override`), `POST /settings/test-pipeline`.

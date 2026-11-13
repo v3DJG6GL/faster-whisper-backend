@@ -676,8 +676,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "MAX_REQUEST_BYTES":
         "Ceiling on a multipart request body, in bytes, applied from "
         "Content-Length before the body is read. Keep it above "
-        "MEDIA_MAX_BYTES so uploads hit their own cap first. Other non-JSON "
-        "bodies keep a 256 MiB backstop regardless. Default 10 GiB.",
+        "MEDIA_MAX_BYTES so uploads hit their own cap first. Any other "
+        "non-JSON body to an upload route is held to 4 MiB regardless. "
+        "Default 10 GiB.",
     "PIPELINE_RULE_ISOLATION":
         "Run the post-processing rules in a few small helper processes with "
         "a time limit per transcript. A rule that does not finish in time is "

@@ -4203,24 +4203,19 @@ def test_probe_counts_a_scraped_page_before_parsing_it(monkeypatch,
     assert all(n < len(ld_json) for n in decoded), decoded
 
 
-def test_probe_prunes_a_request_handler_registered_by_plugin_loading(
-        tmp_path, monkeypatch):
-    """YoutubeDL() loads yt-dlp's default plugin dirs (every sys.path entry,
-    the user's config dir) in-process, and a RequestHandler a plugin
-    registers there would sit behind the guard and take whatever the guard
-    declines. The probe must build its director from the guard alone, as the
-    download child (--no-plugin-dirs) does."""
-    from yt_dlp.networking.common import _REQUEST_HANDLERS
-    plugin = tmp_path / "yt_dlp_plugins" / "extractor"
-    plugin.mkdir(parents=True)
-    (plugin / "fwb_test_stray.py").write_text(
-        "from yt_dlp.networking._urllib import UrllibRH\n"
-        "from yt_dlp.networking.common import register_rh\n\n\n"
-        "@register_rh\n"
-        "class FwbTestStrayRH(UrllibRH):\n"
-        "    RH_NAME = 'fwb-test-stray'\n", encoding="utf-8")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.setattr(yt_dlp.globals.all_plugins_loaded, "value", False)
+def test_probe_prunes_a_request_handler_registered_beside_the_guard(monkeypatch):
+    """A RequestHandler registered in this process by anything but the guard
+    would sit behind the guard and take whatever the guard declines. The link
+    check loads no plugin dir, so only code already running here could
+    register one; the probe still builds its director from the guard alone,
+    as the download child (--no-plugin-dirs) does."""
+    from yt_dlp.networking._urllib import UrllibRH
+    from yt_dlp.networking.common import _REQUEST_HANDLERS, register_rh
+
+    @register_rh
+    class FwbTestStrayRH(UrllibRH):
+        RH_NAME = "fwb-test-stray"
+    assert "FwbTestStray" in _REQUEST_HANDLERS
     seen = {}
 
     def _extract_info(self, url, download=False, **kw):
@@ -4237,8 +4232,6 @@ def test_probe_prunes_a_request_handler_registered_by_plugin_loading(
         _run(udl.probe("https://example.com/watch?v=x", timeout=10.0))
     finally:
         _REQUEST_HANDLERS.pop("FwbTestStray", None)
-        for name in [n for n in sys.modules if n.endswith(".fwb_test_stray")]:
-            sys.modules.pop(name)
     assert seen["handlers"] == ["fwb-guarded-urllib"]
 
 
