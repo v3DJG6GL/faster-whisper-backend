@@ -120,6 +120,61 @@ def test_stream_rejects_a_non_string_audio_format(client, monkeypatch, caplog, f
     assert not [r for r in rows if r.get("status") == "error"]
 
 
+class _NoReprList(list):
+    """A list whose repr fails the way a deeply nested one does."""
+
+    def __repr__(self):
+        raise RecursionError("Stack overflow while getting the repr of an object")
+
+
+def _nested_format_frame(depth: int) -> str:
+    return '{"type":"config","audio":{"format":' + "[" * depth + "]" * depth + "}}"
+
+
+@pytest.mark.parametrize("how", ["nested", "repr_fails"])
+def test_stream_rejects_a_deeply_nested_audio_format(client, monkeypatch, caplog, how):
+    """The refusal never reprs a non-string format: json decodes a list nested
+    deeper than repr() can walk (a ~100 KB frame), and that overflow reached
+    the blanket except — a traceback and an error usage row per handshake
+    instead of unsupported_format."""
+    text = _nested_format_frame(48000)
+    if how == "repr_fails":
+        # The depth json accepts depends on the platform's stack; this arm
+        # hands the route the same failure without it.
+        text = _nested_format_frame(1)
+        monkeypatch.setattr(
+            streaming_routes.store_common, "json_object",
+            lambda _t: {"type": "config", "audio": {"format": _NoReprList([[]])}})
+    elif streaming_routes.store_common.json_object(text) is None:
+        pytest.skip("json refuses this nesting depth on this platform")
+    rows = []
+    monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
+    caplog.set_level(logging.ERROR, logger="faster_whisper_backend.streaming.routes")
+    with stream_ws(client) as ws:
+        ws.send_text(text)
+        msg = ws.receive_json()
+        if msg.get("type") == "ready":
+            # The server thread's stack is smaller than this one's: json
+            # refused the frame there and the default format applied.
+            stop_and_drain(ws)
+            pytest.skip("json refuses this nesting depth on the server thread")
+    assert msg["type"] == "error"
+    assert msg["code"] == "unsupported_format"
+    assert "of type" in msg["message"]
+    assert not [r for r in caplog.records if r.getMessage().startswith("[stream")]
+    assert not [r for r in rows if r.get("status") == "error"]
+
+
+def test_stream_unsupported_format_message_echoes_a_string_as_before(client):
+    """A string format is still echoed as its repr cut to 64 characters."""
+    fmt = "it's \"g729\" " + "x" * 80
+    with stream_ws(client) as ws:
+        ws.send_json({"type": "config", "audio": {"format": fmt}})
+        msg = ws.receive_json()
+    assert msg["code"] == "unsupported_format"
+    assert msg["message"].startswith(f"audio format {repr(fmt)[:64]} not supported (raw: [")
+
+
 def test_stream_treats_a_non_string_model_as_absent(client):
     """A non-string handshake `model` falls back to whisper-1 instead of riding
     into the job row and the model load."""

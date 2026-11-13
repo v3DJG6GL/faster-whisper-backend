@@ -294,6 +294,104 @@ def test_ffmpeg_transport_bounds_a_one_frame_allocation_bomb():
     assert total == 0
 
 
+def _ebml(elem_id: bytes, payload: bytes) -> bytes:
+    """One EBML element with an 8-byte size field."""
+    return elem_id + ((1 << 56) | len(payload)).to_bytes(8, "big") + payload
+
+
+def _empty_tags_webm(n_bytes: int) -> bytes:
+    """A WebM header, an unknown-size Segment, then nothing but Tags full of
+    empty SimpleTag elements: Matroska that parses and never reaches a
+    cluster, so ffmpeg keeps reading it (and keeping every tag) without
+    producing a byte of PCM."""
+    head = _ebml(b"\x1A\x45\xDF\xA3", b"".join((
+        _ebml(b"\x42\x86", b"\x01"), _ebml(b"\x42\xF7", b"\x01"),
+        _ebml(b"\x42\xF2", b"\x04"), _ebml(b"\x42\xF3", b"\x08"),
+        _ebml(b"\x42\x82", b"webm"), _ebml(b"\x42\x87", b"\x02"),
+        _ebml(b"\x42\x85", b"\x02"))))
+    segment = b"\x18\x53\x80\x67" + b"\x01" + b"\xFF" * 7
+    tags = _ebml(b"\x12\x54\xC3\x67", _ebml(b"\x73\x73", b"\x67\xC8\x80" * 20000))
+    return (head + segment + tags * (n_bytes // len(tags) + 1))[:n_bytes]
+
+
+def test_ffmpeg_transport_stops_a_header_that_never_yields_pcm(monkeypatch, caplog):
+    """Neither the output ratio nor the allocation ceiling sees a container
+    that only ever sends front matter: no PCM comes out and no allocation is
+    large, yet the child keeps what it parsed (about 26 bytes resident per
+    input byte). Past the input allowance without one PCM byte the decoder is
+    stopped like an output-ratio breach: dead, one WARNING, nothing more
+    written to it."""
+    cap, frame = 256 * 1024, 64 * 1024
+    monkeypatch.setattr(stream_transport, "_MAX_INPUT_BEFORE_PCM", cap)
+    caplog.set_level(logging.WARNING, logger="faster_whisper_backend.streaming.transport")
+    bomb = _empty_tags_webm(1024 * 1024)
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        try:
+            for at in range(0, len(bomb), frame):
+                await t.feed(bomb[at:at + frame])
+                if t.dead:
+                    break
+            dead, fed = t.dead, t._in_bytes
+            for _ in range(20):               # a client that keeps sending
+                await t.feed(b"\x00" * 16)
+            return dead, fed, t._in_bytes
+        finally:
+            await t.aclose()
+
+    dead, fed, fed_after = asyncio.run(run())
+    assert dead
+    assert cap < fed <= cap + frame
+    assert fed_after == fed
+    assert total == 0
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("no PCM after" in m for m in msgs) == 1
+    assert not any("ffmpeg exited" in m for m in msgs)
+
+
+def test_ffmpeg_transport_input_allowance_ends_at_the_first_pcm_byte(monkeypatch):
+    """The allowance covers only the stretch before the first PCM byte: a
+    stream that has started to decode goes on past it, however long it is."""
+    # The real allowance stays well clear of ffmpeg's 5 MB probe window, the
+    # longest a real stream goes without PCM.
+    assert 3 * 5_000_000 <= stream_transport._MAX_INPUT_BEFORE_PCM <= 32 * 1024 * 1024
+    cap = 256 * 1024
+    monkeypatch.setattr(stream_transport, "_MAX_INPUT_BEFORE_PCM", cap)
+    wav = _tiny_rate_wav(1024 * 1024, sample_rate=8000)
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        try:
+            await t.feed(wav[:cap // 2])
+            for _ in range(200):
+                if t._out_bytes or t.dead:
+                    break
+                await asyncio.sleep(0.05)
+            assert t._out_bytes and not t.dead
+            for at in range(cap // 2, len(wav), 64 * 1024):
+                await t.feed(wav[at:at + 64 * 1024])
+            return t.dead, t._in_bytes
+        finally:
+            await t.aclose()
+
+    assert asyncio.run(run()) == (False, len(wav))
+    # 8 kHz pcm_u8 mono resamples to 4 bytes of 16 kHz s16le per input byte.
+    assert total >= 4 * 1024 * 1024 * 0.99
+
+
 def _transport_argv(monkeypatch) -> list:
     """The argv FfmpegTransport.start() hands to the subprocess, unrun."""
     seen = []

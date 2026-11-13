@@ -867,8 +867,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # instead of the documented unsupported_format frame.
         if not isinstance(audio_fmt, str) or (
                 audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS):
+            # Only a string is echoed: repr() of a JSON list nested deeper than
+            # the stack allows overflows it (json itself decodes such a frame),
+            # and below that depth it still costs the loop tenths of a second.
+            _fmt_label = (repr(audio_fmt)[:64] if isinstance(audio_fmt, str)
+                          else f"of type {type(audio_fmt).__name__}")
             await _safe_ws_send(ws, {"type": "error", "code": "unsupported_format",
-                                    "message": f"audio format {repr(audio_fmt)[:64]} not supported "
+                                    "message": f"audio format {_fmt_label} not supported "
                                                f"(raw: {sorted(RAW_FORMATS)}, "
                                                f"encoded via ffmpeg: {sorted(ENCODED_FORMATS)})"},
                                 close=True)

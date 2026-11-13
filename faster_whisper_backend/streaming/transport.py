@@ -49,6 +49,14 @@ _MAX_FFMPEG_ALLOC = 64 * 1024 * 1024
 # most audio + video) and a file adds cover art or a chapter track; a
 # container over the cap is refused at open.
 _MAX_INPUT_STREAMS = 8
+# Ceiling on the container bytes ffmpeg may take before its first PCM byte. A
+# Matroska header of empty tag elements is kept by the demuxer at about 26
+# bytes resident per input byte: no output for the ratio to count and no
+# single large allocation, so the child grows by gigabytes for as long as the
+# client keeps sending. Real streams produce PCM within ffmpeg's 5 MB probe
+# window (a few hundred KiB for every recorder format); the bound stops
+# counting at the first PCM byte.
+_MAX_INPUT_BEFORE_PCM = 16 * 1024 * 1024
 # Input demuxers ffmpeg may open. It picks one by content, whatever the
 # handshake declared, and a manifest demuxer fetches what it references:
 # ffmpeg 7.0's dash demuxer (the imageio-ffmpeg fallback) connects to an MPD's
@@ -179,6 +187,19 @@ class FfmpegTransport:
                                "for the rest of this session")
             return
         self._in_bytes += len(data)
+        if self._out_bytes == 0 and self._in_bytes > _MAX_INPUT_BEFORE_PCM:
+            # A dead decoder, as on an output-ratio breach: this frame is not
+            # written, and the latch keeps the "ffmpeg exited" line from
+            # following this one.
+            logger.warning("[ffmpeg-transport] no PCM after %d container bytes; "
+                           "stopping the decoder", self._in_bytes)
+            try:
+                self._proc.kill()
+            except ProcessLookupError:
+                pass
+            self._reader_dead = True
+            self._dead_logged = True
+            return
         try:
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
