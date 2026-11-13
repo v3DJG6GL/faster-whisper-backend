@@ -15,8 +15,11 @@ case where a pattern got past that screen.
 import asyncio
 import json
 import logging
+import os
 import random
 import re
+import socket
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -432,6 +435,130 @@ def test_shutdown_leaves_no_child_even_under_a_walk_in_flight(pool, monkeypatch)
     # rather than run that rule in this process.
     walker.join(10)
     assert done == [_SLOW_TEXT]
+
+
+# --- a helper's start ----------------------------------------------------------------
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/net/unix")
+def test_another_local_process_finds_no_endpoint_of_a_helper():
+    """The pair a helper talks over has no name: nothing for a process without
+    it to find, connect to, or end a start with."""
+    mine = f"@fwb-rules-{os.getpid()}-"
+    seen: list = []
+    stop = threading.Event()
+
+    def names():
+        with open("/proc/net/unix", encoding="utf-8", errors="replace") as fh:
+            return [line.split()[-1] for line in fh if mine in line]
+
+    def stranger():
+        while not stop.is_set():
+            for name in names():
+                seen.append(name)
+                with socket.socket(socket.AF_UNIX) as sock:
+                    try:
+                        sock.connect("\0" + name[1:])
+                    except OSError:
+                        pass
+
+    watcher = threading.Thread(target=stranger, daemon=True)
+    watcher.start()
+    try:
+        rule_helper.start(3)
+        ready = rule_helper._POOL.wait_ready(30)
+        listed = names()
+    finally:
+        stop.set()
+        watcher.join(10)
+        rule_helper.shutdown()
+    assert seen == [] and listed == []
+    assert ready
+
+
+def test_a_failed_start_is_made_up_after_the_retry_time(monkeypatch):
+    real = rule_helper._spawn
+    failed: list = []
+
+    def first_fails(register):
+        if not failed:
+            failed.append(1)
+            raise OSError("no more processes")
+        return real(register)
+
+    monkeypatch.setattr(rule_helper, "_spawn", first_fails)
+    monkeypatch.setattr(rule_helper, "_RETRY_AFTER_S", 0.2)
+    rule_helper.start(2)
+    pool = rule_helper._POOL
+    for starter in list(pool._starters):
+        starter.join(30)
+    assert failed and len(pool.pids()) == 1
+    time.sleep(0.3)
+    pool.release(pool.acquire())              # the next walk tops the pool up
+    assert pool.wait_ready(30)
+    assert len(pool.pids()) == 2
+
+
+def test_a_helper_that_never_reports_ready_fails_the_start_in_time(monkeypatch):
+    monkeypatch.setattr(rule_helper, "_BOOT", "import time; time.sleep(60)")
+    monkeypatch.setattr(rule_helper, "_START_TIMEOUT_S", 1.0)
+    procs: list = []
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="did not answer within 1 s"):
+        rule_helper._spawn(procs.append)
+    assert time.monotonic() - t0 < 5
+    assert len(procs) == 1 and procs[0].poll() is not None      # killed and reaped
+
+
+def test_a_helper_that_exits_while_starting_fails_the_start_at_once(monkeypatch):
+    # It reads what the parent writes first, so the parent's write never
+    # meets a closed pipe.
+    monkeypatch.setattr(rule_helper, "_BOOT",
+                        "import sys; sys.stdin.buffer.read(); raise SystemExit(7)")
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="exited with code 7"):
+        rule_helper._spawn(lambda proc: None)
+    assert time.monotonic() - t0 < 5
+
+
+def test_a_module_in_the_working_directory_does_not_load_in_a_helper(tmp_path, monkeypatch):
+    # A module every helper imports, as a file in the directory the server
+    # was started from.
+    (tmp_path / "pickle.py").write_text("raise SystemExit(7)\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    rule_helper.start(1)
+    try:
+        assert rule_helper._POOL.wait_ready(30)
+    finally:
+        rule_helper.shutdown()                # before tmp_path stops being a cwd
+
+
+def test_a_starter_thread_that_cannot_start_leaves_the_walks_in_process(monkeypatch, caplog):
+    real = threading.Thread.start
+
+    def no_thread(self):
+        if self.name == "rule-helper-start":
+            raise RuntimeError("can't start new thread")
+        real(self)
+
+    _install_rows(monkeypatch, [_row("card", "Card · x", "x", "y", 1)])
+    rule_helper.start(1)
+    pool = rule_helper._POOL
+    assert pool.wait_ready(30)
+    for proc in list(pool._procs):
+        proc.kill()
+    monkeypatch.setattr(threading.Thread, "start", no_thread)
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        assert pl_engine._postprocess_text("x") == "y"        # the replacement's start fails
+        assert pool._alive == 0
+        t0 = time.monotonic()
+        assert pl_engine._postprocess_text("x x") == "y y"    # and no walk waits for it
+        assert time.monotonic() - t0 < 5
+    assert caplog.text.count("could not be started") == 1
+    rule_helper.shutdown()                                    # joins no unstarted thread
+
+    rule_helper.start(2)                                      # at startup: returns
+    assert rule_helper._POOL._alive == 0
+    assert rule_helper._POOL.acquire() is None
 
 
 # --- the switch --------------------------------------------------------------------

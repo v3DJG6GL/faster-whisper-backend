@@ -11,16 +11,20 @@ a walk is and how its result comes back are the engine's business
 Two roles, one file:
   * parent -> ``start()`` / ``shutdown()`` (the app's lifespan) and the pool's
               ``acquire`` / ``call`` / ``release`` / ``discard`` (the engine).
-  * helper -> ``helper_main()``, started as ``python -c`` by ``_spawn``. It
-              imports the engine (and with it the settings modules, never the
-              model stack or the app), takes its rules from the parent over the
-              connection and never reads them from the config files itself.
+  * helper -> ``helper_main()``, started as ``python -P -c`` by ``_spawn``
+              (-P: the server's working directory is not an import root for
+              it). It imports the engine (and with it the settings modules,
+              never the model stack or the app), takes its rules from the
+              parent over the connection and never reads them from the config
+              files itself.
 
 The helper is a plain child process (``subprocess``), not a
 ``multiprocessing.Process``: that one re-imports the parent's ``__main__`` in
 the child, which under ``python main.py`` is the whole app. The two sides talk
 over a ``multiprocessing.connection`` (a Unix socket, a named pipe on Windows),
-whose ``poll(timeout)`` is the same timed wait on every platform.
+whose ``poll(timeout)`` is the same timed wait on every platform. It is one
+connected pair made by the parent, the helper's end inherited at its start:
+no address exists that another process could find or connect to.
 
 Stdlib-only at import: the engine imports this module, and the helper imports
 it before anything else.
@@ -32,11 +36,9 @@ import faulthandler
 import logging
 import os
 import pickle
-import secrets
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from multiprocessing import connection as _connection
@@ -55,14 +57,14 @@ IN_HELPER = False
 # keep walks flowing while one is held by a slow rule or is being replaced
 # (about a quarter of a second), and serve walks from several threads at once.
 POOL_SIZE = 3
-# Longest wait for a helper's start: the interpreter, the engine import and
-# the connection handshake take about a quarter of a second on an idle box.
+# Longest wait for a helper's start: the interpreter and the engine import
+# take about a quarter of a second on an idle box.
 _START_TIMEOUT_S = 30.0
 # Longest wait for a free helper. Walks take milliseconds, so only helpers
 # held by slow rules (each for at most its deadline) make a walk wait at all.
 _ACQUIRE_TIMEOUT_S = 30.0
-# After every helper failed to start, how long walks run in-process before
-# the pool tries again.
+# After a helper failed to start, how long until the pool makes the start up
+# (with none left, walks run in-process meanwhile).
 _RETRY_AFTER_S = 60.0
 # How long a helper may stay inside one request before it ends itself. The
 # parent enforces the real deadline and kills the helper; this only covers a
@@ -75,6 +77,9 @@ _IDLE_POLL_S = 5.0
 # The helper re-arms its limit at a request only when the last arming is
 # older than this (arming costs more than a short walk).
 _REARM_AFTER_S = 1.0
+
+# The helper's first message, sent once its imports are done.
+_READY = b"ready"
 
 _BOOT = ("import sys; sys.path.insert(0, sys.argv[1]); "
          "from faster_whisper_backend.pipeline import rule_helper; "
@@ -118,18 +123,6 @@ def call(helper: _Helper, payload: bytes, timeout: float) -> bytes:
         raise HelperGone(str(exc) or type(exc).__name__) from exc
 
 
-def _new_address() -> str:
-    """A fresh address for one helper's listener: a named pipe on Windows, an
-    abstract socket on Linux (no file, so a read-only filesystem is fine), a
-    socket file in the temp dir elsewhere."""
-    name = f"fwb-rules-{os.getpid()}-{secrets.token_hex(8)}"
-    if os.name == "nt":
-        return rf"\\.\pipe\{name}"
-    if sys.platform.startswith("linux"):
-        return "\0" + name
-    return os.path.join(tempfile.gettempdir(), name + ".sock")
-
-
 def _stop(proc) -> None:
     """Kill the helper and reap it. SIGKILL at once: a helper inside a slow
     match cannot act on anything gentler, and it holds nothing to flush. The
@@ -153,44 +146,69 @@ def _stop(proc) -> None:
             pass
 
 
-def _connect(proc, address: str, key: bytes):
-    """The parent's end of the connection to a helper that is still starting:
-    the helper listens once its imports are done, so the connect is retried
-    until then."""
-    end = time.monotonic() + _START_TIMEOUT_S
-    while True:
+def _child_end(conn) -> "tuple[int, dict]":
+    """The helper's end of the pair as the helper will know it, and the Popen
+    arguments that let exactly this one handle through to it."""
+    end = conn.fileno()
+    if os.name == "nt":
+        # Handles are not inherited unless marked so AND listed: with a
+        # handle_list the child gets the listed ones (and its standard
+        # streams), nothing else of this process.
+        os.set_handle_inheritable(end, True)
+        startupinfo = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [end]})
+        return end, {"startupinfo": startupinfo}
+    return end, {"pass_fds": (end,)}
+
+
+def _await_ready(proc, conn) -> None:
+    """Wait for the helper's first message. RuntimeError when it does not
+    come within _START_TIMEOUT_S or the helper ends first (its end of the
+    pair closes with it)."""
+    try:
+        if not conn.poll(_START_TIMEOUT_S):
+            raise RuntimeError(f"helper did not answer within {_START_TIMEOUT_S:g} s")
+        if conn.recv_bytes(len(_READY)) != _READY:
+            raise RuntimeError("helper sent an unexpected first message")
+    except (EOFError, OSError) as exc:
         try:
-            return _connection.Client(address, authkey=key)
-        except (OSError, EOFError, _connection.AuthenticationError) as exc:
-            if proc.poll() is not None:
-                raise RuntimeError(f"helper exited with code {proc.returncode}") from exc
-            if time.monotonic() > end:
-                raise RuntimeError(
-                    f"helper did not answer within {_START_TIMEOUT_S:g} s") from exc
-            time.sleep(0.005)
+            code = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            code = None
+        raise RuntimeError(f"helper exited with code {code}") from exc
 
 
 def _spawn(register) -> _Helper:
-    """Start one helper and connect to it. `register(proc)` is called as soon
-    as the process exists, so a shutdown in the middle of the start still
-    finds it."""
+    """Start one helper on its end of a connected pair and wait until it is
+    ready. `register(proc)` is called as soon as the process exists, so a
+    shutdown in the middle of the start still finds it."""
     shm = _shared_memory.SharedMemory(create=True, size=8, track=False)
     try:
-        address = _new_address()
-        key = secrets.token_bytes(32)
-        proc = subprocess.Popen(
-            [sys.executable, "-c", _BOOT, _paths.REPO_ROOT],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # Made here and inherited, not listened for: an endpoint with a name
+        # (a socket address, a pipe name) is one any local process can
+        # connect to first. A socketpair on POSIX; on Windows one pipe
+        # instance with both ends already taken.
+        conn, theirs = _connection.Pipe(duplex=True)
         try:
-            register(proc)
-            # Over stdin, not argv: the key must not show in the process
-            # list, and an abstract socket name starts with a NUL.
-            proc.stdin.write(pickle.dumps((address, key, shm.name)))
-            proc.stdin.close()
-            conn = _connect(proc, address, key)
+            try:
+                end, inherit = _child_end(theirs)
+                proc = subprocess.Popen(
+                    [sys.executable, "-P", "-c", _BOOT, _paths.REPO_ROOT],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **inherit)
+            finally:
+                # The helper holds its own copy; with this one closed, a
+                # helper that ends shows as EOF on `conn`.
+                theirs.close()
+            try:
+                register(proc)
+                proc.stdin.write(pickle.dumps((end, shm.name)))
+                proc.stdin.close()
+                _await_ready(proc, conn)
+            except BaseException:
+                _stop(proc)
+                raise
         except BaseException:
-            _stop(proc)
+            conn.close()
             raise
         helper = _Helper(proc, conn, shm)
     except BaseException:
@@ -245,13 +263,36 @@ class _Pool:
         return self._closed
 
     def _start_locked(self, n: int) -> None:
+        """Start `n` helpers in the background. Never raises: a starter
+        thread that cannot be started is a start that failed."""
         self._starters = [t for t in self._starters if t.is_alive()]
         for _ in range(n):
+            try:
+                t = threading.Thread(target=self._start_one, name="rule-helper-start",
+                                     daemon=True)
+                t.start()
+            except Exception as exc:  # noqa: BLE001 - "can't start new thread"
+                self._start_failed_locked(exc)
+                break
+            # Counted after the start (_start_one's own bookkeeping waits for
+            # the lock this thread holds): a thread that never ran leaves
+            # neither a count nobody takes back nor an entry shutdown() joins.
             self._alive += 1
-            t = threading.Thread(target=self._start_one, name="rule-helper-start",
-                                 daemon=True)
             self._starters.append(t)
-            t.start()
+
+    def _start_failed_locked(self, exc: BaseException) -> None:
+        """One helper start failed (its count is already taken back). The
+        pool makes it up after _RETRY_AFTER_S (acquire); with no helper left
+        the walks run in-process until then."""
+        if not self._closed:
+            self._retry_at = time.monotonic() + _RETRY_AFTER_S
+            if self._alive == 0 and not self._down_logged:
+                self._down_logged = True
+                logger.warning(
+                    "[pipeline] rule helper process could not be started (%s) — "
+                    "rules run inside the server process without a time limit; "
+                    "retrying every %g s", exc, _RETRY_AFTER_S)
+        self._cond.notify_all()
 
     def _register(self, proc) -> None:
         with self._cond:
@@ -266,15 +307,7 @@ class _Pool:
             with self._cond:
                 self._alive -= 1
                 self._procs = {p for p in self._procs if p.poll() is None}
-                if self._alive == 0 and not self._closed:
-                    self._retry_at = time.monotonic() + _RETRY_AFTER_S
-                    if not self._down_logged:
-                        self._down_logged = True
-                        logger.warning(
-                            "[pipeline] rule helper process could not be started (%s) — "
-                            "rules run inside the server process without a time limit; "
-                            "retrying every %g s", exc, _RETRY_AFTER_S)
-                self._cond.notify_all()
+                self._start_failed_locked(exc)
             return
         with self._cond:
             if not self._closed:
@@ -295,11 +328,14 @@ class _Pool:
             while True:
                 if self._closed:
                     return None
+                down = self._alive == 0
+                if self._alive < self._size and time.monotonic() >= self._retry_at:
+                    # Starts that failed are made up here, one round per
+                    # _RETRY_AFTER_S (a failed start pushes _retry_at out).
+                    self._start_locked(self._size - self._alive)
                 if self._idle:
                     return self._idle.pop()
-                if self._alive == 0:
-                    if time.monotonic() >= self._retry_at:
-                        self._start_locked(self._size)
+                if down:
                     return None
                 left = end - time.monotonic()
                 if left <= 0:
@@ -384,7 +420,9 @@ _atexit_registered = False
 
 def start(size: int = POOL_SIZE) -> None:
     """Start the helper pool (idempotent). Returns at once: the helpers come
-    up in the background, and a walk that arrives first waits for one."""
+    up in the background, and a walk that arrives first waits for one. Never
+    raises: helpers that cannot be started are logged and retried by the pool,
+    and the walks run in-process meanwhile."""
     global _POOL, _atexit_registered
     with _POOL_LOCK:
         if _POOL is None:
@@ -407,12 +445,12 @@ def shutdown() -> None:
 
 
 def helper_main() -> None:
-    """The helper process: connect back to the parent, then answer its
-    requests one at a time with the engine's handler until the parent goes
-    away."""
+    """The helper process: take the inherited end of the parent's pair, then
+    answer its requests one at a time with the engine's handler until the
+    parent goes away."""
     global IN_HELPER
     IN_HELPER = True
-    address, key, shm_name = pickle.loads(sys.stdin.buffer.read())
+    end, shm_name = pickle.loads(sys.stdin.buffer.read())
     # A Ctrl-C in the server's terminal reaches the whole foreground group;
     # the parent decides when a helper stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -420,8 +458,12 @@ def helper_main() -> None:
     from faster_whisper_backend.pipeline import engine  # noqa: PLC0415 - after IN_HELPER
     shm = _shared_memory.SharedMemory(name=shm_name, track=False)
     mark = shm.buf.cast("q")
-    with _connection.Listener(address, authkey=key) as listener:
-        conn = listener.accept()
+    conn = (_connection.PipeConnection(end) if os.name == "nt"
+            else _connection.Connection(end))
+    try:
+        conn.send_bytes(_READY)
+    except (EOFError, OSError):
+        return
     while True:
         # Idle: nothing to limit, so the limit is only pushed out. The parent
         # going away ends the wait (EOF), and with it the helper.

@@ -9,6 +9,7 @@ and subprocess.Popen so even an accidental direct invocation can't escape.
 
 import importlib
 import os
+import subprocess
 import time
 
 import pytest
@@ -20,6 +21,7 @@ from faster_whisper_backend.settings import config
 # Bound at import, before the autouse _guard stubs the module attribute, so
 # the direct-call test exercises the real function rather than the stub.
 _REAL_FLUSH = restart_service._flush_before_exit
+_REAL_POPEN = subprocess.Popen
 
 
 class _FakeTimer:
@@ -260,7 +262,7 @@ def test_win32_winsw_restart_bang(monkeypatch):
 
 
 # The restart bypasses ASGI shutdown, so every exec/exit path must run
-# _flush_before_exit (held receipts, stats samples, NVML) first.
+# _flush_before_exit (held receipts, stats samples, NVML, rule helpers) first.
 def _order_probe(monkeypatch):
     order = []
     monkeypatch.setattr(restart_service, "_flush_before_exit",
@@ -309,8 +311,9 @@ def test_winsw_restart_bang_flushes_before_exit(monkeypatch):
 
 def test_flush_before_exit_swallows_failures(monkeypatch):
     """A broken flush must never block the restart itself: every duty is
-    attempted in order (held receipts, stats samples, NVML), and a failing
-    one must not skip the ones after it."""
+    attempted in order (held receipts, stats samples, NVML, rule helpers),
+    and a failing one must not skip the ones after it."""
+    from faster_whisper_backend.pipeline import rule_helper
     from faster_whisper_backend.runtime import system_stats
     from faster_whisper_backend.stats import sampler
     from faster_whisper_backend.transcription import receipt_hold
@@ -329,11 +332,45 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
         reached.append("shutdown")
         raise RuntimeError("nvml exploded")
 
+    def _boom_helpers():
+        reached.append("helpers")
+        raise RuntimeError("helper pool exploded")
+
     monkeypatch.setattr(receipt_hold, "flush_all", _boom_flush)
     monkeypatch.setattr(sampler, "flush", _boom_sampler)
     monkeypatch.setattr(system_stats, "shutdown", _boom_shutdown)
-    _REAL_FLUSH()  # must not raise
-    assert reached == ["flush", "sampler", "shutdown"]
+    with monkeypatch.context() as scoped:
+        # Put back before the test ends: the per-test reset stops the pool
+        # through the same function.
+        scoped.setattr(rule_helper, "shutdown", _boom_helpers)
+        _REAL_FLUSH()  # must not raise
+    assert reached == ["flush", "sampler", "shutdown", "helpers"]
+
+
+def test_flush_before_exit_stops_the_rule_helpers(monkeypatch):
+    """The exec'd image never waits for the helpers of the one it replaces:
+    they are killed and reaped before it."""
+    from faster_whisper_backend.pipeline import rule_helper
+    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.stats import sampler
+    from faster_whisper_backend.transcription import receipt_hold
+
+    monkeypatch.setattr(receipt_hold, "flush_all", lambda: [])
+    monkeypatch.setattr(sampler, "flush", lambda: None)
+    monkeypatch.setattr(system_stats, "shutdown", lambda: None)
+    # The autouse guard's Popen stub is the subprocess module's own attribute.
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    rule_helper.start(2)
+    pool = rule_helper._POOL
+    try:
+        assert pool.wait_ready(30)
+        procs = list(pool._procs)
+        assert len(procs) == 2
+        _REAL_FLUSH()
+        assert rule_helper._POOL is None
+        assert all(p.poll() is not None for p in procs)      # killed and reaped
+    finally:
+        rule_helper.shutdown()
 
 
 @pytest.fixture
