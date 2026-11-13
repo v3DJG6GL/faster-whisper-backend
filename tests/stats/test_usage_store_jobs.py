@@ -1251,3 +1251,102 @@ def test_failed_zero_work_jobs_are_capped_per_user_per_hour(us, monkeypatch):
     assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 5
     assert _row(us, f"SELECT utterances FROM usage_jobs WHERE job_id = '{0:032x}'")[0] == 2
     assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'bob'")[0] == 1
+
+
+def _zero_work_fail(us, jid, *, user_id="alice", kind="dictation", **kw):
+    _rec(us, user_id=user_id, status="error", audio_s=0, words=0, kind=kind,
+         job_id=jid, **kw)
+
+
+def test_outcome_stub_does_not_reset_the_failed_job_cap(us, monkeypatch):
+    # An outcome posted under a fresh id leaves a stub; a failed zero-work
+    # request naming that id must not turn it into one more failure row past
+    # the cap (and so free the stub's slot for the next pair).
+    monkeypatch.setattr(us, "_MAX_FAILED_JOBS_PER_HOUR", 3)
+    monkeypatch.setattr(us, "_MAX_STUBS_PER_HOUR", 3)
+    answers = []
+    for i in range(10):
+        answers.append(_outcome(us, f"{i:032x}", user_id="alice"))
+        _zero_work_fail(us, f"{i:032x}")
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'"
+                    " AND status <> 'ok'")[0] == 3
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'"
+                    " AND utterances = 0")[0] == 3
+    assert answers == ["accepted"] * 6 + ["duplicate"] * 4
+    assert _row(us, "SELECT requests, errors FROM usage_hourly"
+                    " WHERE user_id = 'alice'")[:] == (10, 10)
+    # A failed zero-work file run naming a stub's id leaves it a stub too.
+    stub = f"{5:032x}"
+    _zero_work_fail(us, stub, kind="file")
+    assert _row(us, "SELECT kind, utterances, reported_ts IS NOT NULL FROM usage_jobs"
+                    f" WHERE job_id = '{stub}'")[:] == ("dictation", 0, 1)
+    # An utterance that did work still adopts its raced stub past the cap.
+    _rec(us, user_id="alice", audio_s=1.5, words=4, kind="dictation", job_id=stub)
+    assert _row(us, "SELECT utterances, words, key_id FROM usage_jobs"
+                    f" WHERE job_id = '{stub}'")[:] == (1, 4, "k")
+    # One user's rows never count against another's.
+    _zero_work_fail(us, "c" * 32, user_id="bob", key_id="kb")
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'bob'")[0] == 1
+
+
+def test_cancelled_zero_work_jobs_share_the_failed_cap(us, monkeypatch):
+    # A run cancelled while it queued did no work either; it is stored as a
+    # non-error, so it has to be counted by what it did, not by its status.
+    monkeypatch.setattr(us, "_MAX_FAILED_JOBS_PER_HOUR", 3)
+    for i in range(5):
+        _rec(us, user_id="alice", cancelled=True, audio_s=0, words=0,
+             kind="file", job_id=f"{i:032x}")
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 3
+    assert _row(us, "SELECT requests, errors FROM usage_hourly"
+                    " WHERE user_id = 'alice'")[:] == (5, 0)
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE status <> 'ok'")[0] == 0
+    # One budget: a refused handshake finds it used up.
+    _zero_work_fail(us, "d" * 32)
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 3
+    # A good text translation (no audio, no words by construction), a
+    # cancelled run that had decoded audio and another user keep their rows.
+    _rec(us, user_id="alice", audio_s=0, words=0, kind="text", job_id="b" * 32)
+    _rec(us, user_id="alice", cancelled=True, audio_s=2.0, words=0,
+         kind="file", job_id="a" * 32)
+    _rec(us, user_id="bob", key_id="kb", cancelled=True, audio_s=0, words=0,
+         kind="file", job_id="c" * 32)
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 5
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'bob'")[0] == 1
+
+
+def test_good_text_translations_do_not_use_up_the_failed_job_budget(us, monkeypatch):
+    monkeypatch.setattr(us, "_MAX_FAILED_JOBS_PER_HOUR", 3)
+    for i in range(6):
+        _rec(us, user_id="alice", audio_s=0, words=0, kind="text", job_id=f"{i:032x}")
+    _zero_work_fail(us, "d" * 32)
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'")[0] == 7
+
+
+def test_failed_job_cap_is_counted_from_its_own_index(us, tmp_path, monkeypatch):
+    # The count runs on the event loop for every failed zero-work request:
+    # it must not walk the user's good rows of the hour, nor more entries
+    # than the cap.
+    conn = us._require_conn()
+    plan = " | ".join(r["detail"] for r in conn.execute(
+        "EXPLAIN QUERY PLAN " + us._ZERO_WORK_COUNT_SQL, ("alice", 0.0, 3)))
+    assert "idx_usage_jobs_user_failed" in plan, plan
+    monkeypatch.setattr(us, "_MAX_FAILED_JOBS_PER_HOUR", 3)
+    for i in range(40):
+        _rec(us, user_id="alice", audio_s=1.0, words=2, kind="dictation",
+             job_id=f"{i:08x}")
+    for i in range(5):
+        _zero_work_fail(us, f"{i:032x}")
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'"
+                    " AND status <> 'ok'")[0] == 3
+    assert conn.execute(us._ZERO_WORK_COUNT_SQL,
+                        ("alice", 0.0, 2)).fetchone()[0] == 2    # stops at the bound
+    # A database written before the index gets it on the next start.
+    conn.execute("DROP INDEX idx_usage_jobs_user_failed")
+    path = us._path
+    _close_store(us)
+    us.init_db(path)
+    assert _row(us, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'"
+                    " AND name = 'idx_usage_jobs_user_failed'")[0] == 1
+    _zero_work_fail(us, "e" * 32)
+    assert _row(us, "SELECT COUNT(*) FROM usage_jobs WHERE user_id = 'alice'"
+                    " AND status <> 'ok'")[0] == 3

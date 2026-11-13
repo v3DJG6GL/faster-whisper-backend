@@ -132,6 +132,57 @@ def test_timing_only_inserts_minimal_row(ts):
     assert row["rtf"] is None
 
 
+def _count(ts, where):
+    return ts._require_conn().execute(
+        f"SELECT COUNT(*) FROM recent_transcriptions WHERE {where}").fetchone()[0]
+
+
+def test_zero_work_failures_of_one_user_do_not_evict_other_users(ts, monkeypatch):
+    # A refused dictation handshake costs its caller nothing and writes one
+    # row; the window is shared, so an unbounded run of them pushed every
+    # other user's rows out.
+    monkeypatch.setattr(ts, "_MAX_ZERO_WORK_FAILS_PER_HOUR", 5)
+    now = time.time()
+    for i in range(20):
+        _timing(ts, f"v{i}", 2.0, 0.5, user_id="victim", created_ts=now - 100 + i,
+                prune_every=1, max_rows=40)
+    _timing(ts, "a-ok", 2.0, 0.5, user_id="alice", created_ts=now - 90,
+            prune_every=1, max_rows=40)
+    _timing(ts, "a-worked", 2.0, 0.5, status="error", words=0, user_id="alice",
+            created_ts=now - 89, prune_every=1, max_rows=40)
+    _timing(ts, "a-cancel", None, 0.5, status="cancelled", words=0, user_id="alice",
+            created_ts=now - 88, prune_every=1, max_rows=40)
+    _timing(ts, "a-dl", None, 0.5, status="error", words=0, user_id="alice",
+            kind="download", created_ts=now - 87, prune_every=1, max_rows=40)
+    _timing(ts, "a-old", None, 0.5, status="error", words=0, user_id="alice",
+            created_ts=now - 7200, prune_every=1, max_rows=40)
+    _timing(ts, "b0", None, 0.5, status="error", words=0, user_id="bob",
+            created_ts=now - 86, prune_every=1, max_rows=40)
+    for i in range(60):
+        _timing(ts, f"a{i}", None, 0.5, status="error", words=0, user_id="alice",
+                created_ts=now - 60 + i, prune_every=1, max_rows=40)
+    assert _count(ts, "user_id = 'victim'") == 20
+    own = {r["request_id"] for r in ts.list_recent(limit=100, user_id_filter="alice")}
+    # The newest failures stay visible; rows that did work, a cancel, a
+    # download, an older failure and another user's failure are not replaced.
+    assert own == {f"a{i}" for i in range(55, 60)} | {
+        "a-ok", "a-worked", "a-cancel", "a-dl", "a-old"}
+    assert _count(ts, "user_id = 'bob'") == 1
+    # A second write for a row that exists replaces nothing.
+    _timing(ts, "a59", None, 0.7, status="error", words=0, user_id="alice",
+            created_ts=now, prune_every=1, max_rows=40)
+    assert _count(ts, "request_id = 'a55'") == 1
+
+
+def test_zero_work_failures_without_a_user_share_one_budget(ts, monkeypatch):
+    monkeypatch.setattr(ts, "_MAX_ZERO_WORK_FAILS_PER_HOUR", 3)
+    now = time.time()
+    for i in range(6):
+        _timing(ts, f"n{i}", None, 0.5, status="error", words=0,
+                created_ts=now - 10 + i)
+    assert {r["request_id"] for r in ts.list_recent(limit=10)} == {"n3", "n4", "n5"}
+
+
 def test_falsy_request_id_skipped(ts):
     _trace(ts, "")
     _timing(ts, "", 1.0, 1.0)

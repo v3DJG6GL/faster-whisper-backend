@@ -417,6 +417,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             error_class=error_class,
             error_stage=error_stage,
             session_job_id=session_job_id,
+            cancelled=(status == "cancelled"),
         )
     except Exception as e:
         logger.warning("[metrics] usage rollup failed: %s", e)

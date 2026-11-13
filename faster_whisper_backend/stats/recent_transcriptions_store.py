@@ -72,6 +72,20 @@ _CAP_KIND = 16
 _CAP_STAGES_JSON = 20_000
 _CAP_KEY_LABEL = 120
 
+# Rows one identity may hold from the last hour for failed requests that did
+# no work (no audio, no words, no text): a refused dictation handshake costs
+# its caller nothing, and each one took a slot of the rolling window every
+# user shares. Past the cap the newest failure replaces that identity's own
+# oldest one, so the latest error stays visible and nobody else's row moves.
+# Rows without a user (keyless callers, server rows) are one identity.
+_MAX_ZERO_WORK_FAILS_PER_HOUR = 50
+# A client cancel is no failure, and a model download's row is server work.
+_ZERO_WORK_FAIL_SQL = (
+    "user_id IS ? AND created_ts >= ? AND status NOT IN ('ok', 'cancelled')"
+    " AND COALESCE(audio_s, 0) = 0 AND COALESCE(words, 0) = 0"
+    " AND COALESCE(raw_text, '') = '' AND COALESCE(kind, '') <> 'download'"
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_transcriptions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -362,7 +376,11 @@ def record_timing(
     `key_label`, `username`, `wait_s` and `error_class` / `error_stage` are
     COALESCEd on conflict, so a caller that omits them never blanks an
     earlier write. Translate and error-path rows have no trace half, so
-    username must come in here."""
+    username must come in here.
+
+    A failed request that did no work keeps at most
+    _MAX_ZERO_WORK_FAILS_PER_HOUR rows per identity and hour: past that the
+    new row replaces that identity's oldest one."""
     if not request_id:
         return
     model = (model or "")[:_CAP_MODEL]
@@ -379,6 +397,9 @@ def record_timing(
     ts = float(created_ts) if created_ts else time.time()
     conn = _require_conn()
     with _lock:
+        if (status not in ("ok", "cancelled") and not audio_s and not words
+                and kind != "download"):
+            _replace_oldest_zero_work_fail(conn, request_id, user_id, ts)
         conn.execute(
             "INSERT INTO recent_transcriptions ("
             "  request_id, created_ts, user_id, username, model, status,"
@@ -403,6 +424,28 @@ def record_timing(
              kind, stages_blob, key_label, wait_s, error_class, error_stage),
         )
         _lazy_prune_if_due(prune_every, max_rows, ttl_days)
+
+
+def _replace_oldest_zero_work_fail(conn: sqlite3.Connection, request_id: str,
+                                   user_id: str | None, ts: float) -> None:
+    """Make room for one more zero-work failure row of `user_id` (caller
+    holds `_lock`): at _MAX_ZERO_WORK_FAILS_PER_HOUR such rows from the hour
+    before `ts`, drop that identity's oldest one. A request that already has
+    its row adds none, so nothing is dropped for it."""
+    if conn.execute("SELECT 1 FROM recent_transcriptions WHERE request_id = ?",
+                    (request_id,)).fetchone() is not None:
+        return
+    window = (user_id, ts - 3600)
+    held = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM recent_transcriptions"
+        f" WHERE {_ZERO_WORK_FAIL_SQL} LIMIT ?)",
+        (*window, _MAX_ZERO_WORK_FAILS_PER_HOUR)).fetchone()[0]
+    if held >= _MAX_ZERO_WORK_FAILS_PER_HOUR:
+        conn.execute(
+            "DELETE FROM recent_transcriptions WHERE id = ("
+            "SELECT id FROM recent_transcriptions"
+            f" WHERE {_ZERO_WORK_FAIL_SQL} ORDER BY created_ts ASC LIMIT 1)",
+            window)
 
 
 def append_stage(request_id: str, stage: dict, *, add_processing_s: float = 0.0) -> bool:

@@ -116,6 +116,20 @@ def test_record_transcription_passes_the_session_job_to_the_usage_rollup(
     assert seen["kind"] == "text"
 
 
+def test_record_transcription_marks_a_cancelled_run_for_the_usage_rollup(
+        monkeypatch):
+    """A cancel is stored as a non-error, so the status alone no longer says
+    that the run did not succeed; usage_store's zero-work cap needs to know."""
+    from faster_whisper_backend.stats import usage_store
+    seen = []
+    monkeypatch.setattr(usage_store, "record_usage", lambda **kw: seen.append(kw))
+    for i, status in enumerate(("cancelled", "ok", "error")):
+        metrics.record_transcription("m", 0.0, 0.5, status, 0,
+                                     request_id=f"r{i}", recent_row=False)
+    assert [(kw["status"], kw["cancelled"]) for kw in seen] == [
+        ("ok", True), ("ok", False), ("error", False)]
+
+
 def test_record_transcription_swallows_store_errors():
     # Stores are not initialised here; the lazy record_timing/record_usage
     # calls raise RuntimeError internally but must be swallowed.
