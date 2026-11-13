@@ -145,6 +145,43 @@ def test_cancelled_export_kills_the_scan_child(tmp_path, monkeypatch):
     assert time.monotonic() - cancelled_at[0] < 1.5
 
 
+def test_scan_stops_a_child_that_writes_more_than_the_byte_budget(
+        tmp_path, monkeypatch, caplog):
+    """A sample table naming one frame again and again makes ffmpeg write
+    thousands of times the source's size without a caption block: the time
+    limit alone would let it run (and the scanner read) for minutes. Past
+    `max_bytes` the scan is inconclusive and the child is killed."""
+    # exec: the writer IS the process the scan kills.
+    _fake_ffmpeg(tmp_path, monkeypatch, "exec yes")
+    procs = []
+    real_popen = cc.subprocess.Popen
+
+    def _popen(*a, **k):
+        procs.append(real_popen(*a, **k))
+        return procs[-1]
+    monkeypatch.setattr(cc.subprocess, "Popen", _popen)
+    t0 = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        assert cc.embedded_captions_empty("/m/x.mkv", timeout=30,
+                                          max_bytes=4 * 1024 * 1024) is False
+    assert time.monotonic() - t0 < 5
+    assert procs[0].returncode is not None          # killed and reaped
+    assert any("scan inconclusive" in r.getMessage()
+               and "outgrew=True" in r.getMessage() for r in caplog.records)
+
+
+def test_scan_within_the_byte_budget_is_unchanged(tmp_path, monkeypatch):
+    data = tmp_path / "es.h264"
+    data.write_bytes(_sei(PAD) + bytes(100_000) + _sei(PAD))
+    _fake_ffmpeg(tmp_path, monkeypatch, f"cat '{data}'")
+    assert cc.embedded_captions_empty("/m/x.mkv", timeout=10) is True
+    # The budget counts what was read: a stream of exactly that size passes.
+    assert cc.embedded_captions_empty(
+        "/m/x.mkv", timeout=10, max_bytes=data.stat().st_size) is True
+    assert cc.embedded_captions_empty(
+        "/m/x.mkv", timeout=10, max_bytes=data.stat().st_size - 1) is False
+
+
 def test_clean_scan_without_captions_logs_no_empty_blocks(
         tmp_path, monkeypatch, caplog):
     _fake_ffmpeg(tmp_path, monkeypatch, "printf abc")
@@ -305,6 +342,21 @@ def test_caption_scan_gets_the_probed_demuxer_from_package(monkeypatch):
     assert asyncio.run(pk._empty_captions_to_strip(
         "/m/x.mkv", "h264", 0, 60, format_name="matroska,webm")) is False
     assert seen == ["matroska,webm"]
+
+
+def test_caption_scan_gets_the_packages_output_bound(tmp_path, monkeypatch):
+    """The scan's child reads the same client file the mux does, so it runs
+    under the mux's own output bound, not a second formula."""
+    monkeypatch.setattr(pk, "ffmpeg_has_bsf", lambda name: True)
+    src = tmp_path / "x.mkv"
+    src.write_bytes(bytes(12_345))
+    seen = []
+    monkeypatch.setattr(cc, "embedded_captions_empty",
+                        lambda *a, **k: seen.append(k.get("max_bytes")) or False)
+    assert asyncio.run(pk._empty_captions_to_strip(
+        str(src), "h264", 0, 60)) is False
+    assert seen == [pk._output_limit(str(src), [])]
+    assert seen[0] == 2 * 12_345 + pk._OUTPUT_MARGIN_BYTES
 
 
 def test_pinned_scan_of_a_clip_with_empty_captions_still_finds_them(tmp_path):

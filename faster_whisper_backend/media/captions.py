@@ -126,17 +126,21 @@ def scan_a53(chunks, scan: "A53Scan | None" = None, *, stop_on_content: bool = T
 
 def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 300.0,
                             cancel: "threading.Event | None" = None,
-                            format_name: "str | None" = None) -> bool:
+                            format_name: "str | None" = None,
+                            max_bytes: "int | None" = None) -> bool:
     """True only when the H.264 video carries A/53 captions and none of them
     holds text. Any doubt (no ffmpeg, a read error, the time limit, the
-    block cap, real caption bytes, `cancel` set) answers False: the captions
-    are kept.
+    block cap, a stream past `max_bytes`, real caption bytes, `cancel` set)
+    answers False: the captions are kept.
 
     `cancel` is how an async caller that was cancelled stops the scan: its
     to_thread await is abandoned, but this thread and its ffmpeg child would
     otherwise read the whole source for up to `timeout`. `format_name` holds
     the read to the demuxer the probe opened `src` with (see
-    subtitle_mux.build_package_argv)."""
+    subtitle_mux.build_package_argv). `max_bytes` bounds what the child may
+    write (the caller's own bound for a copy of `src`): a real video's
+    stream is about the size of its file, while a sample table naming one
+    frame any number of times is copied out for the whole time limit."""
     argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin",
             *audio_ffmpeg.format_whitelist_args(format_name), "-i", src,
             "-map", f"0:v:{max(0, int(video_index))}", "-c", "copy",
@@ -148,7 +152,7 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
     except OSError:
         return False
     scan = A53Scan()
-    state = {"eof": False, "timed_out": False}
+    state = {"eof": False, "timed_out": False, "outgrew": False, "read": 0}
 
     def _expire():
         # A read blocks until 1 MiB or EOF, so the between-reads check below
@@ -183,6 +187,10 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
             if not data:
                 state["eof"] = True
                 return
+            state["read"] += len(data)
+            if max_bytes is not None and state["read"] > max_bytes:
+                state["outgrew"] = True
+                return
             yield data
     rc = None
     try:
@@ -196,17 +204,18 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-        else:  # stopped early: real captions, time limit, cancel, or the scan raised
+        else:  # stopped early: real captions, a limit, cancel, or the scan raised
             proc.kill()
             proc.wait()
         proc.stdout.close()
     if scan.content_pairs:
         return False
-    if state["timed_out"] or rc != 0 or scan.capped:
+    if state["timed_out"] or state["outgrew"] or rc != 0 or scan.capped:
         # The extension only: the path tail is the retained media id plus the
         # store directory, and media ids are never logged.
         logger.info("[captions] scan inconclusive (rc=%s, timed out=%s, "
-                    "capped=%s) for a .%s source", rc, state["timed_out"], scan.capped,
+                    "capped=%s, outgrew=%s) for a .%s source", rc,
+                    state["timed_out"], scan.capped, state["outgrew"],
                     log_safe(os.path.splitext(src)[1].lstrip(".") or "?"))
         return False
     if scan.present:

@@ -506,10 +506,13 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
     # the route released its in-flight slot (package() kills its own ffmpeg).
     cancel = threading.Event()
     try:
+        # The scan's ffmpeg copies the same client file's video out: it runs
+        # under the bound the package's own output has.
+        max_bytes = await asyncio.to_thread(_output_limit, src, [])
         return await asyncio.to_thread(_cc.embedded_captions_empty, src,
                                        video_index=video_index,
                                        timeout=min(300.0, max(10.0, timeout / 3)),
-                                       cancel=cancel,
+                                       cancel=cancel, max_bytes=max_bytes,
                                        **({"format_name": format_name}
                                           if format_name else {}))
     except asyncio.CancelledError:
