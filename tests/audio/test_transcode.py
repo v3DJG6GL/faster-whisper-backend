@@ -2176,7 +2176,7 @@ def test_refuse_input_refuses_a_file_with_more_tracks_than_the_limit(
     with pytest.raises(ValueError, match="more than 20 tracks"):
         app_module._refuse_input(over)
 
-    def no_open(path):
+    def no_open(path, **kwargs):
         raise av.error.InvalidDataError(1094995529, "Invalid data found")
     monkeypatch.setattr(audio_transcode, "_open_audio", no_open)
     with pytest.raises(ValueError, match="more than 20 tracks"):
@@ -2275,7 +2275,7 @@ def test_refuse_input_caps_the_allocation_ahead_of_its_own_reopen(
     src = _write_src_wav(str(tmp_path / "a.wav"), rate=RATE, nchannels=1)
     events = _spy_alloc_cap(monkeypatch)
 
-    def no_open(path):
+    def no_open(path, **kwargs):
         raise av.error.InvalidDataError(1094995529, "Invalid data found")
     monkeypatch.setattr(audio_transcode, "_open_audio", no_open)
     app_module._refuse_input(src)
@@ -2290,9 +2290,37 @@ def test_refuse_input_caps_the_allocation_ahead_of_its_open_without_the_limit(
                         audio_ffmpeg.PYAV_MAX_STREAMS + 1)
     events = _spy_alloc_cap(monkeypatch)
 
-    def no_open(path):
+    def no_open(path, **kwargs):
         raise av.error.InvalidDataError(1094995529, "Invalid data found")
     monkeypatch.setattr(audio_transcode, "_open_audio", no_open)
     with pytest.raises(ValueError, match="more than 20 tracks"):
         app_module._refuse_input(over)
     assert events == ["cap", "open", "open"]
+
+
+def test_only_a_caller_that_asks_gets_a_time_limit_on_its_open(
+        tmp_path, monkeypatch):
+    """The decode paths open without one: the limit is for a check that
+    opens and closes. Asked for, it is PyAV's open-only pair, so reads of
+    the container are untimed all the same; and a limit that has passed
+    fails the open with an av error, not with the plain refusal."""
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
+    opens = _spy_av_open(monkeypatch)
+    audio_transcode._open_audio(src)[0].close()
+    audio_transcode.declared_shape(src)
+    audio_transcode.refuse_multi_input(src)
+    audio_transcode.decode_16k_bounded(src, max_seconds=None)
+    audio_transcode.transcode_to_wav_16k_mono(src, str(tmp_path / "out.wav"))
+    assert len(opens) == 6      # the last call opens its output as well
+    assert all("timeout" not in kwargs for _file, kwargs in opens)
+
+    opens.clear()
+    container, stream = audio_transcode._open_audio(src, timeout=30.0)
+    try:
+        assert sum(f.samples for f in container.decode(stream)) == RATE // 2
+    finally:
+        container.close()
+    assert [kwargs["timeout"] for _file, kwargs in opens] == [(30.0, None)]
+    with pytest.raises(av.error.ExitError) as stopped:
+        audio_transcode._open_audio(src, timeout=1e-9)
+    assert type(stopped.value) is not ValueError

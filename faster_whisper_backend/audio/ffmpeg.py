@@ -257,6 +257,20 @@ def client_open_pool() -> concurrent.futures.ThreadPoolExecutor:
     return _CLIENT_OPEN_POOL
 
 
+# The wall-clock time one check on that worker gets for its header opens (an
+# upload's input check makes up to three). A demuxer that does not find its
+# header reads on to the end of the file — QuickTime box by box, seconds per
+# 16 MiB of 8-byte boxes, minutes per GiB — and every other upload waits
+# behind it. A real header opens in milliseconds whatever the file's size
+# (10 GiB with its index at the end: 0.05 s), so no real file comes near.
+# PyAV grants the limit to each of an open's two phases (the header, then the
+# stream probe): a check ends within about twice this. It ends a wait on file
+# reads, not CPU spent inside one index build.
+HEADER_OPEN_BUDGET_S = 30.0
+TOO_SLOW_TO_OPEN = ("unsupported container: the file's header takes too long "
+                    "to read")
+
+
 def max_alloc_args() -> "list[str]":
     """The ffmpeg CLI global option that holds a child reading a client file
     to the allocation cap the in-process opens have. A file the capped

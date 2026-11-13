@@ -118,7 +118,7 @@ def _av():
     return av
 
 
-def _open_client_file(av, path: str):
+def _open_client_file(av, path: str, *, timeout: "float | None" = None):
     """av.open of client-chosen bytes: file protocol only, no demuxer that
     pulls in other inputs or reads a whole text file at the open
     (audio_ffmpeg.single_input_demuxers), and audio
@@ -129,7 +129,12 @@ def _open_client_file(av, path: str):
     ValueError, the refusal callers tell apart from an av decode error. So
     is a file with more streams than audio_ffmpeg.PYAV_MAX_STREAMS whose
     demuxer fails on the one past it, or one whose open asks for more than
-    the allocation cap (audio_ffmpeg.TOO_MUCH_TO_OPEN)."""
+    the allocation cap (audio_ffmpeg.TOO_MUCH_TO_OPEN).
+
+    `timeout` (seconds; None: none) stops the open's file reads once it has
+    passed. The open then fails with its usual av error, or returns a
+    container holding what was read up to then — the caller tells by the
+    clock. Reads of the returned container are never timed."""
     # metadata_errors="ignore" as in faster-whisper's decode_audio: PyAV's
     # default "strict" raises UnicodeDecodeError (a ValueError — read as a
     # refusal upstream) on a non-UTF-8 tag, e.g. a cp1252 RIFF INFO title.
@@ -141,8 +146,11 @@ def _open_client_file(av, path: str):
     # is still listed, just never decoded.
     if decoders := audio_ffmpeg.pyav_audio_decoders():
         options["codec_whitelist"] = decoders
+    # PyAV's (open, read) pair: a limit on the open alone, so a decode of
+    # the container handed back is never cut short by it.
+    timed = {} if timeout is None else {"timeout": (timeout, None)}
     try:
-        return av.open(path, options=options, metadata_errors="ignore")
+        return av.open(path, options=options, metadata_errors="ignore", **timed)
     except av.FFmpegError as e:
         if getattr(e, "errno", None) == errno.EINVAL:
             raise ValueError("unsupported container") from e
@@ -151,11 +159,12 @@ def _open_client_file(av, path: str):
         raise
 
 
-def _open_audio(src_path: str):
+def _open_audio(src_path: str, *, timeout: "float | None" = None):
     """(container, first audio stream) of `src_path`; the caller closes the
     container. ValueError when there is no audio stream, or when that stream
     is in a channel order this PyAV cannot release safely
-    (audio_ffmpeg.CUSTOM_CHANNEL_ORDER)."""
+    (audio_ffmpeg.CUSTOM_CHANNEL_ORDER). `timeout` is _open_client_file's:
+    for a caller that only inspects the open, not one that decodes."""
     # The source is an uploaded clip (or a downloaded link) whose bytes AND
     # filename extension a client chose, so a crafted concat/ffconcat, HLS
     # playlist or SDP input can coax the demuxer into following external
@@ -166,7 +175,7 @@ def _open_audio(src_path: str):
     # and the demuxer allowlist (_open_client_file) stops a playlist reading
     # a sibling local file through the whitelisted file protocol itself. The
     # refusal by name below backs the allowlist up.
-    container = _open_client_file(_av(), src_path)
+    container = _open_client_file(_av(), src_path, timeout=timeout)
     if audio_ffmpeg.is_multi_input_format(getattr(container.format, "name", None)):
         container.close()
         raise ValueError("unsupported container")

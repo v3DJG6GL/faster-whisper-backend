@@ -4,6 +4,7 @@ before, and a small file of compressed silence decodes to gigabytes."""
 
 import asyncio
 import os
+import struct
 import subprocess
 import sys
 import threading
@@ -330,3 +331,126 @@ def test_the_upload_route_checks_its_input_on_the_shared_worker(
         "file": ("a.wav", wav_bytes(seconds=1.0), "audio/wav")})
     assert r.status_code == 200, r.text
     assert len(threads) == 1 and threads[0].startswith("client-open")
+
+
+def _padded_file(path, mib=16):
+    """A file whose open reads to the end without finding a header: an
+    `ftyp` box followed by `mib` MiB of 8-byte `free` boxes."""
+    with open(path, "wb") as f:
+        f.write(struct.pack(">I4s4sI4s", 20, b"ftyp", b"qt  ", 0, b"qt  "))
+        f.write(struct.pack(">I4s", 8, b"free") * (mib * 1024 * 1024 // 8))
+    return str(path)
+
+
+def test_a_header_that_takes_too_long_to_read_is_refused(
+        app_module, tmp_path, monkeypatch):
+    """Each of the check's three opens reads such a file box by box to its
+    end (seconds per 16 MiB), on the worker every other upload waits for.
+    They share one time budget, and a check that ran out of it refuses the
+    file: it never passes one it could not finish reading."""
+    monkeypatch.setattr(audio_ffmpeg, "HEADER_OPEN_BUDGET_S", 0.05)
+    with pytest.raises(ValueError) as refused:
+        app_module._refuse_input(_padded_file(tmp_path / "padded.mov"))
+    assert type(refused.value) is ValueError
+    assert str(refused.value) == audio_ffmpeg.TOO_SLOW_TO_OPEN
+
+
+def test_a_header_followed_by_padding_is_refused_too(
+        app_module, tmp_path, monkeypatch):
+    """With its header in front the same padding still has to be read to
+    the end, and the open that ran out of time SUCCEEDS (libav reads the
+    stop as the end of the file): refused all the same, or the decoder's
+    own open would read the padding next."""
+    from tests.audio.test_transcode import _mov_declaring_samples
+    src = _mov_declaring_samples(str(tmp_path / "padded.mov"), 1000)
+    assert app_module._refuse_input(src) is None
+    with open(src, "ab") as f:
+        f.write(struct.pack(">I4s", 8, b"free") * (16 * 1024 * 1024 // 8))
+    monkeypatch.setattr(audio_ffmpeg, "HEADER_OPEN_BUDGET_S", 0.05)
+    with pytest.raises(ValueError) as refused:
+        app_module._refuse_input(src)
+    assert str(refused.value) == audio_ffmpeg.TOO_SLOW_TO_OPEN
+
+
+class _OpenedStub:
+    """What the check reads of a container it opened."""
+    format = None
+    streams = ()
+
+    def __init__(self, closed):
+        self._closed = closed
+
+    def close(self):
+        self._closed.append(self)
+
+
+@pytest.mark.parametrize("slow, fails", [
+    ("strict", True), ("strict", False),
+    ("limited", True), ("limited", False),
+    ("unlimited", True), ("unlimited", False)])
+def test_whichever_open_runs_out_of_time_the_file_is_refused(
+        app_module, monkeypatch, slow, fails):
+    """The opens before `slow` fail at once; `slow` returns after the budget
+    has run out, with an error or with a container. Either way the check is
+    unfinished, and whatever it opened is closed."""
+    budget = 0.05
+    monkeypatch.setattr(audio_ffmpeg, "HEADER_OPEN_BUDGET_S", budget)
+    opened, closed = [], []
+
+    def step(name):
+        if name == slow:
+            time.sleep(2 * budget)
+        if name != slow or fails:
+            raise av.error.InvalidDataError(1094995529, "Invalid data found")
+        opened.append(_OpenedStub(closed))
+        return opened[-1]
+
+    def reopen(path, *, options, metadata_errors, timeout):
+        return step("limited" if "max_streams" in options else "unlimited")
+    monkeypatch.setattr(app_module._transcode, "_open_audio",
+                        lambda path, *, timeout: (step("strict"), None))
+    monkeypatch.setattr(av, "open", reopen)
+    with pytest.raises(ValueError) as refused:
+        app_module._refuse_input("a.bin")
+    assert type(refused.value) is ValueError
+    assert str(refused.value) == audio_ffmpeg.TOO_SLOW_TO_OPEN
+    assert closed == opened and len(opened) == (0 if fails else 1)
+
+
+def test_the_check_limits_each_open_and_leaves_its_answers_alone(
+        app_module, tmp_path, monkeypatch):
+    """Every open of the check gets what is left of one budget, as an
+    open-only limit (PyAV's (open, read) pair), and files that open at once
+    are answered as before: a WAV after one open, a file nothing reads
+    after all three, a file at the stream limit after one."""
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(wav_bytes(seconds=1.0))
+    junk = tmp_path / "junk.bin"
+    junk.write_bytes(b"RIFFxxxxWAVE")
+    at_limit = write_tracks(str(tmp_path / "at.wtv"),
+                            audio_ffmpeg.PYAV_MAX_STREAMS)
+    timeouts, real_open = [], av.open
+
+    def spy_open(file, *args, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return real_open(file, *args, **kwargs)
+    monkeypatch.setattr(av, "open", spy_open)
+    for path, opens in ((wav, 1), (junk, 3), (at_limit, 1)):
+        timeouts.clear()
+        assert app_module._refuse_input(str(path)) is None
+        assert len(timeouts) == opens
+        assert all(read is None for _open, read in timeouts)
+        left = [open_ for open_, _read in timeouts]
+        assert left == sorted(left, reverse=True)
+        assert 0 < left[-1] <= left[0] <= audio_ffmpeg.HEADER_OPEN_BUDGET_S
+
+
+def test_an_upload_whose_header_takes_too_long_to_read_is_a_400(
+        client, fake_model, tmp_path, monkeypatch):
+    monkeypatch.setattr(audio_ffmpeg, "HEADER_OPEN_BUDGET_S", 0.05)
+    with open(_padded_file(tmp_path / "padded.mov"), "rb") as f:
+        r = post_transcription(client, files={
+            "file": ("a.mov", f.read(), "video/quicktime")})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == audio_ffmpeg.TOO_SLOW_TO_OPEN
+    assert fake_model.last_audio is None

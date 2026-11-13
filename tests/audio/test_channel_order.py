@@ -65,7 +65,7 @@ def test_the_upload_check_refuses_it_on_the_default_reopen_too(tmp_path, app_mod
 
     src = _custom_order_aiff(tmp_path / "a.aiff")
 
-    def no_guarded_open(path):
+    def no_guarded_open(path, **kwargs):
         raise av.error.InvalidDataError(1094995529, "Invalid data", path)
 
     monkeypatch.setattr(app_module._transcode, "_open_audio", no_guarded_open)

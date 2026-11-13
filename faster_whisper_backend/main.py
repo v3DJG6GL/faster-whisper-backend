@@ -1435,7 +1435,9 @@ def _refuse_input(path: str) -> None:
     the real decoder raises the av error, answered as undecodable — unless
     FFmpeg's default open reads it as a playlist, reads it only without the
     stream limit, or finds audio in a channel order this PyAV cannot release
-    safely (see below; transcode._open_audio refuses that one itself)."""
+    safely (see below; transcode._open_audio refuses that one itself). The
+    opens share one time budget (audio_ffmpeg.HEADER_OPEN_BUDGET_S): a file
+    that uses it up is refused as well."""
     import av
     # Also for the reopen below and faster-whisper's own open after it.
     audio_ffmpeg.cap_libav_alloc()
@@ -1444,9 +1446,26 @@ def _refuse_input(path: str) -> None:
     # when the list is empty, as an empty whitelist refuses every decoder.
     decoders = audio_ffmpeg.pyav_audio_decoders()
     audio_only = {"codec_whitelist": decoders} if decoders else {}
+    # This runs on the one worker every upload's check waits for, and an
+    # open that finds no header reads the whole file looking for one. Each
+    # open gets what is left of the budget; PyAV stops its reads then, and
+    # the open comes back with its ordinary error or — the stop read as the
+    # end of the file — with a container, so only the clock tells. Either
+    # way the check is unfinished: a refusal, never "left to the decoder",
+    # which would read the same bytes again without a limit.
+    deadline = time.monotonic() + audio_ffmpeg.HEADER_OPEN_BUDGET_S
+
+    def _left() -> float:
+        return max(0.1, deadline - time.monotonic())
+
+    def _refuse_when_out_of_time(cause: "BaseException | None" = None) -> None:
+        if time.monotonic() >= deadline:
+            raise ValueError(audio_ffmpeg.TOO_SLOW_TO_OPEN) from cause
+
     try:
-        container, _stream = _transcode._open_audio(path)
-    except av.FFmpegError:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
+        container, _stream = _transcode._open_audio(path, timeout=_left())
+    except av.FFmpegError as e:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
+        _refuse_when_out_of_time(e)
         # The fallbacks — transcribe(path), pyannote, the separator — open
         # with FFmpeg's default nested whitelist (file,crypto,data), not the
         # file-only one: an HLS playlist decrypting a sibling segment fails
@@ -1454,8 +1473,9 @@ def _refuse_input(path: str) -> None:
         try:
             container = av.open(
                 path, options={**audio_ffmpeg.pyav_stream_limit(), **audio_only},
-                metadata_errors="ignore")
+                metadata_errors="ignore", timeout=(_left(), None))
         except av.FFmpegError as e:
+            _refuse_when_out_of_time(e)
             # Those fallbacks open without the stream limit: a file that
             # runs into it here is refused, not left to them.
             if audio_ffmpeg.refused_as_too_much(e):
@@ -1466,12 +1486,16 @@ def _refuse_input(path: str) -> None:
             # for any of the streams it then lists.
             try:
                 unlimited = av.open(path, options=dict(audio_only),
-                                    metadata_errors="ignore")
-            except av.FFmpegError:
+                                    metadata_errors="ignore",
+                                    timeout=(_left(), None))
+            except av.FFmpegError as unopened:
+                _refuse_when_out_of_time(unopened)
                 return      # opens for nobody: left to the decoder
             unlimited.close()
+            _refuse_when_out_of_time(e)
             raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
         try:
+            _refuse_when_out_of_time()
             if audio_ffmpeg.is_multi_input_format(
                     getattr(container.format, "name", None)):
                 raise ValueError("unsupported container")
@@ -1486,6 +1510,7 @@ def _refuse_input(path: str) -> None:
             container.close()
         return
     container.close()
+    _refuse_when_out_of_time()
 
 
 async def _refuse_input_gated(path: str) -> None:
