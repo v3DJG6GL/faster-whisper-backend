@@ -442,6 +442,224 @@ def test_plausible_mistyped_values_are_still_printed(monkeypatch, restore_config
     _assert_not_warned("not shown")
 
 
+def test_run_on_wildcard_origin_is_not_echoed(monkeypatch, restore_config):
+    """The wildcard note lists the dropped entries as written; the entry that
+    swallowed the next .env line is listed without that line's text."""
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_CORS_ALLOW_ORIGINS=
+        "* WHISPER_BOOTSTRAP_ADMIN_KEY=wk_0123456789abcdefghijSECRET",
+        WHISPER_TRUSTED_ORIGINS=
+        "https://ok.example,https://*.example.com WHISPER_HF_TOKEN=hf_ORIGINSECRET")
+    assert config.TRUSTED_ORIGINS == ["https://ok.example"]
+    _assert_warned("WHISPER_TRUSTED_ORIGINS: dropped wildcard entries",
+                   "https://*.example.com <not shown>")
+    _assert_warned("WHISPER_CORS_ALLOW_ORIGINS: dropped wildcard entries")
+    _assert_not_warned("wk_0123", "SECRET", "hf_ORIGIN", "BOOTSTRAP_ADMIN_KEY",
+                       "WHISPER_HF_TOKEN")
+
+
+def test_run_on_secret_with_a_comma_is_not_echoed_as_a_wildcard_entry(
+        monkeypatch, restore_config):
+    """A comma inside the swallowed text makes a list entry of its own, with
+    no NAME= in it: the test is on the variable's whole value, not per entry."""
+    _reload_with_env(
+        monkeypatch, WHISPER_TRUSTED_ORIGINS=
+        "https://ok.example WHISPER_BOOTSTRAP_ADMIN_KEY=abcdefgh,ijkl*mnop-SECRETPART")
+    _assert_warned("WHISPER_TRUSTED_ORIGINS: dropped wildcard entries")
+    _assert_not_warned("SECRETPART", "ijkl", "abcdefgh", "BOOTSTRAP_ADMIN_KEY")
+
+
+@pytest.mark.parametrize("field,head", [
+    ("TEMPERATURE", "0.0 "), ("SUPPRESS_TOKENS", "-1 "),
+    ("TEMPERATURE", "0.0"), ("SUPPRESS_TOKENS", "-1")])
+def test_run_on_per_model_string_field_is_not_echoed(
+        monkeypatch, restore_config, field, head):
+    """The per-model fields kept as raw strings are quoted by their
+    validators; a head without whitespace is what a lost newline leaves."""
+    _reload_with_env(monkeypatch, **{
+        f"WHISPER_MODEL_OVERRIDE__tiny__{field}":
+        head + "WHISPER_HF_TOKEN=hf_PERMODELSECRET"})
+    assert field not in config.MODEL_OVERRIDES.get("tiny", {})
+    _assert_warned("value(s) for 'tiny'", field, "<not shown>")
+    _assert_not_warned("hf_PERMODEL", "SECRET", "WHISPER_HF_TOKEN")
+
+
+@pytest.mark.parametrize("var,head", [
+    ("WHISPER_TEMPERATURE", "0.0"), ("WHISPER_SUPPRESS_TOKENS", "-1"),
+    ("WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS", "10.0.0.0/8"),
+    ("WHISPER_USER_WEBUI_ALLOWED_HOSTS", "10.0.0.0/8"),
+    ("WHISPER_TRUSTED_ORIGINS", "x"), ("WHISPER_CORS_ALLOW_ORIGINS", "x"),
+    ("WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE", "nope")])
+def test_run_on_without_whitespace_is_not_echoed(monkeypatch, restore_config, var, head):
+    """A lost newline joins two lines with nothing between them: the second
+    setting is recognised by this app's own WHISPER_ prefix."""
+    _reload_with_env(monkeypatch, **{var: head + "WHISPER_HF_TOKEN=hf_GLUEDSECRET"})
+    _assert_warned(var + " is not a valid", "<not shown>")
+    _assert_not_warned("hf_GLUED", "SECRET", "WHISPER_HF_TOKEN")
+
+
+@pytest.mark.parametrize("value", [" KEY=abc0042", "KEY=abc0042"])
+def test_run_on_after_an_empty_value_is_not_echoed(monkeypatch, restore_config, value):
+    """An empty first setting leaves a short value that is only the second
+    line (with or without the space a `KEY= ` line ends on)."""
+    _reload_with_env(monkeypatch, WHISPER_VAD_FILTER=value,
+                     WHISPER_MODEL_OVERRIDE__tiny__DIARIZE=value)
+    _assert_warned("WHISPER_VAD_FILTER=", "not a valid boolean")
+    _assert_warned("DIARIZE=", "not a valid boolean", "for tiny")
+    _assert_not_warned("abc0042", "KEY=abc")
+
+
+def _run_on_sweep_env(head):
+    """Every WHISPER_* variable config.py reads from the environment (mapped,
+    special-cased, and each per-model field under a model id of its own: one
+    entry reports only its first error) set to `head` + a second setting that
+    carries a numbered canary. Not the data-layout roots: they would re-root
+    the paths of this test process. Upper-case ids: Windows upper-cases the
+    names, and the name-only lines are compared with them."""
+    names = [*settings_schema.ENV_VAR_MAPPING.values(), "WHISPER_ADMIN_UI",
+             "WHISPER_BOOTSTRAP_ADMIN_KEY", "WHISPER_CAPTURES_PROPOSER_CACHE_TTL_S",
+             "WHISPER_NOT_A_SETTING"]
+    names += [f"WHISPER_MODEL_OVERRIDE__M{i}__{f}"
+              for i, f in enumerate(settings_schema.ModelOverride.model_fields)]
+    return {n: f"{head}WHISPER_HF_TOKEN=hf_CANARY{i:04d},x*y-CANARYPART"
+            for i, n in enumerate(dict.fromkeys(names))}
+
+
+@pytest.mark.parametrize("head", [
+    "x ", "1 ", "0.0 ", "true ", "* ", "https://*.example.com ",
+    "https://ok.example,https://*.b.example ", "10.0.0.0/8 ", "-1 ", "a,b ",
+    " ", "", "x", "0.0", "*", "10.0.0.0/8", "https://ok.example"])
+def test_no_startup_warning_quotes_a_run_on_value(monkeypatch, restore_config, head):
+    """Whatever message a variable ends up in, the text it swallowed from the
+    next .env line is in none of them, and every such variable is named in a
+    line of its own (value untouched, swallowed name not printed)."""
+    env = _run_on_sweep_env(head)
+    _reload_with_env(monkeypatch, **env)
+    leaking = [m for m in config._ENV_WARNINGS if "canary" in m.lower()]
+    assert not leaking, leaking[:3]
+    _assert_not_warned("WHISPER_HF_TOKEN=")
+    named = {m.split(" ", 1)[0] for m in config._ENV_WARNINGS
+             if "holds a second WHISPER_ name" in m}
+    assert named == set(env)
+    assert all(len(m) <= config._WARNING_MAX + 1 and "\n" not in m
+               for m in config._ENV_WARNINGS)
+
+
+def test_run_on_in_a_free_text_setting_is_reported_by_name_only(
+        monkeypatch, restore_config):
+    """A free-text setting takes the run-on as its value and nothing rejects
+    it: the value stays as it is, and one line names the variable only."""
+    raw = " (KI) WHISPER_BOOTSTRAP_ADMIN_KEY=wk_0123456789abcdefghijSECRET"
+    _reload_with_env(monkeypatch, WHISPER_OUTPUT_SUFFIX=raw)
+    assert config.OUTPUT_SUFFIX == raw
+    _assert_warned("WHISPER_OUTPUT_SUFFIX holds a second WHISPER_ name",
+                   "NOT applied", "not shown")
+    _assert_not_warned("wk_0123", "SECRET", "BOOTSTRAP_ADMIN_KEY")
+
+
+def test_ordinary_values_read_as_before(monkeypatch, restore_config):
+    """No second NAME= that could be a setting of this app: every message
+    keeps the text it quotes, and no name-only line is added. A `x=1` in a
+    prompt is not a second setting."""
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_TRUSTED_ORIGINS="https://ok.example,https://*.example.com",
+        WHISPER_TEMPERATURE="0,x",
+        WHISPER_DEFAULT_PROMPT="Befund x=1, Radiologie",
+        WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="nope",
+        WHISPER_MODEL_OVERRIDE__tiny__TEMPERATURE="0,y")
+    assert config.DEFAULT_PROMPT == "Befund x=1, Radiologie"
+    _assert_warned("WHISPER_TRUSTED_ORIGINS: dropped wildcard entries "
+                   "['https://*.example.com'] — they never matched")
+    _assert_warned("WHISPER_TEMPERATURE is not a valid TEMPERATURE", "got 'x'")
+    _assert_warned("WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE is not a valid",
+                   "unknown rule slugs: ['nope']")
+    _assert_warned("value(s) for 'tiny' (TEMPERATURE)", "got 'y'")
+    _assert_not_warned("not shown", "second WHISPER_ name")
+
+
+def test_startup_warning_is_one_bounded_line(monkeypatch, restore_config):
+    """A JSON key lands in the location half of a validation reason: a line
+    break in it would split one log record in two, a long one fills the log."""
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDES=json.dumps(
+            {"ti\nny 2026 CRITICAL forged \x1b[31m": {"BEAM_SIZE": 999}}),
+        WHISPER_OVERRIDE_PROFILES=json.dumps({"A" * 5000: {"BEAM_SIZE": 999}}))
+    _assert_warned("WHISPER_MODEL_OVERRIDES is not a valid", "ti?ny 2026 CRITICAL")
+    _assert_warned("WHISPER_OVERRIDE_PROFILES is not a valid", "AAAA", "…")
+    for m in config._ENV_WARNINGS:
+        assert not any(c in m for c in "\n\r\x1b"), m
+        assert len(m) <= config._WARNING_MAX + 1, len(m)
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("ten", (-1, False)), ("0,x", (-1, False)), ("https://a.example/?q=1", (-1, False)),
+    ("Befund = finding", (-1, False)), ("a 9b=1", (-1, False)), ("9a=1", (-1, False)),
+    ("1 9WHISPER_=1", (-1, False)), ("a WHISPER_", (-1, False)),
+    ("KEY=1", (0, False)), (" KEY=1", (1, False)), ("5 KEY=1 b=2", (2, False)),
+    ("WHISPER_=1", (0, False)), ("WHISPER_X=1", (0, True)),
+    ("0.0WHISPER_X=1", (3, True)), ("0.0 WHISPER_X=1", (4, True)),
+    ("a\tb=c WHISPER_X=1", (2, True)), ("1=WHISPER_WHISPER_X=1", (2, True)),
+    ("1 x9WHISPER_AB=1", (2, True))])
+def test_second_name_is_found_where_the_swallowed_text_starts(value, expected):
+    assert config._second_name(value) == expected
+
+
+def test_screen_reads_only_this_apps_variables_and_adds_nothing_without_a_run_on():
+    msgs = ["WHISPER_BEAM_SIZE='ten' is not a valid integer; keeping 10",
+            "a path /srv/x KEY=notwhisper is printed"]
+    env = {"PATH": "/srv/x KEY=notwhisper", "LS_COLORS": "a WHISPER_X=1",
+           "WHISPER_DEFAULT_PROMPT": "Befund x=1, Radiologie",
+           "WHISPER_TRANSLATION_GLOSSARY": "Befund = finding",
+           "WHISPER_TRUSTED_ORIGINS": "https://a.example/?q=1"}
+    assert config._screen_env_warnings(msgs, env) == msgs
+
+
+def test_screen_cuts_the_run_on_text_in_every_spelling_a_message_uses(tmp_path):
+    """Raw, repr-quoted (alone and inside a longer quoted string), and as a
+    path the data-layout defaults normalised."""
+    tail = "WHISPER_HF_TOKEN=hf_it's\\a//SECRET/"
+    env = {"WHISPER_DB_DIR": "/srv/db " + tail}
+    whole = env["WHISPER_DB_DIR"]
+    both, path = 'say "x" ' + whole, os.path.normpath(whole + "/keys.sqlite3")
+    msgs = [f"raw {whole} end", f"repr {whole!r} end", f"list {[whole]} end",
+            f"both quotes {both!r} end", f"path {path} end",
+            f"path repr {path!r} end"]
+    out = config._screen_env_warnings(msgs, env)
+    assert len(out) == len(msgs) + 1
+    assert not any("SECRET" in m or "hf_it" in m for m in out), out
+    assert all("<not shown>" in m for m in out[:-1]), out
+    assert out[-1].startswith("WHISPER_DB_DIR holds a second WHISPER_ name")
+
+    # The legacy-state line prints the configured path as it is: a path
+    # setting has no validator, so the run-on is its live value.
+    (tmp_path / "captures").mkdir()
+    (tmp_path / "captures" / "a.wav").write_bytes(b"x")
+    env = {"WHISPER_CAPTURES_DIR": "/nowhere WHISPER_HF_TOKEN=hf_LEGACYSECRET"}
+    legacy = config._legacy_state_warnings(
+        str(tmp_path), str(tmp_path / "data"),
+        {"captures": env["WHISPER_CAPTURES_DIR"]})
+    assert len(legacy) == 1 and "hf_LEGACYSECRET" in legacy[0]
+    out = config._screen_env_warnings(legacy, env)
+    assert not any("LEGACY" in m or "WHISPER_HF_TOKEN" in m for m in out), out
+    assert "the server reads /nowhere <not shown>" in out[0]
+
+
+def test_screen_scans_a_long_value_in_linear_time():
+    """A megabyte of name characters with no `=` (a .env value has no size
+    limit) is one pass, not one pass per WHISPER_ in it."""
+    import time
+    value = "WHISPER_" * 125_000
+    start = time.monotonic()
+    out = config._screen_env_warnings(["m"], {"WHISPER_DEFAULT_PROMPT": value})
+    assert out == ["m"]
+    out = config._screen_env_warnings(["m"], {"WHISPER_DEFAULT_PROMPT": value + "=x"})
+    assert len(out) == 2 and "WHISPER_DEFAULT_PROMPT holds a second" in out[1]
+    assert time.monotonic() - start < 5
+
+
 def test_secret_file_indirection(monkeypatch, tmp_path):
     secret = tmp_path / "key"
     secret.write_text("  sk-from-file  \n", encoding="utf-8")

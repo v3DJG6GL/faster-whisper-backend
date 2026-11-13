@@ -22,6 +22,7 @@ import json
 import os
 import re
 
+from faster_whisper_backend.core import store_common as _store_common  # stdlib-only
 from faster_whisper_backend.settings import config_renames as _renames
 from faster_whisper_backend import paths as _paths  # underscore: not a setting
 
@@ -1476,7 +1477,9 @@ except ImportError:
 # Collects "couldn't parse WHISPER_X=..." messages encountered while applying
 # env overrides at import time. main.py drains this AFTER logging is configured
 # (config.py runs too early to log), so a typo like WHISPER_BEAM_SIZE=ten is
-# surfaced as a warning rather than silently ignored.
+# surfaced as a warning rather than silently ignored. Appending here is all a
+# new message needs: the module's last statement passes the whole list through
+# _screen_env_warnings.
 _ENV_WARNINGS: list[str] = []
 # Names of env vars whose value a reader below could not parse (and so kept
 # the current value). The validation pass at the bottom folds these into
@@ -1501,6 +1504,88 @@ def _shown(raw: str) -> str:
     if len(v) <= 16 and not _RUN_ON_RE.search(v):
         return repr(raw)
     return f"<a value of {len(raw)} characters, not shown>"
+
+_NAME_CHARS = ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+               "0123456789_")
+_OWN_PREFIX = "WHISPER_"
+# One startup message is one log record of at most this many characters.
+_WARNING_MAX = 2000
+
+def _second_name(value: str) -> "tuple[int, bool]":
+    """Where the text of a second setting starts in an env value (-1: no
+    second NAME=), and whether any second name is one of this app's own.
+    A name counts after whitespace or at the very start (an empty first
+    line); a WHISPER_<NAME>= counts anywhere, also glued onto the first
+    value, which is what a lost newline leaves. One pass over the `=` signs:
+    a regex for the glued form re-reads a long run of name characters once
+    per WHISPER_ in it."""
+    first, own, seg_start = -1, False, 0
+    while not own:
+        eq = value.find("=", seg_start)
+        if eq < 0:
+            break
+        seg = value[seg_start:eq]
+        name = seg[len(seg.rstrip(_NAME_CHARS)):]
+        start = eq - len(name)
+        at = name.find(_OWN_PREFIX)
+        own = 0 <= at < len(name) - len(_OWN_PREFIX)
+        if first < 0:
+            if name and not name[0].isdigit() and (
+                    start == 0 or value[start - 1].isspace()):
+                first = start
+            elif own:
+                first = start + at
+        seg_start = eq + 1
+    return first, own
+
+def _screen_env_warnings(msgs: "list[str]", environ) -> "list[str]":
+    """The one way out for a startup message (they reach the served log).
+    What a WHISPER_* value holds from its second NAME= on belongs to another
+    setting — two .env lines run together — and may be a secret: that text is
+    cut out of EVERY message, whole and per comma-separated piece (a list
+    reader or a CSV validator quotes one piece), in each spelling a message
+    gives it (as is, repr-quoted, as a normalised path). The test is on the
+    variable's raw value, not on the message site, so a message added later
+    is covered too. A value holding a second WHISPER_<NAME>= also gets a line
+    naming the variable alone: where nothing rejects the value (free text, a
+    path) no other message says so. The swallowed setting's name is never
+    printed. Each message leaves as one line of bounded length."""
+    pieces: "set[str]" = set()
+    extra: "list[str]" = []
+    for name in sorted(environ):
+        if not name.startswith(_OWN_PREFIX):
+            continue
+        value = environ[name]
+        at, own = _second_name(value)
+        if at < 0:
+            continue
+        tail = value[at:].strip()
+        for piece in (tail, *tail.split(",")):
+            piece = piece.strip()
+            for text in (piece, os.path.normpath(piece) if piece else piece):
+                # Shorter than this is no secret, and cutting it would eat
+                # ordinary words out of unrelated messages.
+                if len(text) < 6:
+                    continue
+                quoted = repr(text)
+                pieces.update((text, quoted[1:-1]))
+                if quoted[0] == '"':
+                    # Inside a longer string repr quotes with ' instead.
+                    pieces.add(quoted[1:-1].replace("'", "\\'"))
+        if own:
+            extra.append(
+                f"{name} holds a second WHISPER_ name (two settings on one "
+                f"line?): the second setting is NOT applied from this line and "
+                f"its text is part of this value, which is not shown")
+    ordered = sorted(pieces, key=len, reverse=True)
+    out: "list[str]" = []
+    for msg in (*msgs, *extra):
+        for piece in ordered:
+            msg = msg.replace(piece, "<not shown>")
+        if len(msg) > _WARNING_MAX:
+            msg = msg[:_WARNING_MAX] + "…"
+        out.append(_store_common._LOG_UNSAFE_RE.sub("?", msg))
+    return out
 
 def _env_unparsed(name: str, raw: str, current, what: str):
     """Warn that `name` is not a valid `what`, mark it unparsed, keep `current`."""
@@ -2671,3 +2756,8 @@ _ENV_WARNINGS.extend(_legacy_state_warnings(_REPO_DIR, _DATA_DIR, {
     "captures": CAPTURES_DIR,
     os.path.join("logs", "whisper.log"): LOG_FILE,
 }))
+
+# LAST statement that touches _ENV_WARNINGS: whatever was collected above
+# leaves through the one screen. In place, so the list object stays the one
+# main drains.
+_ENV_WARNINGS[:] = _screen_env_warnings(_ENV_WARNINGS, os.environ)
