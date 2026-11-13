@@ -731,6 +731,9 @@ _TEST_PIPELINE_PROBE_ROUNDS = 3
 # text-changing map or callback before a pattern forces a walk of the rest of
 # the list, so walks that each finish would otherwise add up to minutes.
 _TEST_PIPELINE_PROBE_WALL = 15.0
+# Wall time one dry run may spend in the structural screens in all. Its own
+# number, not the probe's: the screens run before any killable child.
+_TEST_PIPELINE_SCREEN_WALL = 15.0
 # Units: ["mark", rule] prints the sha1 of the text that rule is handed;
 # ["sub", rule, pattern, replacement] is a regex-list entry, applied exactly as
 # the dry run applies it (the walk's output bound, `cap` in the input, counted
@@ -1049,6 +1052,12 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
         "shorter list to see this step"
     )
 
+    _UNSCREENED_MSG = (
+        "not executed here: this dry run's screen time ran out before this "
+        "pattern was checked (a long rule list or patterns that are slow to "
+        "check), so it may be harmless — test a shorter list to see this step"
+    )
+
     def _screen_msg(pat: str) -> str | None:
         """The save-time structural screens as a not_run advisory; None = safe
         to run. The fixed-count screen (regex_guard.check_fixed_counts) comes
@@ -1126,7 +1135,29 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
         codes = {c.strip().lower() for c in langs if isinstance(c, str) and c.strip()}
         return bool(codes) and language not in codes
 
-    _screened: dict[str, bool] = {}
+    # pattern -> its screen advisory (None = safe to run): one screen per
+    # distinct pattern per request, all of them inside one time budget.
+    _screen_cache: dict[str, str | None] = {}
+    _screen_left = [_TEST_PIPELINE_SCREEN_WALL]
+
+    def _screened(pat: str) -> str | None:
+        """_screen_msg(pat), asked once per request; past the request's
+        screen time a pattern not yet asked about is not screened and not
+        run (_UNSCREENED_MSG)."""
+        if pat in _screen_cache:
+            return _screen_cache[pat]
+        if _screen_left[0] <= 0:
+            msg: str | None = _UNSCREENED_MSG
+        else:
+            t0 = time.monotonic()
+            msg = _screen_msg(pat)
+            _screen_left[0] -= time.monotonic() - t0
+        # The first answer stands for the whole request. A guard thread left
+        # behind by its 2 s join can finish a screen beside a later pass: if
+        # its "safe" replaced an "unscreened" already given, the pattern
+        # would run in-process although the probe walk built on the first
+        # answer left it out and never timed it.
+        return _screen_cache.setdefault(pat, msg)
 
     def _probe_items(rule: Any) -> list[tuple[int, str, Any]]:
         """(entry index, pattern, replacement) for every match `rule` would run
@@ -1157,9 +1188,7 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
             # object) and leave the whole request unprobed.
             if rep is not None and not isinstance(rep, str):
                 continue
-            if pat not in _screened:
-                _screened[pat] = _screen_msg(pat) is None
-            if _screened[pat]:
+            if _screened(pat) is None:
                 out.append((ei, pat, rep))
         return out
 
@@ -1256,6 +1285,8 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
                     # never probed ("may be harmless") 0.
                     bad: str | None = None
                     rank = -1
+                    # The first rank-0 reason, for the caveat below.
+                    waived: str | None = None
                     for ei, entry in enumerate(entries):
                         ep = entry.get("pattern", "") or ""
                         if not ep:
@@ -1267,18 +1298,25 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
                             if rank < 1:
                                 bad, rank = "pattern must be a string", 1
                             continue
-                        screen = _screen_msg(ep)
+                        screen = _screened(ep)
                         if screen is not None:
                             # Wins over an earlier compile error: `not_run`
-                            # needs its "not executed here" caveat shown.
-                            if rank < 3:
-                                bad, rank = screen, 3
+                            # needs its "not executed here" caveat shown. A
+                            # pattern the screens never reached ranks with
+                            # the unprobed ones.
+                            r = 0 if screen is _UNSCREENED_MSG else 3
+                            if rank < r:
+                                bad, rank = screen, r
+                            if r == 0 and waived is None:
+                                waived = screen
                             lout["not_run"] = True
                             continue
                         if ei in held:
                             r = 2 if held[ei] == _SLOW_PROBE_MSG else 0
                             if rank < r:
                                 bad, rank = held[ei], r
+                            if r == 0 and waived is None:
+                                waived = held[ei]
                             lout["not_run"] = True
                             continue
                         try:
@@ -1331,11 +1369,12 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
                         total += n
                     lout["after"] = cur
                     lout["matches"] = total
-                    # Only an unprobed entry (rank 0) can be not_run under a
-                    # rank-1 error; unlike ranks 2-3, that error has no "not
-                    # executed here" caveat of its own, so it gets both.
+                    # Only an unprobed or unscreened entry (rank 0) can be
+                    # not_run under a rank-1 error; unlike ranks 2-3, that
+                    # error has no "not executed here" caveat of its own, so
+                    # it gets both.
                     if rank == 1 and lout.get("not_run"):
-                        bad = f"{bad}; another entry is {_UNPROBED_MSG}"
+                        bad = f"{bad}; another entry is {waived}"
                     if bad is not None:
                         lout["err"] = bad
                     lout["done"] = True
@@ -1373,7 +1412,7 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
                 # As in the regex-list branch: never screen an uncapped repr.
                 if not isinstance(pattern, str):
                     return {**kept, "error": "pattern must be a string"}
-                screen = _screen_msg(pattern)
+                screen = _screened(pattern)
                 if screen is not None:
                     return {**kept, "error": screen, "not_run": True}
                 if -1 in held:
@@ -1445,8 +1484,9 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
         # killable probe on exactly this text, or it is not run.
         held: dict[int, str] = {}
         # Off the loop: the structural screen of a new pattern is a compile
-        # plus pairwise overlap matching. Passes run one after another, so
-        # _screened is never touched by two threads at once.
+        # plus pairwise overlap matching. Passes run one after another; only
+        # a guard thread left behind by its join can ask _screened beside
+        # one, and each pattern keeps the first answer it was given.
         items = await asyncio.to_thread(_probe_items, rule)
         if items and probe["on"]:
             h = _text_sha(text)

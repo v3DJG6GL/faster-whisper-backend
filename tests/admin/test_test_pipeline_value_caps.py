@@ -2,12 +2,15 @@
 longer than a saved rule may carry: editor rules skip the schema adapter, so
 the dry run applies the save's bounds itself."""
 
+import threading
+import time
 from typing import get_args
 
 from faster_whisper_backend.admin import routes as admin_routes
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import schema as settings_schema
 from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, refused_dry_run, upper_rule
+from tests.conftest import record_calls
 
 
 def test_caps_are_read_off_the_schema():
@@ -205,3 +208,114 @@ def test_patterns_are_screened_off_the_event_loop(client, monkeypatch):
                               {"pattern": "baz", "replacement": "qux"}], sample="foo baz")
     assert step["after"] == "bar qux"
     assert seen and not any(seen)
+
+
+def _timed_screens(monkeypatch, wall, secs=0.0, refuse=()):
+    """Every structural screen takes `secs` and refuses the patterns in
+    `refuse`, against `wall` seconds of screen time for one dry run. Returns
+    the patterns screened, one per call."""
+    asked = []
+
+    def _screen(pat):
+        asked.append(pat)
+        time.sleep(secs)
+        return pat in refuse
+    monkeypatch.setattr(admin_routes.regex_guard, "_nested_repetition", _screen)
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_SCREEN_WALL", wall)
+    return asked
+
+
+def test_each_pattern_is_screened_once(client, monkeypatch):
+    # The probe walk, the list's run and a later rule all ask about the same
+    # patterns; each screen is a compile plus pairwise overlap matching.
+    asked = _timed_screens(monkeypatch, wall=15.0)
+    steps = dry_run(client, [list_rule([{"pattern": "foo", "replacement": "bar"},
+                                        {"pattern": "baz", "replacement": "qux"}]),
+                             upper_rule("baz")], "foo baz")["steps"]
+    assert steps[0]["after"] == "bar qux"
+    assert sorted(asked) == ["baz", "foo"]
+
+
+def test_screens_stop_at_their_time_budget(client, monkeypatch):
+    # 41 distinct patterns at 0.03 s a screen against 0.05 s: the first two
+    # are screened and run, the rest are reported, neither matched here nor
+    # handed to the probe child.
+    asked = _timed_screens(monkeypatch, wall=0.05, secs=0.03)
+    walked = record_calls(monkeypatch, admin_routes, "_probe_chain",
+                          lambda text, units, *a, **kw: units)
+    rules = [list_rule([{"pattern": f"w{r}{i:02d}", "replacement": "x"} for i in range(20)],
+                       name=f"r{r}") for r in range(2)]
+    sample = "w019 w119"
+    steps = dry_run(client, [*rules, upper_rule(r"w\d+")], sample)["steps"]
+    assert asked == ["w000", "w001"]
+    for step in steps[:3]:
+        assert step["not_run"] is True and "screen time ran out" in step["error"]
+        assert step["after"] == sample
+    assert {u[2] for units in walked for u in units if u[0] in ("sub", "match")} == set(asked)
+
+
+def test_an_unscreened_entry_does_not_hide_a_screen_verdict(client, monkeypatch):
+    # The first rule's screen spends the time; the second rule's `a` is then
+    # unscreened ("may be harmless") beside the verdict already known.
+    _timed_screens(monkeypatch, wall=0.01, secs=0.02, refuse={"(a+)+$"})
+    nested = {"pattern": "(a+)+$", "replacement": "x"}
+    step = dry_run(client, [list_rule([nested]),
+                            list_rule([{"pattern": "a", "replacement": "b"}, nested])],
+                   "aaaa")["steps"][1]
+    assert (step["not_run"], step["after"]) == (True, "aaaa")
+    assert step["error"].startswith("nested repetition")
+    assert "may be harmless" not in step["error"]
+
+
+def test_a_rank_one_error_beside_an_unscreened_entry_says_why_it_did_not_run(client, monkeypatch):
+    _timed_screens(monkeypatch, wall=0.0)
+    step = list_step(client, [{"pattern": "a", "replacement": "b"},
+                              {"pattern": ["("], "replacement": "x"}])
+    assert (step["not_run"], step["after"]) == (True, "aaaa")
+    assert step["error"].startswith("pattern must be a string")
+    assert "another entry is not executed here" in step["error"]
+    assert "screen time ran out" in step["error"]
+
+
+def test_a_pattern_left_unscreened_stays_unrun_when_a_stranded_thread_clears_it(client, monkeypatch):
+    # Rule 1's guard thread is left behind inside the screen of `q` (its
+    # join gives up). `p` then spends the screen time, so rule 2's `q` is
+    # left out of the probe walk. The stranded thread clearing `q` after
+    # that walk must not let it run: nothing timed it on this text.
+    release, inside = threading.Event(), threading.Event()
+    stranded = []
+
+    def _screen(pat):
+        if pat == "q" and not inside.is_set():
+            inside.set()
+            release.wait(5)
+        elif pat == "p":
+            inside.wait(5)
+            time.sleep(0.06)
+        return False
+    monkeypatch.setattr(admin_routes.regex_guard, "_nested_repetition", _screen)
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_SCREEN_WALL", 0.05)
+    real_join = threading.Thread.join
+
+    def _join(self, timeout=None):
+        if self.name.endswith("(_do_list)") and not stranded:
+            stranded.append(self)
+            timeout = 0.05
+        return real_join(self, timeout)
+    monkeypatch.setattr(threading.Thread, "join", _join)
+
+    def _walk(text, units, *a, **kw):
+        release.set()
+        real_join(stranded[0], 5)
+        return {1: admin_routes._text_sha(text)}, set(), None
+    monkeypatch.setattr(admin_routes, "_probe_chain", _walk)
+    try:
+        steps = dry_run(client, [list_rule([{"pattern": "q", "replacement": 5}]),
+                                 list_rule([{"pattern": "p", "replacement": "P"},
+                                            {"pattern": "q", "replacement": "Q"}])],
+                        "p q")["steps"]
+    finally:
+        release.set()
+    assert steps[0]["slow"] is True
+    assert (steps[1]["after"], steps[1]["not_run"]) == ("P q", True)
+    assert "screen time ran out" in steps[1]["error"]
