@@ -1723,10 +1723,14 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
                 _buf = _fh.read()
             _enc = ("utf-16" if _buf[:2] in (b"\xff\xfe", b"\xfe\xff")
                     else "utf-8-sig")
-            os.environ[_secret] = _buf.decode(_enc).strip()
-            _ENV_FROM_SECRET_FILES.add(_secret)
-            if not os.environ[_secret]:
-                # An empty file reads like an unset variable: say so, or an
+            _value = _buf.decode(_enc).strip()
+            if _value:
+                os.environ[_secret] = _value
+                _ENV_FROM_SECRET_FILES.add(_secret)
+            else:
+                # An empty file reads like an unset variable, so nothing is
+                # written: an explicit "" would clear a HF_TOKEN saved in
+                # config.local.json and env-pin the field. Say so, or an
                 # empty bootstrap-key secret leaves OPEN mode unexplained.
                 _ENV_WARNINGS.append(
                     f"{_secret}_FILE={_path!r} is empty; {_secret} is NOT set"

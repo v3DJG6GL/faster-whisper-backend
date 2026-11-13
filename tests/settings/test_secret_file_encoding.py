@@ -14,6 +14,9 @@ import os
 import pytest
 
 from faster_whisper_backend.settings import config
+from faster_whisper_backend.settings import config_store
+from tests.conftest import _repoint_path_default
+from tests.settings._rules_helpers import seed_local as _seed_local
 
 _VAR = "WHISPER_BOOTSTRAP_ADMIN_KEY"
 
@@ -78,8 +81,33 @@ def test_an_empty_file_warns_that_the_secret_is_not_set(
     warning = [m for m in config._ENV_WARNINGS if m.startswith(_VAR + "_FILE=")]
     assert len(warning) == 1, config._ENV_WARNINGS
     assert "is empty" in warning[0] and "OPEN mode" in warning[0]
-    # The restart still drops the var so the next process reads the file again.
-    assert _VAR in config._ENV_FROM_SECRET_FILES
+    # Nothing was read from the file, so the restart has nothing to drop: the
+    # var stays unset and the next process reads the file again anyway.
+    assert _VAR not in config._ENV_FROM_SECRET_FILES
+
+
+def test_an_empty_hf_token_file_keeps_the_stored_token(
+        monkeypatch, tmp_path, restore_config):
+    """The prepass wrote WHISPER_HF_TOKEN="" for an empty file, which the
+    str_or_none reader maps to None: the token saved in config.local.json
+    was dropped and the field env-pinned, while the warning said the var
+    was NOT set."""
+    var = "WHISPER_HF_TOKEN"
+    path = _seed_local(tmp_path, {"HF_TOKEN": "hf_storedtoken123"})
+    monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
+    _repoint_path_default(monkeypatch, (config_store.load_overrides,), str(path))
+    secret = tmp_path / "token"
+    secret.write_bytes(b"\n")
+    # setenv first so undo() also clears a value the prepass writes.
+    monkeypatch.setenv(var, "x")
+    monkeypatch.delenv(var)
+    monkeypatch.setenv(var + "_FILE", str(secret))
+    importlib.reload(config)
+    assert config.HF_TOKEN == "hf_storedtoken123"
+    assert var not in os.environ
+    assert "HF_TOKEN" not in config_store.env_pinned_fields()
+    assert any(m.startswith(var + "_FILE=") and f"{var} is NOT set" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
 def test_a_filled_file_adds_no_warning(monkeypatch, tmp_path, restore_config):
