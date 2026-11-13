@@ -1328,6 +1328,69 @@ def test_guard_counts_empty_periods_and_adaptation_sets(monkeypatch):
     assert _registered_guard()["_DIALS"].tls.variants == cap
 
 
+def _mpd_beside(reps=50, *, root="", period="", in_set="", set_attrs=""):
+    """`reps` Representations with other content beside them at each level."""
+    return _mpd(
+        root + "<Period>" + period
+        + f'<AdaptationSet mimeType="audio/mp4"{set_attrs}>' + in_set
+        + "<BaseURL>a.m4a</BaseURL>"
+        + "".join(f'<Representation id="r{i}" bandwidth="{i + 1}" '
+                  'codecs="mp4a.40.2"/>' for i in range(reps))
+        + "</AdaptationSet></Period>")
+
+
+@pytest.mark.parametrize("beside", [
+    {"in_set": "<a/>" * 200},
+    {"period": "<a/>" * 200},
+    {"root": "<a/>" * 200},
+    {"set_attrs": "".join(f' a{i}=""' for i in range(200))},
+], ids=["in the set", "under the period", "under the root", "set attributes"])
+def test_guard_charges_what_yt_dlp_rewalks_per_representation(monkeypatch, beside):
+    """For every Representation yt-dlp searches the children of the MPD, of
+    the Period and (twice) of the AdaptationSet and copies the set's
+    attributes: 1 000 Representations beside 1.9 million empty elements
+    (7.6 MB) took 36 s of CPU with every count within its cap."""
+    guard = _registered_guard()
+    assert guard["_MAX_MANIFEST_WALK"] == 2 ** 30
+    monkeypatch.setitem(guard, "_MAX_MANIFEST_WALK", 10_000)
+    _reset_budget()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="manifest is too large"):
+        _parse_mpd(_mpd_beside(**beside))
+    # A refused manifest spends nothing; the same Representations with
+    # nothing beside them parse, and spend from the extraction's budget.
+    assert guard["_DIALS"].tls.walk == 0
+    formats, _ = _parse_mpd(_mpd_beside())
+    assert len(formats) == 50
+    # Per Representation: the root's and the Period's one child, the set's
+    # 51 children and one attribute twice, its own three attributes.
+    spent = guard["_DIALS"].tls.walk
+    assert spent == 50 * (1 + 1 + 2 * 51 + 2 * 1 + 3)
+    # One extraction parses many manifests: each within the cap is not enough.
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="manifest is too large"):
+        _parse_mpd(_mpd_beside())
+    assert guard["_DIALS"].tls.walk == spent
+    _reset_budget()
+    assert guard["_DIALS"].tls.walk == 0
+    assert len(_parse_mpd(_mpd_beside())[0]) == 50
+
+
+def test_guard_admits_the_widest_manifests_the_variant_cap_allows():
+    """What yt-dlp re-walks is bounded on top of the variant cap, not in its
+    place: all 20 000 Representations in one AdaptationSet, or one each in
+    20 000 Periods, stay inside the bound (sized here, not parsed)."""
+    guard = _registered_guard()
+    variants = guard["_MAX_MPD_REPRESENTATIONS"]
+    # The charge of the test above, at the variant cap.
+    one_set = variants * (1 + 1 + 2 * (variants + 1) + 2 * 1 + 3)
+    one_each = variants * (variants + 1 + 2 * (1 + 1) + 2 * 1 + 3)
+    assert max(one_set, one_each) <= guard["_MAX_MANIFEST_WALK"]
+    # Smooth Streaming, per QualityLevel: the root's children and its
+    # StreamIndex's. Every level in one StreamIndex, or a StreamIndex each,
+    # with one chunk.
+    assert variants * (1 + variants + 1) <= guard["_MAX_MANIFEST_WALK"]
+    assert variants * (variants + 1 + 1) <= guard["_MAX_MANIFEST_WALK"]
+
+
 # ---- Smooth Streaming: yt-dlp expands every <c r="N"> into N fragment dicts
 # for each QualityLevel of the stream, in process and with no cap. The guard
 # counts them against the DASH budget before the expansion.
@@ -1877,6 +1940,31 @@ def test_guard_refuses_an_ism_manifest_listing_too_many_variants(monkeypatch, ov
         _parse_ism(_ism(over(cap)))
     fmts, _subs = _parse_ism(_ism(_ism_audio('<c t="0" d="1"/>', levels=cap)))
     assert len(fmts) == cap
+
+
+@pytest.mark.parametrize("beside", [
+    lambda: _ism(_ism_audio("<a/>" * 300 + '<c t="0" d="1"/>', levels=50)),
+    lambda: _ism("<a/>" * 300 + _ism_audio('<c t="0" d="1"/>', levels=50)),
+], ids=["in the stream", "under the root"])
+def test_guard_charges_what_yt_dlp_rewalks_per_quality_level(monkeypatch, beside):
+    """For every QualityLevel yt-dlp searches the children of its StreamIndex
+    (for the chunks) and of the manifest (for a Protection element): 300
+    levels under a root of 1.9 million empty elements took 4 s of CPU with
+    every count within its cap."""
+    guard = _registered_guard()
+    monkeypatch.setitem(guard, "_MAX_MANIFEST_WALK", 10_000)
+    _reset_budget()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="manifest is too large"):
+        _parse_ism(beside())
+    assert guard["_DIALS"].tls.walk == 0
+    plain = _ism(_ism_audio('<c t="0" d="1"/>', levels=50))
+    assert len(_parse_ism(plain)[0]) == 50
+    # Per level: the root's one child and the stream's 51.
+    assert guard["_DIALS"].tls.walk == 50 * (1 + 51)
+    # DASH and Smooth Streaming manifests of one extraction share the budget.
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="manifest is too large"):
+        for _ in range(4):
+            _parse_ism(plain)
 
 
 def test_guard_charges_an_ism_chunk_that_builds_no_fragment(monkeypatch):
