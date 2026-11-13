@@ -992,10 +992,15 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _client_language = req_language
         _client_prompt = req_prompt
         _client_prompt_provided = prompt_provided
-        # Set by _refresh_ident when the handshake credential stops resolving to
-        # the identity that opened the connection. Latching (never cleared): a
-        # revoked session is closed, not resumed.
+        # Set by _refresh_ident (and by the receive loop's
+        # _producer_credential_check) when the handshake credential stops
+        # resolving to the identity that opened the connection. Latching (never
+        # cleared): a revoked session is closed, not resumed.
         _auth_revoked = False
+        # The receive loop's own copy of the pre-auth snapshot: its credential
+        # check and the pump's _refresh_ident each have to see a version bump
+        # for themselves, so neither may consume the other's.
+        _prod_version, _prod_resolved_at = _ident_version, _ident_resolved_at
 
         # Locked language / prompt: the admin value stands; the client's
         # handshake value is ignored (and surfaced in the ready frame). Locked
@@ -1758,6 +1763,44 @@ async def transcribe_stream(ws: WebSocket) -> None:
             except Exception as _re:  # noqa: BLE001 — never break dictation on refresh
                 logger.warning("[stream %s] ident refresh failed: %s", session_id[:8], _re)
 
+        def _producer_credential_check():
+            """Receive-loop side of the re-check: is the handshake credential
+            still valid? Encoded bytes that never decode queue no audio chunk,
+            so _refresh_ident is never asked for them, yet each frame re-arms
+            the idle deadline and the decoder child stays alive.
+
+            Sets the latch only. ident / wrappers / prompt stay the pump's to
+            re-resolve: this runs while the pump is parked inside an awaited
+            decode, and rebinding them here would hand one utterance two
+            configurations. Throttled like _refresh_ident (same
+            settings_version.reauth_due, own snapshot), so a live credential
+            costs no store read per frame. Never raises, and fails the way
+            _refresh_ident does: a version probe that cannot run changes
+            nothing (it is retried at the next frame), a credential lookup that
+            cannot run counts as revoked."""
+            nonlocal _prod_version, _prod_resolved_at, _auth_revoked
+            if _auth_revoked:
+                return
+            try:
+                due = settings_version.reauth_due(_prod_version, _prod_resolved_at)
+            except Exception as _re:  # noqa: BLE001 — never break dictation on a probe
+                logger.warning("[stream %s] credential probe failed: %s",
+                               session_id[:8], store_common.log_safe(str(_re)))
+                return
+            if due is None:
+                return
+            _prod_version, _prod_resolved_at = due
+            try:
+                fresh = authenticate_ws(ws)
+            except Exception as _ae:  # noqa: BLE001 — cannot prove still-valid
+                logger.warning("[stream %s] re-auth failed: %s",
+                               session_id[:8], store_common.log_safe(str(_ae)))
+                fresh = None
+            if fresh is None or fresh.get("user_id") != user.get("user_id"):
+                _auth_revoked = True
+                logger.warning("[stream %s] credential no longer valid — closing",
+                               session_id[:8])
+
         # Producer→consumer hand-off. The receive loop (producer) must NEVER block
         # on a decode: if it does, it stops draining ws.receive(), the inbound WS
         # message queue fills, websockets stops reading frames, the client's PONGs
@@ -1881,7 +1924,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         # Non-speech audio opens no utterance and runs no
                         # decode, yet it re-arms the idle deadline like any
                         # other audio: checked here, a revoked credential
-                        # loses a silent stream at its next chunk.
+                        # loses a silent stream at its next chunk of PCM (raw
+                        # or decoded). Encoded bytes that decode to nothing
+                        # queue no chunk at all; the receive loop's
+                        # _producer_credential_check covers those.
                         _require_live_credential()
                         await session.feed_pcm(data)
                     elif kind == "flush":
@@ -1964,10 +2010,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     break
                 if msg.get("type") == "websocket.disconnect":
                     break
+                # Every frame kind, and before the frame is used: bytes the
+                # decoder turns into no PCM reach no pump-side check.
+                _producer_credential_check()
                 if _auth_revoked:
-                    # Latched by _refresh_ident on the consumer side. Every sink
-                    # is already cut (the decode guards); this closes the socket
-                    # too, at the first frame after the revocation.
+                    # Latched by the check above or by _refresh_ident on the
+                    # consumer side. Every sink is already cut (the decode
+                    # guards); this closes the socket too, at the first frame
+                    # after the revocation.
                     await _send_error_frame(ws, send_lock, "unauthorized", _REVOKED_MSG)
                     break
                 if msg.get("bytes") is not None:

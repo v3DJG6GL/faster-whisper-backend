@@ -576,6 +576,113 @@ def test_silent_stream_closes_when_key_is_revoked(
     assert fake_model.last_kwargs == {}        # no decode ran at any point
 
 
+class _NoPcmTransport:
+    """An encoded-audio decoder that accepts every byte and yields no PCM (a
+    container header followed by bytes that decode to nothing)."""
+    dead = False
+
+    def __init__(self):
+        self.fed = []
+        self.closed = 0
+
+    async def start(self):
+        pass
+
+    async def feed(self, data):
+        self.fed.append(data)
+
+    async def aclose(self):
+        self.closed += 1
+
+
+def test_encoded_stream_without_pcm_closes_when_key_is_revoked(
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
+    """Encoded bytes that never decode queue no audio chunk, so the pump is
+    never asked, while every frame still re-arms the idle deadline. The
+    receive loop re-checks the credential per inbound frame instead: the first
+    frame after the revocation is not fed, and the socket closes with 4401."""
+    uid, raw_alice = locked_user(make_user_key)
+    transport = _NoPcmTransport()
+    monkeypatch.setattr(streaming_routes, "make_transport",
+                        lambda fmt, sink, **kw: transport)
+    calls = record_calls(monkeypatch, streaming_routes, "authenticate_ws", lambda ws: 1)
+
+    with ready_ws(client, raw_alice, audio={"format": "webm"}) as ws:
+        for _ in range(3):
+            ws.send_bytes(b"\x1a\x45\xdf\xa3 no audio in here")
+        wait_until(lambda: len(transport.fed) == 3)
+        steady = len(calls)
+        api_keys_store.revoke_user(uid)        # bumps the config version
+        ws.send_bytes(b"\x00" * 64)            # next frame re-auths → revoked
+        # The stop is a no-op on the closed socket; if the close regresses it
+        # ends the drain so the assertions fail instead of blocking.
+        msgs, code = stop_if_open_and_drain(ws)
+
+    assert steady == 1, f"re-authenticated {steady}x with no version bump"
+    _assert_revoked_close(msgs, code)
+    assert len(calls) == 2
+    assert not any(m.get("type") in ("final", "closing") for m in msgs), msgs
+    assert len(transport.fed) == 3             # the frame after the revocation is dropped
+    assert transport.closed                    # the decoder is reaped with the session
+    assert fake_model.last_kwargs == {}        # no decode ran at any point
+
+
+def _no_pcm_session_frames(client, raw_key, monkeypatch, between):
+    """Two no-PCM frames with `between()` run after the first; returns the
+    transport, the frames and the close code."""
+    transport = _NoPcmTransport()
+    monkeypatch.setattr(streaming_routes, "make_transport",
+                        lambda fmt, sink, **kw: transport)
+    with ready_ws(client, raw_key, audio={"format": "webm"}) as ws:
+        ws.send_bytes(b"\x1a\x45\xdf\xa3 no audio in here")
+        wait_until(lambda: len(transport.fed) == 1)
+        between()
+        ws.send_bytes(b"\x00" * 64)
+        msgs, code = stop_and_drain(ws)
+    return transport, msgs, code
+
+
+def test_encoded_stream_without_pcm_survives_an_unrelated_config_bump(
+        client, make_user_key, app_module, monkeypatch, energy_vad):
+    """The other direction for the receive loop's check: a bump that leaves the
+    credential valid re-authenticates once and changes nothing — the frame is
+    fed and the session ends with its normal close."""
+    from faster_whisper_backend.settings import version as settings_version
+
+    _, raw_alice = locked_user(make_user_key)
+    calls = record_calls(monkeypatch, streaming_routes, "authenticate_ws", lambda ws: 1)
+
+    transport, msgs, code = _no_pcm_session_frames(
+        client, raw_alice, monkeypatch, settings_version.bump_config_version)
+
+    assert len(transport.fed) == 2
+    assert len(calls) == 2
+    assert not any(m.get("type") == "error" for m in msgs), msgs
+    assert msgs[-1] == {"type": "closing"} and code == 1000
+
+
+def test_encoded_stream_without_pcm_survives_a_failing_version_probe(
+        client, make_user_key, app_module, monkeypatch, energy_vad):
+    """A version probe that cannot run is not a revocation (as on the pump
+    side): the receive loop keeps the session and asks again at the next
+    frame."""
+    from faster_whisper_backend.settings import version as settings_version
+
+    _, raw_alice = locked_user(make_user_key)
+
+    def _break_probe():
+        def _boom(seen_version, resolved_at):
+            raise RuntimeError("store busy")
+        monkeypatch.setattr(settings_version, "reauth_due", _boom)
+
+    transport, msgs, code = _no_pcm_session_frames(
+        client, raw_alice, monkeypatch, _break_probe)
+
+    assert len(transport.fed) == 2
+    assert not any(m.get("type") == "error" for m in msgs), msgs
+    assert msgs[-1] == {"type": "closing"} and code == 1000
+
+
 def test_revocation_during_the_handshake_still_closes_with_4401(
         client, make_user_key, app_module, monkeypatch, energy_vad):
     """A revocation landing between authentication and the end of the handshake
