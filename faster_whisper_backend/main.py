@@ -2667,13 +2667,15 @@ async def transcribe(
                                 import av as _av
                                 # So is a file that passed the decode
                                 # helper's memory budget or ended the
-                                # helper: the separator's own decoders have
+                                # helper, and one no helper could be had
+                                # for: the separator's own decoders have
                                 # neither bound.
                                 _refused = (
                                     (isinstance(_te, ValueError)
                                      and not isinstance(_te, _av.FFmpegError))
-                                    or isinstance(_te, (MemoryError,
-                                                        _transcode.DecoderEnded))
+                                    or isinstance(_te, (
+                                        MemoryError, _transcode.DecoderEnded,
+                                        _decode_helper.HelperFailed))
                                     or (isinstance(
                                             _te, _transcode.TranscodeBudgetExceeded)
                                         and _sep_cap is not None
@@ -2728,7 +2730,8 @@ async def transcribe(
                             except Exception as _me:  # noqa: BLE001
                                 if (not _sep_opened or isinstance(
                                         _me, (MemoryError,
-                                              _transcode.DecoderEnded))):
+                                              _transcode.DecoderEnded,
+                                              _decode_helper.HelperFailed))):
                                     _ps(step=None)
                                     raise _bgm_separation.BgmSeparationError(
                                         "music separation skipped: the file "

@@ -11,6 +11,7 @@ from tests.conftest import FakeModel, FakeSegment, bearer, on_event_loop, record
 from tests._translation_helpers import enable_translation, stub_translate
 from tests.main._stage_helpers import capture_receipt, transcode_raises
 from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import decode_helper
 from faster_whisper_backend.audio import transcode as audio_transcode
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.media import media_store
@@ -732,6 +733,7 @@ def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
 @pytest.mark.parametrize("ended", [
     MemoryError("the file needs more memory than a decode gets"),
     audio_transcode.DecoderEnded(-11),
+    decode_helper.HelperFailed("a decode helper was killed"),
 ])
 def test_a_transcode_that_ended_its_decode_helper_never_reaches_the_separator(
         client, app_module, monkeypatch, ended):
@@ -757,6 +759,7 @@ def test_a_transcode_that_ended_its_decode_helper_never_reaches_the_separator(
 @pytest.mark.parametrize("ended", [
     MemoryError("the file needs more memory than a decode gets"),
     audio_transcode.DecoderEnded(-11),
+    decode_helper.HelperFailed("a decode helper was killed"),
 ])
 def test_a_fallback_original_that_ends_its_measuring_decode_is_skipped(
         client, app_module, monkeypatch, ended):
