@@ -7,6 +7,7 @@ import psutil
 import pytest
 
 from tests._transcription_helpers import post_transcription, wav_bytes
+from tests.audio.test_transcode import FRAME_SAMPLES_BOUND, one_frame_alac_caf
 
 
 def test_audio_decoding_past_the_ceiling_is_a_413(client, app_module,
@@ -28,6 +29,18 @@ def test_audio_within_the_ceiling_reaches_the_model_decoded(
     assert r.status_code == 200, r.text
     assert isinstance(fake_model.last_audio, np.ndarray)
     assert fake_model.last_audio.shape == (32000,)
+
+
+def test_a_frame_of_too_many_samples_is_a_413(client, fake_model, tmp_path):
+    """The ceiling counts seconds; a single frame of more samples than the
+    decode buffers at once is refused the same way, whatever its length."""
+    src = one_frame_alac_caf(str(tmp_path / "over.caf"),
+                             frame_samples=FRAME_SAMPLES_BOUND + 1)
+    with open(src, "rb") as f:
+        r = post_transcription(client, files={
+            "file": ("a.caf", f.read(), "audio/x-caf")})
+    assert r.status_code == 413, r.text
+    assert fake_model.last_audio is None
 
 
 def test_the_ceiling_is_half_the_free_ram_at_the_decode_peak(app_module,

@@ -43,6 +43,17 @@ _PCM_BITS = {"pcm_u8": 8, "pcm_s8": 8, "pcm_alaw": 8, "pcm_mulaw": 8,
 # samples of 8 kHz FLAC).
 _MAX_FRAME_S = 60.0
 
+# Most samples x channels of one decoded frame any reader here takes.
+# _MAX_FRAME_S reads a frame's length at the rate the file declares, while
+# buffering and resampling it cost its sample count: a codec whose header
+# sets the frame length (ALAC: up to 2^24 samples, 26 bits per 65 536 of
+# silence) gives a frame of a second or less at a declared rate in the MHz,
+# and several hundred MB per channel on its way through the fifo and the
+# resampler. Real frames stay far below: 65 535 samples x 8 channels of FLAC,
+# 131 072 x channels of WavPack, ~1 s x channels of TTA (1.6 M at 192 kHz
+# 7.1); the packets of a PCM WAV are 16 384 samples at that rate.
+_MAX_FRAME_SAMPLES = 1 << 22
+
 # Changes of input format, layout or rate _resampled follows in one stream:
 # _MAX_SETUP_CHANGES up front plus one per _FRAMES_PER_SETUP_CHANGE frames
 # decoded so far, a change counting rate // 48000 (at least 1). Each one
@@ -64,7 +75,8 @@ _SKIPPED_PACKETS_MARGIN = 1 << 20
 
 
 class DecodeTooLong(Exception):
-    """decode_16k_bounded's input ran past its `max_seconds` ceiling."""
+    """decode_16k_bounded's input ran past its `max_seconds` ceiling, or one
+    of its frames past _MAX_FRAME_S or _MAX_FRAME_SAMPLES."""
 
 
 class ResampleFailed(Exception):
@@ -83,6 +95,13 @@ class TranscodeBudgetExceeded(RuntimeError):
     RuntimeError, so a caller that only knows the base class still reads it
     as a failed transcode; one that passed a budget for a reason of its own
     (main.py's BGM RAM cap) can tell it apart."""
+
+
+def _frame_too_big(frame) -> bool:
+    """Whether `frame` holds more than _MAX_FRAME_SAMPLES samples x
+    channels."""
+    return (frame.samples * max(1, len(frame.layout.channels))
+            > _MAX_FRAME_SAMPLES)
 
 
 def _av():
@@ -258,7 +277,8 @@ def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
         cost, state = 0.0, {}
         for frame in _decoded_frames(container, stream, state):
             channels = len(frame.layout.channels)
-            if channels <= 0 or not frame.sample_rate:
+            if (channels <= 0 or not frame.sample_rate
+                    or _frame_too_big(frame)):
                 return False
             cost += (frame.samples / frame.sample_rate
                      * cost_per_s(frame.sample_rate, channels))
@@ -322,12 +342,16 @@ def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
     to (16 kHz output) reaches `num_samples`, or once it holds 2 x
     `num_samples` sample-channels (the stereo-equivalent), so a 254-channel
     stream meets the resampler on a ~4 MB group instead of ~0.5 GB; and a
-    single frame past _MAX_FRAME_S is refused. The resampler streams, so
-    where a group ends changes no output sample."""
+    single frame past _MAX_FRAME_S, or past _MAX_FRAME_SAMPLES before the
+    fifo copies it, is refused. The resampler streams, so where a group
+    ends changes no output sample."""
     fifo = _av().audio.fifo.AudioFifo()
     seconds = 0.0
     out = 0.0
     for frame in frames:
+        if _frame_too_big(frame):
+            raise DecodeTooLong(
+                "a decoded frame is larger than the server resamples")
         if frame.sample_rate:
             dur = frame.samples / frame.sample_rate
             if dur > _MAX_FRAME_S:
@@ -483,11 +507,14 @@ def _resampled(frames, *, format: str, layout: str, rate: int):
     for frame in frames:
         seen += 1
         # Checked before the resampler sees the frame: it resamples the
-        # whole frame in one call (see _MAX_FRAME_S).
+        # whole frame in one call (see _MAX_FRAME_S, _MAX_FRAME_SAMPLES).
         if frame.sample_rate and frame.samples / frame.sample_rate > _MAX_FRAME_S:
             raise ValueError(
                 f"unsupported audio: a decoded frame runs past "
                 f"{_MAX_FRAME_S:.0f} s")
+        if _frame_too_big(frame):
+            raise ValueError("unsupported audio: a decoded frame is larger "
+                             "than the server resamples")
         frame_setup = (frame.format.name, frame.layout.name, frame.sample_rate)
         if frame_setup != setup:
             if resampler is not None:
@@ -586,15 +613,15 @@ def _drop_before(frames, skip_out: int, state: dict):
     grid (n * 16000 % rate == 0). The first frame always passes (an MP3's
     is trimmed to the encoder delay, off every grid point), and dropping
     stops at the first frame whose format, layout or rate differs (the
-    resampler restarts there) or that runs past _MAX_FRAME_S (_resampled
-    refuses it). After a format change the rest of the skip is resampled
-    up to _SKIP_RESAMPLE_MAX of work, past which the piece is refused
-    (ValueError; the language check then downloads the whole file). A run
-    that meets no grid point within _SKIP_HOLD_MAX_S, _SKIP_HOLD_MAX_BYTES
-    or _SKIP_HOLD_MAX_FRAMES (only a crafted rate or block size) is dropped
-    off the grid anyway. What is dropped is charged to the discard budget
-    `state` carries (see _DISCARD_MAX_FRAMES), past which the piece is
-    refused the same way."""
+    resampler restarts there) or that runs past _MAX_FRAME_S or
+    _MAX_FRAME_SAMPLES (_resampled refuses it). After a format change the
+    rest of the skip is resampled up to _SKIP_RESAMPLE_MAX of work, past
+    which the piece is refused (ValueError; the language check then
+    downloads the whole file). A run that meets no grid point within
+    _SKIP_HOLD_MAX_S, _SKIP_HOLD_MAX_BYTES or _SKIP_HOLD_MAX_FRAMES (only a
+    crafted rate or block size) is dropped off the grid anyway. What is
+    dropped is charged to the discard budget `state` carries (see
+    _DISCARD_MAX_FRAMES), past which the piece is refused the same way."""
     skip_s = skip_out / 16000
     it = iter(frames)
     first = next(it, None)
@@ -608,6 +635,7 @@ def _drop_before(frames, skip_out: int, state: dict):
         r = f.sample_rate
         changed = (f.format.name, f.layout.name, r) != setup
         if (changed or not r or f.samples / r > _MAX_FRAME_S
+                or _frame_too_big(f)
                 or (seen + held_n + f.samples) / r >= skip_s - _SKIP_GUARD_S):
             yield from held
             if changed:
@@ -639,12 +667,13 @@ def _charged_until_cut(f, it, at: float, skip_s: float):
     is charged and past _SKIP_RESAMPLE_MAX the piece is refused. Each
     change of format, layout or rate, `f`'s own included, adds
     _SKIP_SETUP_CHANGE_COST: _resampled rebuilds its resampler there. A
-    frame without a rate or over _MAX_FRAME_S ends the charge: _resampled
-    handles it as before."""
+    frame without a rate, or over _MAX_FRAME_S or _MAX_FRAME_SAMPLES, ends
+    the charge: _resampled handles it as before."""
     work, setup = 0.0, None
     while f is not None:
         r = f.sample_rate
-        if not r or f.samples / r > _MAX_FRAME_S or at >= skip_s - _SKIP_GUARD_S:
+        if (not r or f.samples / r > _MAX_FRAME_S or _frame_too_big(f)
+                or at >= skip_s - _SKIP_GUARD_S):
             break
         frame_setup = (f.format.name, f.layout.name, r)
         if frame_setup != setup:

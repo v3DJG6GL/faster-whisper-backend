@@ -15,8 +15,10 @@ from faster_whisper.audio import decode_audio
 from faster_whisper_backend.audio import transcode
 from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
 from tests.audio.test_transcode import (
+    FRAME_SAMPLES_BOUND,
     _count_demuxed,
     frameless_flac_mp4,
+    one_frame_alac_caf,
     one_hertz_flac,
     run_under_ram_ceiling,
 )
@@ -162,6 +164,46 @@ def test_a_frame_longer_than_60_s_is_refused(tmp_path):
         "else:\n"
         "    print('ok')\n")
     assert got == "DecodeTooLong"
+
+
+def _count_fifo_writes(monkeypatch):
+    """How many frames decode_16k_bounded copies into its fifo from here on
+    (a one-item list)."""
+    import av
+    real, writes = av.audio.fifo.AudioFifo, [0]
+
+    class _Fifo:
+        def __init__(self):
+            self._fifo = real()
+
+        def write(self, frame):
+            writes[0] += 1
+            return self._fifo.write(frame)
+
+        def __getattr__(self, name):
+            return getattr(self._fifo, name)
+
+    monkeypatch.setattr(av.audio.fifo, "AudioFifo", _Fifo)
+    return writes
+
+
+def test_a_frame_of_too_many_samples_is_refused_before_it_is_buffered(
+        tmp_path, monkeypatch):
+    """The ceiling charges a frame its seconds at the rate the file declares,
+    while copying it into the fifo and resampling it cost its sample count:
+    a frame past _MAX_FRAME_SAMPLES samples x channels ends the decode as
+    DecodeTooLong (the handler's 413) before the fifo takes it. One at the
+    bound decodes to faster-whisper's samples."""
+    at = one_frame_alac_caf(str(tmp_path / "at.caf"),
+                            frame_samples=FRAME_SAMPLES_BOUND)
+    assert np.array_equal(transcode.decode_16k_bounded(at, max_seconds=None),
+                          decode_audio(at, sampling_rate=16000))
+    over = one_frame_alac_caf(str(tmp_path / "over.caf"),
+                              frame_samples=FRAME_SAMPLES_BOUND + 1)
+    writes = _count_fifo_writes(monkeypatch)
+    with pytest.raises(transcode.DecodeTooLong, match="larger than"):
+        transcode.decode_16k_bounded(over, max_seconds=None)
+    assert writes == [0]
 
 
 def _silence_opus(tmp_path, channels, seconds):

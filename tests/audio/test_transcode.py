@@ -1670,6 +1670,101 @@ def test_an_8k_flac_with_the_longest_legal_frames_still_transcodes(tmp_path):
         assert w.getnframes() == 20 * RATE
 
 
+# transcode._MAX_FRAME_SAMPLES, spelled out: the tests below pin the value.
+FRAME_SAMPLES_BOUND = 1 << 22
+
+
+def one_frame_alac_caf(path, *, frame_samples, rate=192000):
+    """A CAF of one mono ALAC packet of digital silence that decodes to a
+    single frame of `frame_samples` samples: a few hundred bytes whatever
+    the count (a run of 65 536 zero samples is 26 bits), and seconds, not
+    minutes, at `rate`."""
+    import struct
+    bits = "0" * 23                 # one mono element, compressed, no own size
+    bits += "0" * 16                # no channel mixing
+    bits += "0000" "0001" "000" "00000"  # predictor: none, shift 1, order 0
+    done = 0
+    while done < frame_samples:
+        bits += "0"                 # one zero sample
+        done += 1
+        if done < frame_samples:    # then a run of up to 65 535 more
+            bits += "1" * 25
+            done += min(65535, frame_samples - done)
+    bits += "111"                   # end of the packet
+    bits += "0" * (-len(bits) % 8)
+    packet = int(bits, 2).to_bytes(len(bits) // 8, "big")
+    cookie = struct.pack(">IBBBBBBHIII", frame_samples, 0, 24, 0, 0, 14, 1,
+                         255, 0, 0, rate)
+    desc = struct.pack(">d4sIIIII", float(rate), b"alac", 0, len(packet),
+                       frame_samples, 1, 0)
+    out = b"caff" + struct.pack(">HH", 1, 0)
+    for kind, body in ((b"desc", desc), (b"kuki", cookie),
+                       (b"data", struct.pack(">I", 0) + packet)):
+        out += kind + struct.pack(">q", len(body)) + body
+    with open(path, "wb") as f:
+        f.write(out)
+    return path
+
+
+def test_a_frame_of_too_many_samples_is_refused_before_it_is_resampled(
+        tmp_path):
+    """A frame goes through the resampler whole, and _MAX_FRAME_S only reads
+    its length in seconds at the rate the file declares: a frame past
+    _MAX_FRAME_SAMPLES samples x channels is refused whatever that rate is,
+    with the plain ValueError of a refused input, and the cost check counts
+    the file as over."""
+    src = one_frame_alac_caf(str(tmp_path / "over.caf"),
+                             frame_samples=FRAME_SAMPLES_BOUND + 1)
+    dst = str(tmp_path / "out.wav")
+    for read in (
+            lambda: audio_transcode.transcode_to_wav(
+                src, dst, rate=44100, layout="stereo"),
+            lambda: audio_transcode.decode_pieces_16k(src, [0.0], 1.0),
+            lambda: audio_transcode.decode_span_16k(src, 0.0, 1.0)):
+        with pytest.raises(ValueError, match="unsupported audio") as refused:
+            read()
+        assert not isinstance(refused.value, av.FFmpegError)
+    assert not os.path.exists(dst)
+    assert audio_transcode.decoded_cost_within(
+        src, cost_per_s=lambda rate, channels: 1.0, max_cost=1e9) is False
+
+
+def test_a_frame_at_the_sample_bound_still_transcodes(tmp_path):
+    assert audio_transcode._MAX_FRAME_SAMPLES == FRAME_SAMPLES_BOUND
+    src = one_frame_alac_caf(str(tmp_path / "at.caf"),
+                             frame_samples=FRAME_SAMPLES_BOUND)
+    dst = str(tmp_path / "out.wav")
+    audio_transcode.transcode_to_wav_16k_mono(src, dst)
+    with wave.open(dst, "rb") as w:
+        assert abs(w.getnframes() - FRAME_SAMPLES_BOUND * RATE // 192000) <= 1
+    assert audio_transcode.decoded_cost_within(
+        src, cost_per_s=lambda rate, channels: 1.0, max_cost=1e9) is True
+
+
+def test_a_skip_hands_a_frame_of_too_many_samples_on_to_the_refusal():
+    """In a skip, such a frame is neither held while looking for a grid
+    point nor charged as resample work: it goes on to _resampled, which
+    refuses it, like a frame past _MAX_FRAME_S."""
+
+    class _Frame(_TinyFrame):
+        # Every frame ends on the 16 kHz grid, so a held one is dropped.
+        sample_rate, samples = 192000, 1920
+
+    class _Wide(_Frame):
+        samples = FRAME_SAMPLES_BOUND + 8
+
+    frames = [_Frame(), _Frame(), _Wide(), *(_Frame() for _ in range(8))]
+    out = list(audio_transcode._drop_before(iter(frames), 16000 * 1000,
+                                            {"n": 0, "rate": None}))
+    assert out == [frames[0], *frames[2:]]
+
+    # Charged, the frames behind it add up to more than _SKIP_RESAMPLE_MAX.
+    rest = [_Frame() for _ in range(audio_transcode._SKIP_RESAMPLE_MAX // 1920)]
+    wide = _Wide()
+    out = list(audio_transcode._charged_until_cut(wide, iter(rest), 0.0, 1e9))
+    assert out == [wide, *rest]
+
+
 def _write_clip(path, audio_codec, *, rate=44100, video_codec=None, fmt=None):
     """A 1 s 440 Hz tone in `audio_codec`, plus a few frames of
     `video_codec` when given, muxed into `path` (format from its suffix
