@@ -1637,11 +1637,21 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
         except (OSError, ValueError) as _exc:
             # A codec error's text names the offending byte and its offset,
             # i.e. part of the secret: only the encoding tried is reported.
-            # OSError text names the path and the OS reason, no file content.
-            _why = (_exc if isinstance(_exc, OSError)
-                    else f"not valid {_enc} text" if isinstance(_exc, UnicodeDecodeError)
-                    else type(_exc).__name__)
-            _ENV_WARNINGS.append(f"{_secret}_FILE={_path!r} could not be read: {_why}")
+            # An OSError is never formatted whole: its text repeats the file
+            # name. Only the OS reason (strerror) is reported.
+            _why = (f"not valid {_enc} text" if isinstance(_exc, UnicodeDecodeError)
+                    else getattr(_exc, "strerror", None) or type(_exc).__name__)
+            if _enc is None:
+                # The file was never opened, so the value may be no path at
+                # all but the secret itself, pasted into the _FILE variable:
+                # name the variable and the OS reason only.
+                _ENV_WARNINGS.append(
+                    f"the file {_secret}_FILE names could not be read: {_why} "
+                    f"(the value is not shown; it must be the PATH of the "
+                    f"secret file)")
+            else:
+                _ENV_WARNINGS.append(
+                    f"{_secret}_FILE={_path!r} could not be read: {_why}")
 
 
 # --- Non-AdminConfig constants (no WebUI row → not in ENV_VAR_MAPPING) -------

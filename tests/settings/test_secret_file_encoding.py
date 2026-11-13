@@ -7,6 +7,7 @@ start); `Set-Content -Encoding UTF8` writes a UTF-8 BOM, which .strip() keeps,
 so the bootstrap admin key never matched what the operator typed.
 """
 
+import errno
 import importlib
 import os
 
@@ -84,6 +85,38 @@ def test_an_empty_file_warns_that_the_secret_is_not_set(
 def test_a_filled_file_adds_no_warning(monkeypatch, tmp_path, restore_config):
     _reload_with_secret_file(monkeypatch, tmp_path, b"sk-from-file\n")
     assert not [m for m in config._ENV_WARNINGS if m.startswith(_VAR + "_FILE=")]
+
+
+@pytest.mark.parametrize("value", [
+    "sk-Pasted/Secret+Value123",       # a base64-style key, slash included
+    "hf_" + "PastedTokenValue" * 20,   # longer than a file name may be
+], ids=["missing", "name-too-long"])
+def test_unopenable_file_warning_does_not_echo_the_value(
+        monkeypatch, value, restore_config):
+    """A file that cannot be opened may be no path at all: the secret itself,
+    pasted into the _FILE variable. The warning reaches the log /logs serves,
+    so it names the variable and the OS reason, never the value."""
+    monkeypatch.setenv(_VAR, "")
+    monkeypatch.setenv(_VAR + "_FILE", value)
+    importlib.reload(config)
+    assert config.BOOTSTRAP_ADMIN_KEY is None
+    assert _VAR not in config._ENV_FROM_SECRET_FILES
+    warning = [m for m in config._ENV_WARNINGS if _VAR + "_FILE" in m]
+    assert len(warning) == 1, config._ENV_WARNINGS
+    assert "could not be read: " in warning[0]
+    assert "the value is not shown" in warning[0]
+    for m in config._ENV_WARNINGS:
+        assert value not in m and value[:12] not in m, m
+
+
+def test_unopenable_file_warning_names_the_os_reason(
+        monkeypatch, tmp_path, restore_config):
+    monkeypatch.setenv(_VAR, "")
+    monkeypatch.setenv(_VAR + "_FILE", str(tmp_path / "no-such-secret"))
+    importlib.reload(config)
+    warning = next(m for m in config._ENV_WARNINGS if _VAR + "_FILE" in m)
+    assert os.strerror(errno.ENOENT) in warning
+    assert "no-such-secret" not in warning and "Errno" not in warning
 
 
 def test_helper_leaves_no_secret_behind(tmp_path):

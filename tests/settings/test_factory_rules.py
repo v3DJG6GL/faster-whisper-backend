@@ -219,6 +219,37 @@ def test_missing_pipeline_rules_key_raises(tmp_path):
         cs.load_factory_rules(path=str(path))
 
 
+def test_load_factory_rules_validation_error_quotes_no_rule_content(path):
+    """The error reaches an admin's 500 body and the server log: it lists
+    `location: reason` lines like load_overrides, without the excerpt of the
+    rules and the docs link pydantic's own text carries."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"PIPELINE_RULES": [
+            _regex_rule("x", pattern="(", replacement="MARKER-7f3a"),
+            _terminal()]}, f)
+    with pytest.raises(RuntimeError) as exc:
+        cs.load_factory_rules(path=path)
+    text = str(exc.value)
+    assert text.startswith(f"{path} failed validation:\n  PIPELINE_RULES: ")
+    assert "invalid regex" in text
+    for leak in ("MARKER-7f3a", "input_value", "input_type", "errors.pydantic.dev"):
+        assert leak not in text, text
+
+
+def test_load_factory_rules_validation_error_lists_at_most_20_locations(path):
+    """One line per failing location, capped: a thousand broken entries must
+    not become one huge log record."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"PIPELINE_RULES": [{"name": f"r{i}", "type": "regex-list"}
+                                      for i in range(25)] + [_terminal()]}, f)
+    with pytest.raises(RuntimeError) as exc:
+        cs.load_factory_rules(path=path)
+    lines = str(exc.value).splitlines()
+    assert len(lines) == 22, lines
+    assert all(ln.startswith("  PIPELINE_RULES.") for ln in lines[1:21])
+    assert lines[-1].startswith("  ... and ") and lines[-1].endswith(" more")
+
+
 def test_neuenzeile_fires_at_end_of_utterance():
     """The committed dictation map's newline keys fire in the common
     dictation positions (end of utterance, before punctuation).

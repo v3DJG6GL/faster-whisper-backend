@@ -333,6 +333,10 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
             out[key] = coerce(out[key])
     return out
 
+# The failing locations one load_factory_rules error lists.
+_FACTORY_ERRORS_MAX = 20
+
+
 def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
     """Load and validate the committed factory pipeline rules from config.json.
 
@@ -359,7 +363,16 @@ def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
     try:
         validated = settings_schema.AdminConfig.model_validate({"PIPELINE_RULES": raw["PIPELINE_RULES"]})
     except ValidationError as e:
-        raise RuntimeError(f"{path} failed validation:\n{e}") from e
+        # Location and reason only, as load_overrides prints them: str(e)
+        # appends an excerpt of the rules and a docs link to every line, and
+        # this text is an admin's 500 body and a line of the served log. The
+        # cap keeps a file of broken entries from becoming one huge record.
+        errs = settings_schema.format_validation_errors(e)
+        detail = "\n".join(f"  {x['loc'] or '(whole file)'}: {x['msg']}"
+                           for x in errs[:_FACTORY_ERRORS_MAX])
+        more = (f"\n  ... and {len(errs) - _FACTORY_ERRORS_MAX} more"
+                if len(errs) > _FACTORY_ERRORS_MAX else "")
+        raise RuntimeError(f"{path} failed validation:\n{detail}{more}") from e
     return validated.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"]
 
 
