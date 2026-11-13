@@ -348,9 +348,23 @@ def run(payload: bytes, timeout: float) -> bytes:
         + reply[1:1 + _FAILURE_TEXT_MAX].decode("utf-8", "replace"))
 
 
+def _keep_end_private(end: int) -> None:
+    """Stop the helper's end of the pair from being inherited any further.
+    It arrives inheritable (that is how the helper got it), and whoever
+    holds it can write the one message the server reads as the check's
+    answer: no program yt-dlp starts for a site gets it, whatever
+    inheritance it is started with."""
+    if os.name == "nt":
+        os.set_handle_inheritable(end, False)
+    else:
+        os.set_inheritable(end, False)
+
+
 def helper_main(end: int) -> None:
     """The helper process: take the inherited end of the parent's pair, load
     what a check needs, answer ONE request and exit."""
+    # Before the check's code is loaded: that is what can start programs.
+    _keep_end_private(end)
     # A Ctrl-C in the server's terminal reaches the whole console on
     # Windows; the parent decides when a helper stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)

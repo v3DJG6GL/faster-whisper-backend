@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
+import sys
 import threading
 import time
 from asyncio import run as _run
@@ -281,6 +284,52 @@ def test_run_without_started_helpers_is_a_failure():
     assert not lh.active()
     with pytest.raises(lh.HelperFailed, match="never started"):
         lh.run(b"x", 1.0)
+
+
+# --- the helper's end of the pair -----------------------------------------------
+
+_HOLDS_FD = "import os, sys; os.fstat(int(sys.argv[1]))"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor inheritance")
+def test_the_helpers_end_is_not_passed_on_to_programs_it_starts():
+    """The helper's end arrives inheritable (that is how it got there). A
+    program started inside the helper with descriptor inheritance on would
+    hold it too, and whoever holds it can write the check's answer."""
+    ours, theirs = os.pipe()
+    try:
+        os.set_inheritable(theirs, True)  # as Popen(pass_fds=...) leaves it
+        argv = [sys.executable, "-c", _HOLDS_FD, str(theirs)]
+        quiet = {"stderr": subprocess.DEVNULL, "close_fds": False}
+        assert subprocess.run(argv, **quiet).returncode == 0  # the premise
+        lh._keep_end_private(theirs)
+        assert os.get_inheritable(theirs) is False
+        assert subprocess.run(argv, **quiet).returncode != 0
+        os.fstat(theirs)  # still open for the helper itself
+    finally:
+        os.close(ours)
+        os.close(theirs)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor inheritance")
+def test_the_helper_closes_its_end_to_others_before_it_loads_the_check(monkeypatch):
+    """helper_main run in this process, on a pair whose other end is gone:
+    it returns at its first message instead of exiting."""
+    ours, theirs = lh._connection.Pipe(duplex=True)
+    end = os.dup(theirs.fileno())
+    theirs.close()
+    ours.close()
+    os.set_inheritable(end, True)
+    seen = []
+
+    def _no_exit(code):
+        raise AssertionError("helper_main got past its first message")
+    monkeypatch.setattr(lh.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(lh.os, "_exit", _no_exit)
+    monkeypatch.setattr(udl, "helper_warm",
+                        lambda: seen.append(os.get_inheritable(end)))
+    lh.helper_main(end)
+    assert seen == [False]
 
 
 # --- the helper's side, run in this process -------------------------------------
