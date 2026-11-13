@@ -18,6 +18,7 @@ import logging
 import pickle
 import re
 import threading
+import time
 
 from faster_whisper_backend.core.store_common import log_safe as _log_safe
 from faster_whisper_backend.pipeline import dictation_map as _dictation_map
@@ -956,8 +957,11 @@ def _seam_walk(prefix_raw: str, full_raw: str, bounds: "tuple[int, int]",
 #     quarantined (_quarantine: skipped by every later walk of this rule set,
 #     logged once, traced "[TIME LIMIT — not applied]") and is redone without
 #     it, at most _WALK_ATTEMPTS times in all.
-#   * No pool, no free helper, or a rule set that cannot be sent: the walk
-#     runs in this process as it always did (logged where it is a fault).
+#   * No pool, no helper that can be started, or a rule set that cannot be
+#     sent: the walk runs in this process as it always did (logged where it
+#     is a fault). Helpers that are up but all held for the whole wait
+#     (rule_helper.BUSY) are the slow rules' doing: the text is returned
+#     without the rules applied, never walked in this process.
 #
 # In-process on purpose: holdback_start (no rule pattern runs there, only the
 # map keys are read) and rebuild_caches (it compiles, it does not match).
@@ -1130,7 +1134,8 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
     `request(token, skip)` builds the request tuple; it is rebuilt for every
     attempt because a timed-out attempt adds to the quarantine. Returns the
     helper's reply tuple, _IN_PROCESS when the caller has to run the walk
-    itself, or None when no attempt finished. Never raises."""
+    itself, or None when no attempt finished (the helpers all held for the
+    whole wait included). Never raises."""
     shipment = _shipment(rules, terminal)
     if shipment is None:
         return _IN_PROCESS
@@ -1139,13 +1144,22 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
     died_at = None
     in_rule = False
     stale = lost = attempts = 0
+    # One wait for a free helper per walk, shared by its attempts: a thread
+    # is parked for at most that long on top of the walk's deadlines.
+    wait_left = _rule_helper._ACQUIRE_TIMEOUT_S
     while attempts < _WALK_ATTEMPTS:
-        helper = pool.acquire()
+        asked = time.monotonic()
+        helper = pool.acquire(max(0.0, wait_left))
+        wait_left -= time.monotonic() - asked
+        if helper is _rule_helper.BUSY:
+            # Slow rules hold every helper. Walked here instead, the same
+            # rules would hold the whole server, with no deadline at all.
+            return None
         if helper is None:
-            # A pool shut down under this walk took its helper mid-rule: the
-            # rule may be one that never finishes, so the walk is not redone
-            # in a process that is about to stop (or in the next test).
-            return None if in_rule and pool.closed else _IN_PROCESS
+            # No helper can be had (pool shut down under this walk, or none
+            # startable). A walk that already lost a helper inside a rule is
+            # not redone here: that rule may be one that never finishes.
+            return None if in_rule else _IN_PROCESS
         loaded = helper.token == token
         try:
             if not loaded:
@@ -1235,8 +1249,9 @@ def _walk_isolated(pool, text: str, rules: "list[_CompiledRule]",
     if reply is _IN_PROCESS:
         return _IN_PROCESS
     if reply is None:
-        # Out of attempts (or of helpers, at shutdown): the text goes on as
-        # it came in. Charged like a walk that changed nothing.
+        # Out of attempts (or of helpers: all held, or gone under a walk
+        # inside a rule): the text goes on as it came in. Charged like a
+        # walk that changed nothing.
         logger.warning(
             "[pipeline] a rule walk did not finish in a helper process — the "
             "text is returned without the rules applied")

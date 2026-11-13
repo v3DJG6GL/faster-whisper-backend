@@ -63,6 +63,10 @@ _START_TIMEOUT_S = 30.0
 # Longest wait for a free helper. Walks take milliseconds, so only helpers
 # held by slow rules (each for at most its deadline) make a walk wait at all.
 _ACQUIRE_TIMEOUT_S = 30.0
+# What acquire() answers when helpers are up but none came free in the wait:
+# the walk must not run in the server process instead (the rules that hold
+# the helpers would hold every thread of the server there).
+BUSY = object()
 # After a helper failed to start, how long until the pool makes the start up
 # (with none left, walks run in-process meanwhile).
 _RETRY_AFTER_S = 60.0
@@ -241,7 +245,10 @@ def _free_shm(shm, mark) -> None:
 class _Pool:
     """A fixed number of helpers and the threads waiting for one. `_alive`
     counts helpers that exist or are being started; the idle ones wait in
-    `_idle` (last in, first out: the warmest helper serves next)."""
+    `_idle` (last in, first out: the warmest helper serves next). `_up` says
+    that a helper has started since the pool was last without any: it tells
+    helpers that are all held (by slow rules) from helpers the platform does
+    not start."""
 
     def __init__(self, size: int) -> None:
         self._size = size
@@ -250,6 +257,7 @@ class _Pool:
         self._procs: set = set()
         self._starters: list[threading.Thread] = []
         self._alive = 0
+        self._up = False
         self._closed = False
         self._retry_at = 0.0
         self._down_logged = False
@@ -284,6 +292,8 @@ class _Pool:
         """One helper start failed (its count is already taken back). The
         pool makes it up after _RETRY_AFTER_S (acquire); with no helper left
         the walks run in-process until then."""
+        if self._alive == 0:
+            self._up = False
         if not self._closed:
             self._retry_at = time.monotonic() + _RETRY_AFTER_S
             if self._alive == 0 and not self._down_logged:
@@ -314,16 +324,19 @@ class _Pool:
                 if self._down_logged:
                     self._down_logged = False
                     logger.info("[pipeline] rule helper processes are back")
+                self._up = True
                 self._idle.append(helper)
                 self._cond.notify()
                 return
         self._close(helper)
 
-    def acquire(self) -> "_Helper | None":
-        """A free helper, waiting for one if all are busy or still starting.
-        None when the walk has to run in-process: the pool is shut down, no
-        helper could be started, or none came free in _ACQUIRE_TIMEOUT_S."""
-        end = time.monotonic() + _ACQUIRE_TIMEOUT_S
+    def acquire(self, timeout: "float | None" = None):
+        """A free helper, waiting up to `timeout` seconds (_ACQUIRE_TIMEOUT_S
+        when None) for one if all are busy or still starting. BUSY when
+        helpers are up but none came free in that time: the caller gives the
+        walk up. None when the walk has to run in-process: the pool is shut
+        down, no helper could be started, or none has started in that time."""
+        end = time.monotonic() + (_ACQUIRE_TIMEOUT_S if timeout is None else timeout)
         with self._cond:
             while True:
                 if self._closed:
@@ -339,14 +352,22 @@ class _Pool:
                     return None
                 left = end - time.monotonic()
                 if left <= 0:
+                    busy = self._up
                     now = time.monotonic()
                     if now - self._busy_logged_at > _RETRY_AFTER_S:
                         self._busy_logged_at = now
-                        logger.warning(
-                            "[pipeline] no rule helper process came free in %g s — "
-                            "this walk runs inside the server process without a "
-                            "time limit", _ACQUIRE_TIMEOUT_S)
-                    return None
+                        if busy:
+                            logger.warning(
+                                "[pipeline] no rule helper process came free in %g s "
+                                "(rules running past their time limit hold them) — the "
+                                "text is returned without the rules applied",
+                                _ACQUIRE_TIMEOUT_S)
+                        else:
+                            logger.warning(
+                                "[pipeline] no rule helper process has started in %g s "
+                                "— this walk runs inside the server process without a "
+                                "time limit", _ACQUIRE_TIMEOUT_S)
+                    return BUSY if busy else None
                 self._cond.wait(left)
 
     def release(self, helper: _Helper) -> None:

@@ -437,6 +437,90 @@ def test_shutdown_leaves_no_child_even_under_a_walk_in_flight(pool, monkeypatch)
     assert done == [_SLOW_TEXT]
 
 
+# --- every helper held ---------------------------------------------------------------
+
+def test_a_busy_pool_never_sends_a_walk_into_the_server_process(pool, monkeypatch, caplog):
+    rows = [_row("card", f"Card · slow {i}", _SLOW, "", 1, i) for i in range(1, 9)]
+    _install_rows(monkeypatch, rows)
+    monkeypatch.setattr(pl_engine, "_DEADLINE_FLOOR_S", 0.5)
+    monkeypatch.setattr(pl_engine, "_WALK_ATTEMPTS", 2)
+    monkeypatch.setattr(rule_helper, "_ACQUIRE_TIMEOUT_S", 0.15)
+    in_server: list = []
+
+    def recorded(text, *args, **kwargs):
+        # In place of the in-process walk, which would never return here.
+        in_server.append(threading.current_thread().name)
+        return text
+
+    monkeypatch.setattr(pl_engine, "_walk", recorded)
+    outs: list = []
+    holders = [threading.Thread(
+        target=lambda: outs.append(pl_engine._postprocess_text(_SLOW_TEXT)), daemon=True)
+        for _ in range(2)]
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        for t in holders:
+            t.start()
+        end = time.monotonic() + 10
+        while pool._idle and time.monotonic() < end:
+            time.sleep(0.01)                  # until both helpers are held
+        trace: list = []
+        budget = pl_engine.WalkBudget(len(_SLOW_TEXT))
+        left = budget.left
+        t0 = time.perf_counter()
+        out = pl_engine._postprocess_text(_SLOW_TEXT, trace=trace, budget=budget)
+        took = time.perf_counter() - t0
+        for t in holders:
+            t.join(30)
+    # Neither the walk that found every helper held nor the holders' own
+    # retries (their replacements are still starting) ran in this process.
+    assert in_server == []
+    assert out == _SLOW_TEXT and took < 0.45
+    assert trace == [("pipeline [TIME LIMIT — rules not applied]", _SLOW_TEXT, _SLOW_TEXT)]
+    assert budget.left == left - len(_SLOW_TEXT)
+    assert outs == [_SLOW_TEXT, _SLOW_TEXT]
+    assert "came free" in caplog.text and "without the rules applied" in caplog.text
+    assert "inside the server process" not in caplog.text
+
+
+def test_a_pool_with_every_helper_held_answers_busy_and_says_so_once(pool, caplog):
+    held = [pool.acquire(), pool.acquire()]
+    try:
+        with caplog.at_level(logging.WARNING, logger="whisper-api"):
+            t0 = time.monotonic()
+            assert pool.acquire(0.05) is rule_helper.BUSY
+            assert pool.acquire(0) is rule_helper.BUSY
+            assert time.monotonic() - t0 < 1
+        assert caplog.text.count("came free") == 1
+    finally:
+        for helper in held:
+            pool.release(helper)
+    got = pool.acquire(0)                     # a free helper needs no wait
+    assert got is not None and got is not rule_helper.BUSY
+    pool.release(got)
+
+
+def test_helpers_that_never_start_in_time_still_mean_in_process(monkeypatch, caplog):
+    gate = threading.Event()
+
+    def stuck(register):
+        gate.wait(20)
+        raise OSError("stuck start")
+
+    monkeypatch.setattr(rule_helper, "_spawn", stuck)
+    monkeypatch.setattr(rule_helper, "_ACQUIRE_TIMEOUT_S", 0.2)
+    _install_rows(monkeypatch, [_row("card", "Card · x", "x", "y", 1)])
+    try:
+        rule_helper.start(2)
+        with caplog.at_level(logging.WARNING, logger="whisper-api"):
+            # No helper has ever come up: that is the platform's doing, not
+            # the rules', and the text is still formatted.
+            assert pl_engine._postprocess_text("x") == "y"
+        assert "without a time limit" in caplog.text
+    finally:
+        gate.set()
+        rule_helper.shutdown()
+
+
 # --- a helper's start ----------------------------------------------------------------
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/net/unix")
