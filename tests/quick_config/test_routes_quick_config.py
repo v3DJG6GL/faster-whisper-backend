@@ -914,6 +914,47 @@ async function api() { return { ok: true, json: async () => next }; }
     ]
 
 
+@needs_node
+def test_quick_config_failed_reapply_start_stops_the_earlier_jobs_poll(
+        client, tmp_path):
+    """A second save whose re-apply POST fails while the first save's job
+    is still polling: the old interval kept ticking and replaced the red
+    "Re-apply failed" strip with "Re-applying rules…" and then a success
+    line for a pass that never saw the new rules. The failed start now
+    stops that poll first, so the error stays on screen."""
+    html = client.get("/quick-config").text
+    start = js_upto(html, "async function startReapplyJobSilent(", "function doDiscard()")
+    out = node_file_json(tmp_path, r"""
+let _stripPoll = 'old-job';
+const cleared = [], errs = [];
+function clearInterval(id) { cleared.push(id); }
+function setInterval() { return 'new-job'; }
+function _showStrip() {}
+function _stripErr(text) { errs.push(text); }
+async function _pollStripOnce() { return 'running'; }
+let mode = 'throw';
+async function api() {
+  if (mode === 'throw') throw new Error('network down');
+  return { ok: false, status: 502 };
+}
+""" + start + r"""
+(async () => {
+  await startReapplyJobSilent(3);
+  const afterThrow = _stripPoll;
+  _stripPoll = 'old-job-2';
+  mode = 'http';
+  await startReapplyJobSilent(3);
+  console.log(JSON.stringify({ cleared, errs, afterThrow, afterHttp: _stripPoll }));
+})();
+""")
+    assert out == {
+        "cleared": ["old-job", "old-job-2"],
+        "errs": ["Re-apply failed: Error: network down", "Re-apply failed: HTTP 502"],
+        "afterThrow": None,
+        "afterHttp": None,
+    }
+
+
 def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client):
     """No JS harness: pin the strings. The stream-recovery probe treated a
     401 / 403 like any failure and polled a dead endpoint under

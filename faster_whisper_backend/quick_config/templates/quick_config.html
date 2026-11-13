@@ -2544,13 +2544,14 @@ async function _pollStripOnce() {
 async function startReapplyJobSilent(n) {
   _showStrip(n);
   const fail = (why) => _stripErr('Re-apply failed: ' + why);
+  // Reset any prior interval first: a Save while an earlier job is still
+  // polling would otherwise run two concurrent polls, and a failed POST
+  // below would see its error overwritten by the old job's next tick.
+  if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
   let r;
   try { r = await api('POST', '/quick-config/reapply-rules'); }
   catch (e) { fail(String(e)); return; }
   if (!r.ok) { fail('HTTP ' + r.status); return; }
-  // Reset any prior interval before scheduling: a Save while an earlier
-  // job is still polling would otherwise run two concurrent polls.
-  if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
   const status = await _pollStripOnce();
   // Keep polling unless the job is already over: status==='done'|'error'
   // already settled the strip via _pollStripOnce, and 'idle' means nothing
