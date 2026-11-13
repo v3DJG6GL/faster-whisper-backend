@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 from asyncio import run as _run
 import gzip
+import http.client
 import http.server
 import json
 import os
@@ -41,6 +42,7 @@ import sys
 import threading
 import types
 from unittest import mock
+import urllib.request
 import zlib
 
 import pytest
@@ -1304,6 +1306,28 @@ def test_guard_refuses_an_mpd_listing_too_many_representations(monkeypatch):
     assert formats
 
 
+def test_guard_counts_empty_periods_and_adaptation_sets(monkeypatch):
+    """A Period or an AdaptationSet without a Representation yields no format
+    and yet is walked, by the count and by yt-dlp: 1.9 million empty Periods
+    (59 MB decoded) took 30 s of CPU. Both are held to the variant cap."""
+    cap = 100
+    monkeypatch.setitem(_registered_guard(), "_MAX_MPD_REPRESENTATIONS", cap)
+    _reset_budget()
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_mpd(_mpd("<Period/>" * (cap + 1)))
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_mpd(_mpd("<Period>" + "<AdaptationSet/>" * (cap + 1) + "</Period>"))
+    # Counted across periods, like the representations.
+    half = "<Period>" + "<AdaptationSet/>" * (cap // 2 + 1) + "</Period>"
+    with pytest.raises(yt_dlp.utils.ExtractorError, match="too many variants"):
+        _parse_mpd(_mpd(half * 2))
+    # A refused manifest spends nothing, and one at the cap parses.
+    assert _registered_guard()["_DIALS"].tls.variants == 0
+    formats, _ = _parse_mpd(_mpd(_adaptation("<BaseURL>a.m4a</BaseURL>") * cap))
+    assert formats
+    assert _registered_guard()["_DIALS"].tls.variants == cap
+
+
 # ---- Smooth Streaming: yt-dlp expands every <c r="N"> into N fragment dicts
 # for each QualityLevel of the stream, in process and with no cap. The guard
 # counts them against the DASH budget before the expansion.
@@ -1638,6 +1662,43 @@ def test_guard_charges_every_live_template_conversion(media, initialization):
     assert len(frags) == (4 if initialization else 3)
     built = sum(len(f.get("path") or f.get("url")) for f in frags)
     assert built <= _registered_guard()["_DIALS"].tls.url_bytes
+
+
+@pytest.mark.parametrize("media,initialization", [
+    ("s$Number%0$100000d.m4s", None),
+    ("s$Number%.$100000d.m4s", None),
+    ("s$Number%5$.100000d.m4s", None),
+    ("s$Number%5d%(Number$)0100000d.m4s", None),
+    ("s$Number%5d%(Number)$0100000d.m4s", None),
+    ("s$Number$.m4s", "i$Bandwidth%0$100000d"),
+], ids=["flag", "dot", "width", "open-key", "closed-key", "initialization"])
+def test_guard_refuses_a_conversion_the_text_after_the_field_completes(
+        media, initialization):
+    """yt-dlp drops a field's closing `$`, so a conversion the field leaves
+    unfinished takes its width from the text after it: a 330-byte MPD with
+    `$Number%0$10000000d` built 10 MB per fragment for a charge of ~30."""
+    guard = _registered_guard()
+    _reset_budget()
+    with pytest.raises(yt_dlp.utils.ExtractorError,
+                       match="segment addresses are too long"):
+        _parse_mpd(_mpd(_adaptation(
+            _live_template(media, initialization)), duration="PT3S"))
+    assert guard["_DIALS"].tls.url_bytes == 0
+
+
+def test_guard_admits_every_finished_conversion_of_a_field():
+    """A field whose conversion ends in its type character before the closing
+    `$` (the standard's `%0[width]d`, and the other printf types yt-dlp also
+    prints) builds what it always did."""
+    for spec, shown in (("", "7"), ("%05d", "00007"), ("%d", "7"),
+                        ("%05u", "00007"), ("%x", "7"), ("%05X", "00007")):
+        _reset_budget()
+        fmts, _subs = _parse_mpd(_mpd(_adaptation(_live_template(
+            f"seg-$Number{spec}$.m4s", f"init-$Bandwidth{spec}$.mp4")),
+            duration="PT7S"))
+        frags = fmts[0]["fragments"]
+        assert frags[0]["path"] == "init-" + shown.replace("7", "1") + ".mp4"
+        assert frags[-1]["path"] == f"seg-{shown}.m4s"
 
 
 def test_guard_charges_real_template_fields_as_before():
@@ -3279,6 +3340,106 @@ def test_guard_does_not_charge_the_format_pass_to_the_manifest_budget(monkeypatc
     assert _registered_guard()["_DIALS"].tls.variants == 0
 
 
+def _site_cookies(ydl, lines):
+    """The jar after a response from cdn.example carrying these Set-Cookie
+    header lines, stored as the stock cookie handler stores them."""
+    headers = http.client.HTTPMessage()
+    for line in lines:
+        headers["Set-Cookie"] = line
+    ydl.cookiejar.extract_cookies(
+        types.SimpleNamespace(info=lambda: headers),
+        urllib.request.Request("http://cdn.example/m"))
+
+
+_COOKIE_INFO = {"id": "x", "title": "t", "extractor": "generic",
+                "extractor_key": "Generic", "webpage_url": "http://cdn.example/m"}
+
+
+def test_guard_sizes_the_cookies_every_format_copies(monkeypatch):
+    """The format pass writes all the site's matching cookies into EVERY
+    format as a string of its own: 1.4 MB of Set-Cookie on one response and
+    a 1 000-variant master peaked at 1.4 GB. Formats x the jar are sized
+    before the pass, from one budget per extraction."""
+    guard = _registered_guard()
+    _reset_budget()
+    monkeypatch.setitem(guard, "_MAX_FORMAT_COOKIE_CHARS", 100_000)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        _site_cookies(ydl, [f"c{i}={'v' * 1000}; Path=/" for i in range(10)])
+        jar = guard["_jar_chars"](ydl)
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="cookies are too large"):
+            ydl.process_ie_result(
+                {**_COOKIE_INFO, "formats": _plain_formats(20)}, download=False)
+        # A refused pass spends nothing, and fewer formats still pass.
+        assert guard["_DIALS"].tls.cookie_chars == 0
+        assert guard["_DIALS"].tls.processed_formats == 0
+        res = ydl.process_ie_result(
+            {**_COOKIE_INFO, "formats": _plain_formats(9)}, download=False)
+        assert guard["_DIALS"].tls.cookie_chars == 9 * jar
+        copied = [len(f["cookies"]) for f in res["formats"]]
+        assert len(copied) == 9 and 10 * 1000 < max(copied) <= jar
+        # A second entry of the same extraction spends from the same budget.
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="cookies are too large"):
+            ydl.process_ie_result(
+                {**_COOKIE_INFO, "formats": _plain_formats(1)}, download=False)
+    _reset_budget()
+    assert guard["_DIALS"].tls.cookie_chars == 0
+
+
+@pytest.mark.parametrize("cookie", [
+    "c{i}=" + "v" * 1000,
+    # yt-dlp writes a value as a quoted string, four characters for each one
+    # it escapes.
+    "c{i}=" + "," * 1000,
+    "c{i}=" + "\xff" * 1000,
+    "c{i}=a" + '"' * 1000,
+    "c{i}",
+    "c{i}=v; Max-Age=" + "9" * 300,
+    "c{i}=v; Expires=Wed, 09 Jun 2100 10:18:14 GMT; Secure",
+    "c{i}=v; Domain=.cdn.example; Path=/" + "p" * 1000,
+], ids=["plain", "commas", "latin-1", "quotes", "no-value", "max-age",
+        "expires", "path"])
+def test_guard_sizes_a_cookie_no_smaller_than_a_format_copies_it(cookie):
+    """Whatever a Set-Cookie line states, the size of the jar is at least
+    the text each format gets from it."""
+    guard = _registered_guard()
+    _reset_budget()
+    formats = [{"url": "https://cdn.example/" + "p" * 1000 + f"/{i}.mp4",
+                "format_id": f"f{i}", "ext": "mp4"} for i in range(3)]
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        _site_cookies(ydl, [cookie.replace("{i}", str(i)) for i in range(10)])
+        assert len(ydl.cookiejar) == 10
+        jar = guard["_jar_chars"](ydl)
+        res = ydl.process_ie_result({**_COOKIE_INFO, "formats": formats},
+                                    download=False)
+    copied = [len(f["cookies"]) for f in res["formats"]]
+    assert 0 < max(copied) <= jar <= max(copied) + 10 * 64
+    assert guard["_DIALS"].tls.cookie_chars == 3 * jar
+
+
+def test_guard_admits_the_cookies_of_real_sites():
+    """A few kB of cookies and a hundred formats are a sliver of the budget,
+    a site that sets none spends nothing, and the cap leaves a 3 kB jar room
+    for every format one extraction may hand the pass."""
+    guard = _registered_guard()
+    assert (guard["_MAX_FORMAT_COOKIE_CHARS"]
+            >= guard["_MAX_EXTRACTION_FORMATS"] * 3000)
+    _reset_budget()
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        assert guard["_jar_chars"](ydl) == 0
+        ydl.process_ie_result(
+            {**_COOKIE_INFO, "formats": _plain_formats(100)}, download=False)
+        assert guard["_DIALS"].tls.cookie_chars == 0
+        _site_cookies(ydl, [f"c{i}={'v' * 250}; Path=/; Secure; Max-Age=86400"
+                            for i in range(8)])
+        res = ydl.process_ie_result(
+            {**_COOKIE_INFO, "formats": _plain_formats(100)}, download=False)
+    assert len(res["formats"]) == 100
+    assert (0 < guard["_DIALS"].tls.cookie_chars
+            < guard["_MAX_FORMAT_COOKIE_CHARS"] // 200)
+
+
 def test_guard_is_not_installed_without_the_format_pass_bound(monkeypatch):
     from yt_dlp.YoutubeDL import YoutubeDL
     guard = _inproc_guard()
@@ -3394,6 +3555,68 @@ def test_guard_sizes_a_table_before_it_is_drawn():
         with pytest.raises(yt_dlp.utils.ExtractorError):
             render(["A"], (["a" * 51] for _ in range(2)))
     assert guard["_MAX_FORMAT_LABEL_CHARS"] == cap
+
+
+def test_guard_charges_every_tab_a_table_cell_expands():
+    """yt-dlp's renderer replaces EVERY tab of a cell with the column's spare
+    width (its own cells hold one, a right-align): two rows of 5 000
+    characters, one of them all tabs, drew 25 million for a charge of 10 002."""
+    guard = _registered_guard()
+    udl.guard_self_check(force=True)
+    _reset_budget()
+    render = sys.modules["yt_dlp.YoutubeDL"].render_table
+    with pytest.raises(yt_dlp.utils.ExtractorError,
+                       match="format names are too long"):
+        render(["Language", "Name"], [["x" * 5000, "a"], ["\t" * 5000, "b"]])
+    assert guard["_DIALS"].tls.table_chars == 0
+    with mock.patch.dict(guard, {"_MAX_FORMAT_LABEL_CHARS": 1000}):
+        # The header's width counts: a cell of tabs alone takes it per tab.
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            render(["H" * 100], [["\t\t"] for _ in range(20)])
+        # An admitted table is charged its padded rows plus the widest cell
+        # of the column for every tab after a cell's first: no less than its
+        # rows are drawn.
+        rows = [["a\tb\tc", "x" * 9], ["\t\t\t", 12345], ["wide" * 5, "\t\ty"]]
+        drawn = render(["A", "B"], rows).splitlines()
+        assert drawn[1] == "a" + " " * 17 + "b" + " " * 17 + "c xxxxxxxxx"
+        assert sum(map(len, drawn[1:])) == 47 + 66 + 38
+        assert guard["_DIALS"].tls.table_chars == 3 * (20 + 9) + 3 * 20 + 9
+    _reset_budget()
+    # yt-dlp's own cells hold one tab at most, which is the padding already
+    # charged: an ordinary table costs rows x the widest of each column.
+    own = [["137", "\t30", "~\t12.34MiB", "\t"] for _ in range(100)]
+    assert render(["ID", "FPS", "\tFILESIZE", "\tTBR"], own)
+    assert guard["_DIALS"].tls.table_chars == 100 * (3 + 3 + 10 + 1)
+    assert guard["_tab_chars"](["ID", "FPS", "\tFILESIZE", "\tTBR"], own) == 0
+
+
+def test_guard_caps_the_tabs_of_a_subtitle_language_of_a_dash_manifest():
+    """The measured shape, through the real parser: a character reference
+    keeps a tab in an attribute, and 40 text AdaptationSets whose @lang is
+    2 000 of them beside one of 2 000 letters (a 328 kB manifest) drew 160
+    million characters, twice. Half the rows and half the width here."""
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import compat_etree_fromstring
+    langs = ["x" * 1000] + [f"b{i}" + "&#9;" * 1000 for i in range(20)]
+    xml = _mpd(
+        '<Period><AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2">'
+        '<Representation id="a" bandwidth="1"><BaseURL>a.m4a</BaseURL>'
+        "</Representation></AdaptationSet>" + "".join(
+            f'<AdaptationSet mimeType="text/vtt" lang="{lang}">'
+            f'<Representation id="t{i}" bandwidth="1"><BaseURL>s{i}.vtt</BaseURL>'
+            "</Representation></AdaptationSet>" for i, lang in enumerate(langs))
+        + "</Period>")
+    udl.guard_self_check(force=True)
+    with yt_dlp.YoutubeDL({"quiet": True, "simulate": True}) as ydl:
+        fmts, subs = InfoExtractor(ydl)._parse_mpd_formats_and_subtitles(
+            compat_etree_fromstring(xml.encode()),
+            mpd_base_url="http://cdn.example/", mpd_url="http://cdn.example/m.mpd")
+        assert sum(lang.count("\t") for lang in subs) == 20 * 1000
+        with pytest.raises(yt_dlp.utils.ExtractorError,
+                           match="format names are too long"):
+            ydl.process_ie_result(
+                {**_listed(), "formats": fmts, "subtitles": subs}, download=False)
 
 
 def test_guard_charges_table_draws_across_one_extraction(monkeypatch):

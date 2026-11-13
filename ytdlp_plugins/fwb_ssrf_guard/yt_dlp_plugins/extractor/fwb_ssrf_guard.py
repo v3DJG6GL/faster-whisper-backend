@@ -216,6 +216,7 @@ def reset_budget() -> None:
     _DIALS.tls.processed_formats = 0
     _DIALS.tls.line_work = 0
     _DIALS.tls.label_chars = 0
+    _DIALS.tls.cookie_chars = 0
     _DIALS.tls.table_chars = 0
 
 
@@ -586,7 +587,10 @@ _MPD_SENTINEL = "_fwb_mpd_bounded"
 # cost grows faster than linearly in their number: 20 000 one-segment
 # representations take ~20 s of CPU, a 64 MiB manifest hours. A 12 h stream
 # split into 720 ad periods of ten representations each is 7 200. A Smooth
-# Streaming QualityLevel is a variant too, from the same budget.
+# Streaming QualityLevel is a variant too, from the same budget. A manifest's
+# Periods and its AdaptationSets are each held to the same number: one
+# without a Representation is no format and is walked all the same, here and
+# by yt-dlp (1.9 million empty Periods, 59 MB decoded, took 30 s of CPU).
 _MAX_MPD_REPRESENTATIONS = 20_000
 # yt-dlp builds every fragment's address as a fresh copy of the manifest's
 # template, so its cost is the template's length (with every substitution),
@@ -613,6 +617,10 @@ _TEMPLATE_FIELD = re.compile(r"\$(?:Number|Bandwidth|Time)(?:%([^$]+))?\$")
 # The text between two `$` that _TEMPLATE_FIELD reads as a field.
 _TEMPLATE_FIELD_RUN = re.compile(r"(?:Number|Bandwidth|Time)(?:%[^$]+)?")
 _DIGIT_RUN = re.compile(r"\d+")
+# What Python's % reads after a conversion's "%" and before its type
+# character: a mapping key, flags, a width, a precision, a length modifier.
+_CONVERSION_HEAD = re.compile(
+    r"(?:\([^)]*\)?)?[-#0 +]*(?:[0-9]+|\*)?(?:\.(?:[0-9]+|\*)?)?[hlL]?")
 _ISM_BITRATE = re.compile(r"{[Bb]itrate}")
 _ISM_START_TIME = re.compile(r"{start[ _]time}")
 
@@ -784,7 +792,7 @@ def _template_bytes(template: str, rep_id, value_digits: int) -> int:
     """The length of one address yt-dlp builds from a DASH template for one
     representation, each field printing its padded width or `value_digits`
     characters, whichever is more. Refuses a template that is too long, has
-    too many fields or pads one too wide."""
+    too many fields, pads one too wide or leaves a conversion unfinished."""
     uses = template.count("$RepresentationID$") if rep_id is not None else 0
     length = len(template) + uses * (len(rep_id or "") - len("$RepresentationID$"))
     if length > _MAX_TEMPLATE_BYTES:
@@ -806,6 +814,14 @@ def _template_bytes(template: str, rep_id, value_digits: int) -> int:
         return length
     if sum(runs[i].count("%") for i in inside) > _MAX_TEMPLATE_FIELDS:
         raise _too_much_url()
+    # yt-dlp's substitution drops a field's closing `$`, so a conversion
+    # still open at the end of its run (no type character yet, or a mapping
+    # key nothing closed) is completed by the text AFTER it, which nothing
+    # here sizes: `$Number%0$10000000d` prints ten million characters.
+    for i in inside:
+        tail = runs[i].rpartition("%")[2]
+        if _CONVERSION_HEAD.match(tail).end() == len(tail):
+            raise _too_much_url()
     # A field standing outside (after a stray `$`) takes the next run's
     # opening `$`: that run can read as a field without being one, here or to
     # yt-dlp, so nothing in such a template counts as sized above.
@@ -873,12 +889,22 @@ def _refuse_oversized_mpd(mpd_doc, mpd_base_len: int = 0) -> None:
     mpd_duration = parse_duration(mpd_doc.get("mediaPresentationDuration"))
     count = representations = url_bytes = label_chars = 0
     mpd_base = base_url(mpd_doc)
-    for period in mpd_doc.findall(q("Period")):
+    # Counted before the walk: each Period costs it a duration parse and a
+    # segment-info lookup of its own.
+    periods = mpd_doc.findall(q("Period"))
+    if len(periods) > _MAX_MPD_REPRESENTATIONS:
+        raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
+    adaptation_sets = 0
+    for period in periods:
         period_duration = (parse_duration(period.get("duration"))
                            or mpd_duration)
         period_info = _mpd_segment_info(period, {"timescale": 1}, q)
         period_base = mpd_base + base_url(period)
-        for adaptation in period.findall(q("AdaptationSet")):
+        adaptations = period.findall(q("AdaptationSet"))
+        adaptation_sets += len(adaptations)
+        if adaptation_sets > _MAX_MPD_REPRESENTATIONS:
+            raise _too_many_variants(_MAX_MPD_REPRESENTATIONS)
+        for adaptation in adaptations:
             set_info = _mpd_segment_info(adaptation, period_info, q)
             set_base = period_base + base_url(adaptation)
             for representation in adaptation.findall(q("Representation")):
@@ -1727,6 +1753,42 @@ def _format_label_chars(formats) -> int:
                          if isinstance(fmt, dict))
 
 
+# The pass also gives EVERY format a `cookies` string of its own, holding all
+# the cookies the site has set that match the format's address
+# (_calc_headers(load_cookies=True)): 1.4 MB of Set-Cookie on one response
+# and a 1 000-variant master peaked at 1.4 GB. Sized first as formats x the
+# jar, from a budget of its own: a real jar x 20 000 formats would eat the
+# label budget, and at 3 kB still fits this one.
+_MAX_FORMAT_COOKIE_CHARS = 64 * 1024 * 1024
+
+
+def _cookies_too_large():
+    from yt_dlp.utils import ExtractorError
+    return ExtractorError("the site's cookies are too large", expected=True)
+
+
+def _jar_chars(ydl) -> int:
+    """The `cookies` text the pass builds for ONE format from everything the
+    site has set so far, sized a cookie at a time and never joined: per
+    cookie `name=value; Domain=; Path=; Secure; Expires=; Version=`, at most
+    64 characters around its own. yt-dlp writes the value as a quoted string
+    (four characters for each one it escapes), so that is what is measured;
+    the expiry is a number of up to ~300 digits. A cookie that does not
+    match a given format is counted all the same."""
+    jar = getattr(ydl, "cookiejar", None)
+    if jar is None:
+        return 0  # yt-dlp fails on its own
+    from yt_dlp.cookies import LenientSimpleCookie
+    encode = LenientSimpleCookie().value_encode
+    chars = 0
+    for cookie in jar:
+        chars += 64 + len(encode(cookie.value)[1]) + sum(
+            _cell_chars(part) for part in (
+                cookie.name, cookie.domain, cookie.path, cookie.expires,
+                cookie.version) if part)
+    return chars
+
+
 def _bounded_process_video_result(original):
     def process_video_result(self, info_dict, *args, **kwargs):
         formats = info_dict.get("formats") if isinstance(info_dict, dict) else None
@@ -1743,8 +1805,13 @@ def _bounded_process_video_result(original):
                  + _format_label_chars(formats))
         if chars > _MAX_FORMAT_LABEL_CHARS:
             raise _labels_too_long()
+        cookie_chars = (getattr(_DIALS.tls, "cookie_chars", 0)
+                        + count * _jar_chars(self))
+        if cookie_chars > _MAX_FORMAT_COOKIE_CHARS:
+            raise _cookies_too_large()
         _DIALS.tls.processed_formats = total
         _DIALS.tls.label_chars = chars
+        _DIALS.tls.cookie_chars = cookie_chars
         return original(self, info_dict, *args, **kwargs)
     setattr(process_video_result, _FORMAT_PASS_SENTINEL, True)
     return process_video_result
@@ -1795,10 +1862,37 @@ def _row_chars(row) -> "list[int]":
     return [_cell_chars(cell) for cell in row]
 
 
+def _tab_chars(header_row, rows) -> int:
+    """What render_table draws on top of the padded rows: it replaces EVERY
+    tab of a cell with the column's width less the cell's own, so a cell of
+    t tabs draws up to t x that width. Each tab after a cell's first costs
+    the column's widest cell (the header's included); the first is the
+    padding itself."""
+    widest = [_cell_chars(cell) for cell in header_row]
+    tabs = [0] * len(widest)
+    for row in rows:
+        for pos, cell in enumerate(row):
+            if pos == len(widest):
+                widest.append(0)
+                tabs.append(0)
+            if isinstance(cell, int):
+                chars = _digits(cell)
+            else:
+                if not isinstance(cell, str):
+                    cell = str(cell)
+                chars = len(cell)
+                more = cell.count("\t") - 1
+                if more > 0:
+                    tabs[pos] += more
+            if chars > widest[pos]:
+                widest[pos] = chars
+    return sum(t * w for t, w in zip(tabs, widest) if t)
+
+
 def _bounded_render_table(original):
     def render_table(header_row, data, *args, **kwargs):
         rows = data if isinstance(data, (list, tuple)) else list(data)
-        chars = _padded_chars(map(_row_chars, rows))
+        chars = _padded_chars(map(_row_chars, rows)) + _tab_chars(header_row, rows)
         total = getattr(_DIALS.tls, "table_chars", 0) + chars
         if chars > _MAX_FORMAT_LABEL_CHARS or total > _MAX_TABLE_CHARS:
             raise _labels_too_long()
