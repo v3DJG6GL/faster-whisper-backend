@@ -660,6 +660,14 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
             # gets server-driven warming, while a later client POST can never
             # switch it off under a running job.
             plan.stage_ahead = plan.stage_ahead or stage_ahead
+            # An entry this call names and the caller's fresh verdict denies
+            # leaves the plan: it can only ever answer `deferred`, and left in
+            # place every restamp would renew its warm lease. An entry the
+            # call does not name is not judged here (see Plan.policies).
+            # (Its warmed key goes with the rebuild of plan.warmed below.)
+            for e in [e for e in plan.entries if e in denied]:
+                plan.entries.remove(e)
+                plan.policies.pop(e, None)
             for f, m in kept:
                 if len(plan.entries) >= _MAX_PLAN_ENTRIES:
                     break
@@ -964,7 +972,9 @@ async def _handle(item: "tuple[str, str, str]") -> None:
     key = stats_key(family, model_id)
     with _lock:
         plan = _plans.get(plan_id)
-        if plan is None or plan.dead:
+        # A queued item of an entry withdrawn since (see _register_plan)
+        # loads nothing: the plan no longer holds a verdict for it.
+        if plan is None or plan.dead or (family, model_id) not in plan.entries:
             return
         if key in plan.warmed:
             # Still warm: nothing to do. Dropped since (see on_stage_start):

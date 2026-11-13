@@ -552,3 +552,43 @@ def test_a_later_registration_replaces_an_entrys_policy(monkeypatch):
     preload.register_plan("u", [("diarization", x)], plan_id=pid)
     asyncio.run(preload._handle((pid, "diarization", x)))
     assert loaded == [("diarization", x)]
+
+
+def test_a_denied_repeat_registration_withdraws_the_entry(monkeypatch):
+    """A repeat POST naming an entry the route now denies (the admin has
+    locked its stage off for the caller) answered `deferred` for it and left
+    it in the plan: every restamp renewed its warm lease, and a queued item
+    of it still loaded under the pair its first registration carried."""
+    _enable(monkeypatch, DIARIZATION_ALLOWED_MODELS={"p/x"},
+            DIARIZATION_MODEL="p/x")
+    _fits(monkeypatch, (None, "size_unknown"))     # nothing enqueues
+    loaded = []
+
+    async def _load(fam, mid):
+        loaded.append((fam, mid))
+    monkeypatch.setattr(preload, "_load", _load)
+    pid = "e" * 8
+    w, d = ("whisper", "large-v3"), ("diarization", "p/x")
+    preload.register_plan("u", [w, d], plan_id=pid, policy=_GLOBAL_POLICY)
+    assert preload.is_warm("pyannote:p/x") is True
+
+    locked = ({}, frozenset({"DIARIZE"}))
+    assert preload_routes._allowed(*d, *locked) is False
+    r = preload.register_plan("u", [w, d], plan_id=pid,
+                              denied={d: "not_allowed"}, policy=locked)
+    rows = {m["id"]: m for m in r["models"]}
+    assert (rows["p/x"]["state"], rows["p/x"]["reason"]) == ("deferred", "not_allowed")
+    plan = preload._plans[pid]
+    assert plan.entries == [w] and plan.stages == [preload._FAMILY_STAGE["whisper"]]
+    assert d not in plan.policies
+    assert preload.is_warm("pyannote:p/x") is False
+    assert preload.is_warm("large-v3") is True
+    # An item of it queued before the denial loads nothing.
+    _fits(monkeypatch, (True, None))
+    asyncio.run(preload._handle((pid, *d)))
+    assert loaded == []
+
+    # Allowed again, it joins the plan as a new entry would.
+    preload.register_plan("u", [w, d], plan_id=pid, policy=_GLOBAL_POLICY)
+    assert preload._plans[pid].entries == [w, d]
+    assert preload.is_warm("pyannote:p/x") is True
