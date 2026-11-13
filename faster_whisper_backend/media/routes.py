@@ -852,7 +852,10 @@ async def package_media(media_id: str, request: Request,
     _key = _rl.identity_key(user, request)
     _media_package_rate.hit(_key)
     try:
-        raw = await request.body()
+        # Not request.body(): Starlette keeps what that returns on the
+        # Request, which lives until the response has been sent — the whole
+        # export and its download.
+        raw = b"".join([chunk async for chunk in request.stream()])
         if raw.count(b"[") + raw.count(b"{") > _PACKAGE_MAX_CONTAINERS:
             raise ValueError("container bomb")
         if sum(raw.count(p) for p in _PACKAGE_KEY_ENDS) > _PACKAGE_MAX_KEYS:
@@ -862,6 +865,8 @@ async def package_media(media_id: str, request: Request,
         body = _package_json_loads(raw)
     except Exception:  # noqa: BLE001 — malformed body is a caller error
         raise HTTPException(status_code=422, detail="expected a JSON body")
+    # Parsed: the encoded bytes (up to the route's body ceiling) go now.
+    raw = None
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="expected a JSON object")
     container = body.get("container") or "mkv"
@@ -921,6 +926,7 @@ async def package_media(media_id: str, request: Request,
     # Every field is copied out: drop the parsed body (and the subtitle
     # dicts the loop still holds) before the probe and the ffmpeg run, so
     # a body padded with ignored keys is not pinned for the whole export.
+    # Its encoded bytes went right after the parse.
     body = raw_subs = t = None
     entry = _owned_media_entry(media_id, user)
     facts = await asyncio.to_thread(_media_streams_for, entry, media_id)

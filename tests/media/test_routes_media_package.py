@@ -536,6 +536,40 @@ def test_package_drops_the_parsed_body_before_the_probe(client, package_enabled,
     assert held == []
 
 
+def test_package_keeps_no_copy_of_the_request_body_during_the_export(
+        client, package_enabled, monkeypatch):
+    """The encoded body (up to the route's 48 MiB ceiling) must not stay
+    referenced across the ffmpeg run and the download: neither by the
+    handler's own frame nor by Starlette's per-request body cache."""
+    import gc
+    import inspect
+    import json
+
+    from starlette.requests import Request
+    mark = b"fwb-raw-body-9c1e"
+    seen: dict = {}
+
+    async def _package(*a, **kw):
+        frames = [o.cr_frame for o in gc.get_objects()
+                  if inspect.iscoroutine(o) and o.cr_frame is not None
+                  and o.cr_code.co_name == "package_media"]
+        seen["handlers"] = len(frames)
+        seen["locals"] = sorted(
+            name for f in frames for name, v in f.f_locals.items()
+            if isinstance(v, (bytes, bytearray)) and mark in v)
+        seen["cached"] = [type(o).__name__ for o in gc.get_objects()
+                          if isinstance(o, Request) and "_body" in vars(o)]
+        raise pk.PackageError("stopped by the test")
+    monkeypatch.setattr(media_routes._pk, "package", _package)
+    mid = _upload(client).json()["media_id"]
+    raw = json.dumps({"container": "mkv", "pad": mark.decode(),
+                      "subtitles": _tracks()}).encode()
+    r = client.post(f"/v1/audio/media/{mid}/package", content=raw,
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 500 and r.json()["detail"] == "stopped by the test"
+    assert seen == {"handlers": 1, "locals": [], "cached": []}
+
+
 def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatch):
     seen = record_calls(monkeypatch, pk, "build_package_argv",
                         lambda *a, **kw: kw.get("video_index"))
