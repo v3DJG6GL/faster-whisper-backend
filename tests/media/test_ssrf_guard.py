@@ -1560,6 +1560,7 @@ def test_guard_refuses_absurd_fragment_url_bytes(parse, xml):
 
 
 _BIG = "1" + "0" * 24  # 25 digits: past UINT64's 20
+_YT_NS = "http://youtube.com/yt/2012/10/10"
 _PLAIN_ISM_URL = "QualityLevels(128000)/Fragments(audio=0)"
 _TIMELINE = ('<SegmentTemplate media="s$Number$.m4s" timescale="{timescale}" '
              'startNumber="{start}"><SegmentTimeline><S t="{t}" d="{d}" r="{r}"/>'
@@ -1573,6 +1574,14 @@ def _timeline(t="0", d="1", r="2", timescale="1", start="1"):
 
 def _ism_numbers(t="0", d="1", r="2", bitrate="128000", url=_PLAIN_ISM_URL):
     return _ism(_ism_url(url, f'<c t="{t}" d="{d}" r="{r}"/>', bitrate=bitrate))
+
+
+def _mpd_content_length(value):
+    """A Representation whose own BaseURL carries YouTube's size attribute."""
+    return _mpd('<Period><AdaptationSet mimeType="audio/mp4"><Representation '
+                'id="r0" bandwidth="1" codecs="mp4a.40.2">'
+                f'<BaseURL xmlns:yt="{_YT_NS}" yt:contentLength="{value}">a.m4a'
+                "</BaseURL></Representation></AdaptationSet></Period>")
 
 
 def _ism_level_number(name, value=_BIG):
@@ -1608,6 +1617,7 @@ def _ism_level_number(name, value=_BIG):
      .replace(' bandwidth="1"', "")),
     (_parse_mpd, _timeline().replace("<AdaptationSet ", f'<AdaptationSet height="{_BIG}" ')),
     (_parse_mpd, _timeline().replace("<AdaptationSet ", f'<AdaptationSet frameRate="{_BIG}" ')),
+    (_parse_mpd, _mpd_content_length(_BIG)),
     *((_parse_ism, _ism_level_number(name))
       for name in ("MaxWidth", "Width", "MaxHeight", "Height", "SamplingRate",
                    "Channels", "BitsPerSample", "NALUnitLengthField")),
@@ -1615,7 +1625,7 @@ def _ism_level_number(name, value=_BIG):
         "ism-r", "ism-bitrate", "mpd-t", "mpd-d", "mpd-r", "mpd-timescale",
         "mpd-start-number", "mpd-bandwidth", "mpd-width", "mpd-height",
         "mpd-audio-sampling-rate", "mpd-frame-rate", "mpd-set-bandwidth",
-        "mpd-set-height", "mpd-set-frame-rate",
+        "mpd-set-height", "mpd-set-frame-rate", "mpd-content-length",
         "ism-max-width", "ism-width", "ism-max-height", "ism-height",
         "ism-sampling-rate", "ism-channels", "ism-bits-per-sample",
         "ism-nal-unit-length-field"])
@@ -1657,6 +1667,9 @@ def test_guard_admits_manifest_numbers_at_uint64_width():
     assert (fmts[0]["tbr"], fmts[0]["width"], fmts[0]["height"]) == (
         int(top) / 1000, 3840, 2160)
     assert fmts[0]["fps"] is None  # yt-dlp reads only a whole-number rate
+    _reset_budget()
+    fmts, _subs = _parse_mpd(_mpd_content_length(top))
+    assert fmts[0]["filesize"] == int(top)
     _reset_budget()
     fmts, _subs = _parse_ism(_ism_level_number("SamplingRate", top))
     assert fmts[0]["asr"] == int(top)

@@ -714,11 +714,13 @@ def _digits(value: int) -> int:
 # on what it builds from them, ~1 ms a fragment at 4 000 digits. DASH's
 # @bandwidth goes into every fragment's address through $Bandwidth$; a
 # Representation's @width / @height / @audioSamplingRate / @frameRate (a
-# whole number reaches int(), a fraction like 30000/1001 does not) and a
-# QualityLevel's sizes, sample rate, channels, bit depth and NAL length field
-# are int()-ed once per format, a cost on top of the variant cap. No real one
-# comes near 20.
+# whole number reaches int(), a fraction like 30000/1001 does not), the
+# yt:contentLength of its BaseURL (the format's filesize, which also travels
+# on in the extraction's result) and a QualityLevel's sizes, sample rate,
+# channels, bit depth and NAL length field are int()-ed once per format, a
+# cost on top of the variant cap. No real one comes near 20.
 _MAX_NUMBER_CHARS = 20
+_YT_CONTENT_LENGTH = "{http://youtube.com/yt/2012/10/10}contentLength"
 
 
 def _refuse_long_number(value) -> None:
@@ -953,6 +955,11 @@ def _refuse_oversized_mpd(mpd_doc, mpd_base_len: int = 0) -> None:
                              "audioSamplingRate", "frameRate"):
                     _refuse_long_number(
                         _representation_attr(representation, adaptation, name))
+                # yt-dlp reads the size from the Representation's first own
+                # BaseURL only.
+                own_base = representation.find(q("BaseURL"))
+                if own_base is not None:
+                    _refuse_long_number(own_base.get(_YT_CONTENT_LENGTH))
                 n, seconds = _representation_segments(info, period_duration)
                 count += n
                 if count > _MAX_MPD_SEGMENTS:
