@@ -178,3 +178,110 @@ def test_converted_models_dir_tilde_is_expanded(monkeypatch, tmp_path):
     # normpath: on Windows expanduser("~/x") keeps the "/".
     assert os.path.normpath(out) == os.path.join(
         str(tmp_path), "models", "ct2", "org__ft", "float16")
+
+
+def test_concurrent_misses_share_one_conversion_probe(monkeypatch, tmp_path):
+    """Every cold miss of one model used to run its own Hub file-list probe,
+    each holding a default-executor worker for as long as the Hub takes to
+    answer. Concurrent misses await one probe; a dropped caller does not
+    cancel it for the rest, and a later miss probes afresh."""
+    import threading
+
+    stub_conversion_stack(monkeypatch, None, converted_dir=tmp_path,
+                          overrides={"org/pinned": {"REVISION": "v2"}})
+    calls, release = [], threading.Event()
+
+    def _probe(model_id, revision=None):
+        calls.append((model_id, revision))
+        release.wait(5)
+        return None     # an already-CT2 repo: nothing to convert
+
+    monkeypatch.setattr(tx_models, "_conversion_repo_files", _probe)
+
+    async def _misses():
+        same = [asyncio.create_task(tx_models._ensure_ct2_model("org/ct2"))
+                for _ in range(8)]
+        other = asyncio.create_task(tx_models._ensure_ct2_model("org/pinned"))
+        while len(calls) < 2:
+            await asyncio.sleep(0.005)
+        same[0].cancel()
+        await asyncio.sleep(0)
+        release.set()
+        done = await asyncio.gather(*same, other, return_exceptions=True)
+        assert tx_models._convert_probes == {}
+        return done
+
+    done = asyncio.run(_misses())
+    assert isinstance(done[0], asyncio.CancelledError)
+    assert done[1:] == ["org/ct2"] * 7 + ["org/pinned"]
+    assert sorted(calls) == [("org/ct2", None), ("org/pinned", "v2")]
+
+    assert asyncio.run(tx_models._ensure_ct2_model("org/ct2")) == "org/ct2"
+    assert calls.count(("org/ct2", None)) == 2
+
+
+def _recording_hub_conversion(monkeypatch, tmp_path, overrides=None):
+    """A Hub whose every repo is a transformers checkpoint, plus a converter:
+    returns (probed repo ids, converted sources)."""
+    probed, converted = [], []
+
+    def _list_repo_files(repo_id, revision=None):
+        probed.append(repo_id)
+        return ["config.json", "model.safetensors"]
+
+    class _Converter:
+        def __init__(self, model_name_or_path, **kw):
+            converted.append(model_name_or_path)
+
+        def convert(self, out, quantization, force):
+            os.makedirs(out)
+            Path(out, "model.bin").write_text("converted")
+
+    stub_hub(monkeypatch, list_repo_files=_list_repo_files)
+    stub_conversion_stack(monkeypatch, _Converter,
+                          converted_dir=tmp_path / "ct2",
+                          overrides=overrides or {})
+    return probed, converted
+
+
+def test_local_files_only_skips_the_hub_probe_and_conversion(
+        monkeypatch, tmp_path):
+    """LOCAL_FILES_ONLY promises no network: with auto-convert on too, a load
+    miss of a Hub id must not ask the Hub for its file list, nor fetch and
+    convert its weights. A conversion made earlier still answers."""
+    probed, converted = _recording_hub_conversion(monkeypatch, tmp_path)
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", True, raising=False)
+
+    assert asyncio.run(tx_models._ensure_ct2_model("org/ft")) == "org/ft"
+    assert (probed, converted) == ([], [])
+
+    out_dir = tx_models._converted_dir_for("org/ft", "float16")
+    os.makedirs(out_dir)
+    Path(out_dir, "model.bin").write_text("earlier")
+    assert asyncio.run(tx_models._ensure_ct2_model("org/ft")) == out_dir
+    assert (probed, converted) == ([], [])
+
+
+def test_local_files_only_per_model_override_skips_only_that_model(
+        monkeypatch, tmp_path):
+    probed, converted = _recording_hub_conversion(
+        monkeypatch, tmp_path, overrides={"org/ft": {"LOCAL_FILES_ONLY": True}})
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    assert asyncio.run(tx_models._ensure_ct2_model("org/ft")) == "org/ft"
+    assert (probed, converted) == ([], [])
+    other = asyncio.run(tx_models._ensure_ct2_model("org/other"))
+    assert other == tx_models._converted_dir_for("org/other", "float16")
+    assert (probed, converted) == (["org/other"], ["org/other"])
+
+
+def test_local_files_only_still_converts_a_local_dir(monkeypatch, tmp_path):
+    """A local HF-format dir needs no network: it converts as before."""
+    converted = _stub_local_conversion(monkeypatch, tmp_path)
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    src, _weights = _local_ft(tmp_path, b"w")
+    out_dir = tx_models._converted_dir_for(str(src), "float16")
+
+    assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
+    assert converted == [str(src)]
+    assert Path(out_dir, "model.bin").read_text() == "w"

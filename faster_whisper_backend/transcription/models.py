@@ -99,6 +99,20 @@ def _end_prefetch(key: tuple, task: "asyncio.Task") -> None:
         task.exception()
 
 
+# (model id, revision) → the running conversion probe every concurrent cache
+# miss of that model awaits (see _ensure_ct2_model). Popped when the task
+# ends, so the next miss probes afresh.
+_convert_probes: "dict[tuple, asyncio.Task]" = {}
+
+
+def _end_convert_probe(key: tuple, task: "asyncio.Task") -> None:
+    if _convert_probes.get(key) is task:
+        del _convert_probes[key]
+    if not task.cancelled():
+        # Retrieved here: every waiter may have been cancelled already.
+        task.exception()
+
+
 # (model_id, chars) → vocab token ids: the encoding depends on the model's
 # BPE table. Dropped on model unload (LRU/idle/evict-on-edit); an LRU capped
 # at _SUPPRESS_CHARS_CACHE_MAX because a client's suppress_chars decode key
@@ -977,12 +991,31 @@ async def _ensure_ct2_model(name: str) -> str:
     # Fast path: already converted (idempotent across restarts).
     if _converted_is_current(name, output_dir):
         return output_dir
+    # LOCAL_FILES_ONLY: no Hub probe and no Hub-sourced conversion (both name
+    # the model to the Hub, the conversion also fetches its weights). A local
+    # HF-format dir needs neither and still converts.
+    if (effective_config.cfg_for(name, "LOCAL_FILES_ONLY")
+            and not os.path.isdir(name)):
+        return name
     if os.path.isfile(os.path.join(output_dir, "model.bin")):
         logger.info("auto-convert: %s changed since its conversion; "
                     "reconverting", name)
     # Off the loop: the probe is a synchronous list_repo_files() HTTPS call.
     # None = nothing to convert (already-CT2 repo or local CT2 dir).
-    files = await asyncio.to_thread(_conversion_repo_files, name, revision)
+    # Single-flight per model and revision: without it N concurrent misses of
+    # one cold model each held a default-executor worker for as long as the
+    # Hub took to answer (its retries on an unreachable Hub run for minutes).
+    _probe_key = (name, revision)
+    _probe = _convert_probes.get(_probe_key)
+    if _probe is None:
+        _probe = asyncio.create_task(
+            asyncio.to_thread(_conversion_repo_files, name, revision))
+        _convert_probes[_probe_key] = _probe
+        _probe.add_done_callback(
+            lambda t, k=_probe_key: _end_convert_probe(k, t))
+    # Shielded: one caller's cancel (a dropped client) must not cancel the
+    # probe the others are waiting on.
+    files = await asyncio.shield(_probe)
     if files is None:
         return name
 
@@ -1730,6 +1763,7 @@ def _reset_for_tests() -> None:
     _suppress_chars_cache.clear()
     _convert_locks.clear()
     _hub_prefetches.clear()
+    _convert_probes.clear()
     _model_load_lock = asyncio.Lock()
     _convert_locks_meta = asyncio.Lock()
     _trim_task = None
