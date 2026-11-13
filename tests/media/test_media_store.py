@@ -349,8 +349,81 @@ def test_a_live_audio_job_outlasting_the_video_clock_is_not_reaped(monkeypatch):
 
 def test_startup_reset_wipes_staging(tmp_path):
     job = ums.new_staging_job()
+    write_bytes(os.path.join(job, "frag", "media.f137.mp4.part"))
+    part = write_bytes(os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part"))
+    spool = write_bytes(os.path.join(ums.staging_dir(), "upload-deadbeef.mp4"))
     ums.startup_reset()
     assert not os.path.exists(job)
+    assert not os.path.exists(part) and not os.path.exists(spool)
+    assert os.listdir(ums._dir()) in ([], ["staging"])
+    assert os.listdir(ums.staging_dir()) == []
+
+
+def test_startup_reset_removes_only_the_stores_own_files(tmp_path):
+    """URL_MEDIA_DIR is a setting, and the data dir is one dropped path
+    segment away from its default: a start must not delete whatever else
+    the configured directory holds, only what this store put there."""
+    d = ums._dir()
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    ours = [ums._REG[mid]["path"],
+            write_bytes(os.path.join(d, "f" * 32 + ".mp4")),      # no registry row
+            write_bytes(os.path.join(d, "e" * 32 + ".bin")),
+            write_bytes(os.path.join(ums.new_staging_job(), "media.mkv")),
+            write_bytes(os.path.join(d, "staging", "upload-deadbeef.mp4.part")),
+            write_bytes(os.path.join(d, "staging", "upload-deadbeef.mp4"))]
+    theirs = [write_bytes(os.path.join(d, "api_keys.sqlite3")),
+              write_bytes(os.path.join(d, "config.local.json")),
+              write_bytes(os.path.join(d, "captures_audio", "ab", "cd", "x.wav")),
+              write_bytes(os.path.join(d, "models", "large-v3", "model.bin")),
+              # Near misses of a retained name: not hex, too long, a directory.
+              write_bytes(os.path.join(d, "g" * 32 + ".mp4")),
+              write_bytes(os.path.join(d, "f" * 33 + ".mp4")),
+              write_bytes(os.path.join(d, "d" * 32 + ".mp4", "inner.bin")),
+              # Inside staging, only the job dirs and the upload spools go.
+              write_bytes(os.path.join(d, "staging", "notes.txt")),
+              write_bytes(os.path.join(d, "staging", "other", "x.bin")),
+              write_bytes(os.path.join(d, "staging", "upload-dir", "x.bin")),
+              write_bytes(os.path.join(d, "staging", "vid-file"))]
+    ums.startup_reset()
+    assert ums._REG == {}
+    assert [p for p in ours if os.path.exists(p)] == []
+    assert [p for p in theirs if not os.path.exists(p)] == []
+    # The store works on from there.
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    assert ums.resolve(mid, user_id=None) is not None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks")
+def test_startup_reset_follows_no_symlink(tmp_path):
+    d = ums._dir()
+    outside = tmp_path / "outside"
+    kept = [write_bytes(str(outside / "video.mp4")),
+            write_bytes(str(outside / "job" / "media.mkv")),
+            write_bytes(str(outside / "staging" / "vid-x" / "media.mkv")),
+            write_bytes(str(outside / "staging" / "upload-1.mp4"))]
+    os.symlink(kept[0], os.path.join(d, "a" * 32 + ".mp4"))
+    os.symlink(str(outside / "job"), os.path.join(ums.staging_dir(), "vid-link"))
+    os.symlink(kept[3], os.path.join(ums.staging_dir(), "upload-link.mp4"))
+    ums.startup_reset()
+    assert [p for p in kept if not os.path.exists(p)] == []
+    # A staging dir that is itself a link is not descended into.
+    import shutil
+    shutil.rmtree(os.path.join(d, "staging"), ignore_errors=True)
+    os.symlink(str(outside / "staging"), os.path.join(d, "staging"))
+    ums.startup_reset()
+    assert [p for p in kept if not os.path.exists(p)] == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_startup_reset_keeps_the_dir_owner_only(tmp_path):
+    d = ums._dir()
+    os.chmod(d, 0o755)
+    ums.startup_reset()
+    assert os.stat(d).st_mode & 0o777 == 0o700
+    import shutil
+    shutil.rmtree(d)
+    ums.startup_reset()
+    assert os.stat(d).st_mode & 0o777 == 0o700
 
 
 def test_stalled_upload_part_survives_the_sweep_until_the_idle_bound():

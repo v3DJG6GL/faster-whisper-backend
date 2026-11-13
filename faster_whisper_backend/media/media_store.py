@@ -11,9 +11,10 @@ picture its subtitles belong to.
 Deliberately tiny and in-process:
   - The registry is a plain dict (GIL-atomic single-key updates, same stance
     as transcription/progress._BATCH_PROGRESS). Ids die with the process, so startup_reset()
-    wipes the directory — every file on disk without a registry entry is an
-    orphan by definition. Multi-worker deployments are already documented as
-    unsupported (SERVER_WORKERS: "keep at 1").
+    removes every retained file and staging leftover — each one on disk
+    without a registry entry is an orphan by definition. Multi-worker
+    deployments are already documented as unsupported (SERVER_WORKERS:
+    "keep at 1").
   - Bounded twice: per-entry TTL (URL_MEDIA_TTL_S) and a byte cap over the
     whole dir (RETAINED_MEDIA_MAX_BYTES, oldest download evicted first). sweep()
     runs from a lifespan task; register() also evicts inline so a burst
@@ -25,6 +26,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -75,8 +77,8 @@ def _dir() -> str:
 
 
 def staging_dir() -> str:
-    """`<URL_MEDIA_DIR>/staging`, created 0700 on first use. Wiped with the
-    whole dir on startup; stale jobs are reaped by sweep()."""
+    """`<URL_MEDIA_DIR>/staging`, created 0700 on first use. Its job dirs
+    and upload spools go on startup; stale ones are reaped by sweep()."""
     d = os.path.join(_dir(), _STAGING_NAME)
     os.makedirs(d, exist_ok=True)
     secure_dir(d)
@@ -108,17 +110,55 @@ def new_staging_job() -> str:
     return job
 
 
+def _lstat_mode(path: str) -> int:
+    """`path`'s own file type and mode (a link is a link, never its
+    target); 0 when it cannot be read."""
+    try:
+        return os.lstat(path).st_mode
+    except OSError:
+        return 0
+
+
+def _listdir(path: str) -> "list[str]":
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
 def startup_reset() -> None:
-    """Wipe + recreate the retention dir. Called once from lifespan."""
+    """Empty the retention dir of everything this store put there and make
+    sure it exists. Called once from lifespan.
+
+    Only the store's own names go, the ones sweep() looks for, at any age:
+    retained files (`<media id>.<ext>`), staging job dirs and upload spools.
+    URL_MEDIA_DIR is a setting, so the directory may hold more than that (the
+    data dir is one dropped path segment away from the default), and a start
+    must not delete an operator's databases or model cache over a slip.
+    Links are left alone, not followed."""
     d = _dir()
     _REG.clear()
     try:
-        if os.path.isdir(d):
-            shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d, exist_ok=True)
         secure_dir(d)
     except OSError as e:
         logger.error("[url-dl] retention dir unusable (%s): %s", d, e)
+        return
+    for name in _listdir(d):
+        stem, _dot, _ext = name.partition(".")
+        path = os.path.join(d, name)
+        if MEDIA_ID_RE.match(stem) and stat.S_ISREG(_lstat_mode(path)):
+            unlink_quietly(path)
+    staging = os.path.join(d, _STAGING_NAME)
+    if not stat.S_ISDIR(_lstat_mode(staging)):
+        return
+    for name in _listdir(staging):
+        path = os.path.join(staging, name)
+        mode = _lstat_mode(path)
+        if name.startswith(_STAGING_PREFIX) and stat.S_ISDIR(mode):
+            shutil.rmtree(path, ignore_errors=True)
+        elif name.startswith(_UPLOAD_PREFIX) and stat.S_ISREG(mode):
+            unlink_quietly(path)
 
 
 def register(src_path: str, *, user_id: "str | None", kind: str = "audio",
