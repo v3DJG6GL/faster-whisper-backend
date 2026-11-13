@@ -1332,6 +1332,41 @@ class _QuietYdlLogger:
 _QUIET_YDL_LOGGER = _QuietYdlLogger()
 
 
+def _quiet_ydl_direct_writes() -> None:
+    """parse_codecs prints "WARNING: Unknown codec <text>" for every name in
+    a manifest's CODECS attribute it does not know — site text, raw — with
+    yt-dlp's module-level write_string: no YoutubeDL in reach, so neither
+    the logger nor `quiet` sees it, and it lands on this process's stderr.
+
+    Rebinding the name in the module that looks it up drops a write that
+    names no stream (stderr is the only place such a write goes); a write
+    with a stream passes through. YoutubeDL, the option parser and the
+    plugin loader imported their own reference and print as before.
+    sys.stderr itself stays put: it belongs to the whole process, and the
+    probe runs beside other threads.
+
+    Fail closed, like the guard: a yt-dlp that moved the name leaves the
+    channel open, so the probe stops instead."""
+    try:
+        from yt_dlp.utils import _utils
+        original = _utils.write_string
+    except (ImportError, AttributeError):
+        original = None
+    if getattr(original, "_fwb_quiet", False):
+        return
+    if not callable(original):
+        raise RuntimeError(
+            f"{GUARD_UNAVAILABLE_MARKER}: yt-dlp's write_string is gone")
+
+    def write_string(s, out=None, encoding=None):
+        if not out:  # yt-dlp's own test for "use stderr"
+            return None
+        return original(s, out, encoding)
+
+    write_string._fwb_quiet = True
+    _utils.write_string = write_string
+
+
 async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     """Policy-gated metadata probe (no download). Client-safe errors only.
     `timeout` is one wall-clock budget for the WHOLE probe — the policy
@@ -1354,6 +1389,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     def _extract() -> dict:
         import yt_dlp  # lazy: optional dependency
 
+        _quiet_ydl_direct_writes()
         pin = pinned_extractors(key)
         opts = {
             "quiet": True,

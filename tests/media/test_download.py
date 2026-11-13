@@ -1355,6 +1355,60 @@ def test_probe_gives_yt_dlp_a_logger_that_keeps_errors_off_stderr(monkeypatch, c
     assert (printed.out, printed.err) == ("", "")
 
 
+def _ydl_utils_as_shipped(monkeypatch):
+    """yt-dlp's `_utils` module with its own write_string in place for this
+    test (an earlier probe in this process has rebound it); monkeypatch puts
+    back whatever was there before."""
+    from yt_dlp.utils import _utils
+    # The package took its own reference when it was imported.
+    monkeypatch.setattr(_utils, "write_string", yt_dlp.utils.write_string)
+    return _utils
+
+
+def test_probe_keeps_yt_dlp_codec_warnings_off_stderr(monkeypatch, capsys):
+    """parse_codecs prints "WARNING: Unknown codec <text>" for each name in a
+    manifest's CODECS attribute it does not know: site text, through a
+    module-level write that no YoutubeDL logger or `quiet` reaches."""
+    utils = _ydl_utils_as_shipped(monkeypatch)
+    codecs = "zz\x1b[31mERROR forged,q,q,avc1.64001f,mp4a.40.2"
+    capsys.readouterr()
+    shipped = yt_dlp.utils.parse_codecs(codecs)
+    # The channel this test is about: yt-dlp still writes there by itself.
+    assert "WARNING: Unknown codec zz\x1b[31merror forged\n" in capsys.readouterr().err
+
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {"title": "t", "extractor_key": "Youtube"})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    capsys.readouterr()
+    assert yt_dlp.utils.parse_codecs(codecs) == shipped
+    printed = capsys.readouterr()
+    assert (printed.out, printed.err) == ("", "")
+
+    # A second probe does not wrap the wrapper, and a write that names its
+    # stream still lands there.
+    quieted = utils.write_string
+    udl._quiet_ydl_direct_writes()
+    assert utils.write_string is quieted
+    out = io.StringIO()
+    utils.write_string("kept\n", out=out)
+    assert out.getvalue() == "kept\n"
+    assert capsys.readouterr().err == ""
+
+
+def test_probe_is_refused_when_yt_dlp_direct_writes_cannot_be_quieted(monkeypatch):
+    """A yt-dlp that no longer has the name leaves nothing to rebind: the
+    probe stops like it does for a guard that did not install, instead of
+    running with the channel open."""
+    utils = _ydl_utils_as_shipped(monkeypatch)
+    monkeypatch.delattr(utils, "write_string")
+    with pytest.raises(RuntimeError, match=udl.GUARD_UNAVAILABLE_MARKER):
+        udl._quiet_ydl_direct_writes()
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {"title": "t", "extractor_key": "Youtube"})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    with pytest.raises(udl.UrlDownloadError, match="unavailable on this server"):
+        _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+
+
 def test_probe_classifies_a_site_sized_error_from_a_bounded_window(monkeypatch):
     """A redirect or meta refresh makes yt-dlp's error as long as the site
     likes, and the classifier lowers, splits and scans its whole input on
