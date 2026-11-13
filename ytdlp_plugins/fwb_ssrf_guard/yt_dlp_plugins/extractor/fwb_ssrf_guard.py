@@ -1992,15 +1992,29 @@ def _tables_are_bounded() -> bool:
 # (<!ATTLIST) is the same amplifier: expat gives every matching element a
 # fresh copy of it (a 120 KB document of 5 000 elements under a
 # 100 000-character default held 534 MB), so a document that declares one is
-# refused too. No other declaration puts content into the tree. With both
-# refused, a document no longer than the cap cannot exceed it and pays
-# nothing. Two million elements is twice a DASH manifest at the segment cap
-# (its attributes fit the doubled cap), and real pages and API answers hold
-# far fewer arrays and objects.
+# refused too. A namespace is the third: the tree names every element and
+# prefixed attribute `{namespace}name`, a string of its own per DISTINCT
+# name, held twice (a 123 KB document of 3 000 names under a
+# 100 000-character namespace held 613 MB), so a declaration longer than
+# _MAX_XML_NAMESPACE_CHARS is refused, where the parser reports it: however
+# the document spells or encodes it. With all three refused, a document no
+# longer than the cap cannot exceed it and pays nothing. Two million elements
+# is twice a DASH manifest at the segment cap (its attributes fit the doubled
+# cap), and real pages and API answers hold far fewer arrays and objects.
 _MAX_XML_ELEMENTS = 2_000_000
 _MAX_JSON_CONTAINERS = 2_000_000
+# What the names of a document at the element cap can still hold is
+# names x 2 x this: 300 000 distinct names took 301 MB at 256 characters
+# against 167 MB at 30, and 1.3 GB at 2 048. The namespaces of DASH, Smooth
+# Streaming, HDS, SMIL, RSS / Atom and TTML are all under 100. The refusal
+# ends the tree, not expat's own read of the rest of the document, which
+# copies the namespace once per prefixed attribute under it (0.7 s for 3 000
+# under 100 000 characters): time only, left to the caller's deadline.
+_MAX_XML_NAMESPACE_CHARS = 256
 _ETREE_SENTINEL = "_fwb_etree_bounded"
 _ETREE_NAME = "compat_etree_fromstring"
+_ETREE_BUILDER = "_TreeBuilder"
+_NS_SENTINEL = "_fwb_ns_bounded"
 _JSON_SENTINEL = "_fwb_json_bounded"
 
 
@@ -2039,7 +2053,20 @@ def _bounded_etree(original):
         _refuse_oversized_xml(text)
         return original(text)
     setattr(compat_etree_fromstring, _ETREE_SENTINEL, True)
+    compat_etree_fromstring.__wrapped__ = original
     return compat_etree_fromstring
+
+
+def _refuse_long_namespace(self, prefix, uri):
+    """yt-dlp's tree builder's `start_ns`: the parser calls it for every
+    namespace declaration, before the element that makes it, and builds the
+    same tree with or without one."""
+    if len(uri or "") > _MAX_XML_NAMESPACE_CHARS:
+        raise xml.etree.ElementTree.ParseError(
+            "the document declares an overlong namespace")
+
+
+setattr(_refuse_long_namespace, _NS_SENTINEL, True)
 
 
 def _etree_bindings():
@@ -2064,6 +2091,27 @@ def _bound_etree_parses() -> None:
             if id(fn) not in wrapped:
                 wrapped[id(fn)] = _bounded_etree(fn)
             setattr(module, _ETREE_NAME, wrapped[id(fn)])
+    # The parser looks `start_ns` up on each builder it is given. A builder
+    # that has one of its own is left alone (replacing it could change the
+    # tree), which leaves is_installed() failing closed.
+    builder = vars(yt_dlp.compat).get(_ETREE_BUILDER)
+    if isinstance(builder, type) and getattr(builder, "start_ns", None) is None:
+        builder.start_ns = _refuse_long_namespace
+
+
+def _namespaces_are_bounded() -> bool:
+    import yt_dlp.compat
+    compat = vars(yt_dlp.compat)
+    if not getattr(getattr(compat.get(_ETREE_BUILDER), "start_ns", None),
+                   _NS_SENTINEL, False):
+        return False
+    # A yt-dlp whose parse stops building with that class would bypass the
+    # hook: the function behind the bound must still name it, as a global of
+    # the compat module.
+    parse = getattr(compat.get(_ETREE_NAME), "__wrapped__", None)
+    code = getattr(parse, "__code__", None)
+    return (code is not None and _ETREE_BUILDER in code.co_names
+            and getattr(parse, "__globals__", None) is compat)
 
 
 def _etree_parses_are_bounded() -> bool:
@@ -2071,7 +2119,8 @@ def _etree_parses_are_bounded() -> bool:
     # A yt-dlp without the compat function fails closed, as with DASH.
     return (getattr(vars(yt_dlp.compat).get(_ETREE_NAME), _ETREE_SENTINEL, False)
             and all(getattr(fn, _ETREE_SENTINEL, False)
-                    for _module, fn in _etree_bindings()))
+                    for _module, fn in _etree_bindings())
+            and _namespaces_are_bounded())
 
 
 def _json_oversized(doc) -> bool:
@@ -2267,7 +2316,8 @@ def is_installed() -> bool:
     and nested manifests before it builds their formats, the formats of one
     extraction before each format pass, every table of formats, thumbnails
     or subtitles before it is drawn, an XML document's elements and
-    a JSON document's arrays and objects before either is parsed, and every
+    a JSON document's arrays and objects before either is parsed, an XML
+    document's namespaces as they are declared, and every
     ffmpeg / ffprobe a postprocessor spawns carries the format whitelist,
     the allocation cap and the stream limit."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)

@@ -3890,6 +3890,109 @@ def test_guard_refuses_xml_attribute_defaults(module):
     assert len(parse(elements)) == len(parse(elements.encode())) == 50
 
 
+_NS_CAP = 256  # the guard's _MAX_XML_NAMESPACE_CHARS, pinned below
+_NS_NAMES = 20
+
+
+def _ns_doc(spelling, chars):
+    """A document of _NS_NAMES distinct names under a `chars`-character
+    namespace, and the root tag it parses to."""
+    uri = "u" * chars
+    elements = "".join(f"<e{i}/>" for i in range(_NS_NAMES))
+    plain = f'<r xmlns="{uri}">{elements}</r>'
+    doc = {
+        "str": plain,
+        "utf-8": plain.encode(),
+        "bytearray": bytearray(plain.encode()),
+        "utf-16": ('<?xml version="1.0" encoding="utf-16"?>' + plain).encode("utf-16"),
+        "utf-16-le": plain.encode("utf-16-le"),
+        "prefixed-elements": f'<r xmlns:p="{uri}">'
+                             + "".join(f"<p:e{i}/>" for i in range(_NS_NAMES)) + "</r>",
+        "prefixed-attributes": f'<r xmlns:p="{uri}">'
+                               + "".join(f'<b p:a{i}="1"/>' for i in range(_NS_NAMES))
+                               + "</r>",
+        "single-quoted": f"<r xmlns  =\n '{uri}'>{elements}</r>",
+        "character-references": '<r xmlns="' + "&#117;" * chars + f'">{elements}</r>',
+        "nested": f'<r><x xmlns="{uri}">{elements}</x><y/></r>',
+        "second-prefix": f'<r xmlns:a="urn:a" xmlns:b="{uri}">{elements}</r>',
+    }[spelling]
+    root = "r" if spelling in ("prefixed-elements", "prefixed-attributes", "nested",
+                               "second-prefix") else f"{{{uri}}}r"
+    return doc, root
+
+
+@pytest.mark.parametrize("spelling", [
+    "str", "utf-8", "bytearray", "utf-16", "utf-16-le", "prefixed-elements",
+    "prefixed-attributes", "single-quoted", "character-references", "nested",
+    "second-prefix"])
+def test_guard_refuses_an_overlong_xml_namespace(spelling):
+    """The tree holds a namespace twice per DISTINCT name under it (element
+    or prefixed attribute), where no count of the raw text sees it: a 123 KB
+    document of 3 000 names under a 100 000-character namespace held 613 MB.
+    The parser reports every declaration however it is spelled."""
+    import xml.etree.ElementTree as ET
+    import yt_dlp.compat
+    # What a document at the element cap can still hold is names x 2 x this.
+    assert _registered_guard().get("_MAX_XML_NAMESPACE_CHARS", _NS_CAP) == _NS_CAP
+    parse = yt_dlp.compat.compat_etree_fromstring
+    over, _root = _ns_doc(spelling, _NS_CAP + 1)
+    with pytest.raises(ET.ParseError, match="overlong namespace"):
+        parse(over)
+    at_cap, root = _ns_doc(spelling, _NS_CAP)
+    tree = parse(at_cap)
+    assert tree.tag == root and len(tree) == (2 if spelling == "nested" else _NS_NAMES)
+
+
+def _tree_shape(element):
+    return (element.tag, sorted(element.attrib.items()), element.text, element.tail,
+            [_tree_shape(child) for child in element])
+
+
+@pytest.mark.parametrize("doc,root", [
+    ('<?xml version="1.0"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" '
+     'xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:cenc="urn:mpeg:cenc:2013" '
+     'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+     'xmlns:yt="http://youtube.com/yt/2012/10/10" '
+     'xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" type="static">'
+     '<Period xlink:href="p.xml" xml:lang="en"><AdaptationSet mimeType="audio/mp4">'
+     '<ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" '
+     'cenc:default_KID="0"/><Representation id="a" bandwidth="1">'
+     '<BaseURL yt:contentLength="12">a.m4a</BaseURL>\n</Representation>'
+     "</AdaptationSet></Period></MPD>", "{urn:mpeg:dash:schema:mpd:2011}MPD"),
+    ('<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" '
+     'xmlns:media="http://search.yahoo.com/mrss/" '
+     'xmlns:atom="http://www.w3.org/2005/Atom"><channel><atom:link href="x"/>'
+     '<item><title>t</title><media:content url="x"/>'
+     "<itunes:duration>1:02</itunes:duration></item></channel></rss>", "rss"),
+    ('<smil xmlns="http://www.w3.org/2001/SMIL20/Language"><head>'
+     '<meta base="http://cdn.example/"/></head><body><switch>'
+     '<video src="a.mp4" system-bitrate="1"/></switch></body></smil>',
+     "{http://www.w3.org/2001/SMIL20/Language}smil"),
+    ('<SmoothStreamingMedia MajorVersion="2" MinorVersion="2" Duration="1">'
+     '<StreamIndex Type="audio" Url="Q({bitrate})/F(a={start time})">'
+     '<QualityLevel Bitrate="1" FourCC="AACL"/><c d="1"/></StreamIndex>'
+     "</SmoothStreamingMedia>", "SmoothStreamingMedia"),
+    ('<manifest xmlns="http://ns.adobe.com/f4m/1.0"><media url="a" bitrate="1"/>'
+     "</manifest>", "{http://ns.adobe.com/f4m/1.0}manifest"),
+    # A namespace redeclared, and undeclared, further down.
+    ('<r xmlns="urn:a"><x xmlns="urn:b"><y/></x><z xmlns=""><w/></z>'
+     '<p:q xmlns:p="urn:c" p:a="1"/></r>', "{urn:a}r"),
+], ids=["mpd", "rss", "smil", "ism", "f4m", "redeclared"])
+def test_guard_admits_real_namespaces(doc, root):
+    """The namespace check only watches declarations: the tree yt-dlp gets
+    (qualified tags and attributes, text, tails) is what the parser builds
+    with no guard at all."""
+    import xml.etree.ElementTree as ET
+    import yt_dlp.compat
+    udl.guard_self_check(force=True)
+    assert getattr(yt_dlp.compat._TreeBuilder, "start_ns", None) is not None
+    plain = _tree_shape(ET.fromstring(doc))
+    assert plain[0] == root
+    for spelling in (doc, doc.encode(),
+                     doc.replace('<?xml version="1.0"?>', "").encode("utf-16")):
+        assert _tree_shape(yt_dlp.compat.compat_etree_fromstring(spelling)) == plain
+
+
 def test_guard_is_not_installed_without_the_xml_bound(monkeypatch):
     import yt_dlp.compat
     import yt_dlp.extractor.generic as generic
@@ -3905,6 +4008,35 @@ def test_guard_is_not_installed_without_the_xml_bound(monkeypatch):
         m.delitem(vars(yt_dlp.compat), "compat_etree_fromstring")
         assert not guard.is_installed()
         guard.install()
+        assert not guard.is_installed()
+    assert guard.is_installed()
+
+
+def test_guard_is_not_installed_without_the_namespace_bound(monkeypatch):
+    import xml.etree.ElementTree as ET
+    import yt_dlp.compat
+    guard = _inproc_guard()
+    assert guard.is_installed()
+    with monkeypatch.context() as m:
+        m.delattr(yt_dlp.compat._TreeBuilder, "start_ns")
+        assert not guard.is_installed()
+        guard.install()  # hooks the builder again
+        assert guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp whose builder watches them itself
+        m.setattr(yt_dlp.compat._TreeBuilder, "start_ns",
+                  lambda self, prefix, uri: None)
+        assert not guard.is_installed()
+        guard.install()  # not replaced: still fails closed
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a yt-dlp that renamed the builder
+        m.delitem(vars(yt_dlp.compat), "_TreeBuilder")
+        assert not guard.is_installed()
+        guard.install()  # nothing to hook: still fails closed
+        assert not guard.is_installed()
+    with monkeypatch.context() as m:  # a parse that builds with something else
+        m.setitem(vars(yt_dlp.compat), "compat_etree_fromstring",
+                  lambda text: ET.XML(text))
+        guard.install()  # bounded like any other, yet the hook is not on its path
         assert not guard.is_installed()
     assert guard.is_installed()
 
