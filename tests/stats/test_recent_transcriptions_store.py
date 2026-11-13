@@ -174,6 +174,40 @@ def test_zero_work_failures_of_one_user_do_not_evict_other_users(ts, monkeypatch
     assert _count(ts, "request_id = 'a55'") == 1
 
 
+def test_zero_work_cancels_of_one_user_do_not_evict_other_users(ts, monkeypatch):
+    # A cancel sent before the decode ends costs its caller as little as a
+    # refused handshake and writes the same kind of row into the shared window.
+    monkeypatch.setattr(ts, "_MAX_ZERO_WORK_FAILS_PER_HOUR", 5)
+    now = time.time()
+    for i in range(20):
+        _timing(ts, f"v{i}", 2.0, 0.5, user_id="victim", created_ts=now - 100 + i,
+                prune_every=1, max_rows=40)
+    _timing(ts, "a-err", None, 0.5, status="error", words=0, user_id="alice",
+            created_ts=now - 90, prune_every=1, max_rows=40)
+    _timing(ts, "a-worked", 2.0, 0.5, status="cancelled", words=0, user_id="alice",
+            created_ts=now - 89, prune_every=1, max_rows=40)
+    _timing(ts, "a-old", None, 0.5, status="cancelled", words=0, user_id="alice",
+            created_ts=now - 7200, prune_every=1, max_rows=40)
+    _timing(ts, "b0", None, 0.5, status="cancelled", words=0, user_id="bob",
+            created_ts=now - 86, prune_every=1, max_rows=40)
+    for i in range(60):
+        _timing(ts, f"c{i}", None, 0.5, status="cancelled", words=0, user_id="alice",
+                kind="translate", created_ts=now - 60 + i, prune_every=1, max_rows=40)
+    assert _count(ts, "user_id = 'victim'") == 20
+    own = {r["request_id"] for r in ts.list_recent(limit=100, user_id_filter="alice")}
+    # The newest cancels stay visible; a failure, a cancel that did work, an
+    # older cancel and another user's cancel are not replaced.
+    assert own == {f"c{i}" for i in range(55, 60)} | {"a-err", "a-worked", "a-old"}
+    assert _count(ts, "user_id = 'bob'") == 1
+    # A full cancel budget takes nothing from the failure budget.
+    for i in range(4):
+        _timing(ts, f"e{i}", None, 0.5, status="error", words=0, user_id="alice",
+                created_ts=now + i, prune_every=1, max_rows=40)
+    own = {r["request_id"] for r in ts.list_recent(limit=100, user_id_filter="alice")}
+    assert own == ({f"c{i}" for i in range(55, 60)} | {f"e{i}" for i in range(4)}
+                   | {"a-err", "a-worked", "a-old"})
+
+
 def test_zero_work_failures_without_a_user_share_one_budget(ts, monkeypatch):
     monkeypatch.setattr(ts, "_MAX_ZERO_WORK_FAILS_PER_HOUR", 3)
     now = time.time()

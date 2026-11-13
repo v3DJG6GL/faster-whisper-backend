@@ -72,19 +72,25 @@ _CAP_KIND = 16
 _CAP_STAGES_JSON = 20_000
 _CAP_KEY_LABEL = 120
 
-# Rows one identity may hold from the last hour for failed requests that did
-# no work (no audio, no words, no text): a refused dictation handshake costs
-# its caller nothing, and each one took a slot of the rolling window every
-# user shares. Past the cap the newest failure replaces that identity's own
+# Rows one identity may hold from the last hour for failed or cancelled
+# requests that did no work (no audio, no words, no text): a refused
+# dictation handshake or a cancel sent before the decode ends costs its
+# caller nothing, and each one took a slot of the rolling window every user
+# shares. Past the cap the newest such row replaces that identity's own
 # oldest one, so the latest error stays visible and nobody else's row moves.
 # Rows without a user (keyless callers, server rows) are one identity.
+# Failures and cancels each have a budget of this size: a client cancel is
+# no failure, so a run of one kind never pushes out the rows of the other.
 _MAX_ZERO_WORK_FAILS_PER_HOUR = 50
-# A client cancel is no failure, and a model download's row is server work.
-_ZERO_WORK_FAIL_SQL = (
-    "user_id IS ? AND created_ts >= ? AND status NOT IN ('ok', 'cancelled')"
+# A model download's row is server work.
+_ZERO_WORK_SQL = (
+    "user_id IS ? AND created_ts >= ? AND {status}"
     " AND COALESCE(audio_s, 0) = 0 AND COALESCE(words, 0) = 0"
     " AND COALESCE(raw_text, '') = '' AND COALESCE(kind, '') <> 'download'"
 )
+_ZERO_WORK_FAIL_SQL = _ZERO_WORK_SQL.format(
+    status="status NOT IN ('ok', 'cancelled')")
+_ZERO_WORK_CANCEL_SQL = _ZERO_WORK_SQL.format(status="status = 'cancelled'")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_transcriptions (
@@ -378,9 +384,10 @@ def record_timing(
     earlier write. Translate and error-path rows have no trace half, so
     username must come in here.
 
-    A failed request that did no work keeps at most
-    _MAX_ZERO_WORK_FAILS_PER_HOUR rows per identity and hour: past that the
-    new row replaces that identity's oldest one."""
+    A failed or cancelled request that did no work keeps at most
+    _MAX_ZERO_WORK_FAILS_PER_HOUR rows per identity and hour, each kind with
+    its own budget: past that the new row replaces that identity's oldest
+    one of the same kind."""
     if not request_id:
         return
     model = (model or "")[:_CAP_MODEL]
@@ -397,9 +404,12 @@ def record_timing(
     ts = float(created_ts) if created_ts else time.time()
     conn = _require_conn()
     with _lock:
-        if (status not in ("ok", "cancelled") and not audio_s and not words
+        if (status != "ok" and not audio_s and not words
                 and kind != "download"):
-            _replace_oldest_zero_work_fail(conn, request_id, user_id, ts)
+            _replace_oldest_zero_work_fail(
+                conn, request_id, user_id, ts,
+                _ZERO_WORK_CANCEL_SQL if status == "cancelled"
+                else _ZERO_WORK_FAIL_SQL)
         conn.execute(
             "INSERT INTO recent_transcriptions ("
             "  request_id, created_ts, user_id, username, model, status,"
@@ -427,24 +437,26 @@ def record_timing(
 
 
 def _replace_oldest_zero_work_fail(conn: sqlite3.Connection, request_id: str,
-                                   user_id: str | None, ts: float) -> None:
+                                   user_id: str | None, ts: float,
+                                   sql: str = _ZERO_WORK_FAIL_SQL) -> None:
     """Make room for one more zero-work failure row of `user_id` (caller
     holds `_lock`): at _MAX_ZERO_WORK_FAILS_PER_HOUR such rows from the hour
     before `ts`, drop that identity's oldest one. A request that already has
-    its row adds none, so nothing is dropped for it."""
+    its row adds none, so nothing is dropped for it. `sql` picks the kind of
+    row counted and dropped (_ZERO_WORK_CANCEL_SQL for a cancel)."""
     if conn.execute("SELECT 1 FROM recent_transcriptions WHERE request_id = ?",
                     (request_id,)).fetchone() is not None:
         return
     window = (user_id, ts - 3600)
     held = conn.execute(
         "SELECT COUNT(*) FROM (SELECT 1 FROM recent_transcriptions"
-        f" WHERE {_ZERO_WORK_FAIL_SQL} LIMIT ?)",
+        f" WHERE {sql} LIMIT ?)",
         (*window, _MAX_ZERO_WORK_FAILS_PER_HOUR)).fetchone()[0]
     if held >= _MAX_ZERO_WORK_FAILS_PER_HOUR:
         conn.execute(
             "DELETE FROM recent_transcriptions WHERE id = ("
             "SELECT id FROM recent_transcriptions"
-            f" WHERE {_ZERO_WORK_FAIL_SQL} ORDER BY created_ts ASC LIMIT 1)",
+            f" WHERE {sql} ORDER BY created_ts ASC LIMIT 1)",
             window)
 
 
