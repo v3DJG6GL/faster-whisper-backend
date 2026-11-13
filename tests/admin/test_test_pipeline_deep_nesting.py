@@ -3,7 +3,12 @@ sre's parser. re.compile raises RecursionError (not re.error) for it, so the
 dry run must catch it itself, as the save path reports it as an invalid regex:
 a step error on a callback rule, a skipped entry in a regex list."""
 
-from tests.admin._pipeline_helpers import dry_run, list_step, upper_rule
+import sys
+
+import pytest
+
+from faster_whisper_backend.admin import routes as admin_routes
+from tests.admin._pipeline_helpers import dry_run, list_rule, list_step, upper_rule
 
 _DEEP = "(" * 512
 
@@ -42,3 +47,32 @@ def test_test_pipeline_null_or_missing_sample_is_the_empty_sample(client):
         r = _post_raw(client, body)
         assert r.status_code == 200, r.text
         assert r.json() == {"steps": [], "final": ""}
+
+
+def test_test_pipeline_render_recursion_error_is_refused(client, monkeypatch):
+    def _too_deep(steps, final):
+        raise RecursionError("Stack overflow")
+    monkeypatch.setattr(admin_routes, "_render_dry_run", _too_deep)
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "ab", "rules": [list_rule([{"pattern": "a", "replacement": "b"}])]})
+    assert r.status_code == 400, r.text
+    assert "JSON cannot carry" in r.json()["error"]
+
+
+# The depth json.loads takes and json.dumps refuses depends on the thread's
+# stack; this one is measured for Linux, and the handling is the same everywhere.
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="nesting depth measured for the Linux thread stack")
+@pytest.mark.parametrize("key", ["label", "type", "name"])
+def test_test_pipeline_deeply_nested_label_type_or_name_is_refused(client, key):
+    """A rule's label, type and name are echoed untyped in its step, and
+    json.loads builds an object nested deeper than the render can walk: that
+    body was an unhandled RecursionError."""
+    rule = {"type": '"regex-list"', "name": '"n"',
+            "entries": '[{"pattern": "a", "replacement": "b"}]',
+            key: '{"a":' * 45_000 + "1" + "}" * 45_000}
+    body = ('{"sample": "ab", "rules": [{'
+            + ", ".join(f'"{k}": {v}' for k, v in rule.items()) + "}]}")
+    r = _post_raw(client, body)
+    assert r.status_code == 400, r.text
+    assert "JSON cannot carry" in r.json()["error"]

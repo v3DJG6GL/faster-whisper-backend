@@ -1561,12 +1561,15 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
 
     try:
         body = await asyncio.to_thread(_render_dry_run, steps, text)
-    except ValueError:
+    except (ValueError, RecursionError):
         # json.loads accepts NaN / Infinity and an escaped unpaired surrogate;
         # the render refuses the first (allow_nan=False) and cannot encode
-        # the second (UnicodeEncodeError is a ValueError).
+        # the second (UnicodeEncodeError is a ValueError). A rule's label,
+        # type and name are echoed untyped, and json.loads also builds an
+        # object nested deeper than json.dumps can walk (RecursionError).
         return _bad_request("sample or rules hold a value JSON cannot carry "
-                            "(NaN/Infinity or an unpaired surrogate)")
+                            "(NaN/Infinity, an unpaired surrogate or a value "
+                            "nested too deeply)")
     return Response(body, media_type="application/json")
 
 
