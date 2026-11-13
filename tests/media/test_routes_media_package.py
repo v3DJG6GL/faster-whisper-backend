@@ -5,6 +5,8 @@ the middleware and the handlers run real."""
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import os
 import shutil
 import sys
@@ -14,6 +16,7 @@ import time
 
 import pytest
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import routes as media_routes
 from faster_whisper_backend.media import subtitle_mux as pk
@@ -350,6 +353,121 @@ def test_streams_probe_failure_logs_neither_the_id_nor_the_path(
                if "stream probe failed" in rec.getMessage()]
     assert mid not in line and os.sep not in line, line
     assert "InvalidDataError" in line and "mp4" in line, line
+
+
+def test_streams_probe_runs_once_per_id_and_one_at_a_time(
+        client, package_enabled, monkeypatch):
+    """A crafted file's header open can hold gigabytes while it lasts:
+    parallel first requests must not each run one. They queue on the one
+    client-open worker, and the ones behind the first find its facts."""
+    gate = threading.Event()
+    lock = threading.Lock()
+    seen = {"calls": 0, "inside": 0, "peak": 0}
+
+    def _probe(path):
+        with lock:
+            seen["calls"] += 1
+            seen["inside"] += 1
+            seen["peak"] = max(seen["peak"], seen["inside"])
+        gate.wait(5)
+        with lock:
+            seen["inside"] -= 1
+        return _streams()
+    monkeypatch.setattr(pk, "probe_streams", _probe)
+    mid_a = _upload(client).json()["media_id"]
+    mid_b = _upload(client).json()["media_id"]
+
+    async def _all():
+        return await asyncio.gather(*(
+            media_routes.media_streams(mid, {"user_id": None})
+            for mid in [mid_a] * 4 + [mid_b] * 4))
+    release = threading.Timer(0.2, gate.set)
+    release.start()
+    try:
+        facts = asyncio.run(_all())
+    finally:
+        gate.set()
+        release.cancel()
+    assert facts == [_streams().as_dict()] * 8
+    assert seen["calls"] == 2 and seen["peak"] == 1, seen
+
+
+def test_client_open_pool_has_one_worker():
+    # The single-flight above and the memory bound both rest on it: a second
+    # worker doubles the worst case and lets two probes of one id overlap.
+    pool = audio_ffmpeg.client_open_pool()
+    lock = threading.Lock()
+    seen = {"inside": 0, "peak": 0}
+
+    def _task():
+        with lock:
+            seen["inside"] += 1
+            seen["peak"] = max(seen["peak"], seen["inside"])
+        time.sleep(0.02)
+        with lock:
+            seen["inside"] -= 1
+        return threading.current_thread().name
+    names = {f.result(timeout=5) for f in [pool.submit(_task) for _ in range(4)]}
+    assert seen["peak"] == 1 and len(names) == 1, (seen, names)
+    assert pool is audio_ffmpeg.client_open_pool()
+
+
+class _LibavOutOfMemory(MemoryError):
+    """PyAV's av.error.MemoryError: a builtin MemoryError that carries
+    libav's ENOMEM."""
+    errno = errno.ENOMEM
+
+
+def test_streams_does_not_cache_a_server_fault(client, package_enabled, monkeypatch):
+    """A probe that failed because the SERVER was out of descriptors or
+    memory says nothing about the file: answered unreadable once, probed
+    again on the next request, not unreadable for the entry's whole life."""
+    for fault in (OSError(errno.EMFILE, "Too many open files"),
+                  OSError(errno.ENFILE, "Too many open files in system"),
+                  OSError(errno.EAGAIN, "Resource temporarily unavailable"),
+                  OSError(errno.EIO, "Input/output error"),
+                  MemoryError()):
+        calls = []
+
+        def _probe(path, fault=fault, calls=calls):
+            calls.append(path)
+            if len(calls) == 1:
+                raise fault
+            return _streams()
+        monkeypatch.setattr(pk, "probe_streams", _probe)
+        mid = _upload(client).json()["media_id"]
+        r = client.get(f"/v1/audio/media/{mid}/streams")
+        assert _ok_body(r)["unreadable"] is True, repr(fault)
+        assert ums.probe_cache_get(mid) is None, repr(fault)
+        r = client.get(f"/v1/audio/media/{mid}/streams")
+        assert _ok_body(r) == _streams().as_dict(), repr(fault)
+        r = _package(client, mid, {"container": "mkv", "subtitles": _tracks()})
+        assert r.status_code == 200, (repr(fault), r.text)
+        assert len(calls) == 2, repr(fault)
+
+
+def test_streams_caches_a_verdict_on_the_file(client, package_enabled, monkeypatch):
+    """What the FILE made the open answer (bad data, a refused container,
+    an allocation past the cap) stays cached: a hostile file is opened once
+    per id, not once per request."""
+    for verdict in (OSError(1094995529, "Invalid data found when processing input"),
+                    ValueError("unsupported container"),
+                    _LibavOutOfMemory(),
+                    OSError(errno.ENOMEM, "Cannot allocate memory")):
+        calls = []
+
+        def _probe(path, verdict=verdict, calls=calls):
+            calls.append(path)
+            raise verdict
+        monkeypatch.setattr(pk, "probe_streams", _probe)
+        mid = _upload(client).json()["media_id"]
+        for _ in range(3):
+            r = client.get(f"/v1/audio/media/{mid}/streams")
+            assert _ok_body(r)["unreadable"] is True, repr(verdict)
+        r = _package(client, mid, {"container": "mkv", "subtitles": _tracks()})
+        assert r.status_code == 422, (repr(verdict), r.text)
+        assert r.json()["detail"]["code"] == "unreadable"
+        assert len(calls) == 1, repr(verdict)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")

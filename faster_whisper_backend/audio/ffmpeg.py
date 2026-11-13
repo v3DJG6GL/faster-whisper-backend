@@ -4,6 +4,7 @@ client-supplied file must never open as, list the audio decoders of the
 binary and of PyAV, and cap what PyAV's libav allocates in one piece and
 how many streams it takes of one file."""
 
+import concurrent.futures
 import ctypes
 import errno
 import functools
@@ -170,6 +171,20 @@ def cap_libav_alloc() -> bool:
             if _libav_alloc_capped is None:
                 _libav_alloc_capped = _set_libav_max_alloc()
     return _libav_alloc_capped
+
+
+# Header opens of client bytes (the export probe, the upload's input check)
+# run one at a time, process-wide: one crafted open may hold PYAV_MAX_STREAMS
+# x ~1.5 x _LIBAV_MAX_ALLOC while it lasts, and the default executor would run
+# as many of them at once as it has workers. A real file's header open takes
+# milliseconds, so the queue is invisible to an ordinary upload.
+_CLIENT_OPEN_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="client-open")
+
+
+def client_open_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """The one-worker executor every header open of a client file runs on."""
+    return _CLIENT_OPEN_POOL
 
 
 def format_whitelist_args(format_name: "str | None") -> "list[str]":

@@ -32,6 +32,7 @@ from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.audio import transcode as _transcode
 from faster_whisper_backend.media import download as _udl
 from faster_whisper_backend.media import language_check as _lc
@@ -625,6 +626,20 @@ def _owned_media_entry(media_id: str, user: dict) -> dict:
     return entry
 
 
+# Probe failures that say the SERVER was short of descriptors or could not
+# read its own disk. Out of memory is one only as a MemoryError without
+# libav's ENOMEM: that errno is how the allocation cap and the stream limit
+# refuse a file (audio_ffmpeg.refused_as_too_much).
+_PROBE_SERVER_FAULTS = frozenset({errno.EMFILE, errno.ENFILE, errno.EAGAIN, errno.EIO})
+
+
+def _is_server_fault(exc: BaseException) -> bool:
+    if audio_ffmpeg.refused_as_too_much(exc):
+        return False
+    return (isinstance(exc, MemoryError)
+            or getattr(exc, "errno", None) in _PROBE_SERVER_FAULTS)
+
+
 def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
     """Cached codec facts for a retained file (probed once per id)."""
     cached = url_media_store.probe_cache_get(media_id)
@@ -639,8 +654,25 @@ def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
         logger.info("[package] stream probe failed (%s): %s",
                     _log_safe(str(entry.get("ext") or "?")), _log_safe(type(e).__name__))
         facts = _pk.unreadable_streams().as_dict()
+        if _is_server_fault(e):
+            # Not a verdict on the file: the next request probes it again,
+            # or a playable video stays unreadable for the entry's life.
+            return facts
     url_media_store.probe_cache_set(media_id, facts)
     return facts
+
+
+async def _media_streams(entry: dict, media_id: str) -> "dict | None":
+    """_media_streams_for off the event loop, on the one client-open worker:
+    probes run one at a time, and the requests queued behind the first one
+    for an id find its cached facts instead of opening the file again. The
+    cache is read here first, so a repeat never waits behind another file's
+    probe."""
+    cached = url_media_store.probe_cache_get(media_id)
+    if cached is not None:
+        return cached
+    return await asyncio.get_running_loop().run_in_executor(
+        audio_ffmpeg.client_open_pool(), _media_streams_for, entry, media_id)
 
 
 @router.post("/v1/audio/media")
@@ -748,7 +780,7 @@ async def media_streams(media_id: str,
     the reason before anyone waits for a mux. Same 404 for every miss."""
     _package_gate()
     entry = _owned_media_entry(media_id, user)
-    facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
+    facts = await _media_streams(entry, media_id)
     if facts is None:
         raise HTTPException(status_code=503,
                             detail="stream probing is unavailable on this server (PyAV)")
@@ -929,7 +961,7 @@ async def package_media(media_id: str, request: Request,
     # Its encoded bytes went right after the parse.
     body = raw_subs = t = None
     entry = _owned_media_entry(media_id, user)
-    facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
+    facts = await _media_streams(entry, media_id)
     if facts is None:
         raise HTTPException(status_code=503,
                             detail="stream probing is unavailable on this server (PyAV)")
