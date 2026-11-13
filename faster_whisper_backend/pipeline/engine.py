@@ -159,12 +159,19 @@ class WalkBudget:
     hand every piece the full floor. A walk costs about rules x the longest
     text it built, so the pieces together cost no more than one walk over
     the whole text may. `left` (what remains, negative once overspent) is
-    for the caller to skip a piece the budget no longer covers."""
+    for the caller to skip a piece the budget no longer covers.
 
-    __slots__ = ("left",)
+    A walk that could not be run at all (the helper processes all held, or a
+    deadline passed with no rule to blame, see "Time limit") ends the
+    budget's walks: `gave_up` is set, and the later pieces come back as they
+    are without another wait. The pieces are one request's, and each would
+    otherwise wait as long as the first did."""
+
+    __slots__ = ("left", "gave_up")
 
     def __init__(self, total_len: int) -> None:
         self.left = output_bound(total_len)
+        self.gave_up = False
 
 
 def _rule_ordinal(card_no: int, sub_no: "int | None" = None) -> str:
@@ -978,6 +985,11 @@ def _seam_walk(prefix_raw: str, full_raw: str, bounds: "tuple[int, int]",
 #     is a fault). Helpers that are up but all held for the whole wait
 #     (rule_helper.BUSY) are the slow rules' doing: the text is returned
 #     without the rules applied, never walked in this process.
+#   * A walk given up because the helpers were all held, or because its
+#     deadline passed with no rule to blame, would end the same way for the
+#     next piece of the same text. It closes its WalkBudget (gave_up): the
+#     request's other pieces are returned as they are, without a wait or a
+#     lost helper each.
 #
 # In-process on purpose: holdback_start (no rule pattern runs there, only the
 # map keys are read) and rebuild_caches (it compiles, it does not match).
@@ -1011,6 +1023,9 @@ _LOST_HELPER_RETRIES = 6
 
 # Returned by the isolated runners for "run it in this process".
 _IN_PROCESS = object()
+# Returned by _in_helper when no attempt can finish for now, whatever the
+# text: the helpers are all held, or a deadline passed with no rule to blame.
+_GAVE_UP = object()
 _NO_SKIP: "frozenset[int]" = frozenset()
 # Guards _QUARANTINE and _SHIPPED updates (reads go without it).
 _ISOLATION_LOCK = threading.Lock()
@@ -1205,8 +1220,11 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
     `request(token, skip)` builds the request tuple; it is rebuilt for every
     attempt because a timed-out attempt adds to the quarantine. Returns the
     helper's reply tuple, _IN_PROCESS when the caller has to run the walk
-    itself, or None when no attempt finished (the helpers all held for the
-    whole wait included). Never raises."""
+    itself, and one of two answers when no attempt finished: _GAVE_UP where
+    the same walk asked again would end the same way (the helpers all held
+    for the whole wait, or a deadline passed with no rule to blame), None
+    otherwise (the rules that held this walk up are quarantined by now, or
+    its helpers were lost). Never raises."""
     shipment = _shipment(rules, terminal)
     if shipment is None:
         return _IN_PROCESS
@@ -1228,7 +1246,7 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
         if helper is _rule_helper.BUSY:
             # Slow rules hold every helper. Walked here instead, the same
             # rules would hold the whole server, with no deadline at all.
-            return None
+            return _GAVE_UP
         if helper is None:
             # No helper can be had (pool shut down under this walk, or none
             # startable). A walk that already lost a helper inside a rule is
@@ -1261,7 +1279,7 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
                 logger.warning(
                     "[pipeline] a rule walk passed its %.3g s time limit with no "
                     "single rule to blame — no rule is skipped", deadline)
-                return None
+                return _GAVE_UP
             if at >= 0:
                 in_rule = True
                 timed_out.add(at)
@@ -1328,19 +1346,27 @@ def _walk_isolated(pool, text: str, rules: "list[_CompiledRule]",
     raises WalkUnfinished for a caller that stores the result
     (`must_finish`)."""
     limits = (_REPEAT_MAX_PASSES, _TRACE_TEXT_MAX, _TRACE_MAX_ROWS)
-    reply = _in_helper(
+    # An earlier piece of this budget's text found that no walk can be run:
+    # this one is not tried (no second wait, no second helper lost).
+    again = budget is not None and budget.gave_up
+    reply = None if again else _in_helper(
         pool, rules, terminal, len(text),
         lambda token, skip: ("walk", token, text, exclude, include, model_name,
                              language, bound, trace is not None, skip, limits))
     if reply is _IN_PROCESS:
         return _IN_PROCESS
+    if reply is _GAVE_UP:
+        if budget is not None:
+            budget.gave_up = True
+        reply = None
     if reply is None:
         # Out of attempts (or of helpers: all held, or gone under a walk
         # inside a rule): the text goes on as it came in. Charged like a
         # walk that changed nothing.
-        logger.warning(
-            "[pipeline] a rule walk did not finish in a helper process — the "
-            "text is returned without the rules applied")
+        if not again:
+            logger.warning(
+                "[pipeline] a rule walk did not finish in a helper process — the "
+                "text is returned without the rules applied")
         if budget is not None:
             budget.left -= len(text)
         if trace is not None:
@@ -1376,7 +1402,7 @@ def _seam_isolated(pool, prefix_raw: str, full_raw: str, bounds: "tuple[int, int
                              include, language, skip, limits))
     if reply is _IN_PROCESS:
         return _IN_PROCESS
-    if reply is None:
+    if reply is None or reply is _GAVE_UP:
         return "not determined (time limit hit)"
     status, value = reply[0], reply[1]
     if status == "raise":

@@ -628,6 +628,80 @@ def test_a_pool_with_every_helper_held_answers_busy_and_says_so_once(pool, caplo
     pool.release(got)
 
 
+def test_pieces_sharing_a_budget_wait_for_a_held_pool_once(pool, monkeypatch, caplog):
+    # One request walks its text piece by piece (a cue, a word) on one
+    # budget: the wait for a helper is the request's, not each piece's.
+    _install_rows(monkeypatch, [_row("card", "Card · x", "x", "y", 1)])
+    wait = 0.15
+    monkeypatch.setattr(rule_helper, "_ACQUIRE_TIMEOUT_S", wait)
+    pieces = [f"x piece {i}" for i in range(10)]
+    held = [pool.acquire(), pool.acquire()]
+    asked: list = []
+    real = pool.acquire
+    monkeypatch.setattr(
+        pool, "acquire", lambda timeout=None: (asked.append(timeout), real(timeout))[1])
+    budget = pl_engine.WalkBudget(sum(map(len, pieces)))
+    left = budget.left
+    trace: list = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="whisper-api"):
+            t0 = time.perf_counter()
+            out = [pl_engine._postprocess_text(p, trace=trace, budget=budget) for p in pieces]
+            took = time.perf_counter() - t0
+            assert len(asked) == 1
+            # A walk outside that budget waits for a helper itself.
+            assert pl_engine._postprocess_text("x") == "x"
+            assert len(asked) == 2
+    finally:
+        for helper in held:
+            pool.release(helper)
+    assert out == pieces and took < 4 * wait
+    # Every piece is charged and traced as the first was.
+    assert budget.left == left - sum(map(len, pieces))
+    assert [row[0] for row in trace] == ["pipeline [TIME LIMIT — rules not applied]"] * 10
+    assert caplog.text.count("did not finish") == 2           # one per wait
+    # With helpers free again another request is formatted; the one that
+    # gave up stays as it is to its end.
+    assert pl_engine._postprocess_text("x", budget=pl_engine.WalkBudget(1)) == "y"
+    assert pl_engine._postprocess_text("x", budget=budget) == "x"
+
+
+def test_pieces_sharing_a_budget_pass_a_blameless_deadline_once(pool, monkeypatch, caplog):
+    # The rows of test_slowish_rows_that_only_together_pass_the_deadline_
+    # quarantine_nobody: redone for the next piece, the walk would pass its
+    # deadline the same way and cost another helper.
+    text, each = _cubic_run(0.08)
+    rows = _install_rows(monkeypatch, [
+        _row("card", f"Card · {i}", _CUBIC, "", 1, i) for i in range(1, 13)]
+        + [_row("tail", "Tail · !", "!", "?", 2)])
+    monkeypatch.setattr(pl_engine, "_DEADLINE_FLOOR_S",
+                        each / 0.2 - pl_engine._DEADLINE_PER_CHAR_S * len(text))
+    calls = _count_calls(monkeypatch)
+    budget = pl_engine.WalkBudget(4 * len(text))
+    left = budget.left
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        out = [pl_engine._postprocess_text(text, budget=budget) for _ in range(4)]
+    assert out == [text] * 4
+    assert len(calls) == 2                    # a load and ONE walk for the four pieces
+    assert caplog.text.count("no single rule") == 1
+    assert budget.left == left - 4 * len(text)
+    assert pl_engine._skip_for(rows) == frozenset()
+    # Another request's walk is run as before.
+    assert pl_engine._postprocess_text("aa!") == "aa?"
+
+
+def test_a_walk_out_of_attempts_leaves_its_budget_open_for_the_next_piece(pool, monkeypatch):
+    # That walk quarantined the rule that held it up: the next piece runs.
+    rows = _install_rows(monkeypatch, [_row("card", "Card · slow", _SLOW, "", 1),
+                                       _row("tail", "Tail · b", "b", "c", 2)])
+    monkeypatch.setattr(pl_engine, "_DEADLINE_FLOOR_S", 0.1)
+    monkeypatch.setattr(pl_engine, "_WALK_ATTEMPTS", 1)
+    budget = pl_engine.WalkBudget(2 * len(_SLOW_TEXT))
+    assert pl_engine._postprocess_text(_SLOW_TEXT, budget=budget) == _SLOW_TEXT
+    assert pl_engine._skip_for(rows) == {0}
+    assert pl_engine._postprocess_text(_SLOW_TEXT, budget=budget) == _SLOW_TEXT[:-1] + "c"
+
+
 class _HeldPool:
     """A pool whose helpers are all held: every acquire answers BUSY."""
 
