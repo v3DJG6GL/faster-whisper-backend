@@ -13,6 +13,7 @@ import contextlib
 import json
 import math
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -81,7 +82,8 @@ def save_lock(path: str):
         lk.release()
 
 
-def atomic_write_json(obj: Any, path: str, *, sort_keys: bool, tmp_prefix: str) -> None:
+def atomic_write_json(obj: Any, path: str, *, sort_keys: bool, tmp_prefix: str,
+                      keep_mode: bool = False) -> None:
     """Atomically write `obj` as pretty JSON to `path`.
 
     Write to a tempfile in the same directory, fsync, then os.replace. The
@@ -91,6 +93,10 @@ def atomic_write_json(obj: Any, path: str, *, sort_keys: bool, tmp_prefix: str) 
     `sort_keys`: True for config.local.json (stable diff of a flat settings
     dict); False for config.json so the committed factory rules keep their
     authored order and git diffs stay minimal.
+
+    `keep_mode`: carry an existing destination's permission bits onto the
+    replacement (best-effort) instead of mkstemp's 0600, so a save of the
+    committed config.json does not lock the checkout's other readers out.
     """
     dst_dir = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(dst_dir, exist_ok=True)
@@ -100,6 +106,11 @@ def atomic_write_json(obj: Any, path: str, *, sort_keys: bool, tmp_prefix: str) 
             json.dump(obj, f, indent=2, ensure_ascii=False, sort_keys=sort_keys)
             f.flush()
             os.fsync(f.fileno())
+        if keep_mode:
+            try:
+                os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
+            except OSError:
+                pass  # no destination yet, or a filesystem without modes
         last_err: Exception | None = None
         for _ in range(5):
             try:

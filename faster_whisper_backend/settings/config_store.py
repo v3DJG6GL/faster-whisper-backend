@@ -457,7 +457,8 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
             merged = raw
         merged.setdefault("schema_version", 1)
         merged["PIPELINE_RULES"] = out_rules
-        atomic_json.atomic_write_json(merged, path, sort_keys=False, tmp_prefix=".config.")
+        atomic_json.atomic_write_json(merged, path, sort_keys=False, tmp_prefix=".config.",
+                                      keep_mode=True)
     return out_rules
 
 

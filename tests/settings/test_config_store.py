@@ -7,6 +7,8 @@ test_factory_rules.py.
 
 import json
 import os
+import stat
+import sys
 import threading
 from pathlib import Path
 
@@ -1320,6 +1322,17 @@ def test_save_factory_rules_preserves_sibling_defaults(tmp_path):
     assert on_disk["DEFAULT_MODEL"] == "keep-me"
     assert on_disk["BEST_OF"] == 7
     assert [r["name"] for r in on_disk["PIPELINE_RULES"]] == ["trim"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_save_factory_rules_keeps_config_json_mode(tmp_path):
+    # config.json is committed and shared with the admins who commit the
+    # Defaults save; the tempfile's 0600 must not replace the checkout's mode.
+    p = str(tmp_path / "config.json")
+    _write_json(p, {"schema_version": 1, "PIPELINE_RULES": []})
+    os.chmod(p, 0o664)
+    cs.save_factory_rules([{"name": "trim", "label": "Trim", "type": "terminal"}], p)
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o664
 
 
 def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch):

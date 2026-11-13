@@ -4,6 +4,8 @@ through config_store.save_overrides in tests/settings/test_config_store.py."""
 
 import json
 import os
+import stat
+import sys
 
 import pytest
 
@@ -49,3 +51,16 @@ def test_atomic_write_gives_up_after_retries(tmp_path, monkeypatch):
     # The temp file is removed even though every replace attempt failed.
     leftovers = [f for f in os.listdir(tmp_path) if f != "x.json"]
     assert leftovers == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_atomic_write_keep_mode_carries_destination_mode(tmp_path):
+    # mkstemp creates 0600: without keep_mode one save of the committed
+    # config.json locked every other account of the checkout out of it.
+    p = str(tmp_path / "config.json")
+    open(p, "w", encoding="utf-8").write("{}")
+    os.chmod(p, 0o664)
+    atomic_json.atomic_write_json({"ok": 1}, p, sort_keys=False, tmp_prefix=".t",
+                                  keep_mode=True)
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o664
+    assert json.loads(open(p, encoding="utf-8").read()) == {"ok": 1}
