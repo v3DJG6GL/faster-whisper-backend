@@ -4,6 +4,7 @@ the 2 s guard thread's join cannot return while `(?:|){N}(?!)` (no nested
 repetition, a tiny fixed count) backtracks 2**N times at every position: the
 whole server would freeze, not one core."""
 
+import json
 import subprocess
 import sys
 import time
@@ -131,6 +132,60 @@ def test_probe_fails_open_when_the_child_cannot_start(monkeypatch):
         raise OSError("no fork")
     monkeypatch.setattr(subprocess, "run", _no_spawn)
     assert _probe([_EMPTY_BACKTRACK]) is None
+
+
+def test_probe_fails_closed_when_its_input_cannot_be_serialised(monkeypatch):
+    # Nothing was probed, so nothing is cleared to run in the server: unlike
+    # a child that cannot start, this is decided by the request's own data.
+    spawned = record_calls(monkeypatch, subprocess, "run", lambda *a, **k: None)
+    loop: list = []
+    loop.append(loop)
+    res = admin_routes._probe_chain(
+        "aaaa", [["mark", 0], ["sub", 0, "a", loop], ["match", 0, "b"]],
+        {}, {"left": 6.0, "wall": 15.0}, cap=1000)
+    assert res == ({}, set(), 0)
+    assert spawned == []
+
+
+def test_a_non_string_replacement_is_not_handed_to_the_probe(client, monkeypatch):
+    # parse_template refuses it before any match, so the entry never runs
+    # in the server and needs no probe; the entries around it still do.
+    seen = record_calls(monkeypatch, admin_routes, "_probe_chain",
+                        lambda text, units, *a, **kw: units)
+    step = list_step(client, [{"pattern": "a", "replacement": "b"},
+                              {"pattern": "b", "replacement": {"a": 1}},
+                              {"pattern": "b", "replacement": 5},
+                              {"pattern": "b", "replacement": 0},
+                              {"pattern": "b", "replacement": "c"}])
+    assert seen == [[["mark", 0], ["sub", 0, "a", "b"], ["sub", 0, "b", ""],
+                     ["sub", 0, "b", "c"]]]
+    # A falsy replacement is the empty one, here as in the walk.
+    assert step["after"] == "" and step["error"] and not step.get("not_run")
+
+
+# The depth json.loads takes and json.dumps refuses depends on the thread's
+# stack; this one is measured for Linux, and the logic is the same everywhere.
+_DEEP_NEEDS_THE_LINUX_STACK = pytest.mark.skipif(
+    sys.platform == "win32", reason="nesting depth measured for the Linux thread stack")
+
+
+@_DEEP_NEEDS_THE_LINUX_STACK
+def test_a_deeply_nested_replacement_does_not_switch_the_probe_off(client, short_probe):
+    """json.loads builds an object nested deeper than json.dumps can walk. As
+    a replacement it made the probe's input unserialisable, and every pattern
+    of the request then ran in the server unprobed."""
+    deep = '{"a":' * 45_000 + "1" + "}" * 45_000
+    rules = json.dumps([list_rule([{"pattern": _EMPTY_BACKTRACK, "replacement": "x"}]),
+                        list_rule([{"pattern": "zzz", "replacement": "DEEP"}], name="deep")])
+    r = client.post("/settings/test-pipeline",
+                    content='{"sample": "aaaa", "rules": ' + rules.replace('"DEEP"', deep) + "}",
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 200, r.text
+    slow, bad = r.json()["steps"]
+    assert slow.get("not_run") is True
+    assert "killable probe" in slow["error"]
+    # The entry keeps its own error and is not run either.
+    assert bad["error"] and bad["after"] == "aaaa"
 
 
 def _count_probe_timeouts(monkeypatch):

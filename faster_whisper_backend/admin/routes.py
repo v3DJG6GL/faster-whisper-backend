@@ -805,7 +805,8 @@ def _probe_chain(text: str, units: list[list[Any]],
     it, is not blamed: the next round runs long enough to give it the whole
     timeout; a round the child spent starting gets one more the same way.
     None when the child cannot run at all — fails open like
-    regex_guard.validate.
+    regex_guard.validate. Units that cannot be serialised for it are not
+    that: the walk then stops at unit 0, nothing probed.
 
     `skip`: unit index -> the digests of its rule's input it is already known
     slow on; on that input it is reported slow and not timed again, on any
@@ -890,16 +891,22 @@ def _probe_chain(text: str, units: list[list[Any]],
             # A child cut by `lead` cannot get back to where the last stopped.
             if timeout <= lead:
                 break
+        try:
+            payload = json.dumps([text, units,
+                                  [*((i, sorted(hs)) for i, hs in known.items()),
+                                   *((i, None) for i in slow)],
+                                  pl_engine._POSTPROCESS_MAX_CHARS if cap is None
+                                  else cap, time.time()])
+        except (ValueError, RecursionError, TypeError):
+            # The caller's own units cannot be handed to a child, so none of
+            # them is cleared: failing open here would let the request's data
+            # decide that its patterns run unprobed.
+            return _done({}, 0)
         t0 = time.monotonic()
         try:
             p = subprocess.run(
                 [sys.executable, "-I", "-c", _PROBE_SRC],
-                input=json.dumps([text, units,
-                                  [*((i, sorted(hs)) for i, hs in known.items()),
-                                   *((i, None) for i in slow)],
-                                  pl_engine._POSTPROCESS_MAX_CHARS if cap is None
-                                  else cap, time.time()]),
-                capture_output=True, text=True,
+                input=payload, capture_output=True, text=True,
                 timeout=timeout)
             if budget is not None and "wall" in budget:
                 budget["wall"] -= time.monotonic() - t0
@@ -1143,6 +1150,12 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
         out = []
         for ei, pat, rep in items:
             if not isinstance(pat, str) or not pat:
+                continue
+            # parse_template refuses a non-string replacement before any
+            # match, so the entry never runs in-process; left in the units it
+            # could make the probe's input unserialisable (a deeply nested
+            # object) and leave the whole request unprobed.
+            if rep is not None and not isinstance(rep, str):
                 continue
             if pat not in _screened:
                 _screened[pat] = _screen_msg(pat) is None
