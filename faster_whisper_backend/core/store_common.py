@@ -18,15 +18,16 @@
   `capped_json()`: a JSON blob under a byte cap, whole or not at all;
   `cfg_int()`: a live int knob read with a fallback.
 
-Every store creates its DB at the process umask (0644 file / 0755 dir on a
-typical Linux box) and nothing narrows it afterwards, yet those files hold
-plaintext dictation, intended text, user comments, API-key hashes and
-session-token hashes. `secure_db_file()` / `secure_dir()` tighten them to
-owner-only right after init_db() has opened the connection.
+The stores hold plaintext dictation, intended text, user comments, API-key
+hashes and session-token hashes, and the process umask (0644 file / 0755 dir
+on a typical Linux box) is wider than that. `open_wal_db()` creates a new DB
+file 0600; `secure_db_file()` / `secure_dir()` tighten the directory, and a
+file an older build left wider, to owner-only right after init_db() has
+opened the connection.
 
-Both are BEST-EFFORT: chmod is meaningless on Windows (the service runs there
-too, see install-service.ps1) and unsupported on FAT/CIFS/9p mounts, and a
-store must never fail to open over a file mode. OSError is swallowed.
+All of it is BEST-EFFORT: a file mode is meaningless on Windows (the service
+runs there too, see install-service.ps1) and unsupported on FAT/CIFS/9p
+mounts, and a store must never fail to open over one. OSError is swallowed.
 """
 from __future__ import annotations
 
@@ -226,6 +227,13 @@ def open_wal_db(path: str) -> sqlite3.Connection:
     recommendation (full durability against power loss is FULL, but NORMAL is
     fine against process crash and ~10x faster on small writes)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    # Born owner-only: connect() would create the file at the umask and leave
+    # it (and its WAL sidecars, which take the main file's mode) readable
+    # until init_db's secure_db_file lands. An existing file is left as it is.
+    try:
+        os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
+    except OSError:
+        pass  # connect() below reports the real error
     # timeout= is the busy timeout: pysqlite calls sqlite3_busy_timeout with
     # it, so no separate PRAGMA busy_timeout is needed.
     conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None,
