@@ -10,7 +10,8 @@ a walk is and how its result comes back are the engine's business
 
 Two roles, one file:
   * parent -> ``start()`` / ``shutdown()`` (the app's lifespan) and the pool's
-              ``acquire`` / ``call`` / ``release`` / ``discard`` (the engine).
+              ``acquire`` / ``call`` / ``wait`` / ``release`` / ``discard``
+              (the engine).
   * helper -> ``helper_main()``, started as ``python -P -c`` by ``_spawn``
               (-P: the server's working directory is not an import root for
               it). It imports the engine (and with it the settings modules,
@@ -74,7 +75,8 @@ _RETRY_AFTER_S = 60.0
 # parent enforces the real deadline and kills the helper; this only covers a
 # parent that died without doing so, where a helper inside a slow match would
 # otherwise hold a CPU core for good. Above the longest request the engine
-# makes (its rule-set load timeout).
+# makes (a walk at its longest deadline plus the wait that settles which rule
+# passed it).
 _SELF_LIMIT_S = 180.0
 # An idle helper wakes this often to push its own limit out.
 _IDLE_POLL_S = 5.0
@@ -99,10 +101,11 @@ class HelperGone(Exception):
 
 
 class _Helper:
-    """One helper process as the parent holds it. `mark` is one shared
-    signed 64-bit slot the helper writes its progress into (the engine: the
-    index of the rule about to run); `token` names the rule set the helper
-    has loaded (the engine's)."""
+    """One helper process as the parent holds it. `mark` is two shared
+    signed 64-bit cells the helper writes its progress into (the engine: the
+    index of the rule about to run, and time.monotonic_ns() when it
+    started); `token` names the rule set the helper has loaded (the
+    engine's)."""
 
     __slots__ = ("proc", "conn", "shm", "mark", "token")
 
@@ -116,11 +119,20 @@ class _Helper:
 
 def call(helper: _Helper, payload: bytes, timeout: float) -> bytes:
     """Send one request and wait up to `timeout` seconds for its reply.
-    HelperTimeout past that, HelperGone when the helper died; either way the
-    caller discards the helper."""
+    HelperTimeout past that (the caller may `wait` on, or discards the
+    helper), HelperGone when the helper died (the caller discards it)."""
     try:
         helper.conn.send_bytes(payload)
-        if not helper.conn.poll(timeout):
+    except (EOFError, OSError) as exc:
+        raise HelperGone(str(exc) or type(exc).__name__) from exc
+    return wait(helper, timeout)
+
+
+def wait(helper: _Helper, timeout: float) -> bytes:
+    """Wait up to `timeout` (more) seconds for the reply to the request
+    `call` sent. Raises as `call` does."""
+    try:
+        if not helper.conn.poll(max(0.0, timeout)):
             raise HelperTimeout
         return helper.conn.recv_bytes()
     except (EOFError, OSError) as exc:
@@ -185,7 +197,7 @@ def _spawn(register) -> _Helper:
     """Start one helper on its end of a connected pair and wait until it is
     ready. `register(proc)` is called as soon as the process exists, so a
     shutdown in the middle of the start still finds it."""
-    shm = _shared_memory.SharedMemory(create=True, size=8, track=False)
+    shm = _shared_memory.SharedMemory(create=True, size=16, track=False)
     try:
         # Made here and inherited, not listened for: an endpoint with a name
         # (a socket address, a pipe name) is one any local process can

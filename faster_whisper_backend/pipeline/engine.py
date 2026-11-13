@@ -693,8 +693,9 @@ def _walk(text: str, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
     process's (_COMPILED_RULES) or, in a helper process, the one its parent
     sent. `skip` holds the indices into `rules` of the quarantined rows (see
     _quarantine); `mark` is the helper's progress slot, written with the
-    index of each row before it runs, or None in-process; `warn` takes what
-    the walk would log (a helper hands it to its parent to log)."""
+    index of each row and when it starts before it runs, or None in-process;
+    `warn` takes what the walk would log (a helper hands it to its parent to
+    log)."""
     peak = len(text)
     if budget is not None:
         # Charged as the walk grows, so a rule that raises mid-walk leaves
@@ -736,6 +737,10 @@ def _walk(text: str, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
                             text, text, memo))
                     continue
                 if mark is not None:
+                    # The start stamp first: a reader between the two writes
+                    # then sees the row before with a young stamp, never
+                    # this row with an old one.
+                    mark[1] = time.monotonic_ns()
                     mark[0] = idx
                 forced_in = rule.name in include
                 before = text
@@ -919,6 +924,7 @@ def _seam_walk(prefix_raw: str, full_raw: str, bounds: "tuple[int, int]",
                 if idx in skip:
                     continue
                 if mark is not None:
+                    mark[1] = time.monotonic_ns()
                     mark[0] = idx
                 na, nb = _apply_bounded(rule, a, ba), _apply_bounded(rule, b, bb)
                 if na is None or nb is None or len(na) > ba or len(nb) > bb:
@@ -952,11 +958,16 @@ def _seam_walk(prefix_raw: str, full_raw: str, bounds: "tuple[int, int]",
 #     helper that holds another rule set is sent the current one first, in
 #     the same exchange, so no walk runs on stale rules and no helper reads
 #     the config files for them.
-#   * Before each rule the helper writes the rule's index into a shared slot.
-#     A walk past its deadline has its helper killed, the rule in the slot
-#     quarantined (_quarantine: skipped by every later walk of this rule set,
-#     logged once, traced "[TIME LIMIT — not applied]") and is redone without
-#     it, at most _WALK_ATTEMPTS times in all.
+#   * Before each rule the helper writes the rule's index and the time into
+#     a shared slot. A walk past its deadline has its helper killed, the rule
+#     in the slot quarantined (_quarantine: skipped by every later walk of
+#     this rule set, logged once, traced "[TIME LIMIT — not applied]") and is
+#     redone without it, at most _WALK_ATTEMPTS times in all.
+#   * The rule in the slot is quarantined only for time it ran itself
+#     (_call_walk, _BLAME_SHARE). A walk that passed its deadline on rows
+#     none of which ran that long quarantines nothing and returns its input:
+#     a quarantine changes what every user gets, and whoever can edit one
+#     card must not be able to aim it at a row of another.
 #   * No pool, no helper that can be started, or a rule set that cannot be
 #     sent: the walk runs in this process as it always did (logged where it
 #     is a fault). Helpers that are up but all held for the whole wait
@@ -981,8 +992,13 @@ _DEADLINE_MAX_S = 60.0
 _LOAD_TIMEOUT_S = 60.0
 # Most attempts one walk makes in a helper. Each attempt that passes the
 # deadline quarantines one rule, so a walk waits for at most this many
-# deadlines; past them it returns its input, traced.
+# deadlines (each with up to _BLAME_SHARE of one on top); past them it
+# returns its input, traced.
 _WALK_ATTEMPTS = 3
+# Share of a walk's deadline a row must have run for, in one go, before a
+# passed deadline is put down to it. A row that was merely the one in the
+# slot when a walk of several slow-ish rows ran out is not quarantined.
+_BLAME_SHARE = 0.5
 
 # How many helpers one walk may lose (dead, not timed out) before it stops
 # asking for another.
@@ -1011,6 +1027,46 @@ def walk_deadline(n: int) -> float:
     return min(_DEADLINE_MAX_S, _DEADLINE_FLOOR_S + _DEADLINE_PER_CHAR_S * n)
 
 
+class _WalkTimeout(_rule_helper.HelperTimeout):
+    """A walk passed its deadline. `blame` is the row to quarantine, -1 when
+    the helper was outside any rule, None when no single row held the walk
+    up."""
+
+    def __init__(self, blame: "int | None") -> None:
+        super().__init__()
+        self.blame = blame
+
+
+def _call_walk(helper, payload: bytes, deadline: float) -> bytes:
+    """rule_helper.call for a walk request. Past the deadline the row in the
+    progress slot is blamed (_WalkTimeout) only once it has itself run for
+    _BLAME_SHARE of the deadline: a younger row gets the rest of that share
+    first, and the walk may well finish in it."""
+    try:
+        return _rule_helper.call(helper, payload, deadline)
+    except _rule_helper.HelperTimeout:
+        pass
+    # Read in this order (the helper writes the stamp first): never a row
+    # with the stamp of the one before it.
+    at, since = helper.mark[0], helper.mark[1]
+    if at < 0:
+        raise _WalkTimeout(-1)
+    share = deadline * _BLAME_SHARE
+    # Both processes read one system-wide clock. Clamped all the same, so a
+    # stamp that cannot be placed never buys more than one share.
+    ran = max(0.0, (time.monotonic_ns() - since) / 1e9)
+    if ran < share:
+        try:
+            return _rule_helper.wait(helper, share - ran)
+        except _rule_helper.HelperTimeout:
+            pass
+        if (helper.mark[0], helper.mark[1]) != (at, since):
+            # The walk went on to another row meanwhile: rows that finish,
+            # and only together take too long.
+            raise _WalkTimeout(None)
+    raise _WalkTimeout(at)
+
+
 def _skip_for(rules: "list[_CompiledRule]") -> "frozenset[int]":
     """The quarantined row indices of `rules` (empty for any other rule set
     than the one the quarantine was made for)."""
@@ -1026,6 +1082,10 @@ def _quarantine(rules: "list[_CompiledRule]", idx: int, why: str) -> None:
     if not 0 <= idx < len(rules):
         return
     with _ISOLATION_LOCK:
+        if rules is not _COMPILED_RULES:
+            # A walk still running on a rule set that was replaced meanwhile:
+            # its rows mean nothing to the live set, whose quarantine stays.
+            return
         q = _skip_for(rules)
         if idx in q:
             return
@@ -1143,6 +1203,9 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
     deadline = walk_deadline(n_chars)
     died_at = None
     in_rule = False
+    # Rows this walk timed out in: skipped by its own retries even where the
+    # quarantine does not take them (a rule set replaced under the walk).
+    timed_out: "set[int]" = set()
     stale = lost = attempts = 0
     # One wait for a free helper per walk, shared by its attempts: a thread
     # is parked for at most that long on top of the walk's deadlines.
@@ -1171,17 +1234,26 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
                 helper.token = token
                 loaded = True
             helper.mark[0] = -1
-            reply = pickle.loads(_rule_helper.call(
-                helper, pickle.dumps(request(token, _skip_for(rules)), 5), deadline))
-        except _rule_helper.HelperTimeout:
-            at = helper.mark[0]
+            helper.mark[1] = 0
+            reply = pickle.loads(_call_walk(
+                helper, pickle.dumps(request(token, _skip_for(rules) | timed_out), 5),
+                deadline))
+        except _rule_helper.HelperTimeout as exc:
             pool.discard(helper)
             if not loaded:
                 _unshippable(rules, terminal, f"no answer in {_LOAD_TIMEOUT_S:g} s")
                 return _IN_PROCESS
             attempts += 1
+            at = getattr(exc, "blame", -1)
+            if at is None:
+                # Redone, it would pass the deadline the same way.
+                logger.warning(
+                    "[pipeline] a rule walk passed its %.3g s time limit with no "
+                    "single rule to blame — no rule is skipped", deadline)
+                return None
             if at >= 0:
                 in_rule = True
+                timed_out.add(at)
                 _quarantine(rules, at, f"ran past the {deadline:.3g} s time limit")
             else:
                 logger.warning(
@@ -1197,6 +1269,7 @@ def _in_helper(pool, rules: "list[_CompiledRule]", terminal: "tuple[str, str, in
             in_rule = in_rule or at >= 0
             if at >= 0 and at == died_at:
                 attempts += 1
+                timed_out.add(at)
                 _quarantine(rules, at, "ended its helper process twice")
             else:
                 lost += 1

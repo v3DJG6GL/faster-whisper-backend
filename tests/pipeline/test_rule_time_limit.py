@@ -35,6 +35,9 @@ from tests.conftest import read_repo_text
 _SLOW = r"(a|a)+$"
 _SLOW_TEXT = "x " + "a" * 40 + "! b"
 _SLOW_WANT = "y " + "a" * 40 + "! c"
+# Cubic on a run of "a" with no "b" after it, and finite: it can be sized to
+# a share of a deadline (_cubic_run).
+_CUBIC = r"a*a*a*b"
 
 
 @pytest.fixture
@@ -98,6 +101,20 @@ def _count_calls(monkeypatch):
 
     monkeypatch.setattr(rule_helper, "call", counting)
     return calls
+
+
+def _cubic_run(seconds):
+    """(text, took): a run of "a" that _CUBIC takes about `seconds` on in
+    this process, and what it took when measured."""
+    def took(n):
+        text = "a" * n + "!"
+        t0 = time.perf_counter()
+        re.sub(_CUBIC, "", text)
+        return time.perf_counter() - t0
+
+    n = 150
+    n = max(n, round(n * (seconds / min(took(n), took(n))) ** (1 / 3)))
+    return "a" * n + "!", min(took(n), took(n))
 
 
 def _limit_warnings(caplog):
@@ -200,6 +217,118 @@ def test_seam_culprit_is_under_the_same_limit(pool, monkeypatch):
     assert pl_engine._skip_for(rules) == {1}
     assert got == _in_process(
         lambda: pl_engine.seam_culprit("x " + "a" * 40 + "!", _SLOW_TEXT))
+
+
+# --- which rule a passed deadline is put down to -------------------------------------
+
+def test_slowish_rows_that_only_together_pass_the_deadline_quarantine_nobody(
+        pool, monkeypatch, caplog):
+    # Twelve finite rows of a fifth of the deadline each: whichever row is in
+    # the slot when the deadline passes has only just started.
+    text, each = _cubic_run(0.08)
+    rows = _install_rows(monkeypatch, [
+        _row("card", f"Card · {i}", _CUBIC, "", 1, i) for i in range(1, 13)]
+        + [_row("tail", "Tail · !", "!", "?", 2)])
+    monkeypatch.setattr(pl_engine, "_DEADLINE_FLOOR_S",
+                        each / 0.2 - pl_engine._DEADLINE_PER_CHAR_S * len(text))
+    calls = _count_calls(monkeypatch)
+    trace: list = []
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        assert pl_engine._postprocess_text(text, trace=trace) == text
+    assert pl_engine._skip_for(rows) == frozenset()
+    assert trace == [("pipeline [TIME LIMIT — rules not applied]", text, text)]
+    assert "no single rule" in caplog.text and "skipped from now on" not in caplog.text
+    assert len(calls) == 2                    # a load and ONE walk: not redone
+    # Every rule is still there for a text they are quick on.
+    assert pl_engine._postprocess_text("aa!") == "aa?"
+
+
+def test_a_rule_that_never_finishes_is_blamed_after_a_slowish_neighbour(pool, monkeypatch):
+    text, took = _cubic_run(0.12)
+    rows = _install_rows(monkeypatch, [_row("card", "Card · finite", _CUBIC, "", 1),
+                                       _row("stuck", "Stuck", _SLOW, "", 2),
+                                       _row("tail", "Tail · !", "!", "?", 3)])
+    monkeypatch.setattr(pl_engine, "_DEADLINE_FLOOR_S",
+                        took / 0.4 - pl_engine._DEADLINE_PER_CHAR_S * len(text))
+    assert pl_engine._postprocess_text(text) == text[:-1] + "?"
+    assert pl_engine._skip_for(rows) == {1}
+
+
+def _past_deadline(monkeypatch, mark, on_wait):
+    """A stand-in helper whose walk is past its deadline with `mark` in the
+    progress slot; `on_wait(helper)` plays the wait that follows."""
+    helper = SimpleNamespace(mark=mark)
+    waits: list = []
+
+    def timed_out(_helper, _payload, _timeout):
+        raise rule_helper.HelperTimeout
+
+    def wait(_helper, timeout):
+        waits.append(timeout)
+        return on_wait(helper)
+
+    monkeypatch.setattr(rule_helper, "call", timed_out)
+    monkeypatch.setattr(rule_helper, "wait", wait)
+    return helper, waits
+
+
+def _still_running(_helper):
+    raise rule_helper.HelperTimeout
+
+
+def test_a_row_is_blamed_only_after_its_own_share_of_the_deadline(monkeypatch):
+    now = time.monotonic_ns
+    share = 10.0 * pl_engine._BLAME_SHARE
+
+    def blame(mark, on_wait):
+        helper, waits = _past_deadline(monkeypatch, mark, on_wait)
+        with pytest.raises(pl_engine._WalkTimeout) as err:
+            pl_engine._call_walk(helper, b"", 10.0)
+        return err.value.blame, waits
+
+    # Outside any rule; and a row that has had its share already: at once.
+    assert blame([-1, 0], _still_running) == (-1, [])
+    assert blame([3, now() - int((share + 1) * 1e9)], _still_running) == (3, [])
+
+    # A row that only just started gets the rest of its share first ...
+    got, waits = blame([3, now() - int(1e9)], _still_running)
+    assert got == 3                           # ... and is blamed if it is still there,
+    assert len(waits) == 1 and share - 1.5 < waits[0] <= share - 1
+
+    def moved_on(helper):
+        helper.mark[:] = [4, now()]
+        raise rule_helper.HelperTimeout
+
+    got, waits = blame([3, now() - int(1e9)], moved_on)
+    assert got is None and len(waits) == 1    # nobody if the walk went on to another row,
+
+    helper, waits = _past_deadline(monkeypatch, [3, now() - int(1e9)], lambda _h: b"reply")
+    assert pl_engine._call_walk(helper, b"", 10.0) == b"reply"     # nothing if it finished.
+
+    # A start stamp this process cannot place (ahead of its own clock) never
+    # buys more than one share.
+    got, waits = blame([3, now() + int(3600e9)], _still_running)
+    assert got == 3 and waits == [share]
+
+
+def test_a_straggler_of_an_older_rule_set_leaves_the_live_quarantine_alone(pool, monkeypatch):
+    old = _install_rows(monkeypatch, _slow_rows())
+    monkeypatch.setattr(pl_engine, "_DEADLINE_FLOOR_S", 0.4)
+    got: list = []
+    walker = threading.Thread(
+        target=lambda: got.append(pl_engine._postprocess_text(_SLOW_TEXT)), daemon=True)
+    walker.start()
+    end = time.monotonic() + 10
+    while len(pool._idle) == 2 and time.monotonic() < end:
+        time.sleep(0.01)                      # until the walk holds a helper
+    # The rules are saved under the walk: a new set, with a quarantine of
+    # its own.
+    live = _install_rows(monkeypatch, _slow_rows() + [_row("extra", "Extra", "q", "q", 3)])
+    pl_engine._quarantine(live, 3, "ran past the time limit")
+    walker.join(30)
+    assert got == [_SLOW_WANT]                # the old walk's retry skipped its slow rule
+    assert pl_engine._skip_for(live) == {3}
+    assert pl_engine._skip_for(old) == frozenset()
 
 
 # --- same output as the in-process walk ----------------------------------------
