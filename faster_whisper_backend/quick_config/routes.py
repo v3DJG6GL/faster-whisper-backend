@@ -32,6 +32,7 @@ Never log trace contents.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import functools
 import hashlib
@@ -39,6 +40,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -96,6 +98,43 @@ _RECENT_PAGE_EXECUTOR = ThreadPoolExecutor(
 _RULES_VIEW_EXECUTOR = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="qc-rules",
 )
+
+# How many of ONE identity's views may be in the two view pools above (running
+# or queued) at a time. The pools' queues are unbounded, their routes are not
+# rate limited and a queued job is never withdrawn, so one caller's burst
+# would otherwise sit in front of every other user's rules view and recent
+# page. A further view of the same identity waits on the loop for one of its
+# own to finish: no refusal, and nothing a page (it loads /state and /recent
+# together) can tell from before.
+_VIEW_SLOTS_PER_IDENTITY = 2
+# identity -> [its semaphore, views holding or waiting on it, its loop]. Only
+# touched on the event loop; an entry goes when its count returns to zero, so
+# the table holds no more identities than have a view in flight.
+_view_slots: dict[str, list[Any]] = {}
+
+
+@contextlib.asynccontextmanager
+async def _identity_view_slot(user: dict[str, Any]) -> AsyncIterator[None]:
+    """Hold one of `user`'s _VIEW_SLOTS_PER_IDENTITY view slots; wraps every
+    submission to _RULES_VIEW_EXECUTOR and _RECENT_PAGE_EXECUTOR. Keyed on
+    the user, else the key (open-mode callers are one identity and queue
+    among themselves)."""
+    key = str(user.get("user_id") or user.get("key_id") or "")
+    loop = asyncio.get_running_loop()
+    ent = _view_slots.get(key)
+    if ent is None or ent[2] is not loop:
+        # A semaphore belongs to the loop its waiters park on; an entry a
+        # closed loop left behind is replaced, never waited on.
+        ent = _view_slots[key] = [
+            asyncio.Semaphore(_VIEW_SLOTS_PER_IDENTITY), 0, loop]
+    ent[1] += 1
+    try:
+        async with ent[0]:
+            yield
+    finally:
+        ent[1] -= 1
+        if not ent[1] and _view_slots.get(key) is ent:
+            del _view_slots[key]
 
 # Ingress cap for a callback:map patch: the schema-derived value web_common
 # bakes into the shared editor, so the save path and the editor's "n / cap"
@@ -213,9 +252,10 @@ def build_visible_rules(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str
     return canonical, role
 
 
-async def _rules_answer(build_doc: Any) -> Response:
+async def _rules_answer(build_doc: Any, user: dict[str, Any]) -> Response:
     """`build_doc()` as a finished JSON response, built and dumped off the
-    loop on _RULES_VIEW_EXECUTOR. `build_doc` calls build_visible_rules itself:
+    loop on _RULES_VIEW_EXECUTOR, in one of `user`'s view slots
+    (_identity_view_slot). `build_doc` calls build_visible_rules itself:
     with every exposed rule at its schema cap the re-validation, the
     fingerprints and the dump are tens of ms and ~11 MB per GET, on routes
     nothing rate limits. pydantic_core.to_json is the serializer FastAPI's
@@ -225,8 +265,9 @@ async def _rules_answer(build_doc: Any) -> Response:
         return Response(
             to_json(build_doc(), inf_nan_mode="null"), media_type="application/json")
 
-    return await asyncio.get_running_loop().run_in_executor(
-        _RULES_VIEW_EXECUTOR, _render)
+    async with _identity_view_slot(user):
+        return await asyncio.get_running_loop().run_in_executor(
+            _RULES_VIEW_EXECUTOR, _render)
 
 
 def editable_fields_map() -> dict[str, list[str]]:
@@ -266,6 +307,15 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
 _HIDDEN_GUARD_REASON = re.compile(
     r"<hidden rule>: (?:invalid regex|regex test failed|regex took)\b")
 _HIDDEN_ERROR = {"loc": "<hidden rule>", "msg": "<hidden rule>"}
+# What a non-admin reads in place of every error that is not about the rules:
+# save_overrides validates the whole stored document, so such an error names a
+# stored admin setting and quotes its refused value. No '<hidden rule>' in it:
+# the page toasts the first entry without that sentinel.
+_FOREIGN_ERROR = {
+    "loc": "",
+    "msg": "the stored server configuration is invalid; ask an admin to"
+           " check /settings",
+}
 
 
 def _redact_invisible_slugs(
@@ -288,12 +338,22 @@ def _redact_invisible_slugs(
     The caller's OWN rules are always visible to them — the PATCH path rejected
     anything else before we got here — so their real errors stay legible.
     Admins see everything unchanged.
+
+    Errors off PIPELINE_RULES are not the caller's at all (a patch changes
+    rule bodies only): a stored admin setting that no longer validates, or a
+    model-level check such as a stale slug reference in MODEL_OVERRIDES /
+    OVERRIDE_PROFILES / CAPTURES_PIPELINE_RULES_EXCLUDE, which lists every
+    rule slug. However many there are, they reach a non-admin as the one
+    _FOREIGN_ERROR, after the caller's own.
     """
     if user.get("is_admin"):
         return errors
     perms = user.get("permissions")
     if perms is None:
         return errors
+    own = [e for e in errors
+           if str(e.get("loc") or "").split(".", 1)[0] == "PIPELINE_RULES"]
+    foreign = [dict(_FOREIGN_ERROR)] if len(own) != len(errors) else []
     # The slug lives under "name" (_RuleBase forbids a "slug" key). Also collect
     # list POSITIONS of hidden rules: a plain Pydantic field error carries no
     # slug, only a dotted loc like `PIPELINE_RULES.7.regex-list...`, and the
@@ -306,9 +366,9 @@ def _redact_invisible_slugs(
             hidden.append(str(name))
             hidden_idx.add(i)
     if not hidden:
-        return errors
+        return (own + foreign) if foreign else errors
     out: list[dict[str, str]] = []
-    for entry in errors:
+    for entry in own:
         red = dict(entry)
         loc = str(red.get("loc") or "")
         m = re.match(r"PIPELINE_RULES\.(\d+)\b", loc)
@@ -357,17 +417,8 @@ def _redact_invisible_slugs(
         # position in the rest of the message, so it is blanked wholesale.
         if swapped and not _HIDDEN_GUARD_REASON.search(red.get("msg") or ""):
             red.update(_HIDDEN_ERROR)
-        # Errors off PIPELINE_RULES (model-level stale-slug checks on
-        # MODEL_OVERRIDES / OVERRIDE_PROFILES / CAPTURES_PIPELINE_RULES_EXCLUDE)
-        # quote slugs bare inside a list and append "Valid: [every slug]".
-        # Map-key collisions always carry loc "PIPELINE_RULES", so a bare
-        # quoted match here cannot be the caller's own map key.
-        elif not loc.startswith("PIPELINE_RULES") and any(
-                f"'{slug}'" in str(red.get(key) or "")
-                for slug in hidden for key in ("loc", "msg")):
-            red.update(_HIDDEN_ERROR)
         out.append(red)
-    return out
+    return out + foreign
 
 
 def _cap_save_errors(errors: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -718,7 +769,7 @@ async def v1_get_pipeline_rules(
             "map_max_entries": _MAP_MAX_ENTRIES,
         }
 
-    return await _rules_answer(_doc)
+    return await _rules_answer(_doc, user)
 
 
 @v1_router.patch("/pipeline-rules")
@@ -937,7 +988,7 @@ async def get_state(
             "map_max_entries": _MAP_MAX_ENTRIES,
         }
 
-    return await _rules_answer(_doc)
+    return await _rules_answer(_doc, user)
 
 
 @router.get(
@@ -1094,7 +1145,7 @@ async def get_recent(
 
     return await _recent_page(
         before_ts=q_before, limit=q_limit,
-        query=None, user_id_filter=user_id_filter,
+        query=None, user_id_filter=user_id_filter, user=user,
     )
 
 
@@ -1104,6 +1155,7 @@ async def _recent_page(
     limit: int,
     query: str | None,
     user_id_filter: str | None,
+    user: dict[str, Any],
 ) -> Response:
     """Shared body of GET /recent and POST /recent/search — identical scoping
     and pagination, the two differ only in where the search term travels.
@@ -1113,21 +1165,23 @@ async def _recent_page(
     Measured ~30 ms per search at the shipped RECENT_TRANSCRIPTIONS_MAX of 500,
     unthrottled, and .env.example documents 0 = unbounded. The body is
     rendered in the same thread (see _render_recent_page), on the page pool
-    (_RECENT_PAGE_EXECUTOR)."""
-    return await asyncio.get_running_loop().run_in_executor(
-        _RECENT_PAGE_EXECUTOR,
-        functools.partial(
-            _render_recent_page,
+    (_RECENT_PAGE_EXECUTOR), in one of `user`'s view slots
+    (_identity_view_slot)."""
+    async with _identity_view_slot(user):
+        return await asyncio.get_running_loop().run_in_executor(
+            _RECENT_PAGE_EXECUTOR,
             functools.partial(
-                recent_transcriptions_store.list_recent,
-                before_ts=before_ts if before_ts > 0 else None,
-                limit=limit,
-                user_id_filter=user_id_filter,
-                query=query or None,
+                _render_recent_page,
+                functools.partial(
+                    recent_transcriptions_store.list_recent,
+                    before_ts=before_ts if before_ts > 0 else None,
+                    limit=limit,
+                    user_id_filter=user_id_filter,
+                    query=query or None,
+                ),
+                limit,
             ),
-            limit,
-        ),
-    )
+        )
 
 
 def _render_recent_page(fetch: Any, limit: int) -> Response:
@@ -1176,6 +1230,7 @@ async def post_recent_search(
         query=(payload.q or "").strip() or None,
         user_id_filter=user["permissions"].effective_user_id_for(
             "quick_config", user.get("user_id") or ""),
+        user=user,
     )
 
 

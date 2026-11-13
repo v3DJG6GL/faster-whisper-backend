@@ -337,6 +337,123 @@ def test_recent_pages_render_on_their_own_bounded_pool(client, monkeypatch):
     assert qc._RECENT_PAGE_EXECUTOR._max_workers == 2
 
 
+def _drive_view_flood(pool, submit, started, release):
+    """Six views of identity "a", then one of "b", against a one-worker
+    `pool` whose jobs block until `release()`. Returns the jobs the pool
+    held (running + queued) once the flood was in, and the table size then."""
+    async def drive():
+        tasks = [asyncio.create_task(submit("a")) for _ in range(6)]
+        await asyncio.sleep(0)
+        tasks.append(asyncio.create_task(submit("b")))
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.005)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        held = 1 + pool._work_queue.qsize()
+        tracked = {k: e[1] for k, e in qc._view_slots.items()}
+        release()
+        await asyncio.wait_for(asyncio.gather(*tasks), 10)
+        return held, tracked
+
+    try:
+        return asyncio.run(drive())
+    finally:
+        release()
+        pool.shutdown(wait=True)
+
+
+def test_rule_views_of_one_identity_wait_for_their_own_slots(monkeypatch):
+    """Neither rules route is rate limited and a queued render is never
+    withdrawn: one identity's burst used to fill the single worker's queue,
+    and every other user's rules view waited behind all of it. At most two of
+    an identity's views are in the pools; its further ones wait on the loop
+    for their own, so another identity is served after at most those two."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="t-rules")
+    monkeypatch.setattr(qc, "_RULES_VIEW_EXECUTOR", pool)
+    gate, started, order = threading.Event(), threading.Event(), []
+
+    def _doc(who):
+        def build():
+            started.set()
+            gate.wait(10)
+            order.append(who)
+            return {"who": who}
+        return build
+
+    held, tracked = _drive_view_flood(
+        pool, lambda who: qc._rules_answer(_doc(who), {"user_id": who}),
+        started, gate.set)
+    assert held <= 3, held                      # two of "a", one of "b"
+    assert tracked == {"a": 6, "b": 1}
+    assert sorted(order) == ["a"] * 6 + ["b"]   # nobody is refused
+    assert order.index("b") <= 2, order
+    # Nobody holds or waits: the table is empty again.
+    assert qc._view_slots == {}
+
+
+def test_recent_pages_of_one_identity_wait_for_their_own_slots(monkeypatch):
+    """Same bound on the recent-page pool, from the same per-identity slots."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="t-recent")
+    monkeypatch.setattr(qc, "_RECENT_PAGE_EXECUTOR", pool)
+    gate, started, order = threading.Event(), threading.Event(), []
+
+    def _list_recent(**kw):
+        started.set()
+        gate.wait(10)
+        order.append(kw["user_id_filter"])
+        return []
+
+    monkeypatch.setattr(recent_transcriptions_store, "list_recent", _list_recent)
+    held, _tracked = _drive_view_flood(
+        pool,
+        lambda who: qc._recent_page(before_ts=0.0, limit=5, query=None,
+                                    user_id_filter=who, user={"user_id": who}),
+        started, gate.set)
+    assert held <= 3, held
+    assert sorted(order) == ["a"] * 6 + ["b"]
+    assert order.index("b") <= 2, order
+    assert qc._view_slots == {}
+
+
+def test_view_slots_are_per_identity_and_shared_by_both_pools():
+    """A third view of the same identity waits whichever pool it is for; a
+    key without a user is its own identity; nothing is left behind when a
+    waiting view is cancelled."""
+    async def drive():
+        alice = {"user_id": "alice", "key_id": "k1"}
+        async with qc._identity_view_slot(alice), qc._identity_view_slot(
+                {"user_id": "alice", "key_id": "k2"}):
+            third = asyncio.create_task(_enter(alice))
+            other = asyncio.create_task(_enter({"user_id": None, "key_id": "k9"}))
+            await asyncio.sleep(0.01)
+            assert not third.done() and other.done()
+            assert set(qc._view_slots) == {"alice"}
+            third.cancel()
+            await asyncio.gather(third, return_exceptions=True)
+            assert qc._view_slots["alice"][1] == 2
+            fourth = asyncio.create_task(_enter(alice))
+        await asyncio.wait_for(fourth, 5)       # a freed slot goes to the waiter
+        assert qc._view_slots == {}
+
+    async def _enter(user):
+        async with qc._identity_view_slot(user):
+            pass
+
+    asyncio.run(drive())
+    # A table entry is only ever used on the loop that made it.
+    asyncio.run(_enter({"user_id": "alice"}))
+    assert qc._view_slots == {}
+
+
 def test_reapply_rules_status(client):
     r = client.get("/quick-config/reapply-rules/status")
     assert r.status_code == 200
@@ -855,7 +972,64 @@ def test_redact_blanks_stale_slug_errors_listing_hidden_rules():
             for slug in hidden:
                 assert f"'{slug}'" not in e["loc"], (slug, e)
                 assert f"'{slug}'" not in e["msg"], (slug, e)
-        assert {"loc": "<hidden rule>", "msg": "<hidden rule>"} in out
+        # Off the rules altogether: nothing a non-admin can act on, so it
+        # is the one generic entry (no setting name, no slug list).
+        assert out == [qc._FOREIGN_ERROR]
+
+
+def test_redact_folds_errors_off_the_rules_into_one_generic_entry():
+    """save_overrides validates the WHOLE stored document, so a stored admin
+    setting that no longer validates fails every rules save. A non-admin got
+    that setting's name and its refused value in the 422."""
+    user = {"is_admin": False, "permissions": _ExposedOnly()}
+    own = {"loc": "PIPELINE_RULES.1.regex-list.entries.0.pattern",
+           "msg": "rule 1 ('meins'): bad"}
+    errs = [
+        {"loc": "ADMIN_WEBUI_ALLOWED_HOSTS",
+         "msg": "Value error, '10.9.8.7/99' is not a valid IP or CIDR"},
+        own,
+        {"loc": "", "msg": "Value error, MODEL_OVERRIDES references models not"
+                           " in ALLOWED_MODELS: ['secret-model']"},
+        {"loc": "PIPELINE_RULES.0.callback:map.map.x",
+         "msg": "Input should be a valid string"},
+    ]
+    before = copy.deepcopy(errs)
+    generic = {"loc": "", "msg": qc._FOREIGN_ERROR["msg"]}
+    assert "admin" in generic["msg"]
+    out = qc._redact_invisible_slugs(errs, user, _GEHEIM_MEINS)
+    assert out == [own, {"loc": "<hidden rule>", "msg": "<hidden rule>"}, generic]
+    # The same without any hidden rule, and with nothing of the caller's own.
+    visible = [{"name": "meins", "exposed": True}]
+    assert qc._redact_invisible_slugs(errs[:2], user, visible) == [own, generic]
+    assert qc._redact_invisible_slugs(errs[:1], user, visible) == [generic]
+    # The caller's own errors alone, and every admin answer, are untouched.
+    assert qc._redact_invisible_slugs([own], user, visible) == [own]
+    assert qc._redact_invisible_slugs(errs, {"is_admin": True}, _GEHEIM_MEINS) is errs
+    assert errs == before
+    # The page toasts the first entry without '<hidden rule>': loc + msg.
+    assert "<hidden rule>" not in generic["msg"]
+
+
+def test_non_admin_422_names_no_unrelated_stored_setting(
+        client, app_module, make_user_key):
+    import json
+
+    from faster_whisper_backend.settings import config_store
+    slug = _expose_first_regex_list_rule(app_module)
+    _root, root_raw = make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    with open(config_store.OVERRIDES_PATH, "w", encoding="utf-8") as fh:
+        json.dump({"ADMIN_WEBUI_ALLOWED_HOSTS": ["127.0.0.1", "10.9.8.7/99"]}, fh)
+
+    r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(raw))
+    assert r.status_code == 422, r.text
+    assert "ADMIN_WEBUI_ALLOWED_HOSTS" not in r.text and "10.9.8.7" not in r.text
+    assert r.json()["errors"] == [{"loc": "", "msg": qc._FOREIGN_ERROR["msg"]}]
+    # An admin can act on it and still reads which setting it is.
+    r = _post_patch(client, {slug: {"enabled": False}}, headers=bearer(root_raw))
+    assert r.status_code == 422, r.text
+    assert any(e["loc"].startswith("ADMIN_WEBUI_ALLOWED_HOSTS")
+               and "10.9.8.7/99" in e["msg"] for e in r.json()["errors"]), r.text
 
 
 def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
