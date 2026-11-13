@@ -112,14 +112,15 @@ def test_a_wav_whose_decoder_refuses_to_open_is_not_handed_over(
     assert fake_model.last_audio is None
 
 
-def test_a_plain_error_after_the_open_never_reopens_the_path(
+def test_a_rate_change_partway_is_undecodable_input_not_reopened(
         client, fake_model, tmp_path):
     """Two recordings of different rates in one file fail in the fifo with
-    a plain ValueError, not an av error: the answer is still that error's,
-    as transcribe(path) would raise it, without the second open."""
+    a plain ValueError, not an av error: the client's file, answered like
+    any undecodable upload (a 400 a client does not retry, not a 500),
+    without the second open."""
     with open(two_rate_flac(tmp_path), "rb") as f:
         r = post_transcription(client, files={
             "file": ("ab.flac", f.read(), "audio/flac")})
-    assert r.status_code == 500, r.text
-    assert r.json()["detail"] == "transcription failed"
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "the file could not be decoded as audio"
     assert fake_model.last_audio is None

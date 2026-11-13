@@ -101,6 +101,20 @@ class DecodeFailed(Exception):
     path again meets the same error."""
 
 
+# PyAV's AudioFifo text for a frame of another rate or sample format than
+# the first; _fw_bounded_groups raises it for fewer channels too.
+_FIFO_MISMATCH = "Frame does not match AudioFifo parameters."
+
+
+class FrameShapeChanged(DecodeFailed):
+    """The DecodeFailed whose cause is the fifo's ValueError (_FIFO_MISMATCH):
+    the file's frames change rate, sample format or channel count partway
+    (two recordings joined into one). A property of the client's file, so
+    it is answered like undecodable input, not as the server's fault."""
+
+    error_class = "decode_failed"
+
+
 class TranscodeBudgetExceeded(RuntimeError):
     """transcode_to_wav's output passed its `max_bytes` budget. A
     RuntimeError, so a caller that only knows the base class still reads it
@@ -116,7 +130,8 @@ DecoderEnded = _decode_helper.HelperDied
 
 # This module's own exceptions, which a helper's error comes back as.
 _HELPER_ERRORS = {c.__name__: c for c in (
-    DecodeTooLong, ResampleFailed, DecodeFailed, TranscodeBudgetExceeded)}
+    DecodeTooLong, ResampleFailed, DecodeFailed, FrameShapeChanged,
+    TranscodeBudgetExceeded)}
 
 # How long a helper gets for an operation that only opens the file: the
 # opens' own budget (granted to each of an open's two phases) and a margin.
@@ -527,7 +542,7 @@ def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
             if channels is None:
                 channels = count
             elif count < channels:
-                raise ValueError("Frame does not match AudioFifo parameters.")
+                raise ValueError(_FIFO_MISMATCH)
         fifo.write(frame)
         if (fifo.samples >= num_samples or out >= num_samples
                 or fifo.samples * len(frame.layout.channels)
@@ -622,7 +637,10 @@ def _decode_16k_frames(src_path: str, max_seconds: "float | None", sink) -> None
             # Whatever its type: an error that is no av error (the fifo's)
             # left unwrapped reads to the caller as a failed open, which it
             # answers by handing the path to a decoder with no whitelist.
-            raise DecodeFailed(str(e)) from e
+            failed = (FrameShapeChanged
+                      if type(e) is ValueError and str(e) == _FIFO_MISMATCH
+                      else DecodeFailed)
+            raise failed(str(e)) from e
     finally:
         container.close()
     # As in decode_audio: resampler objects are only freed by a collection.

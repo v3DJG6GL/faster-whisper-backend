@@ -6,6 +6,7 @@ its decode steps; the encoded fixtures come from the ffmpeg CLI and skip when
 it (or one of its encoders) is unavailable."""
 
 import errno
+import json
 import subprocess
 import sys
 import types
@@ -261,6 +262,19 @@ def test_a_failure_past_the_open_is_a_decode_failure_whatever_its_type(tmp_path)
     with pytest.raises(ValueError) as theirs:
         decode_audio(src, sampling_rate=16000)
     assert str(theirs.value) == str(cause)
+
+
+def test_a_rate_change_partway_is_told_apart_from_a_decoder_error(tmp_path):
+    """The fifo's refusal of a frame of another rate is the file's shape,
+    not a decoder failure: a FrameShapeChanged, which crosses from a decode
+    helper as itself."""
+    from faster_whisper_backend.audio import decode_helper
+    with pytest.raises(transcode.FrameShapeChanged) as failed:
+        transcode.decode_16k_bounded(two_rate_flac(tmp_path), max_seconds=None)
+    said = json.loads(json.dumps(decode_helper._describe(failed.value)))
+    rebuilt = decode_helper._rebuild(said, transcode._HELPER_ERRORS)
+    assert type(rebuilt) is transcode.FrameShapeChanged
+    assert type(rebuilt.__cause__) is ValueError
 
 
 class _RecordingFifo:

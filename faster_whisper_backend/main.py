@@ -2918,6 +2918,10 @@ async def transcribe(
                     # same group, after buffering a whole 500 000-sample
                     # group of every channel again: answer its error now.
                     raise (_rs.__cause__ or _rs) from None
+                except _transcode.FrameShapeChanged:
+                    # The file's frames change rate or channels partway:
+                    # the client's input, answered 400 below.
+                    raise
                 except _transcode.DecodeFailed as _df:
                     # The whitelisted open succeeded and the decoder itself
                     # failed: transcribe(path) would re-open the file with
@@ -3864,9 +3868,11 @@ async def transcribe(
             _exc = e
             import av as _av
             if isinstance(e, (_av.error.InvalidDataError,
-                              _transcode.DecoderEnded)):
+                              _transcode.DecoderEnded,
+                              _transcode.FrameShapeChanged)):
                 # The upload (or the linked media) is not decodable audio —
-                # DecoderEnded: it ended the helper process that decoded it —
+                # DecoderEnded: it ended the helper process that decoded it;
+                # FrameShapeChanged: its frames change rate or channels —
                 # the caller's input, not a server fault, so a 400 a client
                 # will not retry and no ERROR line. Classify HERE, while the
                 # av error is in hand (decode_failed); _exc becomes the 400 so
