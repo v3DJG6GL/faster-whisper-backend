@@ -1011,6 +1011,28 @@ _guard_announced = False
 _guard_module = None
 
 
+def _close_plugin_dirs() -> None:
+    """The API twin of the download argv's --no-plugin-dirs. yt-dlp's
+    default plugin dirs (several under the home dir, /etc, every sys.path
+    entry) are import roots: the first YoutubeDL() of a process imports
+    whatever package sits there. Nothing of ours comes through them — the
+    guard is loaded by path (guard_self_check) — so none stays open.
+
+    Fail closed, like the guard: a yt-dlp that moved the switch would load
+    the default dirs again, so link downloads stop instead."""
+    try:
+        import yt_dlp.globals as _globals  # lazy: optional dependency
+        _globals.plugin_dirs.value = []
+        closed = _globals.plugin_dirs.value == []
+    except (ImportError, AttributeError) as e:
+        raise RuntimeError(
+            f"{GUARD_UNAVAILABLE_MARKER}: yt-dlp's plugin dirs cannot be "
+            f"closed ({type(e).__name__}: {e})") from None
+    if not closed:
+        raise RuntimeError(
+            f"{GUARD_UNAVAILABLE_MARKER}: yt-dlp's plugin dirs did not close")
+
+
 def guard_self_check(*, force: bool = False) -> None:
     """Install the yt-dlp SSRF guard in THIS process and prove that it took.
 
@@ -1031,6 +1053,8 @@ def guard_self_check(*, force: bool = False) -> None:
         for path in (GUARD_LAUNCHER, GUARD_MODULE):
             if not os.path.isfile(path):
                 raise RuntimeError(f"guard file missing: {path}")
+        # Before anything of yt-dlp runs in this process.
+        _close_plugin_dirs()
         spec = importlib.util.spec_from_file_location(
             "fwb_ssrf_guard_inproc", GUARD_MODULE)
         if spec is None or spec.loader is None:
@@ -1460,13 +1484,16 @@ async def _probe_info(url: str, deadline: float) -> "tuple[str, dict, str | None
             if observe is not None:
                 observe(cutoff.add, deadline=cutoff.deadline)
             try:
+                # Again here: guard_self_check answers from its cache, and
+                # the dirs are a process-wide switch of yt-dlp's.
+                _close_plugin_dirs()
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    # YoutubeDL() has just loaded yt-dlp's default plugin
-                    # dirs, and a RequestHandler a plugin registers there
-                    # would sit behind the guard and take whatever it
-                    # declines. The director is built on the first request,
-                    # so re-pruning here keeps such a handler out of it (the
-                    # download child never loads those dirs at all).
+                    # YoutubeDL() loads plugins, from no dir now (as in the
+                    # download child). A RequestHandler registered some
+                    # other way would still sit behind the guard and take
+                    # whatever it declines. The director is built on the
+                    # first request, so re-pruning here keeps such a handler
+                    # out of it.
                     _guard_module.install()
                     if not _guard_module.is_installed():
                         raise RuntimeError(

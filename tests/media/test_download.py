@@ -431,8 +431,9 @@ def _stand_in_yt_dlp(monkeypatch, matched, info):
     fake.YoutubeDL = _FakeYDL
     monkeypatch.setitem(sys.modules, "yt_dlp", fake)
     monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
-    # probe() re-installs the guard after YoutubeDL() loads plugins; the
-    # stand-in loads none.
+    # probe() closes yt-dlp's plugin dirs before it builds its YoutubeDL and
+    # re-installs the guard after; the stand-in has no plugin loading.
+    monkeypatch.setattr(udl, "_close_plugin_dirs", lambda: None)
     monkeypatch.setattr(udl, "_guard_module", types.SimpleNamespace(
         install=lambda: None, is_installed=lambda: True))
     monkeypatch.setattr(udl, "match_extractor", lambda u: matched)
