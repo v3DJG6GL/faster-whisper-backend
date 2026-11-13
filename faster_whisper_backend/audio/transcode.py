@@ -87,9 +87,10 @@ class ResampleFailed(Exception):
 class DecodeFailed(Exception):
     """decode_16k_bounded's decode failed after _open_audio had opened the
     file; __cause__ is the error itself, the decoder's av error or a plain
-    one (the fifo's ValueError on a frame of another rate or layout). Told
-    apart from a failed open: the decode already ran, so decoding the path
-    again meets the same error."""
+    one (the fifo's ValueError on a frame of another rate or sample format,
+    _fw_bounded_groups' own on a frame with fewer channels than the first).
+    Told apart from a failed open: the decode already ran, so decoding the
+    path again meets the same error."""
 
 
 class TranscodeBudgetExceeded(RuntimeError):
@@ -354,9 +355,12 @@ def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
     `num_samples` sample-channels (the stereo-equivalent), so a 254-channel
     stream meets the resampler on a ~4 MB group instead of ~0.5 GB; and a
     single frame past _MAX_FRAME_S, or past _MAX_FRAME_SAMPLES before the
-    fifo copies it, is refused. The resampler streams, so where a group
-    ends changes no output sample."""
+    fifo copies it, is refused, and so is a frame with fewer channels than
+    the first (ValueError, the fifo's own for a changed rate or format).
+    The resampler streams, so where a group ends changes no output
+    sample."""
     fifo = _av().audio.fifo.AudioFifo()
+    channels = None
     seconds = 0.0
     out = 0.0
     for frame in frames:
@@ -375,6 +379,17 @@ def _fw_bounded_groups(frames, num_samples: int, max_seconds: "float | None"):
                         f"audio runs past {max_seconds:.0f} s of decoded input")
             out += dur * 16000
         frame.pts = None  # Ignore timestamp check.
+        # PyAV's fifo compares the format, rate and time base of a later
+        # frame with its first, not the channel count: it copies as many
+        # planes (or packed channels) as it was allocated with, so a frame
+        # with fewer is read past its end. The allocation outlives every
+        # fifo.read(); the fifo ignores an empty frame.
+        if frame.samples:
+            count = frame.layout.nb_channels
+            if channels is None:
+                channels = count
+            elif count < channels:
+                raise ValueError("Frame does not match AudioFifo parameters.")
         fifo.write(frame)
         if (fifo.samples >= num_samples or out >= num_samples
                 or fifo.samples * len(frame.layout.channels)

@@ -8,6 +8,7 @@ it (or one of its encoders) is unavailable."""
 import errno
 import subprocess
 import sys
+import types
 
 import av
 import numpy as np
@@ -260,6 +261,77 @@ def test_a_failure_past_the_open_is_a_decode_failure_whatever_its_type(tmp_path)
     with pytest.raises(ValueError) as theirs:
         decode_audio(src, sampling_rate=16000)
     assert str(theirs.value) == str(cause)
+
+
+class _RecordingFifo:
+    """Stands in for av.audio.fifo.AudioFifo: keeps the layout name of each
+    frame written and copies nothing."""
+
+    def __init__(self):
+        self.samples, self.written = 0, []
+
+    def write(self, frame):
+        self.written.append(frame.layout.name)
+        self.samples += frame.samples
+
+    def read(self):
+        self.samples = 0
+        return "group"
+
+
+def _stub_frame(layout, samples=1024):
+    frame = av.AudioFrame(format="fltp", layout=layout, samples=samples)
+    frame.sample_rate = 44100
+    return frame
+
+
+def _written_by_groups(monkeypatch, frames, num_samples=500000):
+    """The layout names _fw_bounded_groups writes into its fifo for `frames`,
+    as a list that fills while the returned generator runs."""
+    fifo = _RecordingFifo()
+    fake = types.SimpleNamespace(audio=types.SimpleNamespace(
+        fifo=types.SimpleNamespace(AudioFifo=lambda: fifo)))
+    monkeypatch.setattr(transcode, "_av", lambda: fake)
+    return fifo.written, transcode._fw_bounded_groups(iter(frames),
+                                                      num_samples, None)
+
+
+def test_a_frame_of_fewer_channels_is_refused_before_the_fifo_copies_it(
+        monkeypatch):
+    """The fifo is allocated for the first frame's channel count and copies
+    that many channels out of every later frame without comparing: a frame
+    with fewer is read past its end. It is refused with the fifo's own error
+    for a changed rate or format, before the write."""
+    written, groups = _written_by_groups(
+        monkeypatch, [_stub_frame("stereo"), _stub_frame("mono")])
+    with pytest.raises(ValueError, match="does not match AudioFifo"):
+        list(groups)
+    assert written == ["stereo"]
+
+
+def test_the_channel_count_is_kept_across_groups(monkeypatch):
+    """The fifo keeps its allocation when a group is read out of it, so the
+    count a later frame is held to is the first frame's, not the first of
+    its group."""
+    written, groups = _written_by_groups(
+        monkeypatch, [_stub_frame("stereo"), _stub_frame("mono")],
+        num_samples=1024)
+    assert next(groups) == "group"
+    with pytest.raises(ValueError, match="does not match AudioFifo"):
+        next(groups)
+    assert written == ["stereo"]
+
+
+def test_more_channels_or_an_empty_frame_pass_the_channel_check(monkeypatch):
+    """Only fewer channels is refused: the fifo copies its own count out of a
+    wider frame (within the frame), and it ignores a frame without samples
+    whatever its layout — neither sets nor fails the count."""
+    written, groups = _written_by_groups(
+        monkeypatch, [_stub_frame("mono", samples=0), _stub_frame("mono"),
+                      _stub_frame("stereo"), _stub_frame("5.1"),
+                      _stub_frame("stereo", samples=0), _stub_frame("mono")])
+    assert list(groups) == ["group"]
+    assert written == ["mono", "mono", "stereo", "5.1", "stereo", "mono"]
 
 
 def test_a_failed_open_is_not_a_decode_failure(tmp_path):
