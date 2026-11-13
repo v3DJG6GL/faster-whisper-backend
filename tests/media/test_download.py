@@ -1316,6 +1316,115 @@ def test_probe_failure_log_masks_a_login_cut_by_the_window(caplog):
     assert "alice" not in caplog.text and "s3cr" not in caplog.text
 
 
+def test_probe_failure_log_masks_a_cut_login_that_holds_an_at_sign(caplog):
+    """A login can hold a raw "@" itself; when the window's cut lands after
+    it, everything behind the scheme is still login."""
+    head = "ERROR: x https://a/?" + "A" * 5000
+    head = head[:udl._MASK_WINDOW - len(" https://u@ser:secr")] + " "
+    text = head + "https://u@ser:secretpw@host/p"
+    assert text[:udl._MASK_WINDOW].endswith("https://u@ser:secr")
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        udl._log_probe_failure("https://host/p", Exception(text))
+    rec = [r.getMessage() for r in caplog.records if "probe failed" in r.getMessage()]
+    assert rec and rec[0].endswith("ERROR: x https://a/?*** https://***")
+    assert "ser:" not in caplog.text and "secr" not in caplog.text
+
+
+def test_probe_gives_yt_dlp_a_logger_that_keeps_errors_off_stderr(monkeypatch, capsys):
+    """Without a logger yt-dlp writes its raw "ERROR: ..." line — the whole
+    URL with its login and query, site text of any length — to this
+    process's stderr before the probe masks and cuts the copy it logs."""
+    import yt_dlp as real_yt_dlp
+    captured = _stand_in_yt_dlp(monkeypatch, "Youtube",
+                                {"title": "t", "extractor_key": "Youtube"})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert captured.get("quiet") is True and captured.get("no_warnings") is True
+    opts = {"quiet": True, "no_warnings": True}
+    if "logger" in captured:
+        opts["logger"] = captured["logger"]
+    capsys.readouterr()
+    with real_yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.report_warning("site text https://u:pw@h/?t=SECRET")
+        ydl.to_screen("site text https://u:pw@h/?t=SECRET")
+        with pytest.raises(real_yt_dlp.utils.DownloadError) as ei:
+            ydl.report_error("Unsupported URL: https://u:pw@h/?t=SECRET\nFORGED")
+    # The raised text (what the probe masks, logs and classifies) is intact.
+    assert "Unsupported URL: https://u:pw@h/?t=SECRET" in str(ei.value)
+    printed = capsys.readouterr()
+    assert (printed.out, printed.err) == ("", "")
+
+
+def test_probe_classifies_a_site_sized_error_from_a_bounded_window(monkeypatch):
+    """A redirect or meta refresh makes yt-dlp's error as long as the site
+    likes, and the classifier lowers, splits and scans its whole input on
+    the event loop: it gets the head and the tail of such a text only."""
+    seen: "list[str]" = []
+    monkeypatch.setattr(
+        udl, "classify_error",
+        lambda t, _orig=udl.classify_error: (seen.append(t), _orig(t))[1])
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    big = ("ERROR: [generic] " + "a" * 200_000 + ": Unable to download "
+           "webpage: x (caused by <HTTPError 404: Not Found>)")
+
+    def _raise_big(u):
+        raise Exception(big)
+    _stand_in_yt_dlp(monkeypatch, "Youtube", _raise_big)
+    with pytest.raises(udl.UrlDownloadError, match="unavailable or has been removed"):
+        _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert [len(t) for t in seen] == [2 * udl._MASK_WINDOW + 1]
+    assert seen[0].startswith("ERROR: [generic] aaa")
+    assert seen[0].endswith("<HTTPError 404: Not Found>)")
+
+    # A text of up to two windows is classified whole, as it is today.
+    for text in ("ERROR: Unsupported URL: https://h/x",
+                 "ERROR: " + "b" * (2 * udl._MASK_WINDOW - 7)):
+        seen.clear()
+
+        def _raise(u, _text=text):
+            raise Exception(_text)
+        _stand_in_yt_dlp(monkeypatch, "Youtube", _raise)
+        with pytest.raises(udl.UrlDownloadError):
+            _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+        assert seen == [text]
+
+
+def test_probe_cuts_site_sized_display_strings(monkeypatch):
+    """Title, uploader and container extension are site text of any length
+    and are copied into the preview answer: each is cut to what a page
+    shows, and a real one comes back as the site sent it."""
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 100_000_000, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_VIDEO_ENABLED", True, raising=False)
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "extractor_key": "Youtube", "title": "T" * 100_000,
+        "uploader": "U" * 100_000, "ext": "e" * 100_000,
+        "formats": _LADDER_INFO["formats"]})
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert info.title == "T" * udl._DISPLAY_MAX
+    assert info.uploader == "U" * udl._DISPLAY_MAX
+    assert info.ext == "e" * udl._CODEC_MAX
+    audio = info.video_ladder[-1]
+    assert audio["ext"] == info.ext
+    assert audio["label"] == "audio only · " + "e" * udl._CODEC_MAX
+
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "extractor_key": "Youtube", "title": "T" * udl._DISPLAY_MAX,
+        "channel": "C" * 100_000, "ext": "m4a"})
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert info.title == "T" * udl._DISPLAY_MAX
+    assert info.uploader == "C" * udl._DISPLAY_MAX
+
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "extractor_key": "Youtube", "title": "A talk", "uploader": None,
+        "channel": "chan", "ext": "m4a"})
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert (info.title, info.uploader, info.ext) == ("A talk", "chan", "m4a")
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {"extractor_key": "Youtube"})
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert (info.title, info.uploader, info.ext) == (None, None, None)
+
+
 def test_download_partial_only_is_size_limit(tmp_path, monkeypatch):
     # --max-filesize skip: clean exit, only a .part file left behind.
     _patch_argv(monkeypatch, _yt_dlp_script("media.m4a.part", size=1))
@@ -2768,3 +2877,24 @@ def test_refused_redirect_closes_its_body(monkeypatch, newurl):
             urllib.request.Request("https://public.example/a"), fp, 302,
             "Found", {}, newurl)
     assert ei.value.fp is fp and fp.closed
+
+
+@pytest.mark.parametrize("newurl", ["https://u:s3cretpw@public.example/x",
+                                    "https://u:s3cretpw@public.example:8443/x",
+                                    "https://justuser@public.example/x"])
+def test_redirect_to_a_url_with_a_login_is_refused(monkeypatch, newurl):
+    """http.client reads "user:pw@host" as a host and a port and quotes the
+    lot in its error, which the direct-media probe logs: the hop is refused
+    before a connection is built, with a text that names none of it."""
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    import urllib.request
+    fp = _UndrainableFp()
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        udl._NoPrivateRedirects().redirect_request(
+            urllib.request.Request("https://public.example/a"), fp, 302,
+            "Found", {}, newurl)
+    assert ei.value.fp is fp and fp.closed
+    assert ei.value.code == 302
+    for shown in (str(ei.value), repr(ei.value), str(ei.value.filename)):
+        assert "s3cretpw" not in shown and "u:" not in shown
+        assert "justuser" not in shown and "public.example:8443" not in shown

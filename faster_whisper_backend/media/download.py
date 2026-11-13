@@ -328,6 +328,18 @@ def _codec_str(v) -> str:
     return str(v)[:_CODEC_MAX]
 
 
+# A title or channel name is page text of any length (a 16 MiB <title> comes
+# back whole), copied into the preview answer and serialized on the event
+# loop; a page shows a line or two of it.
+_DISPLAY_MAX = 500
+
+
+def _display_str(v) -> "str | None":
+    """A site's title / uploader for the preview: text only, cut to what a
+    page shows."""
+    return v[:_DISPLAY_MAX] if isinstance(v, str) and v else None
+
+
 def _rung_spec(f: dict) -> str:
     """The resolution half of a label: "1080p", "1080p60 HDR", the site's
     own "1280x720" when only that is known, else ""."""
@@ -705,6 +717,14 @@ class _NoPrivateRedirects(urllib.request.HTTPRedirectHandler):
             _close_quietly(fp)
             raise urllib.error.HTTPError(
                 newurl, code, "redirect to a non-http URL", headers, fp)
+        if "@" in parts.netloc:
+            # http.client reads "user:pw@host" as a host and a port and
+            # quotes the lot in its error, which callers log. The error
+            # names the URL that redirected, so the login is not in it.
+            _close_quietly(fp)
+            raise urllib.error.HTTPError(
+                req.full_url, code, "redirect to a URL with a login",
+                headers, fp)
         if not parts.hostname or _host_is_forbidden(parts.hostname):
             _close_quietly(fp)
             raise urllib.error.HTTPError(
@@ -1297,6 +1317,21 @@ def _policy_check_info(info: dict) -> None:
         raise UrlPolicyError(_OVER_CAP_MSG)
 
 
+class _QuietYdlLogger:
+    """Without a logger yt-dlp writes its "ERROR: ..." line to this process's
+    stderr: the whole URL with its login and query and site text of any
+    length, unmasked and uncut. The same text is raised, and
+    _log_probe_failure logs it masked."""
+
+    def debug(self, msg):
+        pass
+
+    info = warning = error = debug
+
+
+_QUIET_YDL_LOGGER = _QuietYdlLogger()
+
+
 async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     """Policy-gated metadata probe (no download). Client-safe errors only.
     `timeout` is one wall-clock budget for the WHOLE probe — the policy
@@ -1323,6 +1358,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         opts = {
             "quiet": True,
             "no_warnings": True,
+            "logger": _QUIET_YDL_LOGGER,
             "noplaylist": True,
             "skip_download": True,
             # Same selector as the download: filesize_approx must describe
@@ -1373,7 +1409,14 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         raise UrlTimeoutError(_TOO_SLOW_MSG) from None
     except Exception as e:  # noqa: BLE001 — classify, never forward raw
         _log_probe_failure(url, e)
-        raise classified_error(str(e)) from None
+        text = str(e)
+        if len(text) > 2 * _MASK_WINDOW:
+            # Site-sized (see _MASK_WINDOW), and the classifier lowers,
+            # splits and scans all of it on the event loop. yt-dlp names the
+            # failure at the head ("ERROR: [x] Unsupported URL") or the tail
+            # ("(caused by <HTTPError 404: Not Found>)").
+            text = text[:_MASK_WINDOW] + "\n" + text[-_MASK_WINDOW:]
+        raise classified_error(text) from None
     if not isinstance(info, dict):
         raise UrlDownloadError("the site returned no usable media info")
     _policy_check_info(info)
@@ -1400,7 +1443,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         xk = str(info.get("extractor_key") or key)
         size = info.get("filesize_approx") or info.get("filesize")
         fs = int(size) if size else None
-        ext = str(info["ext"]) if info.get("ext") else None
+        # Site text like a codec id; it also feeds the audio rung's label.
+        ext = _codec_str(info["ext"]) if info.get("ext") else None
         abr = _plausible_abr(info.get("abr"))
         ladder: "list[dict]" = []
         if getattr(cfg, "URL_VIDEO_ENABLED", False):
@@ -1425,9 +1469,10 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         return UrlMediaInfo(
             url=url,
             extractor_key=xk,
-            title=info.get("title"),
+            title=_display_str(info.get("title")),
             duration=_finite_duration(info.get("duration")),
-            uploader=info.get("uploader") or info.get("channel"),
+            uploader=(_display_str(info.get("uploader"))
+                      or _display_str(info.get("channel"))),
             filesize_approx=fs,
             is_live=bool(info.get("is_live")),
             thumbnail_url=info.get("thumbnail"),
@@ -1504,8 +1549,9 @@ def _mask_userinfo(text: str) -> str:
 # log keeps 120 characters of the result either way.
 _MASK_WINDOW = 4096
 # What the window's cut leaves of a URL whose login ran past it: the scheme
-# and a login without the "@" _URL_USERINFO_RE keys on.
-_URL_CUT_LOGIN_RE = re.compile(r"(?i)(https?://)[^/\s?#@]+\Z")
+# and a login whose last "@" (the one _URL_USERINFO_RE keys on) fell off. A
+# login can hold an "@" of its own, so the class is _URL_USERINFO_RE's.
+_URL_CUT_LOGIN_RE = re.compile(r"(?i)(https?://)[^/\s?#]+\Z")
 
 
 def _log_probe_failure(url: str, e: Exception) -> None:
