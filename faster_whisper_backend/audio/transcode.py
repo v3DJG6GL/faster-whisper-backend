@@ -120,10 +120,12 @@ def _av():
 
 def _open_client_file(av, path: str):
     """av.open of client-chosen bytes: file protocol only, no demuxer that
-    pulls in other inputs (audio_ffmpeg.single_input_demuxers), and audio
+    pulls in other inputs or reads a whole text file at the open
+    (audio_ffmpeg.single_input_demuxers), and audio
     decoders only (audio_ffmpeg.pyav_audio_decoders). A
     playlist fails that allowlist with EINVAL before it opens a single
-    entry; it is answered ValueError("unsupported container") — a plain
+    entry, a subtitle text file before its demuxer reads a line; either is
+    answered ValueError("unsupported container") — a plain
     ValueError, the refusal callers tell apart from an av decode error. So
     is a file with more streams than audio_ffmpeg.PYAV_MAX_STREAMS whose
     demuxer fails on the one past it, or one whose open asks for more than
@@ -460,14 +462,17 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
 
 def refuse_multi_input(path: str) -> None:
     """ValueError("unsupported container") when `path` opens as a demuxer
-    that pulls in OTHER inputs (see audio_ffmpeg.MULTI_INPUT_DEMUXERS).
+    that pulls in OTHER inputs (see audio_ffmpeg.MULTI_INPUT_DEMUXERS), or
+    as one off the allowlist for reading a whole text file at the open
+    (audio_ffmpeg.WHOLE_FILE_TEXT_DEMUXERS).
 
     For paths handed to a decoder that does not go through _open_audio
     (faster-whisper's decode_audio, pyannote): run it on the raw upload
     first. No audio stream is required, and an av error is NOT refused —
     the same libavformat open in the real decoder raises it anyway, with
     that caller's own error handling — except the EINVAL of a demuxer
-    outside the allowlist, which is the playlist itself."""
+    outside the allowlist, which is the playlist (or the text file)
+    itself."""
     av = _av()
     try:
         container = _open_client_file(av, path)

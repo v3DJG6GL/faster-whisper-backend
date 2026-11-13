@@ -31,6 +31,20 @@ MULTI_INPUT_DEMUXERS = frozenset({
     "image2", "avisynth", "vapoursynth", "vobsub",
 })
 
+# Demuxers that read their WHOLE file inside av.open: text subtitles, lyrics,
+# closed-caption dumps and FFmpeg's metadata text queue every cue (or
+# chapter) before the open returns, ~40 bytes of RAM per byte of 8-byte
+# lines, in allocations far below the cap on a single one — 32 MiB of
+# "{1}{2}a" lines is 1.3 GB and three seconds on the one client-open worker,
+# and the answer is "no audio stream" either way: none of them carries audio
+# or video. A subtitle track INSIDE a container (mov, matroska) is that
+# container's demuxer, not one of these.
+WHOLE_FILE_TEXT_DEMUXERS = frozenset({
+    "aqtitle", "ass", "ffmetadata", "jacosub", "lrc", "mcc", "microdvd",
+    "mpl2", "mpsub", "pjs", "rcwt", "realtext", "sami", "scc", "srt", "stl",
+    "subviewer", "subviewer1", "tedcaptions", "vplayer", "webvtt",
+})
+
 
 def is_multi_input_format(name: "str | None") -> bool:
     """True when a demuxer name (PyAV's ``container.format.name``, which can
@@ -41,11 +55,13 @@ def is_multi_input_format(name: "str | None") -> bool:
 @functools.lru_cache(maxsize=1)
 def single_input_demuxers() -> str:
     """PyAV's `format_whitelist` for client-supplied bytes: every input
-    demuxer its libavformat has, minus MULTI_INPUT_DEMUXERS. The refusal by
-    the opened format's name comes too late on its own: a playlist demuxer
-    opens its first entry inside av.open, so a missing and a present sibling
-    already fail differently. libavformat checks this list right after
-    probing, before the demuxer reads its header, and answers EINVAL."""
+    demuxer its libavformat has, minus MULTI_INPUT_DEMUXERS and
+    WHOLE_FILE_TEXT_DEMUXERS. The refusal by the opened format's name comes
+    too late on its own: a playlist demuxer opens its first entry inside
+    av.open, so a missing and a present sibling already fail differently,
+    and a text demuxer has read its file by then. libavformat checks this
+    list right after probing, before the demuxer reads its header, and
+    answers EINVAL."""
     import av  # noqa: PLC0415 — optional dependency; callers import it first
     names = set()
     for n in av.formats_available:
@@ -53,10 +69,11 @@ def single_input_demuxers() -> str:
             name = av.ContainerFormat(n, "r").name   # muxer-only names raise
         except ValueError:
             continue
-        if not is_multi_input_format(name):
-            names.update(name.split(","))
+        parts = set(name.split(","))
+        if (not is_multi_input_format(name)
+                and parts.isdisjoint(WHOLE_FILE_TEXT_DEMUXERS)):
+            names.update(parts)
     return ",".join(sorted(names))
-
 
 
 @functools.lru_cache(maxsize=1)

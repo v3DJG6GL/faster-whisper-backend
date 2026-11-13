@@ -368,6 +368,7 @@ def test_open_audio_pins_the_single_input_demuxer_allowlist(tmp_path,
     assert {"wav", "mp3", "flac", "ogg", "matroska", "mov", "aac",
             "mpegts", "flv"} <= set(allowed)
     assert not audio_ffmpeg.MULTI_INPUT_DEMUXERS & set(allowed)
+    assert not audio_ffmpeg.WHOLE_FILE_TEXT_DEMUXERS & set(allowed)
     src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
     opens = _spy_av_open(monkeypatch)
     audio_transcode.declared_shape(src)
@@ -377,6 +378,99 @@ def test_open_audio_pins_the_single_input_demuxer_allowlist(tmp_path,
          "format_whitelist": audio_ffmpeg.single_input_demuxers(),
          "max_streams": "20",
          "codec_whitelist": audio_ffmpeg.pyav_audio_decoders()}] * 2
+
+
+# The smallest file each demuxer of audio_ffmpeg.WHOLE_FILE_TEXT_DEMUXERS
+# probes as its own.
+_TEXT_DEMUXER_FILES = {
+    "aqtitle": b"-->> 1\na\n\n-->> 2\n\n",
+    "ass": (b"[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, "
+            b"Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, "
+            b"Text\nDialogue: 0,0:00:00.00,0:00:01.00,D,,0,0,0,,a\n"),
+    "ffmetadata": b";FFMETADATA1\n[CHAPTER]\nEND=1\n",
+    "jacosub": b"#TIMERES 30\n0:00:00.00 0:00:01.00 D a\n",
+    "lrc": b"[00:01.00]a\n[00:02.00]b\n",
+    "mcc": b"File Format=MacCaption_MCC V1.0\n\n00:00:00:00\tT52S\n",
+    "microdvd": b"{1}{2}a\n{3}{4}b\n{5}{6}c\n",
+    "mpl2": b"[1][2]a\n[3][4]b\n[5][6]c\n",
+    "mpsub": b"FORMAT=TIME\n0 1\na\n\n0 1\nb\n\n",
+    "pjs": b'1,2,"a"\n3,4,"b"\n',
+    "rcwt": (b"\xcc\xcc\xed\xcc\x00\x50\x00\x01\x00\x00\x00" + bytes(8)
+             + b"\x01\x00\x04\x80\x80"),
+    "realtext": b'<window duration="1">\n<time begin="1"/>a\n',
+    "sami": b"<SAMI>\n<BODY>\n<SYNC Start=1><P>a\n",
+    "scc": b"Scenarist_SCC V1.0\n\n00:00:00:00\t9420\n\n",
+    "srt": b"1\n00:00:00,000 --> 00:00:01,000\na\n\n",
+    "stl": b"//x\n00:00:00:00 , 00:00:01:00 , a\n",
+    "subviewer": (b"[INFORMATION]\n[TITLE]x\n[END INFORMATION]\n[SUBTITLE]\n"
+                  b"00:00:00.00,00:00:01.00\na\n\n"),
+    "subviewer1": (b"******** START SCRIPT ********\n[00:00:00]\na\n"
+                   b"[00:00:01]\n\n"),
+    "tedcaptions": (b'{"captions":[{"duration":1,"content":"a",'
+                    b'"startOfParagraph":false,"startTime":1}]}'),
+    "vplayer": b"0:00:01:a\n0:00:02:b\n",
+    "webvtt": b"WEBVTT\n\n00:00.000 --> 00:01.000\na\n\n",
+}
+
+
+def test_every_whole_file_text_demuxer_has_a_file_that_probes_as_it():
+    assert set(_TEXT_DEMUXER_FILES) == audio_ffmpeg.WHOLE_FILE_TEXT_DEMUXERS
+
+
+@pytest.mark.parametrize("name", sorted(_TEXT_DEMUXER_FILES))
+def test_a_cue_text_file_is_no_client_container(name, tmp_path):
+    """A subtitle, lyrics or chapter text file carries no audio or video and
+    its demuxer reads all of it inside av.open: both in-process opens of
+    client bytes refuse it at probe time, as they refuse a playlist — the
+    plain ValueError, whatever the upload is named."""
+    from faster_whisper_backend.media import subtitle_mux
+
+    src = tmp_path / "up.wav"
+    src.write_bytes(_TEXT_DEMUXER_FILES[name])
+    with av.open(str(src)) as plain:
+        assert plain.format.name == name
+    for opener in (audio_transcode.declared_shape,
+                   audio_transcode.refuse_multi_input,
+                   subtitle_mux.probe_streams):
+        with pytest.raises(ValueError, match="^unsupported container$") as ei:
+            opener(str(src))
+        assert not isinstance(ei.value, av.FFmpegError)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="reads the child's peak RSS in Linux's unit")
+def test_a_cue_text_file_is_refused_before_it_is_read(tmp_path):
+    """A text-subtitle demuxer queues every line of the file inside av.open,
+    ~40 bytes of RAM per byte of 8-byte lines in allocations far below the
+    allocation cap (80 MB for these 2 MiB). Off the allowlist the open ends
+    at the probe, before the demuxer reads a line."""
+    import subprocess
+
+    src = tmp_path / "cues.wav"
+    src.write_bytes(b"{1}{2}a\n" * (2 * 1024 * 1024 // 8))
+    # VmHWM, not ru_maxrss: the latter survives the exec, so it is never
+    # below what this test's own (large) process held when it forked.
+    code = ("import re, sys\n"
+            "from faster_whisper_backend.audio import transcode\n"
+            "def peak_kb():\n"
+            "    status = open('/proc/self/status').read()\n"
+            "    return int(re.search(r'VmHWM:\\s+(\\d+) kB', status).group(1))\n"
+            "transcode._av()\n"
+            "before = peak_kb()\n"
+            "try:\n"
+            "    transcode._open_audio(sys.argv[1])[0].close()\n"
+            "    how = 'ok'\n"
+            "except ValueError as e:\n"
+            "    how = str(e)\n"
+            "print(peak_kb() - before, how)\n")
+    r = subprocess.run([sys.executable, "-c", code, str(src)],
+                       capture_output=True, text=True, timeout=120,
+                       cwd=os.path.dirname(os.path.dirname(
+                           os.path.dirname(os.path.abspath(__file__)))))
+    assert r.returncode == 0, r.stderr[-2000:]
+    grew_kb, how = r.stdout.strip().split(" ", 1)
+    assert how == "unsupported container"
+    assert int(grew_kb) < 32 * 1024
 
 
 def _damaged_mp3(path, *, seconds=8):
