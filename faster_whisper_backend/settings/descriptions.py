@@ -688,8 +688,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
 
     "ADMIN_WEBUI_ALLOWED_HOSTS":
         "IP/CIDR allowlist for the admin pages (/settings, /settings/api-keys, "
-        "/docs) — an admin API key is also required. Loopback (127.0.0.1, ::1) "
-        "is always implicitly allowed; default is loopback only.",
+        "/docs). Once an admin API key exists, that key is required as well. "
+        "Before the first admin key is created (open mode), every host on "
+        "this list is admin without a key — create the admin key before you "
+        "widen the list. Loopback (127.0.0.1, ::1) is always implicitly "
+        "allowed; default is loopback only.",
     "USER_WEBUI_ALLOWED_HOSTS":
         "IP/CIDR allowlist for the user pages (/quick-config, /captures, "
         "/reports, /stats, /logs, /sev) — the per-page API key is still "
