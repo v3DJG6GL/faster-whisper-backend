@@ -13,7 +13,7 @@ from tests._transcription_helpers import post_verbose as _post
 from tests._transcription_helpers import post_verbose_ok as _post_ok
 from tests._transcription_helpers import watch_progress
 from tests._translation_helpers import enable_translation
-from tests.conftest import bearer
+from tests.conftest import FakeSegment, bearer
 from tests.main._stage_helpers import stage_raises
 
 _PID = "beef" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -200,6 +200,30 @@ def test_captures_never_store_translated_text(client, app_module, monkeypatch, c
     assert stored["translation_source"] == "cascade-mt"
     assert stored["translation_model"]
     assert stored["task"] == "transcribe"   # the Whisper task that ran
+
+
+def test_a_capture_leaves_out_a_target_that_kept_a_source_segment(
+        client, app_module, fake_model, monkeypatch, created_captures):
+    """A target for which one segment's guard kept the source text is not
+    stored at all: spliced out, the track would read as a full translation
+    of the clip with a sentence missing, and be exported as one. A target
+    that kept nothing is stored whole."""
+    enable_translation(app_module, monkeypatch, CAPTURES_RECORDING_ENABLED=True,
+                       TRANSLATION_MAX_TARGETS=2)
+    fake_model._segments = [FakeSegment("eins", 0.0, 1.0),
+                            FakeSegment("zwei", 1.0, 2.0)]
+
+    async def _fake(segments, targets, **kwargs):
+        per_seg = [{"en": f"en-{i}", "fr": f"fr-{i}"}
+                   for i, _ in enumerate(segments)]
+        per_seg[1]["en"] = segments[1]["text"]
+        return per_seg, [], {"model": "org/d:Q4", "source": "de",
+                             "mode": "fluent", "kept": {1: ["en"]}}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    body = _post_ok(client, translate_to="en,fr")
+    assert body["segments"][1]["translations_kept"] == ["en"]
+    assert created_captures[-1]["translations"] == {"fr": "fr-0 fr-1"}
 
 
 def test_plain_json_carries_translations_and_warnings(client, app_module,

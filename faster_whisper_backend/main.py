@@ -3433,20 +3433,20 @@ async def transcribe(
             # only the English track is ever eligible as Whisper training
             # data (its translate task targets English and nothing else), so
             # the exporter has to be able to pick one language out.
-            # Segments whose guard fallback KEPT the source text for a target
-            # (translations_kept) are skipped for that target: the response
-            # flags them per segment, but the stored track has no such
-            # marker, so a kept original would be exported as translated
-            # text — source-language audio labelled task=translate.
+            # A target for which any segment's guard fallback KEPT the source
+            # text (translations_kept) is left out: the response flags those
+            # segments, but the stored track has no such marker, so a kept
+            # original would be exported as translated text (source-language
+            # audio labelled task=translate), and a track with the segment
+            # cut out would be exported missing a sentence.
             _capture_translations: "dict[str, str] | None" = None
             if will_capture and _translation_meta is not None:
                 _capture_translations = {
                     _lang: _tr.join_translations([
                         (seg.get("translations") or {}).get(_lang, "")
-                        for seg in segments_list
-                        if _lang not in (seg.get("translations_kept") or ())],
-                        target=_lang)
+                        for seg in segments_list], target=_lang)
                     for _lang in _translation_meta["targets"]
+                    if _lang not in _translation_meta["kept"]
                 }
                 _capture_translations = {
                     k: v for k, v in _capture_translations.items() if v}
