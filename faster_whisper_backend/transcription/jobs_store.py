@@ -73,6 +73,13 @@ _CAP_SIDE_JSON = 64_000
 # the list or be pruned mid-run. Only the backstop for a row a dead worker
 # left running (mark_running_as_failed covers the single-worker restart).
 _RUNNING_FLOOR_S = 24 * 3600.0
+# Failed / cancelled rows one caller may hold from the last hour. Such a row
+# stores no result and a run that fails at once costs its caller nothing, yet
+# each one took a slot of the JOBS_MAX_ROWS window every user shares, and the
+# prune then dropped other callers' stored results. Past the cap the newest
+# such row replaces that caller's own oldest one, so the latest error stays
+# readable and nobody else's row moves.
+_MAX_RESULTLESS_PER_HOUR = 50
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -315,7 +322,39 @@ def finish(
                 *((request_id,) if request_id is not None else ()),
             ),
         )
+        if cur.rowcount and state != "done":
+            _drop_resultless_past_cap(conn, job_id, now)
         return bool(cur.rowcount)
+
+
+def _drop_resultless_past_cap(conn: sqlite3.Connection, job_id: str,
+                              now: float) -> None:
+    """Keep the owner of the row finish() just stamped failed / cancelled
+    (caller holds `_lock`) at _MAX_RESULTLESS_PER_HOUR such rows from the
+    last hour: that row and the newest others stay, the owner's older ones
+    go. A `done` or running row, a row finished earlier and another owner's
+    row are never touched. The state is already stamped, so a failure here
+    is logged and never fails the finish."""
+    try:
+        row = conn.execute("SELECT user_id, key_id FROM jobs WHERE job_id = ?",
+                           (job_id,)).fetchone()
+        if row is None:
+            return
+        # A row with a user belongs to that user whatever key wrote it
+        # (is_owner), so the key arm stays empty for it: searching the key
+        # would walk every row that key ever wrote a second time. Each arm
+        # is an index search over the owner's rows only.
+        where, params = _owner_clause(
+            row["user_id"], None if row["user_id"] else row["key_id"], False)
+        conn.execute(
+            "DELETE FROM jobs WHERE job_id IN (SELECT job_id FROM jobs WHERE "
+            + where + " AND state IN ('failed', 'cancelled')"
+            " AND finished_ts >= ? AND job_id != ?"
+            " ORDER BY finished_ts DESC LIMIT -1 OFFSET ?)",
+            (*params, now - 3600.0, job_id,
+             max(0, _MAX_RESULTLESS_PER_HOUR - 1)))
+    except sqlite3.Error as e:
+        logger.warning("[jobs] result-less row cap failed: %s", e)
 
 
 def patch_result(job_id: str, patch: Callable[[dict], bool]) -> bool:

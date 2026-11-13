@@ -247,6 +247,65 @@ def test_byte_cap_never_eats_rows_that_hold_no_bytes(db):
     assert db.get("2" * 32) is None and db.get("3" * 32) is not None
 
 
+def _fail(db, job_id, state="failed", **start_kw):
+    _start(db, job_id=job_id, **start_kw)
+    assert db.finish(job_id=job_id, state=state, error="nope", ttl_s=_TTL)
+    return job_id
+
+
+def test_one_callers_failed_rows_cannot_push_out_another_users_results(
+        db, monkeypatch):
+    """A failed run costs its caller nothing and writes one row; without a
+    bound per caller, enough of them fill the row cap every user shares and
+    the prune drops the others' stored results."""
+    monkeypatch.setattr(js, "_MAX_RESULTLESS_PER_HOUR", 5, raising=False)
+    victims = [_done(db, {"text": "kept"}, job_id=f"b{i:031x}",
+                     user_id="bob", key_id="kb") for i in range(3)]
+    for i in range(40):
+        _fail(db, f"a{i:031x}", user_id="alice", key_id="ka")
+    db.prune(ttl_s=_TTL, max_rows=20, max_bytes=0)
+    assert [db.get_result(j) for j in victims] == [{"text": "kept"}] * 3
+    assert len(db.list_jobs(user_id="alice", key_id="ka", limit=100)) == 5
+
+
+def test_resultless_cap_drops_only_the_callers_oldest_recent_failure(
+        db, monkeypatch):
+    monkeypatch.setattr(js, "_MAX_RESULTLESS_PER_HOUR", 3, raising=False)
+    own = dict(user_id="alice", key_id="ka")
+    done = _done(db, {"text": "x"}, job_id="d" * 32, **own)
+    running = _start(db, job_id="r" * 32, **own)
+    stale = _fail(db, "5" * 32, **own)  # failed more than an hour ago
+    js._conn.execute("UPDATE jobs SET finished_ts = finished_ts - 3700 "
+                     "WHERE job_id = ?", (stale,))
+    foreign = [_fail(db, "b" * 32, user_id="bob", key_id="kb"),
+               _fail(db, "c" * 32, user_id=None, key_id="kc"),
+               _fail(db, "e" * 32, user_id=None, key_id=None)]
+    recent = []
+    for i, st in enumerate(("failed", "cancelled", "failed")):
+        recent.append(_fail(db, str(i) * 32, state=st, **own))
+        js._conn.execute("UPDATE jobs SET finished_ts = ? WHERE job_id = ?",
+                         (time.time() - 30 + i, recent[-1]))
+    # At the cap nothing is dropped yet.
+    assert all(db.get(j) is not None for j in recent)
+    newest = _fail(db, "9" * 32, **own)
+    assert db.get(recent[0]) is None
+    # The row just finished stays readable: its client polls it for the error.
+    assert db.get(newest)["error"] == "nope"
+    for kept in (done, running, stale, *foreign, *recent[1:]):
+        assert db.get(kept) is not None, kept
+
+
+@pytest.mark.parametrize("owner", [dict(user_id=None, key_id="kc"),
+                                   dict(user_id=None, key_id=None)])
+def test_resultless_cap_covers_callers_without_a_user(db, monkeypatch, owner):
+    monkeypatch.setattr(js, "_MAX_RESULTLESS_PER_HOUR", 2, raising=False)
+    other = _fail(db, "f" * 32, user_id=None, key_id="other")
+    for i in range(5):
+        _fail(db, str(i) * 32, **owner)
+    assert len(db.list_jobs(limit=100, **owner)) == 2
+    assert db.get(other) is not None
+
+
 def test_lazy_prune_runs_every_nth_insert(db):
     _start(db, job_id="e" * 32, prune_every=3)  # counter 1
     db.finish(job_id="e" * 32, state="failed", ttl_s=0.0)
