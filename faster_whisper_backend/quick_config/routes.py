@@ -367,6 +367,22 @@ def _redact_invisible_slugs(
             hidden_idx.add(i)
     if not hidden:
         return (own + foreign) if foreign else errors
+    # Only the two slug-bearing forms settings/schema.py emits, and only
+    # where it puts them: `rule {idx} ({slug!r})` opens the message,
+    # `duplicate rule name '{slug}' at index {idx}` is the whole of it
+    # (Pydantic may prefix "Value error, "). Anywhere else the text is the
+    # caller's own: a map key in a collision message, or a regex group name
+    # re.error echoes. Swapping a hidden slug there would blank the caller's
+    # error only when that slug exists, an existence oracle per save.
+    # Every hidden slug in one alternation, compiled once per call: a slug
+    # (RuleSlug) holds no quote, so at most one of them fits between the
+    # two quotes, and trying each slug on each error in turn cost a save
+    # thread seconds on a patch with thousands of invalid keys.
+    slugs = "|".join(re.escape(slug) for slug in hidden)
+    rule_form = re.compile(rf"^((?:Value error, )?rule \d+ )\('(?:{slugs})'\)")
+    duplicate_form = re.compile(
+        rf"^((?:Value error, )?duplicate rule )name '(?:{slugs})'"
+        r"( at index \d+)$")
     out: list[dict[str, str]] = []
     for entry in own:
         red = dict(entry)
@@ -382,23 +398,8 @@ def _redact_invisible_slugs(
         swapped = False
         for key in ("loc", "msg"):
             orig = str(red.get(key) or "")
-            val = orig
-            for slug in hidden:
-                # Only the two slug-bearing forms settings/schema.py emits,
-                # and only where it puts them: `rule {idx} ({slug!r})` opens
-                # the message, `duplicate rule name '{slug}' at index {idx}`
-                # is the whole of it (Pydantic may prefix "Value error, ").
-                # Anywhere else the text is the caller's own: a map key in a
-                # collision message, or a regex group name re.error echoes.
-                # Swapping a hidden slug there would blank the caller's error
-                # only when that slug exists, an existence oracle per save.
-                esc = re.escape(slug)
-                val = re.sub(rf"^((?:Value error, )?rule \d+ )\('{esc}'\)",
-                             r"\1('<hidden rule>')", val, count=1)
-                val = re.sub(
-                    rf"^((?:Value error, )?duplicate rule )name '{esc}'"
-                    r"( at index \d+)$",
-                    r"\1name '<hidden rule>'\2", val, count=1)
+            val = rule_form.sub(r"\1('<hidden rule>')", orig, count=1)
+            val = duplicate_form.sub(r"\1name '<hidden rule>'\2", val, count=1)
             swapped = swapped or val != orig
             # The schema's guard messages read `rule {idx} ({slug!r}) entry
             # {eidx}: ...` — after the slug swap the ordinal still gives away

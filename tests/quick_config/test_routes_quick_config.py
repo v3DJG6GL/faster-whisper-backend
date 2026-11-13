@@ -1010,6 +1010,32 @@ def test_redact_folds_errors_off_the_rules_into_one_generic_entry():
     assert "<hidden rule>" not in generic["msg"]
 
 
+def test_redact_cost_does_not_grow_with_hidden_rules():
+    """A patch with thousands of unknown keys gets one error per key, and each
+    one was searched for every hidden slug in turn: 199 hidden rules made that
+    most of a minute on a save thread, under the rules lock, for an answer of
+    50 entries. All hidden slugs are looked for in one pass per error."""
+    rules = [{"name": f"r{k}", "exposed": k == 0} for k in range(200)]
+    user = {"is_admin": False, "permissions": _ExposedOnly()}
+    errs = [{"loc": f"PIPELINE_RULES.0.regex-list.entries.0.x{i}",
+             "msg": "Extra inputs are not permitted"} for i in range(10_000)]
+    hidden = [
+        {"loc": "PIPELINE_RULES",
+         "msg": "Value error, rule 150 ('r150') entry 2: invalid regex: boom"},
+        {"loc": "PIPELINE_RULES",
+         "msg": "Value error, duplicate rule name 'r199' at index 7"},
+    ]
+    t0 = time.perf_counter()
+    out = qc._redact_invisible_slugs(errs + hidden, user, rules)
+    assert time.perf_counter() - t0 < 3.0
+    assert out[:-2] == errs
+    assert out[-2:] == [
+        {"loc": "PIPELINE_RULES",
+         "msg": "Value error, <hidden rule>: invalid regex: boom"},
+        {"loc": "<hidden rule>", "msg": "<hidden rule>"},
+    ]
+
+
 def test_non_admin_422_names_no_unrelated_stored_setting(
         client, app_module, make_user_key):
     import json
