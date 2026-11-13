@@ -316,10 +316,11 @@ _WS_BEARER_SUBPROTOCOL = "bearer."
 
 
 class _CredentialRevoked(CloseAbort):
-    """Raised out of a streaming decode when the connection's credential no
-    longer resolves to the identity that opened it (key/user revoked, key
-    rotated, session signed out). Aborts the decode BEFORE the model, the
-    captures row, the trace row and the usage row — see _refresh_ident."""
+    """Raised out of a streaming decode (or the pump's per-chunk check) when
+    the connection's credential no longer resolves to the identity that opened
+    it (key/user revoked, key rotated, session signed out). Aborts the decode
+    BEFORE the model, the captures row, the trace row and the usage row — see
+    _refresh_ident."""
 
 
 def _ws_bearer_subprotocol(ws: WebSocket) -> str:
@@ -983,10 +984,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
         gate_final_words = bool(effective_config.cfg_for(final_model, "WORD_TIMESTAMPS_ENABLED", ident))
         gate_partial_words = bool(effective_config.cfg_for(partial_model_name, "WORD_TIMESTAMPS_ENABLED", ident))
 
-        # _refresh_ident re-resolves ident on the next decode (partial or final)
-        # when the config version changes, so admin edits to a binding/profile/
-        # setting apply mid-session. Keep the client's ORIGINAL (pre-lock)
-        # handshake values so the lock re-application stays idempotent across refreshes.
+        # _refresh_ident re-resolves ident on the next audio chunk or decode
+        # (partial or final) when the config version changes, so admin edits to
+        # a binding/profile/setting apply mid-session. Keep the client's
+        # ORIGINAL (pre-lock) handshake values so the lock re-application stays
+        # idempotent across refreshes.
         _client_language = req_language
         _client_prompt = req_prompt
         _client_prompt_provided = prompt_provided
@@ -1091,7 +1093,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     or "")
 
         def _require_live_credential():
-            """Re-resolve the identity; abort this decode / row if the credential was revoked."""
+            """Re-resolve the identity; abort this chunk / decode / row if the credential was revoked."""
             _refresh_ident()
             if _auth_revoked:
                 raise _CredentialRevoked("credential revoked mid-session")
@@ -1692,6 +1694,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             session reaching its absolute expiry bumps nothing. Called by every
             decode, partials included (about once a second): a revocation stops
             the partials too, and one utterance's partials may straddle a change.
+            Called for every queued audio chunk as well, since a stream of
+            non-speech audio never decodes and would otherwise never be asked.
             The no-change case is an integer compare and a monotonic read plus,
             at most every 0.25 s per process, a sibling data_version PRAGMA (see
             settings_version._KEYS_PROBE_MIN_INTERVAL_S); a re-resolve costs a
@@ -1874,6 +1878,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     if kind == "pcm":
                         _qbytes -= len(data)
                         session._skip_partials = _qbytes > _behind_bytes
+                        # Non-speech audio opens no utterance and runs no
+                        # decode, yet it re-arms the idle deadline like any
+                        # other audio: checked here, a revoked credential
+                        # loses a silent stream at its next chunk.
+                        _require_live_credential()
                         await session.feed_pcm(data)
                     elif kind == "flush":
                         try:

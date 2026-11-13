@@ -548,6 +548,34 @@ def test_revoked_session_closes_without_a_further_client_frame(
     _assert_revoked_close(msgs, code)
 
 
+def test_silent_stream_closes_when_key_is_revoked(
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
+    """Non-speech audio opens no utterance, so no decode ever runs to re-check
+    the credential, while every chunk still re-arms the idle deadline. The
+    pump re-checks per queued chunk instead: steady silence costs no
+    authenticate_ws call, and the first chunk after the revocation closes the
+    socket with 4401."""
+    uid, raw_alice = locked_user(make_user_key)
+    calls = record_calls(monkeypatch, streaming_routes, "authenticate_ws", lambda ws: 1)
+
+    with ready_ws(client, raw_alice) as ws:
+        for _ in range(3):
+            ws.send_bytes(_pcm(0, 500))        # silence: no utterance, no decode
+        time.sleep(0.3)
+        steady = len(calls)
+        api_keys_store.revoke_user(uid)        # bumps the config version
+        ws.send_bytes(_pcm(0, 500))            # next chunk re-auths → revoked
+        # The stop is a no-op on the closed socket; if the close regresses it
+        # ends the drain so the assertions fail instead of blocking.
+        msgs, code = stop_if_open_and_drain(ws)
+
+    assert steady == 1, f"re-authenticated {steady}x with no version bump"
+    _assert_revoked_close(msgs, code)
+    assert len(calls) == 2
+    assert not any(m.get("type") in ("final", "closing") for m in msgs), msgs
+    assert fake_model.last_kwargs == {}        # no decode ran at any point
+
+
 def test_revocation_during_the_handshake_still_closes_with_4401(
         client, make_user_key, app_module, monkeypatch, energy_vad):
     """A revocation landing between authentication and the end of the handshake
