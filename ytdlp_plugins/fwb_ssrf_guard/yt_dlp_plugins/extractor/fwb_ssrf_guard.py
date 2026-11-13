@@ -1986,11 +1986,15 @@ def _tables_are_bounded() -> bool:
 # cap too (those inside strings only overcount). expat builds an
 # internal entity's markup once per reference, where no count of the raw text
 # sees it, so a document that declares entities is refused outright; none of
-# the manifest formats yt-dlp parses declares any. With entities refused, a
-# document no longer than the cap cannot exceed it and pays nothing. Two
-# million elements is twice a DASH manifest at the segment cap (its
-# attributes fit the doubled cap), and real pages and API answers hold far
-# fewer arrays and objects.
+# the manifest formats yt-dlp parses declares any. An attribute default
+# (<!ATTLIST) is the same amplifier: expat gives every matching element a
+# fresh copy of it (a 120 KB document of 5 000 elements under a
+# 100 000-character default held 534 MB), so a document that declares one is
+# refused too. No other declaration puts content into the tree. With both
+# refused, a document no longer than the cap cannot exceed it and pays
+# nothing. Two million elements is twice a DASH manifest at the segment cap
+# (its attributes fit the doubled cap), and real pages and API answers hold
+# far fewer arrays and objects.
 _MAX_XML_ELEMENTS = 2_000_000
 _MAX_JSON_CONTAINERS = 2_000_000
 _ETREE_SENTINEL = "_fwb_etree_bounded"
@@ -1998,26 +2002,27 @@ _ETREE_NAME = "compat_etree_fromstring"
 _JSON_SENTINEL = "_fwb_json_bounded"
 
 
-_ENTITY_DECL = "<!ENTITY"
-# expat also reads UTF-16 (either byte order), where the declaration's bytes
-# differ; a literal production, it has no other spelling.
-_ENTITY_DECL_BYTES = (_ENTITY_DECL.encode(), _ENTITY_DECL.encode("utf-16-le"),
-                      _ENTITY_DECL.encode("utf-16-be"))
+_DTD_DECLS = ("<!ENTITY", "<!ATTLIST")
+# expat also reads UTF-16 (either byte order), where a declaration's bytes
+# differ; literal productions, they have no other spelling.
+_DTD_DECL_BYTES = tuple(decl.encode(encoding) for decl in _DTD_DECLS
+                        for encoding in ("utf-8", "utf-16-le", "utf-16-be"))
 
 
 def _refuse_oversized_xml(text) -> None:
     if isinstance(text, str):
-        declares = _ENTITY_DECL in text
+        declares = any(decl in text for decl in _DTD_DECLS)
         lt, close, eq = "<", "</", "="
     elif isinstance(text, (bytes, bytearray)):
-        declares = any(decl in text for decl in _ENTITY_DECL_BYTES)
+        declares = any(decl in text for decl in _DTD_DECL_BYTES)
         lt, close, eq = b"<", b"</", b"="
     else:
         return
     # What a malformed document raises: every caller handles it (GenericIE
     # goes on scraping the page as HTML).
     if declares:
-        raise xml.etree.ElementTree.ParseError("the document declares entities")
+        raise xml.etree.ElementTree.ParseError(
+            "the document declares entities or attribute defaults")
     if len(text) <= _MAX_XML_ELEMENTS:
         return
     elements = text.count(lt) - text.count(close)

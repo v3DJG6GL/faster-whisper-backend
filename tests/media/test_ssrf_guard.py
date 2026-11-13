@@ -3869,6 +3869,27 @@ def test_guard_refuses_xml_entity_declarations(module):
     assert parse(rss).tag == parse(rss.encode()).tag == "rss"
 
 
+@pytest.mark.parametrize("module", _ETREE_IMPORTERS)
+def test_guard_refuses_xml_attribute_defaults(module):
+    import importlib
+    import xml.etree.ElementTree as ET
+    udl.guard_self_check(force=True)
+    parse = importlib.import_module(module).compat_etree_fromstring
+    # expat gives every matching element a fresh copy of an <!ATTLIST
+    # default, where no count of the raw text sees it: a 120 KB document of
+    # 5 000 elements under a 100 000-character default held 534 MB.
+    elements = "<r>" + "<e/>" * 50 + "</r>"
+    doc = ('<?xml version="1.0"?><!DOCTYPE r [<!ATTLIST e a CDATA "'
+           + "x" * 1000 + '">]>' + elements)
+    for spelling in (doc, doc.encode(), bytearray(doc.encode()),
+                     doc.encode("utf-16"), doc.encode("utf-16-le"),
+                     doc.encode("utf-16-be")):
+        with pytest.raises(ET.ParseError, match="attribute defaults"):
+            parse(spelling)
+    # The same elements with no declaration still parse.
+    assert len(parse(elements)) == len(parse(elements.encode())) == 50
+
+
 def test_guard_is_not_installed_without_the_xml_bound(monkeypatch):
     import yt_dlp.compat
     import yt_dlp.extractor.generic as generic
