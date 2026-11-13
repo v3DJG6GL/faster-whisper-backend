@@ -8,6 +8,7 @@ import av
 import pytest
 
 from tests._transcription_helpers import post_transcription, wav_bytes
+from tests.audio.test_transcode import two_rate_flac
 
 
 def _failing_decode(app_module, monkeypatch, cause):
@@ -87,6 +88,19 @@ def test_a_wav_whose_decoder_refuses_to_open_is_not_handed_over(
         client, fake_model):
     r = post_transcription(client, files={
         "file": ("a.wav", _g726_wav_refusing_its_decoder(), "audio/wav")})
+    assert r.status_code == 500, r.text
+    assert r.json()["detail"] == "transcription failed"
+    assert fake_model.last_audio is None
+
+
+def test_a_plain_error_after_the_open_never_reopens_the_path(
+        client, fake_model, tmp_path):
+    """Two recordings of different rates in one file fail in the fifo with
+    a plain ValueError, not an av error: the answer is still that error's,
+    as transcribe(path) would raise it, without the second open."""
+    with open(two_rate_flac(tmp_path), "rb") as f:
+        r = post_transcription(client, files={
+            "file": ("ab.flac", f.read(), "audio/flac")})
     assert r.status_code == 500, r.text
     assert r.json()["detail"] == "transcription failed"
     assert fake_model.last_audio is None

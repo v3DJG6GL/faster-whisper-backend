@@ -856,6 +856,19 @@ def _silent_flac(path, *, seconds, rate=8000):
     return path
 
 
+def two_rate_flac(tmp_path):
+    """A second of 16 kHz FLAC followed by a second of 8 kHz, as `cat a.flac
+    b.flac` makes it: the decoder's frames change rate halfway."""
+    parts = []
+    for rate in (16000, 8000):
+        with open(_silent_flac(str(tmp_path / f"{rate}.flac"), seconds=1,
+                               rate=rate), "rb") as f:
+            parts.append(f.read())
+    src = tmp_path / "ab.flac"
+    src.write_bytes(b"".join(parts))
+    return str(src)
+
+
 def test_decode_span_does_not_hold_the_skipped_audio(tmp_path):
     """The skip is dropped while decoding: the piece holds `want` samples
     (plus at most one resampled frame), not everything before it. A link's

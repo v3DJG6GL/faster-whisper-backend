@@ -7,6 +7,7 @@ import psutil
 import pytest
 
 from tests._transcription_helpers import post_transcription, wav_bytes
+from tests.audio.test_decode_bounded import out_of_memory_after_one_frame
 from tests.audio.test_transcode import FRAME_SAMPLES_BOUND, one_frame_alac_caf
 
 
@@ -70,6 +71,20 @@ def test_a_decode_out_of_memory_is_a_413_not_a_second_decode(
     def _oom(path, *, max_seconds):
         raise MemoryError
     monkeypatch.setattr(app_module._transcode, "decode_16k_bounded", _oom)
+    r = post_transcription(client, files={
+        "file": ("a.wav", wav_bytes(seconds=2.0), "audio/wav")})
+    assert r.status_code == 413, r.text
+    assert "too long to decode" in r.json()["detail"]
+    assert fake_model.last_audio is None
+
+
+def test_a_libav_out_of_memory_mid_decode_is_a_413_too(
+        client, app_module, fake_model, monkeypatch):
+    """libav's own ENOMEM, raised while the real decode runs: PyAV types it
+    as an av error and a MemoryError, and it gets the MemoryError's answer."""
+    monkeypatch.setattr(
+        app_module._transcode, "_fw_decoded_frames",
+        out_of_memory_after_one_frame(app_module._transcode._fw_decoded_frames))
     r = post_transcription(client, files={
         "file": ("a.wav", wav_bytes(seconds=2.0), "audio/wav")})
     assert r.status_code == 413, r.text

@@ -5,9 +5,11 @@ The identity tests are the tripwire for a faster-whisper upgrade that changes
 its decode steps; the encoded fixtures come from the ffmpeg CLI and skip when
 it (or one of its encoders) is unavailable."""
 
+import errno
 import subprocess
 import sys
 
+import av
 import numpy as np
 import pytest
 from faster_whisper.audio import decode_audio
@@ -21,6 +23,7 @@ from tests.audio.test_transcode import (
     one_frame_alac_caf,
     one_hertz_flac,
     run_under_ram_ceiling,
+    two_rate_flac,
 )
 from tests.conftest import write_wav
 
@@ -242,3 +245,65 @@ def test_a_many_channel_group_is_bounded(tmp_path):
         "else:\n"
         "    print('ok')\n")
     assert got == "ResampleFailed"
+
+
+def test_a_failure_past_the_open_is_a_decode_failure_whatever_its_type(tmp_path):
+    """Two recordings of different rates in one file: the fifo refuses the
+    first frame of the second with a plain ValueError, no av error. Past
+    the open that is a DecodeFailed like the decoder's own errors, carrying
+    the error faster-whisper's decode_audio raises on the same bytes."""
+    src = two_rate_flac(tmp_path)
+    with pytest.raises(transcode.DecodeFailed) as failed:
+        transcode.decode_16k_bounded(src, max_seconds=None)
+    cause = failed.value.__cause__
+    assert type(cause) is ValueError and str(failed.value) == str(cause)
+    with pytest.raises(ValueError) as theirs:
+        decode_audio(src, sampling_rate=16000)
+    assert str(theirs.value) == str(cause)
+
+
+def test_a_failed_open_is_not_a_decode_failure(tmp_path):
+    """Nothing was decoded yet: the open's own error reaches the caller,
+    which may still hand the path to another decoder."""
+    junk = tmp_path / "junk.wav"
+    junk.write_bytes(b"RIFFxxxxWAVE")
+    with pytest.raises(av.error.InvalidDataError):
+        transcode.decode_16k_bounded(str(junk), max_seconds=None)
+
+
+def libav_out_of_memory():
+    """libav's ENOMEM as PyAV raises it: an av error and a MemoryError."""
+    return av.error.MemoryError(errno.ENOMEM, "Cannot allocate memory", "x")
+
+
+def out_of_memory_after_one_frame(real):
+    """A stand-in for transcode._fw_decoded_frames (`real`): its first frame,
+    then libav's out-of-memory error."""
+    def frames(container, stream):
+        yield next(real(container, stream))
+        raise libav_out_of_memory()
+    return frames
+
+
+@pytest.mark.parametrize("where", ["decoder", "resampler"])
+def test_a_libav_out_of_memory_past_the_open_stays_a_memory_error(
+        tmp_path, monkeypatch, where):
+    """PyAV's error for a libav ENOMEM is an av error AND a MemoryError: it
+    leaves as the MemoryError the handler answers 413, not wrapped as a
+    DecodeFailed (the handler's 500)."""
+    src = write_wav(str(tmp_path / "two.wav"), _tone(2.0, 16000))
+    if where == "decoder":
+        monkeypatch.setattr(
+            transcode, "_fw_decoded_frames",
+            out_of_memory_after_one_frame(transcode._fw_decoded_frames))
+    else:
+        class _Resampler:
+            def __init__(self, **kwargs):
+                pass
+
+            def resample(self, frame):
+                raise libav_out_of_memory()
+        monkeypatch.setattr(av.audio.resampler, "AudioResampler", _Resampler)
+    with pytest.raises(MemoryError) as raised:
+        transcode.decode_16k_bounded(src, max_seconds=None)
+    assert isinstance(raised.value, av.error.MemoryError)

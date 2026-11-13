@@ -85,9 +85,11 @@ class ResampleFailed(Exception):
 
 
 class DecodeFailed(Exception):
-    """decode_16k_bounded's decoder failed after _open_audio had opened the
-    file; __cause__ is the av error. Told apart from a failed open: the
-    decoder already ran, so decoding the path again meets the same error."""
+    """decode_16k_bounded's decode failed after _open_audio had opened the
+    file; __cause__ is the error itself, the decoder's av error or a plain
+    one (the fifo's ValueError on a frame of another rate or layout). Told
+    apart from a failed open: the decode already ran, so decoding the path
+    again meets the same error."""
 
 
 class TranscodeBudgetExceeded(RuntimeError):
@@ -413,7 +415,15 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
                     array = frame.to_ndarray()
                     dtype = array.dtype
                     raw_buffer.write(array)
-        except av.FFmpegError as e:
+        except (DecodeTooLong, ResampleFailed, MemoryError):
+            # MemoryError ahead of the wrap: PyAV's error for a libav ENOMEM
+            # is an av error and a MemoryError, and the caller answers the
+            # latter as "does not fit", not as a failed decode.
+            raise
+        except Exception as e:
+            # Whatever its type: an error that is no av error (the fifo's)
+            # left unwrapped reads to the caller as a failed open, which it
+            # answers by handing the path to a decoder with no whitelist.
             raise DecodeFailed(str(e)) from e
     finally:
         container.close()
