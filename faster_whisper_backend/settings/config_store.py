@@ -27,6 +27,7 @@ from faster_whisper_backend.settings import config_renames as _renames
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.core import atomic_json
+from faster_whisper_backend.core import store_common
 from faster_whisper_backend.paths import REPO_ROOT, default_data_dir
 
 from pydantic import TypeAdapter, ValidationError
@@ -295,6 +296,38 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
+# The failing locations one validation failure lists, and how much of a
+# location and of a reason is kept. An everyday location stays under 140
+# characters (a 96-character model id inside MODEL_OVERRIDES) and the longest
+# everyday reason, an exclude naming an unknown rule, lists every valid slug:
+# about 500 characters with the shipped rules.
+_FACTORY_ERRORS_MAX = 20
+_ERROR_LOC_MAX = 200
+_ERROR_MSG_MAX = 1000
+
+
+def _error_part(s: str, limit: int) -> str:
+    """`s` on one line, at most `limit` characters ("…" marks a cut)."""
+    cut = s[:limit] + "…" if len(s) > limit else s
+    return store_common._LOG_UNSAFE_RE.sub("?", cut)
+
+
+def validation_error_lines(e: ValidationError,
+                           limit: int = _FACTORY_ERRORS_MAX) -> list[str]:
+    """`location: reason` per error, at most `limit` of them and each part
+    bounded: pydantic puts an offending dict KEY into the location whole and a
+    validator may quote the entry it refuses, and these lines are an admin's
+    500 body and records of the served log. Never str(e): it appends an
+    excerpt of the input, which for a whole-file validator is the stored
+    document, HF_TOKEN included."""
+    errs = settings_schema.format_validation_errors(e)
+    lines = [f"{_error_part(x['loc'], _ERROR_LOC_MAX) or '(whole file)'}: "
+             f"{_error_part(x['msg'], _ERROR_MSG_MAX)}" for x in errs[:limit]]
+    if len(errs) > limit:
+        lines.append(f"... and {len(errs) - limit} more")
+    return lines
+
+
 def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     """Load and validate the overrides file. NEVER raises — returns {} on any
     error (missing file, malformed JSON, validation failure). Logs to stderr
@@ -319,11 +352,7 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     try:
         validated = settings_schema.AdminConfig.model_validate(raw)
     except ValidationError as e:
-        # Key and reason only: str(e) appends an excerpt of the input, which
-        # for a whole-file validator is the stored document, HF_TOKEN included.
-        detail = "\n".join(
-            f"  {x['loc'] or '(whole file)'}: {x['msg']}"
-            for x in settings_schema.format_validation_errors(e))
+        detail = "\n".join("  " + ln for ln in validation_error_lines(e))
         print(f"[config_store] {path} failed validation; ignoring overrides:\n{detail}",
               file=sys.stderr)
         return {}
@@ -332,9 +361,6 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
         if key in out:
             out[key] = coerce(out[key])
     return out
-
-# The failing locations one load_factory_rules error lists.
-_FACTORY_ERRORS_MAX = 20
 
 
 def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
@@ -363,16 +389,10 @@ def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
     try:
         validated = settings_schema.AdminConfig.model_validate({"PIPELINE_RULES": raw["PIPELINE_RULES"]})
     except ValidationError as e:
-        # Location and reason only, as load_overrides prints them: str(e)
-        # appends an excerpt of the rules and a docs link to every line, and
-        # this text is an admin's 500 body and a line of the served log. The
-        # cap keeps a file of broken entries from becoming one huge record.
-        errs = settings_schema.format_validation_errors(e)
-        detail = "\n".join(f"  {x['loc'] or '(whole file)'}: {x['msg']}"
-                           for x in errs[:_FACTORY_ERRORS_MAX])
-        more = (f"\n  ... and {len(errs) - _FACTORY_ERRORS_MAX} more"
-                if len(errs) > _FACTORY_ERRORS_MAX else "")
-        raise RuntimeError(f"{path} failed validation:\n{detail}{more}") from e
+        # Location and reason only, as load_overrides prints them: this text
+        # is an admin's 500 body and a line of the served log.
+        detail = "\n".join("  " + ln for ln in validation_error_lines(e))
+        raise RuntimeError(f"{path} failed validation:\n{detail}") from e
     return validated.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"]
 
 

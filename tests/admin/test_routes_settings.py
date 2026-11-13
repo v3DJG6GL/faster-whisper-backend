@@ -436,6 +436,24 @@ def test_clear_local_override_refusal_logs_no_stored_values(
     assert not lines[0].endswith("refused: ") and "refused: : " not in lines[0]
 
 
+def test_clear_local_override_refusal_log_line_is_bounded(
+        client, tmp_path, monkeypatch, caplog):
+    """A stored key that fails the schema lands whole in the error location;
+    the logged line clips it and keeps it on one line."""
+    _seed_factory(monkeypatch, tmp_path, _rules("alpha"))
+    with open(config_store.OVERRIDES_PATH, "w", encoding="utf-8") as f:
+        json.dump({"MODEL_OVERRIDES": {"bad id\nINJECTED " + "M" * 3000: {}},
+                   "PIPELINE_RULES": []}, f)
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        r = client.post("/settings/factory-rules/clear-local-override")
+    assert r.status_code == 422, r.text
+    lines = [rec.getMessage() for rec in caplog.records
+             if "clear-local-override refused" in rec.getMessage()]
+    assert len(lines) == 1, caplog.text
+    assert "MODEL_OVERRIDES.bad id" in lines[0]
+    assert "\n" not in lines[0] and len(lines[0]) < 1500
+
+
 def _pin_pipeline_rules(monkeypatch, app_module):
     """Pin PIPELINE_RULES by env, stub the rebuild and park a sentinel rule
     list on cfg; returns the rebuild-call list."""

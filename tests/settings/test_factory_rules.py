@@ -250,6 +250,20 @@ def test_load_factory_rules_validation_error_lists_at_most_20_locations(path):
     assert lines[-1].startswith("  ... and ") and lines[-1].endswith(" more")
 
 
+def test_load_factory_rules_validation_error_bounds_each_line(path):
+    """pydantic puts an offending map KEY into the location whole: the line is
+    clipped, and a newline inside the key does not start a line of its own."""
+    key = "K" * 5000 + "\nINJECTED LINE"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"PIPELINE_RULES": [_map_rule("m", {key: "v"}), _terminal()]}, f)
+    with pytest.raises(RuntimeError) as exc:
+        cs.load_factory_rules(path=path)
+    lines = str(exc.value).splitlines()
+    assert len(lines) == 2, [ln[:80] for ln in lines]
+    assert lines[1].startswith("  PIPELINE_RULES.0.callback:map.map.KKKK")
+    assert len(lines[1]) < 500 and "INJECTED" not in lines[1]
+
+
 def test_neuenzeile_fires_at_end_of_utterance():
     """The committed dictation map's newline keys fire in the common
     dictation positions (end of utterance, before punctuation).

@@ -933,6 +933,43 @@ def test_load_overrides_whole_file_failure_is_labelled(tmp_path, capsys):
     assert lines[1].startswith("  (whole file): ") and "SESSION_COOKIE_NAME" in lines[1]
 
 
+def test_load_overrides_validation_failure_bounds_each_line(tmp_path, capsys):
+    """pydantic puts an offending map KEY into the location whole, and a
+    validator quotes the entry it refuses: both are clipped, and a newline
+    inside the key does not start a line of its own."""
+    key = "K" * 5000 + "\nINJECTED LINE"
+    p = _seed_local(tmp_path, {"PIPELINE_RULES": [_map_rule("m", {key: "v"}), _terminal()],
+                               "ADMIN_WEBUI_ALLOWED_HOSTS": ["h" * 5000]})
+    assert cs.load_overrides(str(p)) == {}
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 3, [ln[:80] for ln in lines]
+    assert any(ln.startswith("  PIPELINE_RULES.0.callback:map.map.KKKK") for ln in lines)
+    assert any(ln.startswith("  ADMIN_WEBUI_ALLOWED_HOSTS") for ln in lines)
+    assert max(len(ln) for ln in lines[1:]) < 1300 and "INJECTED" not in "".join(lines)
+
+
+def test_load_overrides_validation_failure_lists_at_most_20_locations(tmp_path, capsys):
+    p = _seed_local(tmp_path, {"PIPELINE_RULES": [
+        {"name": f"r{i}", "type": "regex-list"} for i in range(25)] + [_terminal()]})
+    assert cs.load_overrides(str(p)) == {}
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 22, lines
+    assert all(ln.startswith("  PIPELINE_RULES.") for ln in lines[1:21])
+    assert lines[-1].startswith("  ... and ") and lines[-1].endswith(" more")
+
+
+def test_validation_error_lines_keep_an_ordinary_reason_whole():
+    """The longest everyday reason, an exclude naming an unknown rule, lists
+    every valid slug: the bound sits above it."""
+    with pytest.raises(ValidationError) as exc:
+        settings_schema.AdminConfig.model_validate({
+            "PIPELINE_RULES": cs.load_factory_rules(),
+            "MODEL_OVERRIDES": {"large-v3": {"PIPELINE_RULES_EXCLUDE": ["mine"]}}})
+    errs = settings_schema.format_validation_errors(exc.value)
+    assert len(errs) == 1 and len(errs[0]["msg"]) > 400
+    assert cs.validation_error_lines(exc.value) == [f"(whole file): {errs[0]['msg']}"]
+
+
 @pytest.mark.parametrize("rules", [
     [{"name": ["x"], "type": "regex-list", "entries": []}],
     [{"name": "r", "type": "regex-list",

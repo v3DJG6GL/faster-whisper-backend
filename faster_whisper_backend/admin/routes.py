@@ -591,12 +591,11 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
             except ValidationError as e:
                 # A stored per-model / profile / captures exclude still names a
                 # rule only the local copy has; the factory list would strand it.
-                # Reasons only: str(e) quotes the stored document (HF_TOKEN
-                # included) as the input of a whole-file validator, and this
-                # line is served by /logs.
-                logger.warning("[config] clear-local-override refused: %s", "; ".join(
-                    f"{x['loc']}: {x['msg']}" if x["loc"] else x["msg"]
-                    for x in settings_schema.format_validation_errors(e)))
+                # Bounded reasons only: str(e) quotes the stored document
+                # (HF_TOKEN included) as the input of a whole-file validator,
+                # and this line is served by /logs.
+                logger.warning("[config] clear-local-override refused: %s",
+                               "; ".join(config_store.validation_error_lines(e)))
                 return web_common.validation_error_response(e)
             except (RuntimeError, OSError) as e:
                 logger.error("[config] clear-local-override failed: %s", e)
