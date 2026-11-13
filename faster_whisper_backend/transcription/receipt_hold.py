@@ -63,10 +63,7 @@ def park(key: str, kwargs: "dict[str, Any]", *, hold_s: float) -> None:
     now = time.monotonic()
     with _lock:
         if key not in _held and len(_held) >= _MAX_HELD:
-            # Evict the least recently touched, not the oldest: a long,
-            # actively-progressing translation must outlive a stalled one.
-            victim = min(_held, key=lambda k: _held[k]["touched"])
-            evicted = _held.pop(victim)
+            evicted = _held.pop(_cap_victim())
             evicted["note"] = "released — pending receipt buffer full"
             _overflow.append(evicted)
         displaced = _held.get(key)
@@ -88,6 +85,33 @@ def park(key: str, kwargs: "dict[str, Any]", *, hold_s: float) -> None:
 _overflow: "list[dict[str, Any]]" = []
 
 
+def _parked_by(entry: "dict[str, Any]") -> Any:
+    """The identity that parked this hold; None when it carries none."""
+    kw = entry["kwargs"]
+    return kw.get("user_id") or kw.get("key_id")
+
+
+def _cap_victim() -> str:
+    """The key a full buffer gives up. Called with the lock held.
+
+    It comes from the identities that hold the most: the cap is server-wide,
+    so a caller who parks receipts and never claims them would otherwise push
+    out everybody else's, and each of those is then logged early while its
+    translation logs a second, separate block. A live session holds one to
+    three receipts at a time, so it is never the largest holder next to a
+    flooding one. Among those holds the least recently touched goes, not the
+    oldest: a long, actively-progressing translation must outlive a stalled
+    one. With nobody ahead (one hold each, or no identities at all) that is
+    the least recently touched of the whole buffer."""
+    counts: "dict[Any, int]" = {}
+    for entry in _held.values():
+        who = _parked_by(entry)
+        counts[who] = counts.get(who, 0) + 1
+    most = max(counts.values())
+    return min((k for k, e in _held.items() if counts[_parked_by(e)] == most),
+               key=lambda k: _held[k]["touched"])
+
+
 def _owner_ok(entry: "dict[str, Any]", owner: "str | None") -> bool:
     """Whether `owner` may act on this hold. The key is a capture id a client
     names, so a caller other than the parking identity must not claim (steal
@@ -96,8 +120,7 @@ def _owner_ok(entry: "dict[str, Any]", owner: "str | None") -> bool:
     flush_all) and a hold parked without an identity are not checked."""
     if owner is None:
         return True
-    kw = entry["kwargs"]
-    stored = kw.get("user_id") or kw.get("key_id")
+    stored = _parked_by(entry)
     return stored is None or stored == owner
 
 

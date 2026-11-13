@@ -167,6 +167,59 @@ def test_eviction_takes_the_least_recently_touched_not_the_oldest():
                for e in evicted for s in e.get("skipped", []))
 
 
+def _park_as(key, idle_s, **identity):
+    """Park for `identity` as if last touched `idle_s` seconds ago (inside the
+    hold), so the victim is defined without sleeping between parks."""
+    receipt_hold.park(key, dict(_kwargs(), file_label=key, **identity), hold_s=90)
+    receipt_hold._held[key]["touched"] = time.monotonic() - idle_s
+
+
+@pytest.mark.parametrize("field", ["user_id", "key_id"])
+def test_a_full_buffer_evicts_from_the_identity_that_holds_the_most(field):
+    """The cap is server-wide: a caller who parks receipts and never claims
+    them must push out its own, not the one another user is about to claim."""
+    _park_as("victimcap", 60, **{field: "alice"})
+    for i in range(receipt_hold._MAX_HELD + 3):
+        _park_as(f"flood{i}", 50 - i, **{field: "bob"})
+    assert receipt_hold.pending() == receipt_hold._MAX_HELD
+    evicted = receipt_hold.sweep()
+    # Bob's own least recently touched ones went, with the usual note.
+    assert [e["file_label"] for e in evicted] == ["flood0", "flood1", "flood2", "flood3"]
+    assert all(any("buffer full" in s for s in e["skipped"]) for e in evicted)
+    assert receipt_hold.claim("victimcap", owner="alice") is not None
+
+
+def test_a_full_buffer_spares_a_busy_hold_of_the_largest_holder():
+    """Inside the largest holder's own receipts the rule is unchanged: the
+    least recently touched goes, not the oldest."""
+    _park_as("victimcap", 60, user_id="alice")
+    for i in range(receipt_hold._MAX_HELD - 1):
+        _park_as(f"flood{i}", 50 - i, user_id="bob")
+    assert receipt_hold.touch("flood0", owner="bob")    # still reporting
+    _park_as("one-too-many", 0, user_id="bob")
+    assert [e["file_label"] for e in receipt_hold.sweep()] == ["flood1"]
+    assert receipt_hold.claim("flood0", owner="bob") is not None
+    assert receipt_hold.claim("victimcap", owner="alice") is not None
+
+
+def test_a_full_buffer_with_no_larger_holder_evicts_the_least_recently_touched():
+    """One hold per identity (or two identities level at the top): nobody is
+    ahead, so the least recently touched of them all goes, as it does for
+    holds parked without an identity."""
+    for i in range(receipt_hold._MAX_HELD):
+        _park_as(f"cap{i}", 10 + i, user_id=f"user{i}")
+    _park_as("extra", 0, user_id="late")
+    assert [e["file_label"] for e in receipt_hold.sweep()] == [
+        f"cap{receipt_hold._MAX_HELD - 1}"]
+    receipt_hold._reset_for_tests()
+    half = receipt_hold._MAX_HELD // 2
+    for i in range(half):
+        _park_as(f"a{i}", 20 + i, user_id="alice")
+        _park_as(f"b{i}", 40 + i, user_id="bob")
+    _park_as("extra", 0, user_id="carol")
+    assert [e["file_label"] for e in receipt_hold.sweep()] == [f"b{half - 1}"]
+
+
 def test_park_without_a_key_is_a_no_op():
     receipt_hold.park("", _kwargs(), hold_s=90)
     assert receipt_hold.pending() == 0
