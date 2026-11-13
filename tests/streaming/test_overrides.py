@@ -4,6 +4,7 @@ final decode. Driven in-process; no faster-whisper needed."""
 
 import json
 import logging
+import threading
 import time
 
 import pytest
@@ -546,6 +547,36 @@ def test_revoked_session_closes_without_a_further_client_frame(
         msgs, code = _drain_with_code(ws)
 
     _assert_revoked_close(msgs, code)
+
+
+def test_receive_loop_revocation_sends_no_frame_after_the_terminal_one(
+        client, make_user_key, fake_model, app_module, monkeypatch, energy_vad):
+    """When the receive loop latches the revocation while a decode is in
+    flight, its unauthorized frame is the last one: it closes the socket at
+    once, so that decode's preview never reaches the revoked identity."""
+    uid, raw_alice = locked_user(make_user_key)
+    entered, release = threading.Event(), threading.Event()
+    real = fake_model.transcribe
+
+    def _held(path, **kwargs):
+        entered.set()
+        release.wait(5)
+        return real(path, **kwargs)
+    monkeypatch.setattr(fake_model, "transcribe", _held)
+
+    with ready_ws(client, raw_alice) as ws:
+        ws.send_bytes(_pcm(8000, 1500))        # speech → a partial decode starts
+        assert entered.wait(5)
+        api_keys_store.revoke_user(uid)        # bumps the config version
+        ws.send_bytes(_pcm(8000, 100))         # receive loop re-auths → revoked
+        msgs = []
+        while not msgs or msgs[-1].get("code") != "unauthorized":
+            msgs.append(ws.receive_json())
+        release.set()                          # the held decode finishes now
+        rest, code = _drain_with_code(ws)
+
+    _assert_revoked_close(msgs, code)
+    assert rest == [], rest
 
 
 def test_silent_stream_closes_when_key_is_revoked(

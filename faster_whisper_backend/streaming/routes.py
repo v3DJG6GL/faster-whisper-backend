@@ -2017,8 +2017,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     # Latched by the check above or by _refresh_ident on the
                     # consumer side. Every sink is already cut (the decode
                     # guards); this closes the socket too, at the first frame
-                    # after the revocation.
-                    await _send_error_frame(ws, send_lock, "unauthorized", _REVOKED_MSG)
+                    # after the revocation. Closed here, not after the drain:
+                    # a decode still in flight would otherwise send its
+                    # frames after this terminal one.
+                    await _send_error_frame(ws, send_lock, "unauthorized", _REVOKED_MSG,
+                                            close_code=_WS_UNAUTH)
                     break
                 if msg.get("bytes") is not None:
                     if msg["bytes"]:
