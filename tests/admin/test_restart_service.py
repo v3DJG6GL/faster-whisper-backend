@@ -262,7 +262,8 @@ def test_win32_winsw_restart_bang(monkeypatch):
 
 
 # The restart bypasses ASGI shutdown, so every exec/exit path must run
-# _flush_before_exit (held receipts, stats samples, NVML, rule helpers) first.
+# _flush_before_exit (held receipts, stats samples, NVML, rule and link
+# helpers) first.
 def _order_probe(monkeypatch):
     order = []
     monkeypatch.setattr(restart_service, "_flush_before_exit",
@@ -311,8 +312,9 @@ def test_winsw_restart_bang_flushes_before_exit(monkeypatch):
 
 def test_flush_before_exit_swallows_failures(monkeypatch):
     """A broken flush must never block the restart itself: every duty is
-    attempted in order (held receipts, stats samples, NVML, rule helpers),
-    and a failing one must not skip the ones after it."""
+    attempted in order (held receipts, stats samples, NVML, rule helpers,
+    link helpers), and a failing one must not skip the ones after it."""
+    from faster_whisper_backend.media import link_helper
     from faster_whisper_backend.pipeline import rule_helper
     from faster_whisper_backend.runtime import system_stats
     from faster_whisper_backend.stats import sampler
@@ -336,6 +338,10 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
         reached.append("helpers")
         raise RuntimeError("helper pool exploded")
 
+    def _boom_link_helpers():
+        reached.append("link helpers")
+        raise RuntimeError("link helpers exploded")
+
     monkeypatch.setattr(receipt_hold, "flush_all", _boom_flush)
     monkeypatch.setattr(sampler, "flush", _boom_sampler)
     monkeypatch.setattr(system_stats, "shutdown", _boom_shutdown)
@@ -343,8 +349,9 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
         # Put back before the test ends: the per-test reset stops the pool
         # through the same function.
         scoped.setattr(rule_helper, "shutdown", _boom_helpers)
+        scoped.setattr(link_helper, "shutdown", _boom_link_helpers)
         _REAL_FLUSH()  # must not raise
-    assert reached == ["flush", "sampler", "shutdown", "helpers"]
+    assert reached == ["flush", "sampler", "shutdown", "helpers", "link helpers"]
 
 
 def test_flush_before_exit_stops_the_rule_helpers(monkeypatch):
@@ -371,6 +378,40 @@ def test_flush_before_exit_stops_the_rule_helpers(monkeypatch):
         assert all(p.poll() is not None for p in procs)      # killed and reaped
     finally:
         rule_helper.shutdown()
+
+
+def test_flush_before_exit_stops_the_link_helpers(monkeypatch):
+    """The same for the helpers pasted links are checked in: the idle spare,
+    and one inside a check, which nothing would stop at its deadline once
+    the image that enforced it is gone."""
+    from faster_whisper_backend.media import link_helper
+    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.stats import sampler
+    from faster_whisper_backend.transcription import receipt_hold
+
+    monkeypatch.setattr(receipt_hold, "flush_all", lambda: [])
+    monkeypatch.setattr(sampler, "flush", lambda: None)
+    monkeypatch.setattr(system_stats, "shutdown", lambda: None)
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    # The suite runs link checks in-process (tests/conftest.py); a stand-in
+    # helper that only waits is all a restart has to stop.
+    monkeypatch.setattr(link_helper, "ISOLATE", True)
+    monkeypatch.setattr(link_helper, "_BOOT", "import time; time.sleep(600)")
+    link_helper.start(spare=True)
+    pool = link_helper._HELPERS
+    busy = None
+    try:
+        busy = pool.take()  # as a check holds one; the next spare is started
+        procs = [busy.proc, pool._spare.proc]
+        assert len({p.pid for p in procs}) == 2
+        assert all(p.poll() is None for p in procs)
+        _REAL_FLUSH()
+        assert all(p.poll() is not None for p in procs)      # killed and reaped
+        assert pool.pids() == [] and pool.spare_pid() is None
+    finally:
+        if busy is not None:
+            pool.end(busy)
+        link_helper.reset()
 
 
 @pytest.fixture

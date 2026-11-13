@@ -51,10 +51,12 @@ def _flush_before_exit() -> None:
     dictation receipts would vanish unlogged (receipt_hold's contract is
     that NOTHING is silently lost), the stats sampler's last minute of
     queued system samples would leave a gap in /stats history, and NVML
-    would leak driver handles. The rule helper processes are stopped here
-    too: the exec'd image never waits for the children of the one it
-    replaces, so they would stay in the process table as zombies (and one
-    inside a slow rule would keep its core until its own limit).
+    would leak driver handles. The rule helper processes and the link
+    check helpers are stopped here too: the exec'd image never waits for
+    the children of the one it replaces, so they would stay in the process
+    table as zombies (and one inside a slow rule or a slow link check would
+    keep its core until its own limit, with nobody left to stop a program
+    it started).
     Best-effort — a restart must never fail because a flush did."""
     try:
         from faster_whisper_backend.transcription import receipt_hold as _receipt_hold
@@ -72,9 +74,14 @@ def _flush_before_exit() -> None:
     except Exception:  # noqa: BLE001
         pass
     try:
-        # Last, as in the lifespan's teardown.
+        # The helpers last and in this order, as in the lifespan's teardown.
         from faster_whisper_backend.pipeline import rule_helper as _rule_helper
         _rule_helper.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from faster_whisper_backend.media import link_helper as _link_helper
+        _link_helper.shutdown()
     except Exception:  # noqa: BLE001
         pass
 
