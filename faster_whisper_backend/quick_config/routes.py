@@ -943,7 +943,7 @@ async def get_state(
         from faster_whisper_backend.reports import store as reports_store
         uid = user.get("user_id") or ""
         if uid:
-            # Off the loop: a SELECT * of full transcript rows plus a json.loads
+            # Off the loop: a read of up to 100 report rows plus a json.loads
             # per row, and /state is the page's auth probe — re-issued on every
             # save and every optimistic-concurrency conflict.
             my_reports = await asyncio.to_thread(

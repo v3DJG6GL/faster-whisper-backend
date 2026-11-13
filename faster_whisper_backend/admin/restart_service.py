@@ -183,7 +183,7 @@ def reclaim_hard_restart_orphans() -> None:
     `fwb-pkg-` subtitle-package workdirs, `fwb-bgm-` separator output dirs
     and /captures `preview_merge_`
     WAVs (plus merge_wavs' `.tmp` sibling) with no finally to reclaim them —
-    url_media_store.startup_reset() wipes only URL_MEDIA_DIR (a same-fs
+    url_media_store.startup_reset() clears only its own files in URL_MEDIA_DIR (a same-fs
     `urlmedia-` copy is a hardlink whose retained name that reset already
     dropped). Single-service assumption (as documented for SERVER_WORKERS);
     a small age guard keeps the sweep off files a just-overlapping process

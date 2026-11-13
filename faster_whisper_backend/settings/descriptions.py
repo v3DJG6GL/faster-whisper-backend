@@ -272,7 +272,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "standard HF cache dir (~/.cache/huggingface).",
     "LOCAL_FILES_ONLY":
         "If true, never hit the network — only resolve from local cache. "
-        "Default false. Use for air-gapped deploys.",
+        "Default false. Use for air-gapped deploys. With "
+        "AUTO_CONVERT_HF_MODELS on, a Hub model that has not been converted "
+        "yet is neither looked up nor converted while this is set; finished "
+        "conversions and local model folders keep working.",
     "HF_TOKEN":
         "HuggingFace auth token for gated/private repos. Account-scoped. "
         "One token for everything Hugging Face: gated whisper repos and the "
@@ -535,7 +538,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "hold the GPU semaphore).",
     "URL_MEDIA_DIR":
         "Directory where downloaded audio is retained briefly so the "
-        "client can fetch it for local playback. Wiped on startup.",
+        "client can fetch it for local playback. On startup the server "
+        "removes its own retained media and staging leftovers from it; any "
+        "other file or folder in it is left alone.",
     "URL_MEDIA_TTL_S":
         "How long a downloaded file stays fetchable via "
         "/v1/audio/url-media/{id}. The window starts when the download "

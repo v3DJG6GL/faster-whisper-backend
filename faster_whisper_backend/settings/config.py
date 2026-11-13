@@ -820,8 +820,8 @@ URL_DOWNLOAD_CONCURRENCY: int = _D("URL_DOWNLOAD_CONCURRENCY")
 
 # Retention of downloaded (and uploaded) media so the client can fetch it once
 # for local playback or export (GET /v1/audio/url-media/{id}): TTL + byte-capped
-# LRU under URL_MEDIA_DIR; the directory is wiped on startup (ids die with the
-# process). RETAINED_MEDIA_MAX_BYTES sizes the whole dir — several videos at
+# LRU under URL_MEDIA_DIR; the store's own files in it are removed on startup
+# (ids die with the process). RETAINED_MEDIA_MAX_BYTES sizes the whole dir — several videos at
 # MEDIA_MAX_BYTES, not just audio.
 URL_MEDIA_DIR: str = _D("URL_MEDIA_DIR")
 URL_MEDIA_TTL_S: int = _D("URL_MEDIA_TTL_S")

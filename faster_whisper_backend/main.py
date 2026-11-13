@@ -529,8 +529,8 @@ async def lifespan(app: FastAPI):
 
     await _preload_extras()
 
-    # Transcribe-from-URL retention: wipe the dir (ids die with the process,
-    # so every surviving file is an orphan) and start the TTL/byte-cap
+    # Transcribe-from-URL retention: remove the store's own files from the
+    # dir (ids die with the process, so every surviving one is an orphan) and start the TTL/byte-cap
     # janitor. Unconditional — URL_DOWNLOAD_ENABLED is a LIVE toggle (no
     # restart badge), so the janitor must already be running when an admin
     # flips it on; with the feature off both are no-ops. The TMPDIR sweep

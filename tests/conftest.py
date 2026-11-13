@@ -699,8 +699,9 @@ def isolate_app_env(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("WHISPER_CLIENT_SETTINGS_DB", str(tmp_path / "client_settings.sqlite3"))
     monkeypatch.setenv("WHISPER_JOBS_DB", str(tmp_path / "jobs.sqlite3"))
     monkeypatch.setenv("WHISPER_LOG_FILE", str(tmp_path / "whisper.log"))
-    # The lifespan's url_media_store.startup_reset() rmtree's URL_MEDIA_DIR
-    # unconditionally — without this it would wipe the REAL /data/url_media.
+    # The lifespan's url_media_store.startup_reset() clears the store's files
+    # in URL_MEDIA_DIR unconditionally — without this it would clear the REAL
+    # /data/url_media.
     monkeypatch.setenv("WHISPER_URL_MEDIA_DIR", str(tmp_path / "url_media"))
 
     # config_store.save_overrides / load_overrides persist to the REAL

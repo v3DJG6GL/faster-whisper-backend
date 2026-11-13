@@ -31,8 +31,8 @@ _CONFIG_VERSION = 0
 # no reload path for them, so signalling those here would only make it
 # re-resolve values that are themselves stale.
 _KEYS_DATA_VERSION: int = -1
-# config_version() runs synchronously on the event loop once per partial-decode
-# interval per live streaming session, and the probe is a PRAGMA under
+# config_version() runs synchronously on the event loop once per queued audio
+# chunk and per decode of every live streaming session, and the probe is a PRAGMA under
 # api_keys_store._lock — the lock every store read/write holds — plus a SELECT
 # under sessions_store._lock (revocation_generation), which on a moved counter
 # also rebuilds the session index, O(live sessions). Rate-limit it

@@ -27,6 +27,9 @@ faster-whisper>=1.2.1
 # faster-whisper master (passes it only for PyAV < 19), not yet released.
 # Lift the cap with the faster-whisper release that carries that fix — the
 # PyAV 19 update waits as a checkbox on the Renovate Dependency Dashboard.
+# PyAV 17 and 18 free a custom channel map twice (an 8-channel AIFF ends the
+# process); faster_whisper_backend/audio/ffmpeg.py holds_custom_channel_map
+# refuses such files on those versions and switches itself off from 19 on.
 av>=11,<19
 
 # Bundled, cross-platform static ffmpeg BINARY for the live-streaming

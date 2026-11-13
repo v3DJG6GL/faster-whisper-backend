@@ -122,7 +122,7 @@ def url_enabled(app_module, monkeypatch):
 
 
 def test_lifespan_reset_is_temp_rooted(client, app_module, tmp_path):
-    # The lifespan's startup_reset() rmtree's URL_MEDIA_DIR unconditionally;
+    # The lifespan's startup_reset() clears URL_MEDIA_DIR unconditionally;
     # conftest must have pointed it under tmp_path before the app started.
     assert app_module.cfg.URL_MEDIA_DIR.startswith(str(tmp_path))
     assert os.path.isdir(app_module.cfg.URL_MEDIA_DIR)
