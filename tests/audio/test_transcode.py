@@ -435,14 +435,16 @@ class _RejectingContainer:
     """Stands in for an opened container whose demuxer hands out `packets`
     rejected packets of `packet_size` bytes; `pulled` counts them."""
 
-    def __init__(self, *, size, packets, packet_size, name=""):
+    def __init__(self, *, size, packets, packet_size, name="",
+                 kind=_RejectedPacket):
         self.size, self.name, self.pulled = size, name, 0
         self._packets, self._packet_size = packets, packet_size
+        self._kind = kind
 
     def demux(self, _stream):
         for _ in range(self._packets):
             self.pulled += 1
-            yield _RejectedPacket(self._packet_size)
+            yield self._kind(self._packet_size)
 
 
 def test_decoded_frames_stop_once_the_rejected_packets_outweigh_the_file(
@@ -473,6 +475,34 @@ def test_decoded_frames_stop_once_the_rejected_packets_outweigh_the_file(
                                     name=str(src))
     assert list(audio_transcode._decoded_frames(container, None)) == []
     assert container.pulled == 15
+
+
+class _FramelessPacket:
+    """A demuxed packet the decoder accepts and turns into no frame."""
+
+    def __init__(self, size):
+        self.size = size
+
+    def decode(self):
+        return []
+
+
+def test_decoded_frames_charge_a_packet_that_decodes_to_no_frame(monkeypatch):
+    """A packet the decoder takes without an error and without a frame is
+    demuxed in full like a rejected one, and charged like one."""
+    monkeypatch.setattr(audio_transcode, "_SKIPPED_PACKETS_MARGIN", 4096)
+    container = _RejectingContainer(size=10_000, packets=5000,
+                                    packet_size=1000, kind=_FramelessPacket)
+    state = {}
+    assert list(audio_transcode._decoded_frames(container, None, state)) == []
+    assert container.pulled == 15
+    assert state == {"cut": True}
+
+    container = _RejectingContainer(size=10_000, packets=14, packet_size=1000,
+                                    kind=_FramelessPacket)
+    state = {}
+    assert list(audio_transcode._decoded_frames(container, None, state)) == []
+    assert container.pulled == 14 and state == {}
 
 
 def _mp4_boxes(data):
@@ -568,6 +598,11 @@ class _CountingContainer:
             self.demuxed += packet.size
             yield packet
 
+    def decode(self, *args, **kwargs):
+        # As PyAV's own InputContainer.decode, over the counted demux.
+        for packet in self.demux(*args, **kwargs):
+            yield from packet.decode()
+
 
 def _count_demuxed(monkeypatch):
     """Every container _open_audio opens from here on, wrapped to count."""
@@ -615,6 +650,70 @@ def test_a_sample_table_naming_one_range_many_times_is_not_read_in_full(
     audio_transcode.transcode_to_wav_16k_mono(src, dst)
     with wave.open(dst, "rb") as w:
         assert abs(w.getnframes() - head) < 2048
+    assert opened.pop().demuxed <= per_read
+
+    assert audio_transcode.decoded_cost_within(
+        src, cost_per_s=lambda rate, channels: 1.0, max_cost=1e9) is False
+    assert opened.pop().demuxed <= per_read
+
+
+def frameless_flac_mp4(path, *, packets, packet_size):
+    """A FLAC-in-MP4 whose sample table names one `packet_size` range
+    `packets` times, four bytes of chunk offset each. The range starts with
+    the byte of a Vorbis-comment block, which FFmpeg's flac decoder takes as
+    metadata: no error and no frame."""
+    with av.open(path, "w", format="mp4") as out:
+        st = out.add_stream("flac", rate=RATE, layout="mono")
+        fr = av.AudioFrame.from_ndarray(np.zeros((1, 4096), np.int16),
+                                        format="s16", layout="mono")
+        fr.sample_rate, fr.pts = RATE, 0
+        for pkt in [*st.encode(fr), *st.encode(None)]:
+            out.mux(pkt)
+    boxes = dict(_mp4_boxes(open(path, "rb").read()))
+    ftyp = _mp4_box(b"ftyp", boxes[b"ftyp"])
+
+    def u32(*values):
+        return b"".join(v.to_bytes(4, "big") for v in values)
+
+    moov = _mp4_with_tables(boxes[b"moov"], {
+        b"stts": lambda p: p[:4] + u32(1, packets, 4096),
+        b"stsc": lambda p: p[:4] + u32(1, 1, 1, 1),
+        b"stsz": lambda p: p[:4] + u32(packet_size, packets),
+        b"stco": lambda p: p[:4] + u32(packets, *[len(ftyp) + 8] * packets)})
+    with open(path, "wb") as f:
+        f.write(ftyp + _mp4_box(b"mdat", b"\x04" + bytes(packet_size - 1))
+                + _mp4_box(b"moov", moov))
+    return path
+
+
+def test_packets_that_decode_to_no_frame_are_not_read_in_full(tmp_path,
+                                                              monkeypatch):
+    """200 sample-table entries naming one 64 KiB range the flac decoder
+    reads as metadata: 13 MB of demuxing for a 67 KB file, quadratic in the
+    upload size, with no frame for any budget to count and no error. The
+    readers stop after about one file size (plus the margin) of them, like
+    they do for rejected packets."""
+    packets, packet_size = 200, 1 << 16
+    monkeypatch.setattr(audio_transcode, "_SKIPPED_PACKETS_MARGIN", 4096)
+    src = frameless_flac_mp4(str(tmp_path / "frameless.mp4"), packets=packets,
+                             packet_size=packet_size)
+    size = os.path.getsize(src)
+    assert size < 70_000
+    per_read = size + 4096 + packet_size
+    assert per_read < packets * packet_size // 50
+    opened = _count_demuxed(monkeypatch)
+
+    container, stream = audio_transcode._open_audio(src)
+    try:
+        state = {}
+        assert list(audio_transcode._decoded_frames(container, stream,
+                                                    state)) == []
+        assert state == {"cut": True}
+    finally:
+        container.close()
+    assert opened.pop().demuxed <= per_read
+
+    assert audio_transcode.decode_span_16k(src, 0.0, 20.0).size == 0
     assert opened.pop().demuxed <= per_read
 
     assert audio_transcode.decoded_cost_within(
@@ -848,6 +947,127 @@ def test_decode_span_does_not_resample_a_skip_behind_a_format_change(
     with pytest.raises(ValueError, match="changes format"):
         audio_transcode.decode_span_16k(str(src), 3 * 3600 - 10.0, 1.0)
     assert sum(fed) < 120 * rate * 40
+
+
+def _count_decoded(monkeypatch):
+    """Frames every _decoded_frames call hands out from here on, as a list
+    of one count per call."""
+    counts, real = [], audio_transcode._decoded_frames
+
+    def counting(container, stream, *args):
+        counts.append(0)
+        for frame in real(container, stream, *args):
+            counts[-1] += 1
+            yield frame
+
+    monkeypatch.setattr(audio_transcode, "_decoded_frames", counting)
+    return counts
+
+
+def _m4a_with_one_sync_sample(path, *, seconds):
+    """An honest mono AAC .m4a whose sample table marks only its first
+    sample as a sync sample: every seek lands on the start of the file."""
+    rate = 44100
+    with av.open(path, "w", format="mp4") as out:
+        st = out.add_stream("aac", rate=rate, layout="mono")
+        x = (0.3 * np.sin(2 * np.pi * 440 * np.arange(rate * seconds) / rate)
+             ).astype(np.float32)
+        for i in range(0, len(x), 1024):
+            fr = av.AudioFrame.from_ndarray(
+                x[i:i + 1024].reshape(1, -1), format="fltp", layout="mono")
+            fr.sample_rate, fr.pts = rate, i
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    boxes = list(_mp4_boxes(open(path, "rb").read()))
+    assert boxes[-1][0] == b"moov"      # so no chunk offset moves
+    stss = _mp4_box(b"stss", bytes(4) + (1).to_bytes(4, "big") * 2)
+    moov = _mp4_with_tables(boxes[-1][1], {b"stbl": lambda p: p + stss})
+    with open(path, "wb") as f:
+        f.write(b"".join(_mp4_box(k, p) for k, p in boxes[:-1])
+                + _mp4_box(b"moov", moov))
+    return path
+
+
+def test_decode_pieces_refuses_a_seek_that_lands_far_ahead_of_the_piece(
+        tmp_path, monkeypatch):
+    """Frames between where a seek lands and the piece are decoded and
+    thrown away, and the file decides how many there are: with one sync
+    sample every seek lands on the start, so each piece decodes the file up
+    to itself — the whole table of a file that names one frame a million
+    times at four bytes each. Past a budget of discarded frames, or of
+    discarded samples, the piece is refused."""
+    src = _m4a_with_one_sync_sample(str(tmp_path / "one-sync.m4a"),
+                                    seconds=60)
+    counts = _count_decoded(monkeypatch)
+    # Within the budget the piece is found, as before: 50 s is 2153 frames
+    # behind the start.
+    [piece] = audio_transcode.decode_pieces_16k(src, [50.0], 1.0)
+    assert piece.size == RATE and counts.pop() > 2153
+
+    monkeypatch.setattr(audio_transcode, "_DISCARD_MAX_FRAMES", 100)
+    with pytest.raises(ValueError, match="ahead of the piece"):
+        audio_transcode.decode_pieces_16k(src, [50.0, 55.0], 1.0)
+    assert counts == [101]              # and the second piece is not tried
+    [piece] = audio_transcode.decode_pieces_16k(src, [2.0], 1.0)
+    assert piece.size == RATE           # 86 frames behind the start
+
+    counts.clear()
+    monkeypatch.setattr(audio_transcode, "_DISCARD_MAX_FRAMES", 1 << 18)
+    monkeypatch.setattr(audio_transcode, "_DISCARD_MAX_SAMPLES", 100 * 1024)
+    with pytest.raises(ValueError, match="ahead of the piece"):
+        audio_transcode.decode_pieces_16k(src, [50.0], 1.0)
+    assert counts == [101]
+
+
+def test_decode_span_refuses_a_skip_past_the_discard_budget(tmp_path,
+                                                            monkeypatch):
+    """The skip of a link's language-check piece comes from a remote
+    playlist: one far past the file decodes every frame of it only to drop
+    it. The budget the seek's lead has ends that too."""
+    src = _silent_flac(str(tmp_path / "long.flac"), seconds=600)
+    counts = _count_decoded(monkeypatch)
+    assert audio_transcode.decode_span_16k(src, 1e6, 1.0).size == 0
+    assert counts.pop() > 1000          # the whole file, within the budget
+    assert audio_transcode.decode_span_16k(src, 580.0, 1.0).size == RATE
+
+    counts.clear()
+    monkeypatch.setattr(audio_transcode, "_DISCARD_MAX_FRAMES", 100)
+    with pytest.raises(ValueError, match="ahead of the piece"):
+        audio_transcode.decode_span_16k(src, 1e6, 1.0)
+    # The first frame always passes; the 101st dropped one ends it.
+    assert counts == [102]
+
+
+def test_the_seek_lead_and_the_skip_share_one_discard_budget(monkeypatch):
+    """One _read_16k call has one budget: what it drops ahead of `after`
+    and what it drops of the skip add up."""
+    def frames(_container, _stream):
+        for i in range(1000):           # 10 s in 10 ms frames
+            fr = av.AudioFrame.from_ndarray(
+                np.zeros((1, 80), dtype=np.int16), format="s16",
+                layout="mono")
+            fr.sample_rate, fr.pts = 8000, i * 80
+            fr.time_base = fractions.Fraction(1, 8000)
+            yield fr
+
+    monkeypatch.setattr(audio_transcode, "_decoded_frames", frames)
+
+    def read(budget, **kw):
+        monkeypatch.setattr(audio_transcode, "_DISCARD_MAX_FRAMES", budget)
+        return audio_transcode._read_16k(None, None, 1600, **kw)
+
+    # 59 frames end before 0.6 s.
+    assert read(59, after=0.6).size == 1600
+    # Of a 3 s skip the frames more than a second ahead of the cut are
+    # dropped: 198 behind the first one, which always passes.
+    assert read(198, skip=3 * RATE).size == 1600
+    assert read(257, skip=3 * RATE, after=0.6).size == 1600
+    for budget, kw in ((58, {"after": 0.6}), (197, {"skip": 3 * RATE}),
+                       (256, {"skip": 3 * RATE, "after": 0.6})):
+        with pytest.raises(ValueError, match="ahead of the piece"):
+            read(budget, **kw)
 
 
 class _TinyFrame:

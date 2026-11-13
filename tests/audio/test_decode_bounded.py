@@ -14,7 +14,12 @@ from faster_whisper.audio import decode_audio
 
 from faster_whisper_backend.audio import transcode
 from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
-from tests.audio.test_transcode import one_hertz_flac, run_under_ram_ceiling
+from tests.audio.test_transcode import (
+    _count_demuxed,
+    frameless_flac_mp4,
+    one_hertz_flac,
+    run_under_ram_ceiling,
+)
 from tests.conftest import write_wav
 
 
@@ -101,6 +106,22 @@ def test_a_one_hertz_block_is_refused_before_it_is_resampled(tmp_path):
         pytest.skip("ffmpeg cannot write a 1 Hz flac")
     with pytest.raises(transcode.DecodeTooLong):
         transcode.decode_16k_bounded(str(tmp_path / "low.flac"), max_seconds=36000)
+
+
+def test_packets_that_decode_to_no_frame_are_not_read_in_full(tmp_path,
+                                                              monkeypatch):
+    """A sample table naming one 64 KiB range 200 times, each a packet the
+    flac decoder takes as metadata: no frame for the duration ceiling to
+    count and no error to stop at. The decode ends, as at the end of the
+    file, once such packets add up to more than the file plus the margin."""
+    packets, packet_size = 200, 1 << 16
+    monkeypatch.setattr(transcode, "_SKIPPED_PACKETS_MARGIN", 4096)
+    src = frameless_flac_mp4(str(tmp_path / "frameless.mp4"), packets=packets,
+                             packet_size=packet_size)
+    opened = _count_demuxed(monkeypatch)
+    got = transcode.decode_16k_bounded(src, max_seconds=60)
+    assert got.size == 0
+    assert opened.pop().demuxed < packets * packet_size // 50
 
 
 def _groups(src, max_seconds=None):

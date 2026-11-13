@@ -55,10 +55,11 @@ _MAX_FRAME_S = 60.0
 _MAX_SETUP_CHANGES = 128
 _FRAMES_PER_SETUP_CHANGE = 4096
 
-# What _decoded_frames skips of packets the decoder rejects, on top of the
-# file's own size. The packets of a real file are disjoint parts of it, so
-# its rejected ones never add up to more than the file; the margin is for a
-# demuxer that hands out a little more than it read.
+# What a decode demuxes of packets that give it no frame — rejected by the
+# decoder, or accepted and turned into nothing — on top of the file's own
+# size. The packets of a real file are disjoint parts of it, so those never
+# add up to more than the file; the margin is for a demuxer that hands out a
+# little more than it read.
 _SKIPPED_PACKETS_MARGIN = 1 << 20
 
 
@@ -262,10 +263,40 @@ def decoded_cost_within(src_path: str, *, cost_per_s, max_cost: float) -> bool:
         container.close()
 
 
+def _frameless_limit(container) -> int:
+    """The packet bytes a decode of `container` may demux without getting a
+    frame for them: the file's size plus _SKIPPED_PACKETS_MARGIN."""
+    size = container.size
+    if size <= 0:
+        try:
+            size = os.path.getsize(container.name)
+        except OSError:
+            size = 0
+    return size + _SKIPPED_PACKETS_MARGIN
+
+
+def _fw_decoded_frames(container, stream):
+    """container.decode(stream), packet by packet as PyAV runs it, ending as
+    at the end of the file once the packets that decoded to no frame add up
+    to more than _frameless_limit (see _decoded_frames): no duration ceiling
+    counts them. An InvalidDataError still ends the generator, as it ends
+    PyAV's, which is what _fw_valid_frames relies on."""
+    limit, frameless = _frameless_limit(container), 0
+    for packet in container.demux(stream):
+        frames = packet.decode()
+        if not frames:
+            frameless += packet.size
+            if frameless > limit:
+                return
+            continue
+        yield from frames
+
+
 def _fw_valid_frames(frames):
     """faster_whisper.audio._ignore_invalid_frames, verbatim: an
-    InvalidDataError ends PyAV's decode generator, so the decode stops at the
-    first invalid packet (unlike _decoded_frames, which skips it)."""
+    InvalidDataError ends the decode generator (PyAV's, and
+    _fw_decoded_frames alike), so the decode stops at the first invalid
+    packet (unlike _decoded_frames, which skips it)."""
     iterator = iter(frames)
     while True:
         try:
@@ -339,7 +370,7 @@ def decode_16k_bounded(src_path: str, *, max_seconds: "float | None"):
     container, stream = _open_audio(src_path)
     try:
         try:
-            frames = _fw_valid_frames(container.decode(stream))
+            frames = _fw_valid_frames(_fw_decoded_frames(container, stream))
             frames = _fw_bounded_groups(frames, 500000, max_seconds)
             for group in itertools.chain(frames, [None]):
                 try:
@@ -395,23 +426,22 @@ def _decoded_frames(container, stream, state: "dict | None" = None):
     PyAV FFmpegError (a decode failure: the caller falls back), NOT the
     plain ValueError main.py treats as a refused input.
 
-    The frames end, as at the end of the file, once the skipped packets add
-    up to more than the file's size plus _SKIPPED_PACKETS_MARGIN, and
-    state["cut"] is set: a sample table can name one byte range any number
-    of times at four bytes each, and a rejected packet is demuxed in full
-    but charged to none of the budgets, which all count decoded frames."""
+    The frames end, as at the end of the file, once the packets that gave
+    no frame add up to more than the file's size plus
+    _SKIPPED_PACKETS_MARGIN, and state["cut"] is set: a sample table can
+    name one byte range any number of times at four bytes each, and a
+    rejected packet — or one the decoder accepts and turns into no frame
+    (FFmpeg's flac decoder takes any packet that starts like a metadata
+    block that way) — is demuxed in full but charged to none of the
+    budgets, which all count decoded frames."""
     invalid = _av().error.InvalidDataError
-    size = container.size
-    if size <= 0:
-        try:
-            size = os.path.getsize(container.name)
-        except OSError:
-            size = 0
-    limit, skipped = size + _SKIPPED_PACKETS_MARGIN, 0
+    limit, skipped = _frameless_limit(container), 0
     for packet in container.demux(stream):
         try:
             frames = packet.decode()
         except invalid:
+            frames = None
+        if not frames:
             skipped += packet.size
             if skipped > limit:
                 if state is not None:
@@ -493,6 +523,49 @@ _SKIP_HOLD_MAX_FRAMES = 16384
 _SKIP_RESAMPLE_MAX = 1 << 25
 _SKIP_SETUP_CHANGE_COST = 1 << 16
 
+# What one _read_16k call decodes only to throw away ahead of its piece: the
+# frames between where a seek lands and `after` (_drop_ahead) plus the ones
+# _drop_before drops of a skip — _DISCARD_MAX_FRAMES frames or
+# _DISCARD_MAX_SAMPLES samples x channels, whichever comes first, then the
+# piece is refused. Nothing else charges them, and the file decides how many
+# there are: a sample table that marks only its first sample as a sync
+# sample sends every seek back to the start, a playlist can declare any
+# skip, and a table naming one frame a million times costs four bytes each.
+# Counted in decode work, not seconds: a second is whatever rate the file
+# declares, and a long skip is no fault (three hours of 1.1 kHz FLAC is 181
+# frames). A real seek lands within a packet or one Matroska cluster of its
+# piece (4.6 s / 191 frames at worst over 32 formats, 33 s by the format's
+# own limit), and a real skip ends inside its first segment, whose 2 MiB
+# hold under 140 000 frames and 2^27 samples even as 6 kbit/s Opus. The
+# budget is 93 min of 48 kHz mono AAC, and a few seconds of one thread:
+# 1-3 s for 2^18 of the cheapest frames, 2-9 s for 2^28 samples of the
+# slowest lossless decoders.
+_DISCARD_MAX_FRAMES = 1 << 18
+_DISCARD_MAX_SAMPLES = 1 << 28
+
+
+def _charge_discard(state: dict, frames: int, samples: int) -> None:
+    """Add `frames` frames of `samples` samples x channels to what one
+    _read_16k call (`state`) threw away ahead of its piece; ValueError — a
+    refused piece, as in _charged_until_cut — past the budget."""
+    state["discard_frames"] = state.get("discard_frames", 0) + frames
+    state["discard_samples"] = state.get("discard_samples", 0) + samples
+    if (state["discard_frames"] > _DISCARD_MAX_FRAMES
+            or state["discard_samples"] > _DISCARD_MAX_SAMPLES):
+        raise ValueError("unsupported audio: too much audio ahead of the "
+                         "piece")
+
+
+def _drop_ahead(frames, after: float, state: dict):
+    """`frames` without those that end before `after` (seconds, stream
+    time); a frame without a timestamp is kept. Each dropped frame is
+    charged to the call's discard budget (see _DISCARD_MAX_FRAMES)."""
+    for f in frames:
+        if f.time is None or f.time + f.samples / f.sample_rate >= after:
+            yield f
+        else:
+            _charge_discard(state, 1, f.samples * len(f.layout.channels))
+
 
 def _drop_before(frames, skip_out: int, state: dict):
     """`frames` without whole frames that end more than _SKIP_GUARD_S ahead
@@ -513,7 +586,9 @@ def _drop_before(frames, skip_out: int, state: dict):
     (ValueError; the language check then downloads the whole file). A run
     that meets no grid point within _SKIP_HOLD_MAX_S, _SKIP_HOLD_MAX_BYTES
     or _SKIP_HOLD_MAX_FRAMES (only a crafted rate or block size) is dropped
-    off the grid anyway."""
+    off the grid anyway. What is dropped is charged to the discard budget
+    `state` carries (see _DISCARD_MAX_FRAMES), past which the piece is
+    refused the same way."""
     skip_s = skip_out / 16000
     it = iter(frames)
     first = next(it, None)
@@ -521,6 +596,7 @@ def _drop_before(frames, skip_out: int, state: dict):
         return
     yield first
     setup = (first.format.name, first.layout.name, first.sample_rate)
+    channels = len(first.layout.channels)   # of every frame dropped below
     seen, held, held_n, held_bytes = first.samples, [], 0, 0
     for f in it:
         r = f.sample_rate
@@ -542,6 +618,7 @@ def _drop_before(frames, skip_out: int, state: dict):
                 or held_n / r > _SKIP_HOLD_MAX_S
                 or held_bytes > _SKIP_HOLD_MAX_BYTES
                 or len(held) >= _SKIP_HOLD_MAX_FRAMES):
+            _charge_discard(state, len(held), held_n * channels)
             state["n"] += held_n
             state["rate"] = r
             seen += held_n
@@ -584,14 +661,16 @@ def _read_16k(container, stream, want: int, *, skip: int = 0,
     """Decode `stream` from where the container stands into 16 kHz mono
     float32: drop frames that end before `after` (seconds, STREAM time —
     media time plus the stream's start_time) and then the first `skip`
-    samples, return the next `want` (fewer at EOF)."""
+    samples, return the next `want` (fewer at EOF). ValueError once the
+    frames decoded only to be dropped pass the discard budget (see
+    _DISCARD_MAX_FRAMES), which the two kinds of drop share."""
     import numpy as np
 
-    # A seek lands on the keyframe at or before `after`.
-    frames = (f for f in _decoded_frames(container, stream)
-              if after is None or f.time is None
-              or f.time + f.samples / f.sample_rate >= after)
     state = {"n": 0, "rate": None}
+    frames = _decoded_frames(container, stream)
+    if after is not None:
+        # A seek lands on the keyframe at or before `after`.
+        frames = _drop_ahead(frames, after, state)
     if skip:
         frames = _drop_before(frames, skip, state)
     # The skipped samples are dropped as they decode, never collected: the
@@ -624,7 +703,8 @@ def decode_pieces_16k(src_path: str, starts: "list[float]",
     """`seconds` of audio from each of `starts` (seconds into the media) as
     16 kHz mono float32 arrays — what Whisper's language detection takes.
     Seeks instead of decoding the whole file; a piece past the end comes
-    back empty."""
+    back empty. ValueError when a seek lands so far ahead of its piece that
+    reaching it passes the discard budget (see _DISCARD_MAX_FRAMES)."""
     want = int(seconds * 16000)
     pieces = []
     container, stream = _open_audio(src_path)
@@ -648,7 +728,8 @@ def decode_span_16k(src_path: str, skip: float, seconds: float):
     one 16 kHz mono float32 array. Counts decoded samples instead of
     seeking: a run of concatenated stream segments (a link's language-check
     piece) carries the stream's own timestamps, which neither start at 0
-    nor need be continuous."""
+    nor need be continuous. ValueError when the skip takes more decoding
+    than the discard budget (see _DISCARD_MAX_FRAMES)."""
     container, stream = _open_audio(src_path)
     try:
         return _read_16k(container, stream, int(seconds * 16000),
