@@ -173,6 +173,59 @@ def cap_libav_alloc() -> bool:
     return _libav_alloc_capped
 
 
+# PyAV 17 and 18 hand a channel layout out as a bitwise copy of libav's
+# struct and release that copy when the Python object dies. A layout in CUSTOM
+# channel order (the 7.1 of an AIFF, a QuickTime `chan` atom naming its
+# channels one by one) owns a heap map, so the first decoded frame that is
+# dropped — or one read of the stream's channel count — frees the map libav
+# still holds, and the second free ends the whole server process. PyAV 19
+# copies the layout properly; 16 and older never release it.
+CUSTOM_CHANNEL_ORDER = ("unsupported audio: the file's channel order is one "
+                        "this server cannot decode; convert it to WAV or "
+                        "FLAC and send it again")
+_AV_CHANNEL_ORDER_CUSTOM = 2    # enum AVChannelOrder
+# AVChannelLayout on a 64-bit build: order (int), nb_channels (int), the mask
+# or the map pointer, an opaque pointer.
+_CHANNEL_LAYOUT_BYTES = 24
+
+
+@functools.lru_cache(maxsize=1)
+def pyav_frees_custom_maps() -> bool:
+    """True on the PyAV versions that free a custom channel map twice."""
+    try:
+        import av
+    except ImportError:
+        return False
+    return str(getattr(av, "__version__", "")).split(".")[0] in ("17", "18")
+
+
+def holds_custom_channel_map(layout) -> bool:
+    """True when `layout` (a PyAV AudioLayout read from a stream or a frame)
+    is in custom channel order on a PyAV that would free its map twice. The
+    object is then kept for the life of the process, so it is never released:
+    the caller refuses the file and must decode nothing of that stream. The
+    order is read from the object's own struct (PyAV exposes no accessor),
+    after checking the struct sits where expected; where it does not, a name
+    libav could only spell out channel by channel counts as custom."""
+    if not pyav_frees_custom_maps():
+        return False
+    head = object.__basicsize__
+    try:
+        located = (type(layout).__basicsize__ == head + _CHANNEL_LAYOUT_BYTES
+                   and ctypes.c_int.from_address(id(layout) + head + 4).value
+                   == layout.nb_channels)
+        if located:
+            custom = (ctypes.c_int.from_address(id(layout) + head).value
+                      == _AV_CHANNEL_ORDER_CUSTOM)
+        else:
+            custom = " channels (" in str(layout.name)
+    except Exception:
+        custom = True
+    if custom:
+        ctypes.pythonapi.Py_IncRef(ctypes.py_object(layout))
+    return custom
+
+
 # Header opens of client bytes (the export probe, the upload's input check)
 # run one at a time, process-wide: one crafted open may hold PYAV_MAX_STREAMS
 # x ~1.5 x _LIBAV_MAX_ALLOC while it lasts, and the default executor would run

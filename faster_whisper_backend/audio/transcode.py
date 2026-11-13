@@ -150,7 +150,9 @@ def _open_client_file(av, path: str):
 
 def _open_audio(src_path: str):
     """(container, first audio stream) of `src_path`; the caller closes the
-    container. ValueError when there is no audio stream."""
+    container. ValueError when there is no audio stream, or when that stream
+    is in a channel order this PyAV cannot release safely
+    (audio_ffmpeg.CUSTOM_CHANNEL_ORDER)."""
     # The source is an uploaded clip (or a downloaded link) whose bytes AND
     # filename extension a client chose, so a crafted concat/ffconcat, HLS
     # playlist or SDP input can coax the demuxer into following external
@@ -169,6 +171,13 @@ def _open_audio(src_path: str):
     if stream is None:
         container.close()
         raise ValueError("source has no audio stream")
+    # Before anything reads the stream's channel count or decodes a frame:
+    # either would release a layout wrapper, and on a custom channel order
+    # that ends the process (audio_ffmpeg.holds_custom_channel_map).
+    context = stream.codec_context
+    if context is not None and audio_ffmpeg.holds_custom_channel_map(context.layout):
+        container.close()
+        raise ValueError(audio_ffmpeg.CUSTOM_CHANNEL_ORDER)
     return container, stream
 
 

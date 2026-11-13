@@ -1421,8 +1421,9 @@ def _refuse_input(path: str) -> None:
     text file the tty demuxer opens) — decode_audio raises a bare IndexError
     on that, a 500. A file that does not open at all is not refused here:
     the real decoder raises the av error, answered as undecodable — unless
-    FFmpeg's default open reads it as a playlist, or reads it only without
-    the stream limit (see below)."""
+    FFmpeg's default open reads it as a playlist, reads it only without the
+    stream limit, or finds audio in a channel order this PyAV cannot release
+    safely (see below; transcode._open_audio refuses that one itself)."""
     import av
     # Also for the reopen below and faster-whisper's own open after it.
     audio_ffmpeg.cap_libav_alloc()
@@ -1454,6 +1455,13 @@ def _refuse_input(path: str) -> None:
             if audio_ffmpeg.is_multi_input_format(
                     getattr(container.format, "name", None)):
                 raise ValueError("unsupported container")
+            # The fallback decoders release PyAV's layout wrappers like any
+            # other reader: a custom channel order must not reach them.
+            for stream in container.streams:
+                context = stream.codec_context if stream.type == "audio" else None
+                if context is not None and audio_ffmpeg.holds_custom_channel_map(
+                        context.layout):
+                    raise ValueError(audio_ffmpeg.CUSTOM_CHANNEL_ORDER)
         finally:
             container.close()
         return
