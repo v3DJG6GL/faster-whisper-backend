@@ -2352,6 +2352,70 @@ def test_ladder_treats_an_absurd_site_bitrate_as_unknown_size():
     assert rung["tbr_kbps"] == 8_000
 
 
+def test_video_ladder_takes_an_unbelievable_height_or_width_as_none():
+    """A height, width or frame rate is the site's word like a bitrate:
+    int() of an infinite one raises, and a 300-digit one is copied into the
+    rung and its label. Either reads as "the site named none"."""
+    inf = float("inf")
+    fmt = {"format_id": "v1", "vcodec": "avc1", "acodec": "mp4a",
+           "protocol": "https", "ext": "mp4", "width": 1280,
+           "resolution": "x", "fps": 1e300}
+
+    def ladder(*formats):
+        return udl.build_video_ladder({"formats": list(formats)}, max_bytes=10**9)
+
+    for h in (inf, 1e300, 10**400, float("nan"), udl._MAX_DIM + 1, True):
+        (rung,) = ladder(dict(fmt, height=h))
+        assert (rung["height"], rung["width"], rung["fps"]) == (None, 1280, None), h
+        # Named like any format without a height: by its resolution text.
+        assert rung["label"] == "x", h
+    for w in (inf, 1e300, 10**400):
+        (rung,) = ladder(dict(fmt, height=720, width=w))
+        assert (rung["height"], rung["width"], rung["fps"]) == (720, None, None), w
+        assert rung["label"] == "720p", w
+    # It groups and ranks as a format without a height, below a real one.
+    rungs = ladder(dict(fmt, height=inf), dict(fmt, format_id="v2", height=720))
+    assert [(r["format_id"], r["height"]) for r in rungs] == [("v2", 720), ("v1", None)]
+    # A codec-less variant is video only by its height.
+    assert ladder({"format_id": "m", "protocol": "m3u8_native", "height": inf,
+                   "resolution": "x"}) == []
+    for fps, want, label in ((1e300, None, "720p"), (udl._MAX_FPS + 1, None, "720p"),
+                             (-5, None, "720p"), (inf, None, "720p"),
+                             (udl._MAX_FPS, 1000, "720p1000"), (59.94, 60, "720p60"),
+                             (25, 25, "720p")):
+        (rung,) = ladder(dict(fmt, height=720, fps=fps))
+        assert (rung["fps"], rung["label"]) == (want, label), fps
+    # A real format's rung is what it was, up to the bound itself.
+    (rung,) = ladder(dict(fmt, height=4320, width=7680.0, fps=59.94))
+    assert (rung["height"], rung["width"], rung["fps"], rung["label"]) == (
+        4320, 7680, 60, "4320p60")
+    assert type(rung["width"]) is int
+    (rung,) = ladder(dict(fmt, height=udl._MAX_DIM, width=udl._MAX_DIM))
+    assert (rung["height"], rung["width"]) == (udl._MAX_DIM, udl._MAX_DIM)
+
+
+def test_probe_reads_a_non_finite_site_size_without_raising(monkeypatch):
+    """A site's size can be infinite or NaN (yt-dlp keeps an entry's own
+    `filesize` beside its formats as it came). Infinity is over any limit;
+    NaN is no size at all. An absurd finite size stays refused."""
+    monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 1000, raising=False)
+    for key in ("filesize", "filesize_approx"):
+        for size in (float("inf"), 1e300, 10**400, 2000):
+            with pytest.raises(udl.UrlPolicyError, match="size limit"):
+                udl._policy_check_info({key: size})
+        for size in (float("nan"), -5, 1000, 999.5):
+            udl._policy_check_info({key: size})  # no raise
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "title": "t", "extractor_key": "Youtube", "filesize": float("nan")})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert info.filesize_approx is None
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "title": "t", "extractor_key": "Youtube", "filesize": 999.5})
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert info.filesize_approx == 999
+
+
 def test_video_ladder_ranks_premium_first_and_applies_the_learned_ratio():
     """YouTube: the Premium 1080p wins on source_preference even at a lower
     codec rank; its HLS bytes and bitrate are peaks, scaled by the ledger's

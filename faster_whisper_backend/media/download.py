@@ -284,19 +284,40 @@ def _site_float(value) -> float:
     return _float_or(value or 0, 0.0)
 
 
+# A height, width or frame rate is the site's word too (a site extractor
+# copies a raw JSON number): int() of an infinite one raises, and a
+# 300-digit one would be copied into the rung and its label. 16K video is
+# 15360 x 8640, and no camera reaches 1000 frames a second.
+_MAX_DIM = 100_000
+_MAX_FPS = 1000
+
+
+def _dim(v) -> "int | None":
+    """A site's height or width as an int when it is a believable pixel
+    count, else None (infinite, NaN, a 300-digit number, not a number)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return int(v) if 0 < v <= _MAX_DIM else None
+
+
+def _fps_int(v) -> "int | None":
+    """A site's frame rate rounded to an int when it is a believable one,
+    else None."""
+    fps = _site_float(v)
+    return int(round(fps)) if 0 < fps <= _MAX_FPS else None
+
+
 def _fmt_rank(f: dict) -> tuple:
     """yt-dlp's own order within a site: quality, resolution, fps, HDR,
     source preference (YouTube's Premium boost lives here), codec, bitrate.
     Ranking the way the downloader ranks is what keeps the card and the
     fetched file in agreement."""
     q = _float_or(f.get("quality"), 0.0)
-    h = f.get("height")
-    w = f.get("width")
     src = _float_or(f.get("source_preference"), -1.0)
     return (
         q,
-        int(h) if isinstance(h, (int, float)) and h > 0 else 0,
-        int(w) if isinstance(w, (int, float)) and w > 0 else 0,
+        _dim(f.get("height")) or 0,
+        _dim(f.get("width")) or 0,
         _site_float(f.get("fps")),
         _is_hdr(f),
         src,
@@ -343,12 +364,11 @@ def _display_str(v) -> "str | None":
 def _rung_spec(f: dict) -> str:
     """The resolution half of a label: "1080p", "1080p60 HDR", the site's
     own "1280x720" when only that is known, else ""."""
-    h = f.get("height")
-    if isinstance(h, (int, float)) and h > 0:
-        fps = _site_float(f.get("fps"))
-        fps_i = int(round(fps)) if fps else 0
+    h = _dim(f.get("height"))
+    if h is not None:
+        fps_i = _fps_int(f.get("fps")) or 0
         hdr = _is_hdr(f)
-        return f"{int(h)}p{fps_i if fps_i > 30 else ''}{' HDR' if hdr else ''}"
+        return f"{h}p{fps_i if fps_i > 30 else ''}{' HDR' if hdr else ''}"
     res = f.get("resolution")
     if isinstance(res, str) and res.strip() and res.strip().lower() != "audio only":
         return res.strip()[:16]
@@ -380,11 +400,10 @@ def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
             continue
         vcodec = f.get("vcodec")
         acodec = f.get("acodec")
-        h = f.get("height")
         # vcodec None is yt-dlp's "unknown" (an HLS master with no CODECS
         # attribute): with a height it is video, as yt-dlp's own `bv*` says.
         if vcodec == "none" or (
-                vcodec is None and not (isinstance(h, (int, float)) and h > 0)):
+                vcodec is None and _dim(f.get("height")) is None):
             # YouTube's "DRC" twins are loudness-normalised duplicates of
             # the same track — never the leg a merge should carry. An HLS
             # audio rendition (vcodec "none", acodec None — yt-dlp never
@@ -434,9 +453,9 @@ def build_video_ladder(info: dict, *, max_bytes: int,
     vids, audio_f = _video_candidates(formats)
     groups: "dict[object, list[dict]]" = {}
     for f in vids:
-        h = f.get("height")
-        if isinstance(h, (int, float)) and h > 0:
-            key: object = int(h)
+        h = _dim(f.get("height"))
+        if h is not None:
+            key: object = h
         else:
             res = f.get("resolution")
             key = f"res:{res}" if isinstance(res, str) and res else f"id:{f['format_id']}"
@@ -536,11 +555,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     vcodec = _codec_str(f["vcodec"]) if f.get("vcodec") else None
     acodec = _codec_str(f.get("acodec")) if has_audio else (
         _codec_str(audio_f["acodec"]) if merges and audio_f.get("acodec") else None)
-    fps = _site_float(f.get("fps"))
-    fps_i = int(round(fps)) if fps else None
     hdr = _is_hdr(f)
-    h = f.get("height")
-    width = f.get("width")
     note = _rung_note(f)
     spec = _rung_spec(f)
     label = " ".join(x for x in (spec, note) if x) or "Best available"
@@ -557,9 +572,9 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
         audio_id = None
     return {
         "kind": "video",
-        "height": int(h) if isinstance(h, (int, float)) and h > 0 else None,
-        "width": int(width) if isinstance(width, (int, float)) and width > 0 else None,
-        "fps": fps_i,
+        "height": _dim(f.get("height")),
+        "width": _dim(f.get("width")),
+        "fps": _fps_int(f.get("fps")),
         "hdr": hdr,
         "vcodec": vcodec,
         "acodec": acodec,
@@ -1313,8 +1328,15 @@ def _policy_check_info(info: dict) -> None:
                 f"this media runs {dur_s / 3600:.1f} h — over the server's "
                 f"{max_dur / 3600:.1f} h limit for link downloads")
     approx = info.get("filesize_approx") or info.get("filesize")
-    if approx is not None and int(approx) > _effective_max_bytes():
-        raise UrlPolicyError(_OVER_CAP_MSG)
+    if approx is not None:
+        try:
+            over = int(approx) > _effective_max_bytes()
+        except OverflowError:  # infinite: past any limit, like the duration
+            over = True
+        except (TypeError, ValueError):  # NaN or no number: the site named no size
+            over = False
+        if over:
+            raise UrlPolicyError(_OVER_CAP_MSG)
 
 
 class _QuietYdlLogger:
@@ -1478,7 +1500,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     def _derive() -> UrlMediaInfo:
         xk = str(info.get("extractor_key") or key)
         size = info.get("filesize_approx") or info.get("filesize")
-        fs = int(size) if size else None
+        fs = _sane_bytes(size) if size else None
         # Site text like a codec id; it also feeds the audio rung's label.
         ext = _codec_str(info["ext"]) if info.get("ext") else None
         abr = _plausible_abr(info.get("abr"))
