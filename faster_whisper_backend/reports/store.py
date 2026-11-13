@@ -52,6 +52,11 @@ _CAP_REQUEST_ID = 128
 # that fits one row fits the other.
 _CAP_LANGUAGE = 32
 _CAP_STAGES_JSON = 20_000
+# Nesting ceiling for stages, the route validator's _NESTED_MAX_DEPTH (the
+# route imports this module, so it cannot be imported from there). Real stages
+# nest 3-4 deep; a list nested thousands deep fits _CAP_STAGES_JSON yet makes
+# the admin export (indent=2) grow with depth squared.
+_MAX_STAGES_DEPTH = 16
 # Year 2100: no plausible trace timestamp lies past it. The bound that
 # matters is rejecting inf/NaN, see _clean_trace_ts.
 _MAX_TRACE_TS = 4_102_444_800.0
@@ -155,6 +160,22 @@ def _reject_json_constant(name: str) -> Any:
     raise ValueError(f"non-finite JSON constant {name}")
 
 
+def _too_deep(value: Any, limit: int) -> bool:
+    """True when any node of `value` sits more than `limit` levels deep,
+    counted as the route validator counts (`value` is level 1, a dict's keys
+    and values one level below it)."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > limit:
+            return True
+        if isinstance(item, dict):
+            stack.extend((x, depth + 1) for x in item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend((x, depth + 1) for x in item)
+    return False
+
+
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. Returns
     plain Python types ready for JSON serialization on the wire."""
@@ -177,13 +198,16 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     # Absent on rows written before the provenance migration. A row stored
     # before upsert_report refused non-finite floats may hold a bare
     # Infinity/NaN: reject it here (-> []) like a legacy trace_ts, or the
-    # strict list/export renders raised on every load.
+    # strict list/export renders raised on every load. A row stored before
+    # the depth bound may nest thousands deep: it reads back as [] too, or
+    # every admin export of it grew with depth squared.
     try:
         d["stages"] = json.loads(d.get("stages") or "[]",
                                  parse_constant=_reject_json_constant)
-        if not isinstance(d["stages"], list):
+        if (not isinstance(d["stages"], list)
+                or _too_deep(d["stages"], _MAX_STAGES_DEPTH)):
             d["stages"] = []
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         d["stages"] = []
     d["language"] = d.get("language") or ""
     return d
@@ -307,8 +331,10 @@ def upsert_report(
     # allow_nan=False: `stages` is list[Any], so the route's allow_inf_nan
     # never reaches a float inside it, and a stored bare Infinity made every
     # strict /reports/api/list and /export render raise (-> not stored).
+    # Nested past _MAX_STAGES_DEPTH is not stored either: the store is the
+    # last line for callers that skip the route validator.
     stages_t = (store_common.capped_json(stages, _CAP_STAGES_JSON, allow_nan=False)
-                if stages else None)
+                if stages and not _too_deep(stages, _MAX_STAGES_DEPTH) else None)
 
     conn = _require_conn()
     # Lookup and write share one lock span: with the lookup outside, two

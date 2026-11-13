@@ -411,3 +411,27 @@ def test_merged_corrections_are_re_capped(reports_store_db):
         ])
     row = rs.get_report(rs.find_by_request_user("grow", "u1")["id"])
     assert len(row["corrections"]) <= text_corrections.CAP_CORRECTIONS
+
+
+def test_too_deep_stages_never_reach_the_export(reports_store_db):
+    """The route refuses stages nested deeper than 16, but a row stored before
+    that bound (or by a caller that skips the route) kept the blob: a list
+    nested thousands deep fits _CAP_STAGES_JSON yet the admin export
+    (indent=2) grows with depth squared. Refused on write; a legacy blob reads
+    back as []."""
+    import json
+    rs = reports_store_db
+    ok = [{"name": "t", "models": [["a"]]}]
+    deep: list = []
+    for _ in range(rs._MAX_STAGES_DEPTH):
+        deep = [deep]
+    rid, _ = _submit(rs, request_id="deep", stages=deep)
+    assert rs.get_report(rid)["stages"] == []
+    assert rs._require_conn().execute(
+        "SELECT stages FROM reports WHERE id = ?", (rid,)).fetchone()[0] is None
+    rid, _ = _submit(rs, request_id="legacy", stages=ok)
+    assert rs.get_report(rid)["stages"] == ok
+    rs._require_conn().execute(
+        "UPDATE reports SET stages = ? WHERE id = ?", (json.dumps(deep), rid))
+    assert rs.get_report(rid)["stages"] == []
+    assert [r["stages"] for r in rs.list_reports(limit=None)] == [[], []]
