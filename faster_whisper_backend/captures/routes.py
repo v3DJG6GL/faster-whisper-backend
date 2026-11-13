@@ -443,12 +443,11 @@ async def propose_merges_api(
         for p in proposals:
             # A scope=all non-admin gets other users' capture previews + the
             # owner's resolved username here, same as the read-by-id siblings
-            # that audit. One line per proposal, keyed on its first member so
-            # a DSAR can trace which rows left the owner's pool.
-            _audit_cross_user_read(
-                user, p, "merge-proposal",
-                (p.get("member_ids") or [""])[0],
-            )
+            # that audit. One line per member, like _validate_merge_payload:
+            # the record keeps 8 chars of its id, so a DSAR can trace every
+            # row that left the owner's pool, not just the first.
+            for mid in p.get("member_ids") or []:
+                _audit_cross_user_read(user, p, "merge-proposal", mid)
             p["username"] = usernames.get(p.get("user_id"))
             for m in p.get("member_previews", []):
                 m["username"] = usernames.get(m.get("user_id"))

@@ -510,6 +510,39 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
     assert audit and "merge-proposal" in audit[0]
 
 
+def test_propose_merges_audits_every_member_of_a_cross_user_proposal(
+        client, make_user_key, monkeypatch, caplog):
+    """A proposal hands a scope=all non-admin every member's preview, and the
+    audit record keeps 8 chars of its id: each member gets its own record,
+    not only the first."""
+    import logging
+
+    uid_owner, _raw_owner = locked_user(make_user_key, pages={"captures": "own"})
+    _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
+    ids = ["propm01cap00", "propm02cap00", "propm03cap00"]
+
+    def _fake_propose(**kw):
+        return ([{
+            "member_ids": list(ids),
+            "member_previews": [{"id": cid, "user_id": uid_owner}
+                                for cid in ids],
+            "user_id": uid_owner,
+        }], False)
+
+    monkeypatch.setattr(
+        captures_routes.captures_merge_proposer, "propose_merges",
+        _fake_propose)
+
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = _get(client, raw_viewer, "propose-merges")
+    assert r.status_code == 200
+    audit = [m for m in caplog.messages
+             if "cross-user-read" in m and "merge-proposal" in m]
+    assert len(audit) == len(ids)
+    for cid in ids:
+        assert sum(f"id={cid[:8]} " in m for m in audit) == 1
+
+
 def test_merge_estimate_audits_every_member_of_a_cross_user_merge(
         client, make_user_key, caplog):
     """The audit record keeps 8 chars of the id it is given, so one record
