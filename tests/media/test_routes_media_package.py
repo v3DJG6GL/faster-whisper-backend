@@ -446,6 +446,77 @@ def test_streams_does_not_cache_a_server_fault(client, package_enabled, monkeypa
         assert len(calls) == 2, repr(fault)
 
 
+def test_streams_caches_a_fault_that_keeps_coming_back(
+        client, package_enabled, monkeypatch):
+    """libav answers EIO for a cut-short file too, on every open: a fault is
+    probed again only so often per entry, then it is the verdict — or each
+    request for the file's facts would hold the one client-open worker for
+    another open."""
+    for fault in (OSError(errno.EIO, "Input/output error"),
+                  OSError(errno.EAGAIN, "Resource temporarily unavailable"),
+                  MemoryError()):
+        calls = []
+
+        def _probe(path, fault=fault, calls=calls):
+            calls.append(path)
+            raise fault
+        monkeypatch.setattr(pk, "probe_streams", _probe)
+        mid = _upload(client).json()["media_id"]
+        for _ in range(10):
+            r = client.get(f"/v1/audio/media/{mid}/streams")
+            assert _ok_body(r)["unreadable"] is True, repr(fault)
+        assert len(calls) == 1 + media_routes._PROBE_FAULT_RETRIES == 3, repr(fault)
+        assert ums.probe_cache_get(mid)["unreadable"] is True, repr(fault)
+        r = _package(client, mid, {"container": "mkv", "subtitles": _tracks()})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "unreadable"
+        assert len(calls) == 3, repr(fault)
+
+
+def test_streams_fault_retries_are_per_entry_and_end_at_a_good_probe(
+        client, package_enabled, monkeypatch):
+    # One file's faults spend none of another's tries, and a probe that works
+    # within them is cached as the file's facts.
+    calls: dict = {}
+
+    def _probe(path):
+        calls[path] = calls.get(path, 0) + 1
+        if calls[path] <= media_routes._PROBE_FAULT_RETRIES:
+            raise OSError(errno.EMFILE, "Too many open files")
+        return _streams()
+    monkeypatch.setattr(pk, "probe_streams", _probe)
+    for _ in range(2):
+        mid = _upload(client).json()["media_id"]
+        bodies = [_ok_body(client.get(f"/v1/audio/media/{mid}/streams"))
+                  for _ in range(4)]
+        assert [b.get("unreadable", False) for b in bodies] == [True, True, False, False]
+        assert ums.probe_cache_get(mid) == _streams().as_dict()
+    assert sorted(calls.values()) == [3, 3]
+
+
+def test_cut_short_matroska_is_opened_a_bounded_number_of_times(
+        client, package_enabled, monkeypatch):
+    """Real bytes through the real probe: a Matroska that ends inside its
+    segment (here right after a SeekHead id) makes libav answer EIO on every
+    open, which reads as the server's fault. Ten requests, three opens."""
+    pytest.importorskip("av")
+    opens = []
+
+    def _probe(path):
+        opens.append(path)
+        return _REAL_PROBE(path)
+    monkeypatch.setattr(pk, "probe_streams", _probe)
+    cut = bytes.fromhex(
+        "1a45dfa3a34286810142f7810142f2810442f381084282886d6174726f736b61"
+        "428781044285810218538067010000000002efe0114d9b74")
+    mid = _upload(client, data=cut, ext="mkv").json()["media_id"]
+    for _ in range(10):
+        r = client.get(f"/v1/audio/media/{mid}/streams")
+        assert _ok_body(r)["unreadable"] is True
+    # One open if a later libav reads the file as bad data instead.
+    assert 1 <= len(opens) <= 1 + media_routes._PROBE_FAULT_RETRIES, len(opens)
+    assert ums.probe_cache_get(mid)["unreadable"] is True
+
+
 def test_streams_caches_a_verdict_on_the_file(client, package_enabled, monkeypatch):
     """What the FILE made the open answer (bad data, a refused container,
     an allocation past the cap) stays cached: a hostile file is opened once

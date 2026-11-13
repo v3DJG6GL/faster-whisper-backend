@@ -287,6 +287,16 @@ def test_expires_at_unix(tmp_path):
     assert ums.expires_at_unix("f" * 32) is None
 
 
+def test_probe_fault_counts_per_entry(tmp_path):
+    a = ums.register(_make_src(tmp_path, name="a.mkv"), user_id=None, kind="video")
+    b = ums.register(_make_src(tmp_path, name="b.mkv"), user_id=None, kind="video")
+    assert [ums.probe_fault(a) for _ in range(3)] == [1, 2, 3]
+    assert ums.probe_fault(b) == 1
+    # A fault is not a cached probe, and an id the store dropped counts nothing.
+    assert ums.probe_cache_get(a) is None
+    assert ums.probe_fault("f" * 32) == 0 and "f" * 32 not in ums._REG
+
+
 def test_register_kind_and_resolve_entry(tmp_path):
     mid = ums.register(_make_src(tmp_path, name="v.mkv", size=40), user_id="u1",
                        kind="video")

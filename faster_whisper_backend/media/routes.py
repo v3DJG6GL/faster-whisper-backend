@@ -640,11 +640,17 @@ def _owned_media_entry(media_id: str, user: dict) -> dict:
     return entry
 
 
-# Probe failures that say the SERVER was short of descriptors or could not
-# read its own disk. Out of memory is one only as a MemoryError without
+# Probe failures that usually say the SERVER was short of descriptors or could
+# not read its own disk. Out of memory is one only as a MemoryError without
 # libav's ENOMEM: that errno is how the allocation cap and the stream limit
 # refuse a file (audio_ffmpeg.refused_as_too_much).
 _PROBE_SERVER_FAULTS = frozenset({errno.EMFILE, errno.ENFILE, errno.EAGAIN, errno.EIO})
+
+# libav answers EIO / EAGAIN for a cut-short file too (a Matroska that ends
+# inside its segment), on every open: a fault is retried this often per entry
+# and then cached like any other refusal, or each request for such a file's
+# facts would hold the one client-open worker for another open.
+_PROBE_FAULT_RETRIES = 2
 
 
 def _is_server_fault(exc: BaseException) -> bool:
@@ -655,7 +661,9 @@ def _is_server_fault(exc: BaseException) -> bool:
 
 
 def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
-    """Cached codec facts for a retained file (probed once per id)."""
+    """Cached codec facts for a retained file (probed once per id; up to
+    _PROBE_FAULT_RETRIES more times while the probe fails as the server's
+    own fault)."""
     cached = url_media_store.probe_cache_get(media_id)
     if cached is not None:
         return cached
@@ -668,9 +676,10 @@ def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
         logger.info("[package] stream probe failed (%s): %s",
                     _log_safe(str(entry.get("ext") or "?")), _log_safe(type(e).__name__))
         facts = _pk.unreadable_streams().as_dict()
-        if _is_server_fault(e):
-            # Not a verdict on the file: the next request probes it again,
-            # or a playable video stays unreadable for the entry's life.
+        if (_is_server_fault(e)
+                and url_media_store.probe_fault(media_id) <= _PROBE_FAULT_RETRIES):
+            # Not yet a verdict on the file: the next request probes it
+            # again, or a playable video stays unreadable for the entry's life.
             return facts
     url_media_store.probe_cache_set(media_id, facts)
     return facts

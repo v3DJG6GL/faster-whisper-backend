@@ -45,7 +45,8 @@ MEDIA_ID_RE = re.compile(rf"\A{MEDIA_ID_PATTERN}\Z")
 
 # media_id -> {path, ext, kind ("audio"|"video"), user_id,
 #              created (time.monotonic), size, source_url,
-#              probe? (cached stream facts)}
+#              probe? (cached stream facts),
+#              probe_faults? (probes that failed as the server's own fault)}
 _REG: "dict[str, dict]" = {}
 
 # Extensions we expect yt-dlp to produce. Anything else keeps a neutral
@@ -291,6 +292,17 @@ def probe_cache_set(media_id: str, facts: dict) -> None:
     entry = _REG.get(media_id)
     if entry is not None:
         entry["probe"] = facts
+
+
+def probe_fault(media_id: str) -> int:
+    """Count one probe of a retained file that failed for a reason read as
+    the server's own; how many it has had so far (0: no such entry). Only
+    the one client-open worker calls it, so the count needs no lock."""
+    entry = _REG.get(media_id)
+    if entry is None:
+        return 0
+    entry["probe_faults"] = entry.get("probe_faults", 0) + 1
+    return entry["probe_faults"]
 
 
 def expires_at_unix(media_id: str) -> "int | None":
