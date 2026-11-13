@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field, ValidationError
 from faster_whisper_backend import build_info
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import config_renames
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import descriptions as field_descriptions
 from faster_whisper_backend.runtime import system_stats
@@ -117,6 +118,9 @@ _MULTILINE_TEXT_FIELDS_JSON: str = json.dumps(
     sorted(settings_schema.MULTILINE_TEXT_FIELDS))
 _WHISPER_LANGS_JSON: str = json.dumps(
     [{"code": c, "name": n} for c, n in WHISPER_LANGUAGE_NAMES.items()])
+_RETIRED_RULE_SLUGS_JSON: str = json.dumps(sorted({
+    *config_renames.RENAMED_RULES, *config_renames.SPLIT_RULES,
+    *config_renames.MERGED_RULES}))
 
 # The fields the WebUI surfaces, as (section, [(subgroup title, names)]);
 # drives the HTML grouping and /settings/state's field map. Generated in
@@ -319,7 +323,8 @@ async def settings_page() -> HTMLResponse:
             .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
             .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON)
             .replace("{{MULTILINE_TEXT_FIELDS_JSON}}", _MULTILINE_TEXT_FIELDS_JSON)
-            .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
+            .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON)
+            .replace("{{RETIRED_RULE_SLUGS_JSON}}", _RETIRED_RULE_SLUGS_JSON),
             current="settings"),
         headers=web_common.PAGE_NO_CACHE_HEADERS,
     )
@@ -342,7 +347,8 @@ async def pipeline_page() -> HTMLResponse:
             .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
             .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON)
             .replace("{{MULTILINE_TEXT_FIELDS_JSON}}", _MULTILINE_TEXT_FIELDS_JSON)
-            .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
+            .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON)
+            .replace("{{RETIRED_RULE_SLUGS_JSON}}", _RETIRED_RULE_SLUGS_JSON),
             current="pipeline"),
         headers=web_common.PAGE_NO_CACHE_HEADERS,
     )

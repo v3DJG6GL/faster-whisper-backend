@@ -1198,6 +1198,12 @@ const NULLABLE_NUMBER_FIELDS = {
 // at render time from settings_schema.MULTILINE_TEXT_FIELDS.
 const MULTILINE_TEXT_FIELDS = new Set({{MULTILINE_TEXT_FIELDS_JSON}});
 
+// Rule slugs a stored slug list is rewritten away from on every load
+// (config_renames RENAMED_RULES / SPLIT_RULES / MERGED_RULES): a custom rule
+// named like one would see its per-model, profile and captures exclusions
+// moved to the factory rule that took the name over. Injected at render.
+const RETIRED_RULE_SLUGS = {{RETIRED_RULE_SLUGS_JSON}};
+
 function makeEditor(name) {
   // Read through the dirty overlay so re-renders triggered by setDirty
   // (e.g. "↺ Reset to default" or list-editor mutations) reflect the
@@ -3367,9 +3373,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           // Unique against config.json too: a config.json rule this server's
           // list predates (new in an update) must not lose its name to a
           // custom rule — it would read as "edited here" and a promote
-          // would overwrite it.
+          // would overwrite it. Never a retired slug either (RETIRED_RULE_SLUGS).
           const others = new Set(rules.filter(r => r !== rule).map(r => r.name)
-            .concat(factoryRules.map(b => b.name)));
+            .concat(factoryRules.map(b => b.name), RETIRED_RULE_SLUGS));
           const newSlug = _ensureUniqueSlug(_slugify(labelInp.value), others);
           if (newSlug !== rule.name) {
             if (expandedNames.has(rule.name)) {
@@ -3650,8 +3656,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     ok.addEventListener('click', () => {
       const lbl = labelInp.value.trim() || 'Custom rule';
       // config.json names too (see the label editor): never take the name
-      // of a config.json rule this server does not have yet.
-      const slugSet = new Set(rules.map(r => r.name).concat(factoryRules.map(b => b.name)));
+      // of a config.json rule this server does not have yet, nor a retired one.
+      const slugSet = new Set(rules.map(r => r.name)
+        .concat(factoryRules.map(b => b.name), RETIRED_RULE_SLUGS));
       const slug = _ensureUniqueSlug(_slugify(lbl), slugSet);
       const t = typeSel.value;
       // A newly-added rule is local-only (seeded:false) until promoted to

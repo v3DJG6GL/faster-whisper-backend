@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from faster_whisper_backend.settings import config_renames
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
 from tests._page_helpers import TOP_CLOSE, js_body, js_upto, needs_node, node_json
@@ -324,10 +325,21 @@ def test_new_slugs_are_unique_against_config_json_too(html):
     """A custom rule could take the name of a config.json rule this server's
     list predates: it then read as "edited here" against an unrelated rule
     and a promote overwrote the config.json one."""
-    assert ("const slugSet = new Set(rules.map(r => r.name)"
-            ".concat(factoryRules.map(b => b.name)));") in html
-    assert ".concat(factoryRules.map(b => b.name)));\n" in html[
+    assert ("const slugSet = new Set(rules.map(r => r.name)\n"
+            "        .concat(factoryRules.map(b => b.name), RETIRED_RULE_SLUGS));"
+            ) in html
+    assert ".concat(factoryRules.map(b => b.name), RETIRED_RULE_SLUGS));\n" in html[
         html.index("if (!slugFixed(rule)) {"):]
+
+
+def test_retired_rule_slugs_are_rendered_into_the_page(html):
+    """Every slug the load-time migration rewrites in slug lists is reserved
+    by the page's slug picker, so a custom rule never takes one."""
+    start = "const RETIRED_RULE_SLUGS = "
+    served = json.loads(js_upto(html, start, ";\n")[len(start):])
+    assert set(served) == {*config_renames.RENAMED_RULES,
+                           *config_renames.SPLIT_RULES,
+                           *config_renames.MERGED_RULES}
 
 
 def _slice(html, start, end):

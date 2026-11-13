@@ -409,7 +409,7 @@ def _label_editor_harness(html, body):
     editor = _block(html, "    // Membership in config.json — not the seeded flag",
                     "      body.appendChild(labelWrap);\n    }\n")
     helpers = _fns(html, "_slugify", "_ensureUniqueSlug", "_helpDiv", "_el")
-    return _FAKE_DOM + helpers + """
+    return _FAKE_DOM + helpers + _block(html, "const RETIRED_RULE_SLUGS = ", ";\n") + """
 const name = 'PIPELINE_RULES';
 const saved = [{ name: 'my-rule', label: 'My rule', type: 'regex' }];
 function fieldDef() { return { value: saved }; }
@@ -445,6 +445,30 @@ console.log(JSON.stringify([
 ]));
 """))
     assert out == ["my-rule", "brand-new"]
+
+
+@needs_node
+def test_label_edit_never_takes_a_retired_slug(client):
+    """A custom rule labelled "Dictation map" took the slug dictation-map,
+    which every load renames to de-dictation-map in the slug lists: its
+    per-model and captures exclusions moved to the factory rule."""
+    out = _node(_label_editor_harness(_html(client, "/settings/pipeline"), """
+const fresh = { name: 'rule', label: '', type: 'regex' };
+const body = document.createElement('div');
+const rule = fresh, rules = [fresh];
+{editor}
+const labelInp = find(body, e => e.tagName === 'INPUT');
+const seen = [];
+for (const text of ['Dictation map', 'Strip whisper punctuation',
+                    'Trim trailing period']) {
+  labelInp.value = text;
+  fire(labelInp, 'input');
+  seen.push(rule.name);
+}
+console.log(JSON.stringify(seen));
+"""))
+    assert out == ["dictation-map-2", "strip-whisper-punctuation-2",
+                   "trim-trailing-period-2"]
 
 
 @needs_node
