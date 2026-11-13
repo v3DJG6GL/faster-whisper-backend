@@ -16,6 +16,12 @@ def test_caps_are_read_off_the_schema():
         settings_schema.RegexListEntry.model_fields["replacement"]) == 512
     assert admin_routes._str_max_length(
         get_args(settings_schema.MapRule.model_fields["map"].annotation)[1]) == 64
+    assert admin_routes._str_max_length(
+        get_args(settings_schema.MapRule.model_fields["map"].annotation)[0]) == 64
+    assert admin_routes._field_max_length(
+        settings_schema.MapRule.model_fields["map"]) == 10_000
+    assert admin_routes._TEST_PIPELINE_MAX_MAP_KEY == 64
+    assert admin_routes._TEST_PIPELINE_MAX_MAP_KEYS == 10_000
 
 
 def test_oversized_regex_list_replacement_is_rejected(client):
@@ -28,6 +34,34 @@ def test_oversized_map_value_is_rejected(client):
     error = refused_dry_run(client, [{"name": "m", "type": "callback:map", "enabled": True,
                                       "map": {"komma": "," * 5000}}], "komma " * 100)
     assert "map value too long" in error
+
+
+def _map_rule(mapping):
+    return {"name": "m", "type": "callback:map", "enabled": True, "map": mapping}
+
+
+def test_oversized_map_key_is_rejected(client):
+    # A map runs in-process (it is not timed by the killable probe), and its
+    # scan grows with the keys' length: a saved rule's key cap applies.
+    error = refused_dry_run(client, [_map_rule({"k" * 65: "x"})], "k" * 65)
+    assert error == "rule 1: map key too long (max 64 chars)"
+
+
+def test_too_many_map_entries_is_rejected(client):
+    error = refused_dry_run(
+        client, [upper_rule("x"), _map_rule({f"w{i}": "x" for i in range(10_001)})], "w1")
+    assert error == "rule 2: too many map entries (max 10000)"
+
+
+def test_map_key_at_the_cap_still_runs(client):
+    step = dry_run(client, [_map_rule({"k" * 64: "x"})], "k" * 64)["steps"][0]
+    assert step["after"] == "x" and step["matches"] == 1
+
+
+def test_map_of_another_rule_type_is_not_counted(client):
+    # Only a callback:map rule reads `map`; a stray one elsewhere is ignored.
+    rule = {**upper_rule("(a)"), "map": {"k" * 65: "x"}}
+    assert dry_run(client, [rule], "a")["steps"][0]["after"] == "A"
 
 
 def test_replacement_at_the_cap_still_runs(client):

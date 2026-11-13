@@ -4565,7 +4565,10 @@ function pipelineTestPanel() {
         const err = _el('span', 'err', step.error);
         outCell.appendChild(err);
       } else {
-        if (!changed) outCell.innerHTML = '<span class="nochange">(no change)</span>';
+        // `text_omitted`: the server left this step's text out of a very
+        // large answer, so "no change" would be a guess.
+        if (step.text_omitted) outCell.innerHTML = '<span class="nochange">(text not shown: response size limit)</span>';
+        else if (!changed) outCell.innerHTML = '<span class="nochange">(no change)</span>';
         else outCell.textContent = step.after;
         if ((step.not_run && step.error) || advisory) {
           const warn = _el('span', 'err', ' ⚠ ' + step.error);

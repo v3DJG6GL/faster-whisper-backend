@@ -189,18 +189,20 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch, short_probe):
 
 
 def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(client, short_probe):
-    # Walk 1 times the entry on the c-run (the child cannot replay the map);
-    # the map turns the real text into "ok", where the entry is instant, so
+    # Walk 1 times the entry on the c-runs (the child cannot replay the map);
+    # the map turns the real text into "ok ok", where the entry is instant, so
     # the walk from there must time it again instead of skipping it as slow.
+    # Two 50-char words: a map key is held to a saved rule's 64 chars.
     steps = dry_run(client, [upper_rule("q"),
                              {"name": "m", "type": "callback:map", "enabled": True,
-                              "map": {"c" * 100: "ok"}},
+                              "map": {"c" * 50: "ok"}},
                              list_rule([
                                  {"pattern": _GROWN_BACKTRACK.replace("|)", "|c)") + "|ok",
-                                  "replacement": "DONE"}])], "c" * 100)["steps"]
-    assert steps[1]["after"] == "ok"
+                                  "replacement": "DONE"}])],
+                    "c" * 50 + " " + "c" * 50)["steps"]
+    assert steps[1]["after"] == "ok ok"
     assert steps[2].get("not_run") is not True
-    assert steps[2]["after"] == "DONE"
+    assert steps[2]["after"] == "DONE DONE"
 
 
 @_SIXTY_WALKS_OUTRUN_WINDOWS_STARTS

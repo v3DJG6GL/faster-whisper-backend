@@ -693,6 +693,13 @@ _TEST_PIPELINE_MAX_REPLACEMENT = _field_max_length(
     settings_schema.RegexListEntry.model_fields["replacement"]) or 512
 _TEST_PIPELINE_MAX_MAP_VALUE = _str_max_length(
     get_args(settings_schema.MapRule.model_fields["map"].annotation)[1]) or 64
+# Same for a map's keys and their count: a map is not timed by the killable
+# probe (it runs in the 2 s guard thread), and the scan of its alternation
+# grows with both, so longer or more keys than a save takes freeze the process.
+_TEST_PIPELINE_MAX_MAP_KEY = _str_max_length(
+    get_args(settings_schema.MapRule.model_fields["map"].annotation)[0]) or 64
+_TEST_PIPELINE_MAX_MAP_KEYS = _field_max_length(
+    settings_schema.MapRule.model_fields["map"]) or 10_000
 # Same for a pattern (every rule type shares the regex-list entry's cap): the
 # structural screen compares every pair of alternatives, so a 16 KB alternation
 # pins a worker thread for minutes before any guard applies.
@@ -702,6 +709,12 @@ _TEST_PIPELINE_MAX_PATTERN = _field_max_length(
 # screen, so an uncapped list fills the request body with seconds of them.
 _TEST_PIPELINE_MAX_ENTRIES = _field_max_length(
     settings_schema.RegexListRule.model_fields["entries"]) or 200
+# Chars of before/after text one response carries over all its steps. Every
+# step repeats the text it is handed, so one rule growing the sample to just
+# under the output bound is echoed by each of the up to 200 steps after it
+# (over 100 MB from a 24 KB request). A full sample through a full list of
+# rules that leave it alone is 3.3 M chars, well inside.
+_TEST_PIPELINE_MAX_ECHO = 8_000_000
 
 
 # Killable pre-run of the dry run's patterns (see _probe_chain). sre holds the
@@ -949,9 +962,10 @@ def _probe_chain(text: str, units: list[list[Any]],
 def _render_dry_run(steps: list[dict[str, Any]], final: str) -> bytes:
     """The test-pipeline body, byte for byte what JSONResponse renders for
     {"steps": steps, "final": final}, dumped one step at a time. Up to
-    _TEST_PIPELINE_MAX_RULES steps each carry the whole before/after text;
-    json's C encoder holds the GIL for one whole dump, so a single dump of
-    the lot stalls the event loop even from a worker thread."""
+    _TEST_PIPELINE_MAX_RULES steps carry before/after text, up to
+    _TEST_PIPELINE_MAX_ECHO chars in all; json's C encoder holds the GIL for
+    one whole dump, so a single dump of the lot stalls the event loop even
+    from a worker thread."""
     def dump(o: Any) -> bytes:
         # The arguments of Starlette's JSONResponse.render.
         return json.dumps(o, ensure_ascii=False, allow_nan=False, indent=None,
@@ -983,6 +997,11 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
 
     Over-long lists (> _TEST_PIPELINE_MAX_RULES) and samples
     (> _TEST_PIPELINE_MAX_SAMPLE chars) are rejected with 400.
+
+    The steps' before/after texts share one size budget
+    (_TEST_PIPELINE_MAX_ECHO chars): a step past it is complete except for
+    its text (`before` and `after` empty, `text_omitted: true`). `final` is
+    always the whole text.
 
     Each rule is compiled and run under a 2 s threading-timer guard against
     the sample, off the event loop. Disabled rules render as `skipped: true`
@@ -1038,7 +1057,11 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
             return f"{e} Not executed here: a timed-out dry-run thread cannot be interrupted."
         return _NESTED_REP_MSG if regex_guard._nested_repetition(pat) else None
 
-    sample = str(payload.get("sample") or "")
+    # Never str() it: a hand-rolled body can nest a list deeper than its repr
+    # can walk. null / missing is the empty sample.
+    sample = payload.get("sample") or ""
+    if not isinstance(sample, str):
+        return _bad_request("sample must be a string")
     rules = payload.get("rules") or []
     if not isinstance(rules, list):
         return _bad_request("rules must be a list of rule dicts")
@@ -1065,7 +1088,10 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
         for e in entries:
             yield "replacement", e.get("replacement"), _TEST_PIPELINE_MAX_REPLACEMENT
         m = rule.get("map") if rule.get("type") == "callback:map" else None
-        for v in m.values() if isinstance(m, dict) else ():
+        m = m if isinstance(m, dict) else {}
+        for k in m:
+            yield "map key", k, _TEST_PIPELINE_MAX_MAP_KEY
+        for v in m.values():
             yield "map value", v, _TEST_PIPELINE_MAX_MAP_VALUE
 
     for idx, rule in enumerate(rules):
@@ -1075,6 +1101,10 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
         if isinstance(ents, list) and len(ents) > _TEST_PIPELINE_MAX_ENTRIES:
             return _bad_request(
                 f"rule {idx + 1}: too many entries (max {_TEST_PIPELINE_MAX_ENTRIES})")
+        keys = rule.get("map") if rule.get("type") == "callback:map" else None
+        if isinstance(keys, dict) and len(keys) > _TEST_PIPELINE_MAX_MAP_KEYS:
+            return _bad_request(f"rule {idx + 1}: too many map entries "
+                                f"(max {_TEST_PIPELINE_MAX_MAP_KEYS})")
         for what, v, cap in _capped_strings(rule):
             if isinstance(v, str) and len(v) > cap:
                 return _bad_request(f"rule {idx + 1}: {what} too long (max {cap} chars)")
@@ -1424,6 +1454,18 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
 
     text = sample
     steps: list[dict[str, Any]] = []
+    echoed = 0
+
+    def _echoed(step: dict[str, Any]) -> dict[str, Any]:
+        """`step` as the response carries it: without its text once the steps
+        so far hold _TEST_PIPELINE_MAX_ECHO chars of it. The count only grows,
+        so every step after the first one cut is cut too."""
+        nonlocal echoed
+        echoed += len(step["before"]) + len(step["after"])
+        if echoed <= _TEST_PIPELINE_MAX_ECHO:
+            return step
+        return {**step, "before": "", "after": "", "text_omitted": True}
+
     saw_terminal = False
     # Whole-request budget: each timed-out rule strands an uninterruptible
     # guard thread, so once the budget is burnt the remaining rules are
@@ -1453,7 +1495,7 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
                     "after": text, "matches": 0, "skipped": False,
                     "error": None, "slow": True}
             step["ordinal"] = idx + 1
-            steps.append(step)
+            steps.append(_echoed(step))
             continue
         step = await _run_pass(idx, rule, text, None)
         # Engine parity (pl_engine._postprocess_text): a repeating rule runs
@@ -1483,26 +1525,27 @@ async def test_pipeline(payload: dict[str, Any]) -> Response:
                 matches += step["matches"]
             step = {**step, "before": first, "matches": matches, "passes": passes}
         step["ordinal"] = idx + 1
-        steps.append(step)
         text = step["after"]
         # A rule stops itself before its output passes the bound (and keeps
         # the text it was handed), so its own `capped` flag counts too.
         if step.get("capped") or len(text) > bound:
             step["capped"] = True
             capped = True
+        # Last: the walk goes on from the step's own text, shown or not.
+        steps.append(_echoed(step))
         if rule.get("type") == "terminal":
             saw_terminal = True
     if not saw_terminal:
         before = text
         text = text.lstrip(" \t\r").rstrip(" \t\r")
         if before != text:
-            steps.append({
+            steps.append(_echoed({
                 "ordinal": len(steps) + 1,
                 "label": "Trim edges (always-last)",
                 "type": "terminal",
                 "before": before, "after": text, "matches": 0,
                 "skipped": False, "error": None, "slow": False,
-            })
+            }))
 
     try:
         body = await asyncio.to_thread(_render_dry_run, steps, text)
