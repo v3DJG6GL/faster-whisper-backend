@@ -92,6 +92,12 @@ def test_build_package_argv_mkv():
     # Every input runs under the file-only protocol whitelist.
     assert argv.count("-protocol_whitelist") == 3
     assert argv.index("-protocol_whitelist") < argv.index("-i")
+    # The child opens the client's file under the allocation cap the
+    # in-process probe has: a global option, ahead of every input.
+    assert argv[argv.index("-max_alloc") + 1] == str(pk.audio_ffmpeg._LIBAV_MAX_ALLOC)
+    assert argv.count("-max_alloc") == 1
+    assert argv.index("-max_alloc") < argv.index("-protocol_whitelist")
+    assert "-max_streams" not in argv
     assert argv[argv.index("-map") + 1] == "0:v:0"
     assert "0:a?" in argv and "1:0" in argv and "2:0" in argv
     assert argv[argv.index("-c:s") + 1] == "srt"

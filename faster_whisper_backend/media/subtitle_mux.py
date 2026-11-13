@@ -255,6 +255,7 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     if container not in CONTAINERS:
         container = "mkv"
     argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            *audio_ffmpeg.max_alloc_args(),
             *audio_ffmpeg.format_whitelist_args(format_name),
             "-i", src]
     for p in srt_paths:

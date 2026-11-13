@@ -142,6 +142,7 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
     stream is about the size of its file, while a sample table naming one
     frame any number of times is copied out for the whole time limit."""
     argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin",
+            *audio_ffmpeg.max_alloc_args(),
             *audio_ffmpeg.format_whitelist_args(format_name), "-i", src,
             "-map", f"0:v:{max(0, int(video_index))}", "-c", "copy",
             "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"]

@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 
 import pytest
@@ -332,6 +333,81 @@ def test_caption_scan_argv_pins_the_probed_demuxer(monkeypatch):
                                    "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2",
                                    "-i", "/m/x.mp4"]
     assert "-format_whitelist" not in plain
+    # Both under the allocation cap the in-process probe has: a global
+    # option, ahead of the input and its own options.
+    for argv in (pinned, plain):
+        at = argv.index("-max_alloc")
+        assert argv[at + 1] == str(cc.audio_ffmpeg._LIBAV_MAX_ALLOC)
+        assert at < argv.index("-protocol_whitelist") and argv.count("-max_alloc") == 1
+        assert "-max_streams" not in argv
+
+
+def _mov_declaring_audio_samples(tmp_path, n) -> str:
+    """A 1 s H.264 clip in QuickTime plus one 16-bit PCM track whose sample
+    table DECLARES `n` samples: about 3 KB of file, and an index of ~36
+    bytes per declared sample in whatever opens it without a cap."""
+    from tests.audio import test_transcode as tt
+    exe = _ffmpeg()
+    clip = tmp_path / "clip.mov"
+    subprocess.run([exe, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+                    "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)],
+                   check=True, timeout=60)
+    boxes = list(tt._mp4_boxes(clip.read_bytes()))
+    assert boxes[-1][0] == b"moov", [kind for kind, _payload in boxes]
+    full, u32 = tt._mp4_full_box, tt._mp4_u32
+    tables = (full(b"stts", u32(1, n, 2)) + full(b"stsc", u32(1, 1, n, 1))
+              + full(b"stsz", u32(2, n)) + full(b"stco", u32(1, 40)))
+    out = tmp_path / "declared.mov"
+    out.write_bytes(b"".join(tt._mp4_box(kind, payload) for kind, payload in boxes[:-1])
+                    + tt._mp4_box(b"moov", boxes[-1][1] + tt._pcm_trak(tables, 2 * n, 10)))
+    return str(out)
+
+
+def _exit_and_peak_kb(argv):
+    """(exit status, peak resident kB) of `argv`, run by a small interpreter
+    of its own: a child's ru_maxrss is never below what its parent held at
+    the fork, and this test's own process is large."""
+    code = ("import resource, subprocess, sys\n"
+            "r = subprocess.run(sys.argv[1:], stdin=subprocess.DEVNULL,\n"
+            "                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            "print(r.returncode, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)\n")
+    r = subprocess.run([sys.executable, "-c", code, *argv], capture_output=True,
+                       text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-2000:]
+    status, peak_kb = r.stdout.split()
+    return int(status), int(peak_kb)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="reads the child's peak RSS in Linux's unit")
+def test_ffmpeg_children_bound_a_declared_sample_count(tmp_path, monkeypatch):
+    """The probe's allocation cap does not keep such a file out: the index
+    it refuses is dropped and the video beside it probes fine. The caption
+    scan and the mux then open the same file in an ffmpeg child, which
+    builds that index (~400-600 MB for these 16 million samples, gigabytes
+    per track at more) unless it runs under the cap too."""
+    pytest.importorskip("av")
+    src = _mov_declaring_audio_samples(tmp_path, 16_000_000)
+    assert os.path.getsize(src) < 5000
+    facts = pk.probe_streams(src)
+    assert facts.video_codec == "h264" and not facts.unreadable
+    out = str(tmp_path / "out.mkv")
+    mux = pk.build_package_argv(src, [], [], container="mkv", out_path=out,
+                                default_track=None, format_name=facts.format_name)
+    scans = []
+
+    def _popen(argv, **k):
+        scans.append(argv)
+        raise OSError("argv only")
+    with monkeypatch.context() as m:
+        m.setattr(cc.subprocess, "Popen", _popen)
+        assert cc.embedded_captions_empty(src, format_name=facts.format_name) is False
+    (scan,) = scans
+    for argv in (scan, mux):
+        status, peak_kb = _exit_and_peak_kb(argv)
+        assert status == 0, argv
+        assert peak_kb < 200 * 1024, (peak_kb, argv)
+    assert pk.probe_streams(out).video_codec == "h264"
 
 
 def test_caption_scan_gets_the_probed_demuxer_from_package(monkeypatch):

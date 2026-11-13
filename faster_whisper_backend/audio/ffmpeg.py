@@ -187,6 +187,21 @@ def client_open_pool() -> concurrent.futures.ThreadPoolExecutor:
     return _CLIENT_OPEN_POOL
 
 
+def max_alloc_args() -> "list[str]":
+    """The ffmpeg CLI global option that holds a child reading a client file
+    to the allocation cap the in-process opens have. A file the capped
+    probe let through (the index it refused is dropped there) would
+    otherwise have that index built in full by the child, a gigabyte and
+    more per track.
+
+    The cap is the child's for everything, its muxer included. The MP4
+    muxer keeps 64-72 bytes per packet of a track in one array, so an MP4
+    export ends with an error past ~3.7 million packets in one track (about
+    17 h of 60 fps video, 22 h of 48 kHz AAC); Matroska keeps no such
+    table. A stream copy needs nothing else near the cap."""
+    return ["-max_alloc", str(_LIBAV_MAX_ALLOC)]
+
+
 def format_whitelist_args(format_name: "str | None") -> "list[str]":
     """The ffmpeg CLI input options ahead of a client file's `-i`: file
     protocol only and, given the demuxer PyAV probed the file with (its full
