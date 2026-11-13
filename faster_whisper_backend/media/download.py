@@ -17,6 +17,13 @@ Design notes:
     info dict); the actual download runs the yt-dlp *CLI in a subprocess* —
     crash isolation from ~2000 third-party extractors, trivial cancellation
     (terminate), and a real wall-clock timeout.
+  - Everything that runs a yt-dlp pattern over text the caller or a site
+    wrote (the offline extractor match, the probe's extraction) runs in a
+    helper process of its own once the app has started them
+    (media/link_helper.py): a regex cannot be stopped in-process and holds
+    the GIL, a helper is killed at the check's deadline. _probe_info and
+    _extractor_policy are the two pieces of work a helper does; with no
+    helper started (tests, scripts) the same two run in this process.
   - yt-dlp fetches with its OWN opener, which on its own follows redirects
     and re-resolves DNS with no policy: a public link could 302 the
     downloader into the LAN or the cloud metadata service. Both paths install
@@ -33,6 +40,7 @@ import concurrent.futures
 import dataclasses
 import http.client
 import importlib.util
+import json
 import logging
 import math
 import os
@@ -49,7 +57,9 @@ from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.core import proc as core_proc
+from faster_whisper_backend.core import store_common as _store_common
 from faster_whisper_backend.core.store_common import log_safe
+from faster_whisper_backend.media import link_helper as _link_helper
 from faster_whisper_backend.paths import REPO_ROOT
 
 logger = logging.getLogger("whisper-api")
@@ -1389,16 +1399,25 @@ def _quiet_ydl_direct_writes() -> None:
     _utils.write_string = write_string
 
 
-async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
-    """Policy-gated metadata probe (no download). Client-safe errors only.
-    `timeout` is one wall-clock budget for the WHOLE probe — the policy
-    check (which can do DNS + a capped direct-media GET) spends from the
-    same deadline as the metadata extraction."""
-    url = validate_url(url)
-    deadline = time.monotonic() + timeout
+class _ExtractFailed(Exception):
+    """yt-dlp's extraction raised. str() is its text, cut to what the log
+    and the classifier read: tool and site text, never for a client."""
+
+
+async def _probe_info(url: str, deadline: float) -> "tuple[str, dict, str | None]":
+    """The part of probe() that runs yt-dlp's patterns and code over the URL
+    and over what its site answers: the policy check, the extraction, and
+    the GenericIE hand-off target (one more pattern match, on a page URL
+    the site named). Returns (extractor key, info dict, hand-off target).
+    Raises the client-safe UrlDownloadError family, or _ExtractFailed.
+
+    This is what a link helper runs (helper_handle), so that a match that
+    does not end is killed with its process; probe() runs it here only
+    when no helper was started."""
     try:
         key = await asyncio.wait_for(
-            check_url_policy(url, deadline=deadline), timeout)
+            check_url_policy(url, deadline=deadline),
+            max(0.0, deadline - time.monotonic()))
     except asyncio.TimeoutError:
         raise UrlTimeoutError(_TOO_SLOW_MSG) from None
 
@@ -1466,7 +1485,6 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     except asyncio.TimeoutError:
         raise UrlTimeoutError(_TOO_SLOW_MSG) from None
     except Exception as e:  # noqa: BLE001 — classify, never forward raw
-        _log_probe_failure(url, e)
         text = str(e)
         if len(text) > 2 * _MASK_WINDOW:
             # Site-sized (see _MASK_WINDOW), and the classifier lowers,
@@ -1474,12 +1492,29 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             # failure at the head ("ERROR: [x] Unsupported URL") or the tail
             # ("(caused by <HTTPError 404: Not Found>)").
             text = text[:_MASK_WINDOW] + "\n" + text[-_MASK_WINDOW:]
-        raise classified_error(text) from None
+        raise _ExtractFailed(text) from None
     if not isinstance(info, dict):
         raise UrlDownloadError("the site returned no usable media info")
+    return key, info, _generic_handoff_target(key, info, url)
+
+
+async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
+    """Policy-gated metadata probe (no download). Client-safe errors only.
+    `timeout` is one wall-clock budget for the WHOLE probe — the policy
+    check (which can do DNS + a capped direct-media GET) spends from the
+    same deadline as the metadata extraction."""
+    url = validate_url(url)
+    deadline = time.monotonic() + timeout
+    try:
+        if _link_helper.active():
+            key, info, _target = await _in_helper("probe", url, deadline)
+        else:
+            key, info, _target = await _probe_info(url, deadline)
+    except _ExtractFailed as e:
+        _log_probe_failure(url, e)
+        raise classified_error(str(e)) from None
     _policy_check_info(info)
     handoff_is_media = False
-    _target = _generic_handoff_target(key, info, url)
     if _target is not None:
         # Under the same deadline as the two steps above: the hand-off
         # host's DNS (picked by the site) and a busy _PROBE_POOL both sit
@@ -1495,8 +1530,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     # The ladder and the subtitle list walk every format and subtitle key
     # the site sent (tens of thousands from a crafted manifest or page):
     # CPU work sized by the site, so it runs on the probe pool, never on
-    # the event loop every live socket shares. _extract has already handed
-    # its worker back, so this cannot wait on a slot it holds itself.
+    # the event loop every live socket shares. The extraction has already
+    # handed its worker back, so this cannot wait on a slot it holds itself.
     def _derive() -> UrlMediaInfo:
         xk = str(info.get("extractor_key") or key)
         size = info.get("filesize_approx") or info.get("filesize")
@@ -1544,7 +1579,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         )
 
     # Held to the same deadline as the hops above (a queued slot on a busy
-    # pool counts against it too), with _extract's 1 s floor so a probe
+    # pool counts against it too), with the extraction's 1 s floor so a probe
     # that finished extracting right at its deadline still derives.
     try:
         return await asyncio.wait_for(
@@ -1552,6 +1587,195 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             max(1.0, deadline - time.monotonic()))
     except asyncio.TimeoutError:
         raise UrlTimeoutError(_TOO_SLOW_MSG) from None
+
+
+# The link settings a helper judges under are the server's live ones, sent
+# with each request: a helper's own copy comes from the config files and
+# would miss a change made since (a setting saved at run time, a monkeypatch).
+_HELPER_CFG_PREFIX = "URL_"
+# What a helper may send back of its own log lines (the direct-media probe's
+# and the guard's): this many, each cut to this length.
+_HELPER_LOG_MAX = 20
+_HELPER_LOG_LINE_MAX = 400
+_HELPER_LOG_LEVELS = (logging.INFO, logging.WARNING, logging.ERROR)
+# The longest refusal text taken from a helper (ours are under 100 chars).
+_HELPER_REFUSAL_MAX = 300
+_HELPER_ERRORS: "dict[str, type[UrlDownloadError]]" = {
+    c.__name__: c for c in (UrlDownloadError, UrlPolicyError, UrlTimeoutError,
+                            UrlTooLargeError)}
+
+
+def _helper_cfg() -> dict:
+    out = {}
+    for name in dir(cfg):
+        if name.startswith(_HELPER_CFG_PREFIX):
+            value = getattr(cfg, name)
+            if value is None or isinstance(value, (bool, int, float, str, list)):
+                out[name] = value
+    return out
+
+
+class _HelperLog(logging.Handler):
+    """Keeps what the check logs inside a helper, for the reply: a helper
+    has no log of its own, and the lines name why a link was refused."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.INFO)
+        self.lines: "list[list]" = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if len(self.lines) < _HELPER_LOG_MAX:
+            try:
+                self.lines.append(
+                    [record.levelno, record.getMessage()[:_HELPER_LOG_LINE_MAX]])
+            except Exception:  # noqa: BLE001 — logging must never raise
+                pass
+
+
+def helper_warm() -> None:
+    """What a link helper does before its request comes (link_helper.
+    helper_main): load yt-dlp, compile every extractor's URL pattern (most
+    of a helper's start) and install the guard, so the check itself starts
+    at once. The helper has no log of its own: what a check logs goes back
+    in its reply (helper_handle), nowhere else."""
+    global _guard_announced
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    import yt_dlp  # noqa: F401 — lazy: optional dependency
+    import yt_dlp.extractor
+
+    for ie in yt_dlp.extractor.gen_extractor_classes():
+        try:
+            ie.suitable("https://warm.invalid/")
+        except Exception:  # noqa: BLE001 — one broken pattern must not stop the rest
+            continue
+    _guard_announced = True  # the server said so at its own start
+    try:
+        guard_self_check()
+    except UrlDownloadError:
+        pass  # the check's own guard_self_check answers the caller
+
+
+def helper_handle(payload: bytes) -> bytes:
+    """One request inside a link helper: the op _in_helper sent, run under
+    the settings it sent. The reply is JSON: {"ok": ...} with the op's
+    result, {"refused": [class name, text]} for a client-safe refusal or
+    {"extract_failed": text}; "log" carries what the check logged."""
+    request = json.loads(payload)
+    for name, value in request["cfg"].items():
+        if name.startswith(_HELPER_CFG_PREFIX):
+            setattr(cfg, name, value)
+    url = request["url"]
+    deadline = time.monotonic() + float(request["left"])
+    log = _HelperLog()
+    logger.addHandler(log)
+    try:
+        if request["op"] == "probe":
+            reply = {"ok": list(asyncio.run(_probe_info(url, deadline)))}
+        else:
+            reply = {"ok": list(_extractor_policy(url))}
+    except _ExtractFailed as e:
+        reply = {"extract_failed": str(e)}
+    except UrlDownloadError as e:
+        reply = {"refused": [type(e).__name__, str(e)]}
+    finally:
+        logger.removeHandler(log)
+    reply["log"] = log.lines
+    return json.dumps(reply).encode("ascii")
+
+
+def _helper_call(op: str, url: str, settings: dict, deadline: float) -> dict:
+    """Blocking half of _in_helper, on the probe pool: one helper, one
+    request, its reply parsed here (it is as large as the site made it)."""
+    left = deadline - time.monotonic()
+    if left <= 0:  # waited for a pool thread past the deadline: no helper is spent
+        raise _link_helper.HelperTimeout
+    payload = json.dumps(
+        {"op": op, "url": url, "left": left, "cfg": settings}).encode("ascii")
+    raw = _link_helper.run(payload, left)
+    try:
+        reply = json.loads(raw)
+    except (ValueError, RecursionError) as e:
+        raise _link_helper.HelperFailed(
+            f"unreadable reply ({type(e).__name__})") from None
+    if not isinstance(reply, dict):
+        raise _link_helper.HelperFailed("unreadable reply (not an object)")
+    return reply
+
+
+def _helper_result(op: str, reply: dict):
+    """The op's result out of a helper's reply, as the in-process call
+    would have returned or raised it. A reply of another shape is a failed
+    helper."""
+    bad = _link_helper.HelperFailed("unreadable reply (unexpected shape)")
+    if "refused" in reply:
+        refused = reply["refused"]
+        if not (isinstance(refused, list) and len(refused) == 2
+                and all(isinstance(x, str) for x in refused)):
+            raise bad
+        raise _HELPER_ERRORS.get(refused[0], UrlDownloadError)(
+            refused[1][:_HELPER_REFUSAL_MAX])
+    if "extract_failed" in reply:
+        text = reply["extract_failed"]
+        if not isinstance(text, str):
+            raise bad
+        raise _ExtractFailed(text[:2 * _MASK_WINDOW + 1])
+    ok = reply.get("ok")
+    if not isinstance(ok, list):
+        raise bad
+    if op == "probe":
+        if not (len(ok) == 3 and isinstance(ok[0], str) and isinstance(ok[1], dict)
+                and (ok[2] is None or isinstance(ok[2], str))):
+            raise bad
+        return ok[0], ok[1], ok[2]
+    if not (len(ok) == 2 and all(
+            x is None or (isinstance(x, list) and all(isinstance(i, str) for i in x))
+            for x in ok)):
+        raise bad
+    return ok[0], ok[1]
+
+
+def _relay_helper_log(reply: dict) -> None:
+    lines = reply.get("log")
+    if not isinstance(lines, list):
+        return
+    for line in lines[:_HELPER_LOG_MAX]:
+        if (isinstance(line, list) and len(line) == 2 and isinstance(line[1], str)
+                and line[0] in _HELPER_LOG_LEVELS):
+            logger.log(line[0], "%s",
+                       _store_common._LOG_UNSAFE_RE.sub("?", line[1][:_HELPER_LOG_LINE_MAX]))
+
+
+async def _in_helper(op: str, url: str, deadline: float, *,
+                     too_slow: "str | None" = None):
+    """Run `op` ("probe": _probe_info, "policy": _extractor_policy) for
+    `url` in a link helper of its own and return what the op returns. The
+    helper is killed at `deadline` (UrlTimeoutError(`too_slow`), by default
+    the probe's "too long to answer"): that is
+    the whole point, a pattern match that does not end stops there and
+    never in this process. A helper that cannot be started or dies is a
+    refusal (client-safe, the cause in the log), never a reason to run the
+    op here."""
+    loop = asyncio.get_running_loop()
+    settings = _helper_cfg()
+    try:
+        # The pool thread enforces the deadline on the helper; the second's
+        # grace only covers a thread that was not free in time.
+        reply = await asyncio.wait_for(
+            loop.run_in_executor(_PROBE_POOL, _helper_call, op, url, settings,
+                                 deadline),
+            max(0.0, deadline - time.monotonic()) + 1.0)
+        _relay_helper_log(reply)
+        return _helper_result(op, reply)
+    except (asyncio.TimeoutError, _link_helper.HelperTimeout):
+        logger.warning("[url-dl] link check (%s) for host %s was stopped at "
+                       "its time limit", op, host_for_log(url))
+        raise UrlTimeoutError(too_slow or _TOO_SLOW_MSG) from None
+    except _link_helper.HelperFailed as e:
+        logger.error("[url-dl] link check (%s) for host %s could not be run: %s",
+                     op, host_for_log(url), log_safe(_mask_userinfo(str(e))))
+        raise UrlDownloadError(
+            "this link could not be checked on the server") from None
 
 
 def _finite_duration(value) -> "float | None":
@@ -1962,14 +2186,31 @@ def _match_filter_args(filters: "list[str] | None") -> "list[str]":
     return [a for f in (filters or []) for a in ("--match-filters", f)]
 
 
-async def _extractor_policy_for(url: str) -> "tuple[list[str] | None, list[str] | None]":
+def _extractor_policy(url: str) -> "tuple[list[str] | None, list[str] | None]":
     """(pinned_extractors(), handoff_match_filters()) for `url`, matched
-    offline again (the subprocess re-extracts from the URL), on the probe
-    pool."""
-    def _both():
-        key = match_extractor(url)
-        return pinned_extractors(key), handoff_match_filters(key)
-    return await asyncio.get_running_loop().run_in_executor(_PROBE_POOL, _both)
+    offline. Blocking: every extractor pattern runs over the URL."""
+    key = match_extractor(url)
+    return pinned_extractors(key), handoff_match_filters(key)
+
+
+# How long a download start waits for the offline match of its URL in a
+# helper: milliseconds of work, most of a second when the helper has to be
+# started first. The probe matched the same URL before, inside its own
+# deadline.
+_POLICY_TIMEOUT_S = 10.0
+
+
+async def _extractor_policy_for(url: str) -> "tuple[list[str] | None, list[str] | None]":
+    """_extractor_policy(url), matched offline again (the subprocess
+    re-extracts from the URL): in a link helper once those are started,
+    else on the probe pool."""
+    if _link_helper.active():
+        pin, filters = await _in_helper(
+            "policy", url, time.monotonic() + _POLICY_TIMEOUT_S,
+            too_slow="this link could not be checked in time")
+        return pin, filters
+    return await asyncio.get_running_loop().run_in_executor(
+        _PROBE_POOL, _extractor_policy, url)
 
 
 def video_format_selector(max_height: "int | None" = None,

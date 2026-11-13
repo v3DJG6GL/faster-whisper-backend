@@ -223,6 +223,7 @@ from faster_whisper_backend.captures import samples_store as capture_samples_sto
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.client_settings import store as client_settings_store
 from faster_whisper_backend.media import download as url_download
+from faster_whisper_backend.media import link_helper as url_link_helper
 from faster_whisper_backend.media import subtitle_mux as _subtitle_mux
 from faster_whisper_backend.media import subtitles as _subtitles
 from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
@@ -657,6 +658,12 @@ async def lifespan(app: FastAPI):
     # before serving, so a startup that fails above leaves no child behind.
     if getattr(cfg, "PIPELINE_RULE_ISOLATION", True):
         pl_rule_helper.start()
+    # From here on a pasted link is checked in a helper process that is
+    # killed at the check's deadline (media/link_helper.py). An idle one is
+    # started ahead only where links are in use: URL_DOWNLOAD_ENABLED is a
+    # live toggle, and the first check after it is turned on starts its own.
+    url_link_helper.start(spare=bool(
+        getattr(cfg, "URL_DOWNLOAD_ENABLED", False) and url_download.yt_dlp_version()))
 
     yield
 
@@ -705,6 +712,7 @@ async def lifespan(app: FastAPI):
     system_stats.shutdown()
     # Last: nothing above walks rules any more. Kills and reaps the helpers.
     await asyncio.to_thread(pl_rule_helper.shutdown)
+    await asyncio.to_thread(url_link_helper.shutdown)
 
 
 # docs_url/redoc_url/openapi_url=None disables FastAPI's built-in (unauthenticated)

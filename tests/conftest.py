@@ -84,6 +84,14 @@ for _k in _DATA_PATH_ENV:
 # which start a pool themselves.
 os.environ["WHISPER_PIPELINE_RULE_ISOLATION"] = "false"
 
+# The same for the helper processes pasted links are checked in
+# (media/link_helper.py): the URL tests patch a stand-in yt-dlp into this
+# process, which a helper would never see. Off, the checks run in-process,
+# the same code; tests/media/test_link_helper.py turns it on for itself.
+from faster_whisper_backend.media import link_helper as _link_helper  # noqa: E402
+
+_link_helper.ISOLATE = False
+
 RATE = 16000
 
 
