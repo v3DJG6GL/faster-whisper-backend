@@ -1421,7 +1421,8 @@ def _refuse_input(path: str) -> None:
     text file the tty demuxer opens) — decode_audio raises a bare IndexError
     on that, a 500. A file that does not open at all is not refused here:
     the real decoder raises the av error, answered as undecodable — unless
-    FFmpeg's default open reads it as a playlist (see below)."""
+    FFmpeg's default open reads it as a playlist, or reads it only without
+    the stream limit (see below)."""
     import av
     # Also for the reopen below and faster-whisper's own open after it.
     audio_ffmpeg.cap_libav_alloc()
@@ -1440,7 +1441,15 @@ def _refuse_input(path: str) -> None:
             # runs into it here is refused, not left to them.
             if audio_ffmpeg.refused_as_too_much(e):
                 raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
-            return
+            # Not every demuxer answers the limit that way (wtv: invalid
+            # data), so ask the fallbacks' question itself: does the file
+            # open without it?
+            try:
+                unlimited = av.open(path, metadata_errors="ignore")
+            except av.FFmpegError:
+                return      # opens for nobody: left to the decoder
+            unlimited.close()
+            raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
         try:
             if audio_ffmpeg.is_multi_input_format(
                     getattr(container.format, "name", None)):
@@ -2926,10 +2935,12 @@ async def transcribe(
                     # answer that error now.
                     raise (_df.__cause__ or _df) from None
                 except Exception as _dec_err:
-                    # transcribe() runs the same steps on the path and meets
-                    # the same error at the same frame, so handing it the
-                    # path decodes nothing past what was counted here; it
-                    # raises the decoder's own error for the undecodable arm.
+                    # An error from before the first frame — the open's, in
+                    # practice; a failed decode is one of the arms above.
+                    # transcribe() opens the path itself and raises the
+                    # decoder's own error for the undecodable arm; what its
+                    # open must not read (a playlist, a file past the stream
+                    # limit) _refuse_input has refused ahead of every stage.
                     logger.warning(
                         "[decode] upload decode failed, handing transcribe() "
                         "the path: %s", _log_safe(str(_dec_err)))

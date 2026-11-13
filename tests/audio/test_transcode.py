@@ -2186,3 +2186,19 @@ def test_refuse_input_caps_the_allocation_ahead_of_its_own_reopen(
     monkeypatch.setattr(audio_transcode, "_open_audio", no_open)
     app_module._refuse_input(src)
     assert events == ["cap", "open"]
+
+
+def test_refuse_input_caps_the_allocation_ahead_of_its_open_without_the_limit(
+        app_module, tmp_path, monkeypatch):
+    """A file the reopen cannot read either is opened once more, without the
+    stream limit: after the same cap."""
+    over = write_tracks(str(tmp_path / "over.wtv"),
+                        audio_ffmpeg.PYAV_MAX_STREAMS + 1)
+    events = _spy_alloc_cap(monkeypatch)
+
+    def no_open(path):
+        raise av.error.InvalidDataError(1094995529, "Invalid data found")
+    monkeypatch.setattr(audio_transcode, "_open_audio", no_open)
+    with pytest.raises(ValueError, match="more than 20 tracks"):
+        app_module._refuse_input(over)
+    assert events == ["cap", "open", "open"]

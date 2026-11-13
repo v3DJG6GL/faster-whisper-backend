@@ -2,13 +2,16 @@
 derived from free RAM, before Whisper sees it: only the byte size was capped
 before, and a small file of compressed silence decodes to gigabytes."""
 
+import av
 import numpy as np
 import psutil
 import pytest
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from tests._transcription_helpers import post_transcription, wav_bytes
 from tests.audio.test_decode_bounded import out_of_memory_after_one_frame
 from tests.audio.test_transcode import FRAME_SAMPLES_BOUND, one_frame_alac_caf
+from tests.conftest import write_tracks
 
 
 def test_audio_decoding_past_the_ceiling_is_a_413(client, app_module,
@@ -147,3 +150,62 @@ def test_a_file_no_open_reads_is_left_to_the_decoder(app_module, tmp_path):
     junk = tmp_path / "junk.bin"
     junk.write_bytes(b"RIFFxxxxWAVE")
     assert app_module._refuse_input(str(junk)) is None
+
+
+class _CountsClose:
+    """An opened container that notes its close() in `closed`."""
+
+    def __init__(self, container, closed):
+        self._container, self._closed = container, closed
+
+    def close(self):
+        self._closed.append(self._container)
+        return self._container.close()
+
+    def __getattr__(self, name):
+        return getattr(self._container, name)
+
+
+def _spy_opens(monkeypatch):
+    """(options of each av.open that succeeded from here on, the containers
+    closed)."""
+    opened, closed, real_open = [], [], av.open
+
+    def spy_open(file, *args, **kwargs):
+        container = real_open(file, *args, **kwargs)
+        opened.append(kwargs.get("options"))
+        return _CountsClose(container, closed)
+    monkeypatch.setattr(av, "open", spy_open)
+    return opened, closed
+
+
+def test_a_file_only_the_stream_limit_keeps_shut_is_refused(
+        app_module, tmp_path, monkeypatch):
+    """A demuxer may answer the stream limit with an error of its own (WTV:
+    invalid data) where MP4 answers out of memory. The fallback decoders
+    set no limit and open such a file, so it is refused here like an MP4
+    of as many tracks; the open that tells it from a file nothing reads has
+    no limit either, and is closed again."""
+    from faster_whisper.audio import decode_audio
+    limit = audio_ffmpeg.PYAV_MAX_STREAMS
+    at_limit = write_tracks(str(tmp_path / "at.wtv"), limit)
+    assert app_module._refuse_input(at_limit) is None
+    over = write_tracks(str(tmp_path / "over.wtv"), limit + 1)
+    assert decode_audio(over, sampling_rate=16000).size > 0
+    opened, closed = _spy_opens(monkeypatch)
+    with pytest.raises(ValueError) as refused:
+        app_module._refuse_input(over)
+    assert str(refused.value) == audio_ffmpeg.TOO_MUCH_TO_OPEN
+    assert opened == [None] and len(closed) == 1
+
+
+def test_an_upload_only_the_stream_limit_keeps_shut_is_a_400(
+        client, fake_model, tmp_path):
+    over = write_tracks(str(tmp_path / "over.wtv"),
+                        audio_ffmpeg.PYAV_MAX_STREAMS + 1)
+    with open(over, "rb") as f:
+        r = post_transcription(client, files={
+            "file": ("a.wtv", f.read(), "video/x-ms-wtv")})
+    assert r.status_code == 400, r.text
+    assert "more than 20 tracks" in r.json()["detail"]
+    assert fake_model.last_audio is None
