@@ -4166,17 +4166,100 @@ def test_guard_whitelists_the_format_of_every_ffmpeg_postprocessor_input(
         assert inputs, argv
         assert argv.count("-format_whitelist") == len(inputs)
         for i in inputs:
-            allowed = _whitelist_after(argv, i - 2)
+            allowed = _whitelist_after(argv, i - 4)
     assert len([a for a in merge if a == "-i"]) == 2
     for argv in (metadata, codec_probe):  # ffprobe: one input, options first
         assert argv[0] == "/opt/ff/ffprobe"
-        assert _whitelist_after(argv, 1) == allowed
+        assert _whitelist_after(argv, 3) == allowed
         assert argv[-1].startswith("file:")
     assert {"mov", "mp4", "m4a", "matroska", "webm", "ogg", "mpegts", "flv",
             "mp3", "aac", "flac", "wav"} <= allowed
     # The demuxers that open other URLs or files never make the list.
     assert not allowed & {"dash", "hls", "concat", "webm_dash_manifest",
                           "sdp", "rtsp", "rtp", "image2", "imf", "tee"}
+
+
+def test_guard_caps_what_every_ffmpeg_postprocessor_spawn_opens(
+        monkeypatch, tmp_path):
+    """The file is the site's bytes, and the mov demuxer builds its index for
+    every sample a track DECLARES: a 4.6 KB file made `ffmpeg -i`, ffprobe
+    and the HLS fixup each peak at 620 MB, forty tracks at 770 MB. Every
+    spawn carries the server's own allocation cap and stream limit."""
+    from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
+    guard = _inproc_guard()
+    # The guard cannot import the package in the download child, so the two
+    # numbers are repeated there.
+    assert guard._FFMPEG_MAX_ALLOC == audio_ffmpeg._LIBAV_MAX_ALLOC
+    assert guard._FFMPEG_MAX_STREAMS == audio_ffmpeg.PYAV_MAX_STREAMS
+    alloc = ["-max_alloc", str(audio_ffmpeg._LIBAV_MAX_ALLOC)]
+    streams = ["-max_streams", str(audio_ffmpeg.PYAV_MAX_STREAMS)]
+    merge, metadata, codec_probe, codec_ffmpeg = _captured_ffmpeg_argvs(
+        monkeypatch, tmp_path)
+    for argv in (merge, metadata, codec_probe, codec_ffmpeg):
+        assert argv[1:3] == alloc, argv  # a global option: once, first
+        assert argv.count("-max_alloc") == 1
+    for argv in (merge, codec_ffmpeg):  # an input option: before every -i
+        inputs = [i for i, arg in enumerate(argv) if arg == "-i"]
+        assert argv.count("-max_streams") == len(inputs) > 0
+        assert all(argv[i - 2:i] == streams for i in inputs), argv
+    for argv in (metadata, codec_probe):  # ffprobe: ahead of its one input
+        assert argv.count("-max_streams") == 1
+        assert argv[5:7] == streams, argv
+    # A command with no input (a version or feature listing) gets no input
+    # option.
+    assert guard._whitelisted_ffmpeg_argv(["/opt/ff/ffmpeg", "-bsfs"]) == [
+        "/opt/ff/ffmpeg", *alloc, "-bsfs"]
+
+
+def _peak_kb_once_open(argv, fifo):
+    """The peak resident kB (VmHWM) of an ffmpeg at the moment it has opened
+    its first input, or None when it refused that input for lack of memory.
+    Its second input is `fifo`, which it opens next and then waits on, alive,
+    while its /proc status is read: the number is the ffmpeg's own (a peak
+    taken from wait4 is never below what the forking process held)."""
+    import time
+    os.mkfifo(fifo)
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    writer = None
+    try:
+        deadline = time.monotonic() + 60
+        while proc.poll() is None and time.monotonic() < deadline:
+            try:  # ENXIO until ffmpeg has the FIFO open for reading
+                writer = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError:
+                time.sleep(0.005)
+        if writer is None:
+            proc.kill()
+            assert b"Cannot allocate memory" in proc.stderr.read(), argv
+            return None
+        with open(f"/proc/{proc.pid}/status", encoding="ascii") as f:
+            return int(re.search(r"VmHWM:\s+(\d+) kB", f.read()).group(1))
+    finally:
+        if writer is not None:
+            os.close(writer)  # end of file: ffmpeg gives the input up
+        proc.communicate(timeout=60)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="reads the child's peak RSS from /proc")
+@pytest.mark.parametrize("which", ["default", "imageio"])
+def test_ffmpeg_postprocessors_bound_a_declared_sample_count(which, tmp_path):
+    """The real binaries honour the cap: the 16 million samples a 4.6 KB
+    file declares cost the merger's ffmpeg 400 to 600 MB of index at its
+    first input without it. With it the file opens without that index or is
+    refused."""
+    from tests.audio.test_transcode import _mov_declaring_samples
+    exe = _ffmpeg_binary(which)
+    guard = _inproc_guard()
+    src = _mov_declaring_samples(str(tmp_path / "declared.mov"), 16_000_000)
+    assert os.path.getsize(src) < 5000
+    fifo = str(tmp_path / "second-input")
+    argv = guard._whitelisted_ffmpeg_argv(
+        [exe, "-y", "-i", "file:" + src, "-i", "file:" + fifo])
+    peak_kb = _peak_kb_once_open(argv, fifo)
+    assert peak_kb is None or peak_kb < 300 * 1024
 
 
 def test_guard_is_not_installed_without_the_ffmpeg_input_whitelist(monkeypatch):
@@ -4295,17 +4378,23 @@ def _encode(exe, out, *args):
         pytest.skip(f"{out.name} encode unavailable")
 
 
-def test_ffmpeg_postprocessors_still_fix_and_merge_a_real_download(tmp_path):
+@pytest.mark.parametrize("which", ["default", "imageio"])
+def test_ffmpeg_postprocessors_still_fix_and_merge_a_real_download(
+        which, tmp_path):
     """The containers a download yields still open: an HLS download's
-    MPEG-TS saved as mp4 is remuxed, a video and an audio format merge."""
+    MPEG-TS saved as mp4 is remuxed, a video and an audio format merge. The
+    imageio-ffmpeg fallback takes the guard's options too (it ships no
+    ffprobe, so its codec probe is `ffmpeg -i`); its 7.0.2 build crashes on
+    an MPEG-TS input whatever the options, so it only merges here."""
     from yt_dlp.postprocessor.ffmpeg import (
         FFmpegFixupM3u8PP, FFmpegMergerPP, FFmpegPostProcessor,
     )
-    exe = _ffmpeg_binary("default")
+    exe = _ffmpeg_binary(which)
     _inproc_guard()
     tone = ["-f", "lavfi", "-i", "sine=frequency=440:duration=1"]
     media = tmp_path / "media.mp4"
-    _encode(exe, media, *tone, "-c:a", "aac", "-f", "mpegts")
+    if which == "default":
+        _encode(exe, media, *tone, "-c:a", "aac", "-f", "mpegts")
     v, a = tmp_path / "v.mp4", tmp_path / "a.webm"
     _encode(exe, v, "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
             "-c:v", "mpeg4")
@@ -4313,9 +4402,11 @@ def test_ffmpeg_postprocessors_still_fix_and_merge_a_real_download(tmp_path):
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
                            "ffmpeg_location": exe}) as ydl:
         pp = FFmpegPostProcessor(ydl)
-        assert pp.get_audio_codec(str(media)) == "aac"
-        FFmpegFixupM3u8PP(ydl).run({"ext": "mp4", "protocol": "m3u8_native",
-                                    "filepath": str(media)})
+        if which == "default":
+            assert pp.get_audio_codec(str(media)) == "aac"
+            FFmpegFixupM3u8PP(ydl).run({"ext": "mp4", "protocol": "m3u8_native",
+                                        "filepath": str(media)})
+            assert media.read_bytes()[4:8] == b"ftyp"  # remuxed out of MPEG-TS
         out = tmp_path / "out.mkv"
         FFmpegMergerPP(ydl).run({
             "filepath": str(out), "ext": "mkv",
@@ -4326,5 +4417,4 @@ def test_ffmpeg_postprocessors_still_fix_and_merge_a_real_download(tmp_path):
                 {"acodec": "opus", "vcodec": "none", "protocol": "https",
                  "filepath": str(a)}]})
         assert pp.get_audio_codec(str(out)) == "opus"
-    assert media.read_bytes()[4:8] == b"ftyp"  # remuxed out of MPEG-TS
     assert out.read_bytes()[:4] == b"\x1aE\xdf\xa3"  # EBML: Matroska

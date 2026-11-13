@@ -30,7 +30,9 @@ WHAT this module installs (import side effect, idempotent — see install()):
     postprocessors spawn: the file's bytes are the site's (an HLS download
     is its segments concatenated verbatim), and a file that is really a DASH
     manifest or an HLS playlist would otherwise open ffmpeg's dash / hls
-    demuxer, which fetches the URLs inside it (see _bound_ffmpeg_inputs).
+    demuxer, which fetches the URLs inside it (see _bound_ffmpeg_inputs);
+    and an allocation cap and a stream limit on the same spawns, as a small
+    file can declare gigabytes of index.
 
 The handler enforces, with download.py's policy (net_policy — ONE
 definition, see below):
@@ -2147,23 +2149,39 @@ _FFMPEG_FORMAT_WHITELIST = ",".join((
     # HLS packed audio, and direct audio links.
     "mp3", "aac", "ac3", "eac3", "flac", "wav",
 ))
+# The same file also decides what those spawns allocate: the mov demuxer
+# builds its index for every sample a track DECLARES, so a 4.6 KB file made
+# `ffmpeg -i`, ffprobe and the HLS fixup each peak at 620 MB, and forty
+# tracks at 770 MB (ffmpeg's own limits: INT_MAX per allocation, 1000
+# streams). Every spawn gets the cap and the stream limit the server's own
+# opens of a client file have: faster_whisper_backend/audio/ffmpeg.py
+# _LIBAV_MAX_ALLOC and PYAV_MAX_STREAMS, repeated here because the download
+# child cannot import the package (a test pins them equal). An input past
+# the stream limit fails to open, as a file ffmpeg cannot read fails. A
+# download has one or two streams per file, and the server's own open of the
+# result holds it to the same two numbers afterwards.
+_FFMPEG_MAX_ALLOC = 256 * 1024 * 1024
+_FFMPEG_MAX_STREAMS = 20
 _FFMPEG_SENTINEL = "_fwb_ffmpeg_inputs_bounded"
 # The FFmpegPostProcessor methods that spawn ffmpeg / ffprobe on a file.
 _FFMPEG_SPAWNERS = ("real_run_ffmpeg", "get_audio_codec", "get_metadata_object")
 
 
 def _whitelisted_ffmpeg_argv(args):
-    """`args` with `-format_whitelist` before every ffmpeg input (`-i`), or
-    first of all for ffprobe, whose single input is its last argument."""
+    """`args` with `-max_alloc` first (a global option) and with
+    `-format_whitelist` and `-max_streams` before every ffmpeg input (`-i`),
+    or ahead of everything else for ffprobe, whose single input is its last
+    argument."""
     if not isinstance(args, (list, tuple)) or not args:
         # Every spawn there is an argv list; anything else cannot be
         # rewritten and must not run unrestricted.
         raise ValueError(f"{MARKER}: refusing an ffmpeg command that is not an argv list")
-    flag = ["-format_whitelist", _FFMPEG_FORMAT_WHITELIST]
+    flag = ["-format_whitelist", _FFMPEG_FORMAT_WHITELIST,
+            "-max_streams", str(_FFMPEG_MAX_STREAMS)]
     exe, *rest = args
+    argv = [exe, "-max_alloc", str(_FFMPEG_MAX_ALLOC)]
     if "ffprobe" in os.path.basename(os.fsdecode(exe)).lower():
-        return [exe, *flag, *rest]
-    argv = [exe]
+        return [*argv, *flag, *rest]
     for arg in rest:
         if arg == "-i":
             argv += flag
@@ -2250,7 +2268,8 @@ def is_installed() -> bool:
     extraction before each format pass, every table of formats, thumbnails
     or subtitles before it is drawn, an XML document's elements and
     a JSON document's arrays and objects before either is parsed, and every
-    ffmpeg / ffprobe a postprocessor spawns carries the format whitelist."""
+    ffmpeg / ffprobe a postprocessor spawns carries the format whitelist,
+    the allocation cap and the stream limit."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
             and set(_REQUEST_HANDLERS) == {GUARD_RH_KEY}
