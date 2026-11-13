@@ -728,12 +728,14 @@ def _align_words_to_final(
             continue
         unmatched = list(range(ri0 + 1, ri1))  # raw words sharing this gap
         split = None
-        # The cells left of the call's budget, checked before the gap's texts
-        # are built: past it the token-count split below takes over.
+        # The cells left of the call's budget and the length of each side,
+        # checked before the gap's texts are built: past either the
+        # token-count split below takes over.
         if unmatched and any(_NO_SPACE_SCRIPT.search(t) for t in ins):
-            cells = (sum(nows_cache[src[ri].get("word") or ""] for ri in unmatched)
-                     * sum(map(len, ins)))
-            if cells <= split_cells:
+            a_chars = sum(nows_cache[src[ri].get("word") or ""] for ri in unmatched)
+            b_chars = sum(map(len, ins))
+            cells = a_chars * b_chars
+            if cells <= split_cells and max(a_chars, b_chars) <= _SPLIT_UNSPACED_MAX_CHARS:
                 split_cells -= cells
                 split = _split_unspaced(
                     ["".join((post_cache.get(src[ri].get("word") or "") or "").split())
@@ -781,6 +783,13 @@ def _align_words_to_final(
 # set expanding the words can reach hundreds of M — minutes of CPU per
 # captures request. Past it the caller's token-count split takes over.
 _SPLIT_UNSPACED_MAX_CELLS = 16_000_000
+
+# Most chars of ONE side of that comparison. The matcher keeps an object per
+# char of each side (~50 B), and the cell product alone admits 16 M chars
+# against one: 0.8 GB per captures request. A capture no rule expands stays
+# under it on both sides (its stored words and final text are capped lower);
+# past it the caller's token-count split takes over.
+_SPLIT_UNSPACED_MAX_CHARS = 1_000_000
 
 # Most inner-loop steps the matcher of _split_unspaced may take over all the
 # gaps of one _align_words_to_final call. The cell product only bounds ONE
@@ -832,10 +841,12 @@ def _split_unspaced(
     inserted one joins the word before it, or the first word. Returns each
     raw word's pieces (one per token it reaches, empty when a rule deleted
     it), or None when no character matches or the gap is too large to
-    compare character by character (_SPLIT_UNSPACED_MAX_CELLS), or the
-    comparison runs past `work`, the matcher steps left to the caller's gaps
-    (a one-item list, charged here; _SPLIT_UNSPACED_MAX_WORK when omitted)."""
-    if sum(map(len, texts)) * sum(map(len, toks)) > _SPLIT_UNSPACED_MAX_CELLS:
+    compare character by character (_SPLIT_UNSPACED_MAX_CELLS, or one side
+    past _SPLIT_UNSPACED_MAX_CHARS), or the comparison runs past `work`, the
+    matcher steps left to the caller's gaps (a one-item list, charged here;
+    _SPLIT_UNSPACED_MAX_WORK when omitted)."""
+    na, nb = sum(map(len, texts)), sum(map(len, toks))
+    if na * nb > _SPLIT_UNSPACED_MAX_CELLS or max(na, nb) > _SPLIT_UNSPACED_MAX_CHARS:
         return None
     if work is None:
         work = [_SPLIT_UNSPACED_MAX_WORK]

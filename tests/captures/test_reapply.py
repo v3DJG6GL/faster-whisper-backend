@@ -11,12 +11,14 @@ The conftest autouse fixture calls captures_reapply._reset_for_tests between
 tests, which restores the canonical idle state.
 """
 
+import contextlib
 import logging
 import types
 
 import pytest
 
 from faster_whisper_backend.captures import reapply as captures_reapply
+from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
@@ -451,6 +453,38 @@ def test_run_leaves_a_sample_locked_mid_pass_alone(
     assert row["final"] == "old"
     assert not row["text_for_training"]
     assert gs.get_sample("reapplymidlock01")["transcript"] == "old"
+
+
+def test_run_leaves_a_sample_locked_before_the_group_write_alone(
+        captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
+    """The group transcript was rebuilt without the per-sample rebuild lock a
+    lock toggle takes: a sample locked after its member was rewritten, while
+    the pass was on its group, still had its transcript replaced."""
+    conn = captures_store_db._require_conn()
+    gs = groups_store_db
+    sid = "reapplygrplock01"
+    _insert(conn, "reapplygrp01", language="de", final="old")
+    _join_sample(conn, gs, sid, "reapplygrp01")
+    real = capture_samples._rebuild_lock
+    held: list[str] = []
+
+    @contextlib.contextmanager
+    def _locks_meanwhile(s):
+        # The owner's Lock click lands while the pass waits for the lock.
+        gs.update_sample(s, {"is_locked": 1})
+        with real(s):
+            held.append(s)
+            yield
+
+    monkeypatch.setattr(capture_samples, "_rebuild_lock", _locks_meanwhile)
+
+    captures_reapply._run()
+
+    assert gs.get_sample(sid)["transcript"] == "old"
+    assert held == [sid]
+    st = captures_reapply.status()
+    assert st["captures_updated"] == 1 and st["groups_updated"] == 0
+    assert captures_store_db.get_capture("reapplygrp01")["final"] == "HELLO [final]"
 
 
 def test_run_leaves_a_capture_merged_into_a_locked_sample_mid_pass_alone(

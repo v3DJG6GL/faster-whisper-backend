@@ -283,21 +283,25 @@ def _run_pass() -> None:
         from faster_whisper_backend.captures.routes import _chip_words_lookup
         chip_words = _chip_words_lookup(ident_cache)
         for sid in affected_sample_ids:
-            g = capture_samples_store.get_sample(sid)
-            if g is None or g.get("is_locked"):
-                continue
-            members = capture_samples_store.get_members(sid)
-            new_t = capture_samples._build_default_transcript(
-                members, g.get("transcript_join_strategy") or "space",
-                words_for=chip_words,
-            )
-            if new_t != (g.get("transcript") or ""):
-                capture_samples_store.update_sample(
-                    sid, {"transcript": new_t},
+            # The per-sid lock a lock toggle, a regenerate and the VAD
+            # reprocess take, held across the lock re-check and the write: a
+            # sample locked while its transcript is rebuilt keeps the old one.
+            with capture_samples._rebuild_lock(sid):
+                g = capture_samples_store.get_sample(sid)
+                if g is None or g.get("is_locked"):
+                    continue
+                members = capture_samples_store.get_members(sid)
+                new_t = capture_samples._build_default_transcript(
+                    members, g.get("transcript_join_strategy") or "space",
+                    words_for=chip_words,
                 )
-                with _state_lock:
-                    _updated_sids.add(sid)
-                    _state["groups_updated"] = len(_updated_sids)
+                if new_t != (g.get("transcript") or ""):
+                    capture_samples_store.update_sample(
+                        sid, {"transcript": new_t},
+                    )
+                    with _state_lock:
+                        _updated_sids.add(sid)
+                        _state["groups_updated"] = len(_updated_sids)
 
 
 def _reset_for_tests() -> None:

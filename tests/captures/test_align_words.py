@@ -403,6 +403,39 @@ def test_split_unspaced_gives_up_past_its_cell_budget(monkeypatch):
     assert split(["他", "好"], ["他好"]) == [["他"], ["好"]]
 
 
+def test_split_unspaced_gives_up_past_its_side_length(monkeypatch):
+    # The cell product alone admits a very long side against a one-char one.
+    split = capture_samples._split_unspaced
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_CHARS", 1)
+    assert split(["他", "好"], ["他好"]) is None
+    assert split(["他"], ["他", "好"]) is None
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_CHARS", 2)
+    assert split(["他", "好"], ["他好"]) == [["他"], ["好"]]
+
+
+def test_unspaced_gap_past_the_side_length_takes_the_token_count_split(monkeypatch):
+    # A word a rule expands, repeated in one gap: the gap's cells fit the
+    # budget, its raw side does not, so its texts are never joined.
+    _install_word_map(monkeypatch, {"中": "中" * 100})
+    monkeypatch.setattr(capture_samples, "_SPLIT_UNSPACED_MAX_CHARS", 250)
+    calls: list[int] = []
+    real = capture_samples._split_unspaced
+
+    def spy(texts, toks, *a):
+        calls.append(sum(map(len, texts)))
+        return real(texts, toks, *a)
+    monkeypatch.setattr(capture_samples, "_split_unspaced", spy)
+    raw = [" 中"] * 3
+    out = capture_samples._align_words_to_final(_words(*raw), "中")
+    assert calls == []
+    assert len(out) == len(raw)
+    assert _join(out) == "中"
+    # Two of them fit, and split as before.
+    out = capture_samples._align_words_to_final(_words(*raw[:2]), "中")
+    assert calls == [200]
+    assert _join(out) == "中"
+
+
 def test_word_walks_share_one_output_budget(app_module, monkeypatch):
     # One walk per distinct raw word, each under its own floor, must not build
     # more chars together than one walk over all of them may.
