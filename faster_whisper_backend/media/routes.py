@@ -5,6 +5,7 @@ their per-identity limiters. The fetch helpers the transcription handler
 shares live in media/video.py.
 """
 import asyncio
+import concurrent.futures
 import contextlib
 import errno
 import json
@@ -61,6 +62,17 @@ _url_subtitles_rate = _rl.per_minute("URL_SUBTITLES_RATE_PER_MIN", 6, "subtitle 
 # audio download from a third party (the whole file unless the stream is
 # segmented) AND up to three detections on the GPU.
 _url_language_rate = _rl.per_minute("URL_LANGUAGE_RATE_PER_MIN", 4, "language checks")
+
+# The language check's opens of a link's audio (its header probe and the
+# decode of its pieces) run one at a time, process-wide: a crafted file's open
+# may hold gigabytes while it lasts (see audio_ffmpeg.client_open_pool), and
+# the default executor would run one per check in flight. A worker of their
+# own, not the header-open one: they decode up to a minute of audio, which
+# there would hold up every upload's input check. An executor, not an asyncio
+# lock: a lock is released when the waiting handler is cancelled while its
+# thread still holds the open.
+_LINK_DECODE_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="link-decode")
 
 
 _VIDEO_MIME = {
@@ -332,9 +344,10 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
                     cancel_check=lambda: tx_progress._cancel_requested(pid),
                     progress_cb=lambda f: tx_progress._progress_set(
                         pid, stage="downloading", progress=f))
-            audio = await asyncio.to_thread(lambda: [
-                _transcode.decode_span_16k(path, skip, seconds)
-                for path, skip in files])
+            audio = await asyncio.get_running_loop().run_in_executor(
+                _LINK_DECODE_POOL, lambda: [
+                    _transcode.decode_span_16k(path, skip, seconds)
+                    for path, skip in files])
         if not all(len(a) for a in audio):
             raise _seg.Unsupported("a piece decoded empty")
     except (tx_progress._ClientCancelled, _udl.UrlCancelled):
@@ -496,7 +509,8 @@ async def url_language(request: Request,
                 return starts, _transcode.decode_pieces_16k(
                     entry["path"], starts, _lc.PIECE_SECONDS)
             try:
-                starts, audio = await asyncio.to_thread(_decode_pieces, starts)
+                starts, audio = await asyncio.get_running_loop().run_in_executor(
+                    _LINK_DECODE_POOL, _decode_pieces, starts)
             except Exception as e:  # noqa: BLE001 — PyAV's text names the path
                 logger.info("[url-dl] language check could not decode the audio "
                             "(host %s): %s", media_video._url_host_for_log(url),

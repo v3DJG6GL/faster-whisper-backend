@@ -1051,6 +1051,113 @@ def test_language_check_cancel_during_the_segments_is_499(client, hls_link,
     assert hls_link.downloads == []
 
 
+class _OpenRecorder:
+    """Counts how many stubbed opens of a link's audio run at once, and on
+    which threads."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.inside = self.peak = self.calls = 0
+        self.threads: set = set()
+
+    def __call__(self):
+        with self._lock:
+            self.calls += 1
+            self.inside += 1
+            self.peak = max(self.peak, self.inside)
+            self.threads.add(threading.current_thread().name)
+        time.sleep(0.03)
+        with self._lock:
+            self.inside -= 1
+
+
+def test_language_check_decodes_one_link_at_a_time(url_enabled, lang_check, monkeypatch):
+    """A crafted file's open can hold gigabytes while it lasts, and a link's
+    file is opened twice (its header for the length, then the pieces): four
+    checks in flight must not each hold one. Both opens of every check run
+    on the one link-decode worker."""
+    import types
+    import numpy as np
+    from faster_whisper_backend.audio import transcode
+    from faster_whisper_backend.media import subtitle_mux
+    opened = _OpenRecorder()
+
+    def _probe(path):
+        opened()
+        return subtitle_mux.MediaStreams(
+            video_codec=None, audio_codec="mp3", width=None, height=None,
+            duration=90.0, mp4_ok=True, mp4_reason=None)
+
+    def _decode(path, starts, seconds):
+        opened()
+        return [np.zeros(16000, dtype=np.float32) for _ in starts]
+    _stub_probe(monkeypatch, duration=None)       # a direct file link
+    monkeypatch.setattr(subtitle_mux, "probe_streams", _probe)
+    monkeypatch.setattr(transcode, "decode_pieces_16k", _decode)
+    monkeypatch.setattr(media_routes, "_has_speech", lambda audio: False)
+
+    class _Request:
+        client = types.SimpleNamespace(host="203.0.113.9")
+
+        async def json(self):
+            return {"url": _URL}
+
+    async def _all():
+        return await asyncio.gather(*(
+            media_routes.url_language(_Request(), {"user_id": None})
+            for _ in range(4)))
+    bodies = asyncio.run(_all())
+    assert [b["verdict"] for b in bodies] == ["unknown"] * 4
+    assert [[p["at"] for p in b["pieces"]] for b in bodies] == [[18.0, 45.0, 70.0]] * 4
+    assert opened.calls == 8 and opened.peak == 1, vars(opened)
+    assert len(opened.threads) == 1, opened.threads
+    assert next(iter(opened.threads)).startswith("link-decode"), opened.threads
+
+
+def test_language_check_decodes_segment_pieces_one_link_at_a_time(
+        url_enabled, monkeypatch):
+    """The segmented arm opens what the site sent as its segments: the same
+    one worker, not a thread per check."""
+    import numpy as np
+    from faster_whisper_backend.audio import transcode
+    from faster_whisper_backend.media import segmented
+    opened = _OpenRecorder()
+
+    async def _fetch(source, starts, seconds, dest_dir, **kw):
+        return ([(os.path.join(dest_dir, "p0.ts"), 1.0)],
+                {"starts": [12.0], "segments": 1, "bytes": 4096})
+
+    def _decode(path, skip, seconds):
+        opened()
+        return np.zeros(16000, dtype=np.float32)
+    monkeypatch.setattr(segmented, "fetch_pieces", _fetch)
+    monkeypatch.setattr(transcode, "decode_span_16k", _decode)
+
+    async def _all():
+        return await asyncio.gather(*(
+            media_routes._segmented_pieces(None, _URL, {"protocol": "hls"}, [12.0], 20.0)
+            for _ in range(4)))
+    got = asyncio.run(_all())
+    assert [(len(audio), starts) for audio, starts, _how in got] == [(1, [12.0])] * 4
+    assert opened.calls == 4 and opened.peak == 1, vars(opened)
+    assert len(opened.threads) == 1, opened.threads
+    assert next(iter(opened.threads)).startswith("link-decode"), opened.threads
+
+
+def test_link_decode_pool_has_one_worker():
+    # The bound above rests on it, and on the worker being its own: a link's
+    # decode lasts up to a minute of audio, which on the header-open worker
+    # would hold up every upload's input check.
+    from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
+    pool = media_routes._LINK_DECODE_POOL
+    opened = _OpenRecorder()
+    for f in [pool.submit(opened) for _ in range(4)]:
+        f.result(timeout=5)
+    assert opened.peak == 1 and len(opened.threads) == 1, vars(opened)
+    assert next(iter(opened.threads)).startswith("link-decode"), opened.threads
+    assert pool is not audio_ffmpeg.client_open_pool()
+
+
 # --- the gates every POST /v1/audio/url-* route shares -------------------------
 
 _ROUTE_BODIES = {"url-preview": {}, "url-subtitles": {"tracks": ["m-de"]},
