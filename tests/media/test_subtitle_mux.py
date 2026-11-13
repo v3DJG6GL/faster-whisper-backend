@@ -5,11 +5,13 @@ from __future__ import annotations
 
 from asyncio import run as _run
 import contextlib
+import errno
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -887,3 +889,75 @@ def test_package_with_the_probed_demuxer_matches_the_unpinned_package(
             layouts.append(_layout(out))
     assert layouts[0] == layouts[1]
     assert [t for t, _c, _l in layouts[1]].count("subtitle") == 2
+
+
+def _padding(mib=16):
+    """`mib` MiB of 8-byte `free` boxes: what an MP4 / MOV open reads box by
+    box to the end."""
+    return ((8).to_bytes(4, "big") + b"free") * (mib * 1024 * 1024 // 8)
+
+
+@pytest.mark.parametrize("header_first", [False, True])
+def test_probe_streams_refuses_a_file_whose_header_takes_too_long_to_read(
+        header_first, tmp_path, monkeypatch):
+    """The probe runs on the worker every upload's input check waits for,
+    and the open of a padded file reads all of it (seconds per 16 MiB):
+    with no header in front of the padding it then fails, with one it
+    succeeds. Out of time either way, and answered with the plain
+    ValueError the route caches as unreadable — never an errno it would
+    read as the server's own fault and probe again."""
+    pytest.importorskip("av")
+    src = tmp_path / "padded.mov"
+    if header_first:
+        write_tracks(str(src), 1)
+        assert pk.probe_streams(str(src)).audio_codec == "pcm_s16le"
+        with open(src, "ab") as f:
+            f.write(_padding())
+    else:
+        src.write_bytes((20).to_bytes(4, "big") + b"ftypqt  " + bytes(4)
+                        + b"qt  " + _padding())
+    monkeypatch.setattr(pk.audio_ffmpeg, "HEADER_OPEN_BUDGET_S", 0.05)
+    with pytest.raises(ValueError) as refused:
+        pk.probe_streams(str(src))
+    assert type(refused.value) is ValueError
+    assert str(refused.value) == pk.audio_ffmpeg.TOO_SLOW_TO_OPEN
+    assert getattr(refused.value, "errno", None) is None
+
+
+def test_a_probe_out_of_time_is_not_answered_with_the_open_s_errno(monkeypatch):
+    """libav answers a read that was stopped like a file cut short — for
+    some containers with EIO, which the route retries as a server fault,
+    holding the worker for another open each time."""
+    av = pytest.importorskip("av")
+    budget = 0.05
+    monkeypatch.setattr(pk.audio_ffmpeg, "HEADER_OPEN_BUDGET_S", budget)
+
+    def slow_open(path, **kwargs):
+        time.sleep(2 * budget)
+        raise av.error.FFmpegError(errno.EIO, "Input/output error")
+    monkeypatch.setattr(av, "open", slow_open)
+    with pytest.raises(ValueError) as refused:
+        pk.probe_streams("a.mkv")
+    assert type(refused.value) is ValueError
+    assert str(refused.value) == pk.audio_ffmpeg.TOO_SLOW_TO_OPEN
+
+
+def test_probe_streams_limits_its_open_and_no_read(tmp_path, monkeypatch):
+    """The budget is PyAV's open-only limit, and a file that opens at once
+    is answered as before; an open that fails inside the budget keeps its
+    own error."""
+    av = pytest.importorskip("av")
+    src = write_tracks(str(tmp_path / "a.mkv"), 2)
+    junk = tmp_path / "junk.mkv"
+    junk.write_bytes(b"RIFFxxxxWAVE")
+    timeouts, real_open = [], av.open
+
+    def spy_open(*args, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return real_open(*args, **kwargs)
+    monkeypatch.setattr(av, "open", spy_open)
+    facts = pk.probe_streams(src)
+    assert (facts.audio_codec, facts.format_name) == ("pcm_s16le", "matroska,webm")
+    with pytest.raises(av.error.InvalidDataError):
+        pk.probe_streams(str(junk))
+    assert timeouts == [(pk.audio_ffmpeg.HEADER_OPEN_BUDGET_S, None)] * 2

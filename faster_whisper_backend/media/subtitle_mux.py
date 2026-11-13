@@ -170,11 +170,26 @@ def probe_streams(path: str) -> MediaStreams:
     unreadable. Those demuxers are off the open's allowlist, so the refusal
     comes before one opens a single entry. At most
     audio_ffmpeg.PYAV_MAX_STREAMS streams are taken: an MP4 / MOV with more
-    is a ValueError too, a Matroska file reports its first ones."""
+    is a ValueError too, a Matroska file reports its first ones. So is a
+    file whose open takes longer than audio_ffmpeg.HEADER_OPEN_BUDGET_S."""
     import av  # optional dependency; the route maps ImportError to 503
 
     # A sample table can declare an index of gigabytes that av.open builds.
     audio_ffmpeg.cap_libav_alloc()
+    # The open runs on the worker every upload's input check waits for, and
+    # one that finds no header reads the whole file looking for it: PyAV
+    # stops its reads when the budget is used up. The open then fails like
+    # one of a file cut short (for some containers with EIO, which the route
+    # would retry as the server's own fault) or returns a container with
+    # what was read up to then, so the clock tells — a plain ValueError, the
+    # verdict on the file the route caches. An (open, read) pair: the limit
+    # is on the open alone.
+    budget = audio_ffmpeg.HEADER_OPEN_BUDGET_S
+    began = time.monotonic()
+
+    def _out_of_time() -> bool:
+        return time.monotonic() - began >= budget
+
     # metadata_errors="replace": PyAV's default "strict" raises
     # UnicodeDecodeError on a non-UTF-8 tag (an AVI with a cp1252 RIFF INFO
     # title), and the route would cache a playable video as unreadable.
@@ -183,14 +198,18 @@ def probe_streams(path: str) -> MediaStreams:
             "protocol_whitelist": "file",
             "format_whitelist": audio_ffmpeg.single_input_demuxers(),
             **audio_ffmpeg.pyav_stream_limit()},
-            metadata_errors="replace")
+            metadata_errors="replace", timeout=(budget, None))
     except av.FFmpegError as e:
+        if _out_of_time():
+            raise ValueError(audio_ffmpeg.TOO_SLOW_TO_OPEN) from e
         if getattr(e, "errno", None) == errno.EINVAL:
             raise ValueError("unsupported container") from e
         if audio_ffmpeg.refused_as_too_much(e):
             raise ValueError(audio_ffmpeg.TOO_MUCH_TO_OPEN) from e
         raise
     with c:
+        if _out_of_time():
+            raise ValueError(audio_ffmpeg.TOO_SLOW_TO_OPEN)
         format_name = getattr(c.format, "name", None) or None
         if audio_ffmpeg.is_multi_input_format(format_name):
             raise ValueError("unsupported container")
