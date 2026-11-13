@@ -84,7 +84,9 @@ _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
 
 # A page of full rows peaks at several times its ~64 MB body while it is
 # built; two at a time bounds that and keeps a burst of page loads off
-# asyncio's default executor (see _GUARDED_SAVE_EXECUTOR).
+# asyncio's default executor (see _GUARDED_SAVE_EXECUTOR). Every builder of
+# that page runs here: GET /recent and its search, GET /v1/recent-words and
+# the /stream connect replay.
 _RECENT_PAGE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="qc-recent",
 )
@@ -104,8 +106,8 @@ _RULES_VIEW_EXECUTOR = ThreadPoolExecutor(
 # rate limited and a queued job is never withdrawn, so one caller's burst
 # would otherwise sit in front of every other user's rules view and recent
 # page. A further view of the same identity waits on the loop for one of its
-# own to finish: no refusal, and nothing a page (it loads /state and /recent
-# together) can tell from before.
+# own to finish: no refusal, and nothing a page (it loads /state, /recent and
+# /stream together) can tell from before.
 _VIEW_SLOTS_PER_IDENTITY = 2
 # identity -> [its semaphore, views holding or waiting on it, its loop]. Only
 # touched on the event loop; an entry goes when its count returns to zero, so
@@ -1264,6 +1266,20 @@ def _replay_frames(page_size: int, sees_all: bool,
             if _trace_visible(entry, sees_all, caller_uid)]
 
 
+async def _stream_replay(user: dict[str, Any], page_size: int,
+                         sees_all: bool, caller_uid: str) -> list[str]:
+    """_replay_frames on the page pool (_RECENT_PAGE_EXECUTOR), in one of
+    `user`'s view slots (_identity_view_slot), as GET /recent builds the
+    same page: a connect is not rate limited either. The slot waits, it never
+    refuses, and it is released before the caller yields a frame — a slot
+    held across a yield would be pinned by a slow reader for the life of the
+    stream."""
+    async with _identity_view_slot(user):
+        return await asyncio.get_running_loop().run_in_executor(
+            _RECENT_PAGE_EXECUTOR,
+            functools.partial(_replay_frames, page_size, sees_all, caller_uid))
+
+
 @router.get(
     "/stream",
     dependencies=[Depends(require_user_webui_host)],
@@ -1322,9 +1338,11 @@ async def stream_recent(
             # Replay the freshest page oldest-first, so the client receives it
             # in chronological order.
             page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
-            # Off the loop with its siblings — this runs once per SSE connect.
-            for frame in await asyncio.to_thread(
-                    _replay_frames, page_size, sees_all, caller_uid):
+            # Off the loop on the page pool, with its siblings — this runs
+            # once per SSE connect. `user` is the connect-time record: the
+            # identity the page's /state and /recent hold their slots under.
+            for frame in await _stream_replay(
+                    user, page_size, sees_all, caller_uid):
                 yield frame
             while True:
                 if await request.is_disconnected():

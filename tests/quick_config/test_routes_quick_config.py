@@ -460,6 +460,43 @@ def test_recent_words_of_one_identity_wait_for_their_own_slots(monkeypatch):
     assert qc._view_slots == {}
 
 
+def test_stream_replay_of_one_identity_waits_for_its_own_slots(monkeypatch):
+    """The /stream connect replay reads and renders the same page of full
+    rows as GET /recent, once per connect and with no rate limit: same pool,
+    same per-identity slots. The replay waits for a slot, it is never
+    refused. The builder is driven directly, never the stream."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="t-recent")
+    monkeypatch.setattr(qc, "_RECENT_PAGE_EXECUTOR", pool)
+    gate, started, order, names = threading.Event(), threading.Event(), [], set()
+
+    def _list_recent(**kw):
+        started.set()
+        gate.wait(10)
+        order.append(kw["user_id_filter"])
+        names.add(threading.current_thread().name.rsplit("_", 1)[0])
+        return [{"request_id": "r", "user_id": kw["user_id_filter"]}]
+
+    monkeypatch.setattr(recent_transcriptions_store, "list_recent", _list_recent)
+    frames = []
+
+    async def _replay(who):
+        frames.append(await qc._stream_replay({"user_id": who}, 5, False, who))
+
+    held, tracked = _drive_view_flood(pool, _replay, started, gate.set)
+    assert names == {"t-recent"}, names
+    assert held <= 3, held
+    assert tracked == {"a": 6, "b": 1}
+    assert sorted(order) == ["a"] * 6 + ["b"]   # nobody is refused
+    assert order.index("b") <= 2, order
+    assert len(frames) == 7 and all(
+        len(f) == 1 and f[0].startswith("event: trace\ndata: {") for f in frames)
+    assert qc._view_slots == {}
+
+
 def test_view_slots_are_per_identity_and_shared_by_both_pools():
     """A third view of the same identity waits whichever pool it is for; a
     key without a user is its own identity; nothing is left behind when a
@@ -1163,16 +1200,17 @@ def test_stream_recent_rechecks_the_caller_before_the_replay(
 def test_stream_replay_renders_off_the_event_loop(client, make_user_key,
                                                   app_module, monkeypatch):
     """Up to a page of capped rows (megabytes of raw/final/steps JSON) is
-    rendered once per connect: in a worker thread, as the same frames in the
-    same oldest-first order with the same scope filter. Driven directly,
-    never via TestClient streaming."""
+    rendered once per connect: in a worker thread of the recent-page pool,
+    as the same frames in the same oldest-first order with the same scope
+    filter. Driven directly, never via TestClient streaming."""
     import json
+    import threading
 
     from tests.conftest import on_event_loop
     uid, raw = locked_alice(make_user_key, "own")
     _seed_recent(("old", "a", "a", uid), ("foreign", "b", "b", "someone-else"),
                  ("new", "c", "c", uid))
-    seen = []
+    seen, names = [], set()
 
     class _Json:
         def __getattr__(self, name):
@@ -1182,6 +1220,7 @@ def test_stream_replay_renders_off_the_event_loop(client, make_user_key,
         def dumps(obj, *a, **k):
             if isinstance(obj, dict) and "final" in obj:
                 seen.append(on_event_loop())
+                names.add(threading.current_thread().name.rsplit("_", 1)[0])
             return json.dumps(obj, *a, **k)
     monkeypatch.setattr(qc, "json", _Json())
     req = fake_request(headers=bearer(raw))
@@ -1197,6 +1236,8 @@ def test_stream_replay_renders_off_the_event_loop(client, make_user_key,
 
     frames = asyncio.run(drive())
     assert seen == [False, False]
+    assert names == {"qc-recent"}, names
+    assert qc._view_slots == {}
     assert all(f.startswith("event: trace\ndata: {") and f.endswith("}\n\n")
                for f in frames)
     rows = [json.loads(f.split("data: ", 1)[1]) for f in frames]
