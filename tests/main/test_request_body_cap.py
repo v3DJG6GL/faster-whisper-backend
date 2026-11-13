@@ -82,7 +82,7 @@ def test_oversize_json_is_rejected_before_the_route_runs(client, app_module):
 
 def test_oversize_json_with_plus_json_subtype_is_413(client):
     # FastAPI parses application/*+json bodies as JSON too — a prefix test on
-    # "application/json" would hand them the 256 MiB non-upload backstop.
+    # "application/json" would hand them another type's ceiling.
     r = client.put("/v1/synced-client-settings", content=_big_json(8 * 1024 * 1024),
                    headers={"Content-Type": "application/merge-patch+json"})
     assert r.status_code == 413
@@ -216,18 +216,57 @@ def test_form_encoded_post_to_an_upload_route_keeps_the_backstop(
     assert r.status_code != 413
 
 
-def test_non_multipart_non_json_to_an_upload_route_keeps_a_256mib_backstop(
+def test_non_multipart_non_json_to_an_upload_route_keeps_a_4mib_backstop(
         client, app_module, monkeypatch):
     # MAX_REQUEST_BYTES is sized for a MEDIA_MAX_BYTES video upload (GiB);
     # only a multipart body to an upload route gets that ceiling, so a
-    # text/plain POST there declaring 300 MiB is still refused up front.
+    # text/plain POST there declaring 5 MiB is still refused up front.
     monkeypatch.setattr(app_module.cfg, "MAX_REQUEST_BYTES",
                         10 * 1024 * 1024 * 1024, raising=False)
     r = client.post("/v1/audio/transcriptions", content=b"x",
                     headers={"Content-Type": "text/plain",
-                             "Content-Length": str(300 * 1024 * 1024)})
+                             "Content-Length": str(5 * 1024 * 1024)})
     assert r.status_code == 413
     assert r.json() == {"detail": "request body too large"}
+
+
+def _spy_form_parser(monkeypatch):
+    """Sizes of the body chunks Starlette's urlencoded form parser is fed."""
+    from starlette.formparsers import FormParser
+    fed = []
+    real = FormParser.__init__
+
+    def _init(self, headers, stream, **limits):
+        async def _counted():
+            async for chunk in stream:
+                fed.append(len(chunk))
+                yield chunk
+        real(self, headers, _counted(), **limits)
+    monkeypatch.setattr(FormParser, "__init__", _init)
+    return fed
+
+
+def test_chunked_form_encoded_body_to_an_upload_route_is_cut_off(
+        client, monkeypatch):
+    # Starlette decodes an urlencoded form on the event loop, field by field
+    # (a field of %XX escapes costs tens of times its multipart twin), before
+    # the handler's own field caps run. No Content-Length: the receive-side
+    # counter stops the body at the backstop, so the parser never gets these
+    # 8 MiB whole.
+    fed = _spy_form_parser(monkeypatch)
+    form = {"Content-Type": "application/x-www-form-urlencoded"}
+    small = b"model=whisper-1&prompt=hi"
+    client.post("/v1/audio/transcriptions", content=small, headers=form)
+    assert sum(fed) == len(small)
+    del fed[:]
+    payload = (b"a=" + b"x" * 65533 + b"&") * 128
+
+    def _gen():
+        for i in range(0, len(payload), 65536):
+            yield payload[i:i + 65536]
+    r = client.post("/v1/audio/transcriptions", content=_gen(), headers=form)
+    assert r.status_code != 200
+    assert sum(fed) <= 4 * 1024 * 1024
 
 
 def test_raw_media_upload_keeps_its_own_ceiling(client, app_module,
@@ -247,8 +286,8 @@ def test_raw_media_upload_keeps_its_own_ceiling(client, app_module,
 
 def test_self_parsing_route_holds_a_non_json_type_to_the_json_cap(client):
     # /auth/login calls request.json() itself, and Starlette parses the body
-    # whatever its Content-Type: a text/plain body there must not ride the
-    # 256 MiB backstop into json.loads (unauthenticated, CSRF-exempt, before
+    # whatever its Content-Type: a text/plain body there must not ride a
+    # larger ceiling into json.loads (unauthenticated, CSRF-exempt, before
     # the login failure limiter).
     r = client.post("/auth/login", content=b"x" * (8 * 1024 * 1024),
                     headers={"Content-Type": "text/plain"})

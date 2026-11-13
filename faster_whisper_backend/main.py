@@ -946,9 +946,13 @@ async def _csrf_mw(request: Request, call_next):
 
 
 # A non-multipart, non-JSON body to an upload route (an urlencoded Form()
-# post) never legitimately approaches the media cap; it keeps the
-# pre-media-cap service ceiling.
-_NON_UPLOAD_BODY_BACKSTOP = 268_435_456
+# post) carries no file, only the text fields: a link or a media id, flags
+# and a prompt the handler cuts to a few KB. Starlette decodes that form on
+# the event loop before any of those cuts, and a field of %XX escapes costs
+# tens of times what the same bytes cost as a multipart field, so this
+# ceiling is what bounds the stall: 4 MiB is still four fields of the
+# largest size Starlette takes (1 MiB).
+_NON_UPLOAD_BODY_BACKSTOP = 4 * 1024 * 1024
 _MEDIA_PACKAGE_PATH_RE = re.compile(
     rf"\A/v1/audio/media/{url_media_store.MEDIA_ID_PATTERN}/package\Z")
 # POST routes that call `await request.json()` themselves: Starlette parses
