@@ -1656,11 +1656,51 @@ def helper_warm() -> None:
         pass  # the check's own guard_self_check answers the caller
 
 
+def _lean_info(info: dict) -> dict:
+    """The info dict a helper sends back: all of it but the lists the
+    server never reads, which a manifest of a few hundred bytes makes a
+    million entries long. The server parses the reply in one call that
+    holds the GIL, so its size is every other thread's wait.
+
+    Left out: `entries` (a playlist is refused by its `_type` alone) and
+    each `formats` entry's `fragments`. The selected format's own list —
+    the top level's, or the one in `requested_formats` — is what
+    segmented.source_of hands the language check, which refuses a list
+    over MAX_DASH_FRAGMENTS by its length before walking it: one entry
+    more than that limit crosses, and is refused there like the whole list.
+
+    No verdict is taken here (probe() judges the reply under the server's
+    settings). A new dict; `info` and the dicts in it stay as they are,
+    whether or not `requested_formats` shares its entries with `formats`."""
+    from faster_whisper_backend.media import segmented as _seg
+    keep = _seg.MAX_DASH_FRAGMENTS + 1
+
+    def _cut(f):
+        fragments = f.get("fragments") if isinstance(f, dict) else None
+        if isinstance(fragments, list) and len(fragments) > keep:
+            return {**f, "fragments": fragments[:keep]}
+        return f
+
+    lean = _cut({k: v for k, v in info.items() if k != "entries"})
+    formats = lean.get("formats")
+    if isinstance(formats, list):
+        lean["formats"] = [
+            {k: v for k, v in f.items() if k != "fragments"}
+            if isinstance(f, dict) and "fragments" in f else f
+            for f in formats]
+    merged = lean.get("requested_formats")
+    if isinstance(merged, list):
+        lean["requested_formats"] = [_cut(f) for f in merged]
+    return lean
+
+
 def helper_handle(payload: bytes) -> bytes:
     """One request inside a link helper: the op _in_helper sent, run under
     the settings it sent. The reply is JSON: {"ok": ...} with the op's
     result, {"refused": [class name, text]} for a client-safe refusal or
-    {"extract_failed": text}; "log" carries what the check logged."""
+    {"extract_failed": text}; "log" carries what the check logged. A
+    probe's info dict goes back without the lists the server does not read
+    (_lean_info)."""
     request = json.loads(payload)
     for name, value in request["cfg"].items():
         if name.startswith(_HELPER_CFG_PREFIX):
@@ -1671,7 +1711,8 @@ def helper_handle(payload: bytes) -> bytes:
     logger.addHandler(log)
     try:
         if request["op"] == "probe":
-            reply = {"ok": list(asyncio.run(_probe_info(url, deadline)))}
+            key, info, target = asyncio.run(_probe_info(url, deadline))
+            reply = {"ok": [key, _lean_info(info), target]}
         else:
             reply = {"ok": list(_extractor_policy(url))}
     except _ExtractFailed as e:

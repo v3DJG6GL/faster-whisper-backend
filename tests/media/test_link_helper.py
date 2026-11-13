@@ -309,6 +309,140 @@ def test_helper_handle_answers_a_probe_with_key_info_and_handoff_target(monkeypa
     assert udl._helper_result("probe", reply)[0] == "Youtube"
 
 
+def _fragments(n):
+    return [{"url": f"https://cdn.example/seg-{i}.m4s", "duration": 2.0}
+            for i in range(n)]
+
+
+def _dash_format(format_id, n, **extra):
+    return {"format_id": format_id, "protocol": "http_dash_segments",
+            "url": "https://cdn.example/manifest.mpd", "ext": "m4a",
+            "fragment_base_url": "https://cdn.example/", "vcodec": "none",
+            "acodec": "mp4a.40.2", "abr": 128.0, "fragments": _fragments(n),
+            **extra}
+
+
+def _dash_info(n, *, merged=False):
+    """A DASH link as yt-dlp answers it: every format lists its fragments,
+    and the selected one's fields are copied to the top level (`merged`:
+    two formats were selected, listed under requested_formats)."""
+    audio = _dash_format("a1", n)
+    video = _dash_format("v1", 3 * n, vcodec="avc1.640028", acodec="none",
+                         ext="mp4", height=720, tbr=2500.0)
+    info = {"title": "t", "extractor_key": "Youtube", "duration": 600,
+            "webpage_url": "https://www.youtube.com/watch?v=x",
+            "formats": [_dash_format("a0", 2 * n, abr=64.0), audio, video],
+            **{k: v for k, v in audio.items() if k != "format_id"}}
+    if merged:
+        # yt-dlp lists the SAME dicts it listed under formats.
+        info["requested_formats"] = [video, audio]
+    return info
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_helper_handle_sends_only_the_fragments_the_server_reads(monkeypatch, merged):
+    """A manifest can list a million fragments per format, and the reply is
+    parsed in the server in one call. Only the selected audio format's list
+    is read there (segmented.source_of), and a list over the language
+    check's limit only by its length."""
+    from faster_whisper_backend.media import segmented as seg
+
+    monkeypatch.setattr(seg, "MAX_DASH_FRAGMENTS", 20)
+    sent = _dash_info(50, merged=merged)
+    _stand_in_yt_dlp(monkeypatch, "Youtube", sent)
+    reply = json.loads(udl.helper_handle(_request(
+        "probe", "https://www.youtube.com/watch?v=x")))
+    key, info, _target = udl._helper_result("probe", reply)
+
+    assert key == "Youtube"
+    assert [sorted(f) for f in info["formats"]] == [
+        sorted(k for k in f if k != "fragments") for f in sent["formats"]]
+    assert all(f[k] == v for f, got in zip(sent["formats"], info["formats"])
+               for k, v in got.items())
+    assert info["fragments"] == _fragments(21)
+    if merged:
+        assert [len(f["fragments"]) for f in info["requested_formats"]] == [21, 21]
+    # Everything else crosses as it was.
+    assert {k: v for k, v in info.items()
+            if k not in ("formats", "fragments", "requested_formats")} == \
+        {k: v for k, v in sent.items()
+         if k not in ("formats", "fragments", "requested_formats")}
+    # What the language check is handed: the same stream, its list still
+    # over the limit, so it is refused there exactly as the whole list is.
+    full, lean = seg.source_of(sent), seg.source_of(info)
+    assert len(full["fragments"]) == 50 and len(lean["fragments"]) == 21
+    assert {**lean, "fragments": None} == {**full, "fragments": None}
+    assert len(lean["fragments"]) > seg.MAX_DASH_FRAGMENTS
+    # The helper's own dict is left as yt-dlp built it.
+    assert len(sent["formats"][2]["fragments"]) == 150
+
+
+def test_helper_handle_sends_a_list_the_language_check_takes_whole(monkeypatch):
+    from faster_whisper_backend.media import segmented as seg
+
+    monkeypatch.setattr(seg, "MAX_DASH_FRAGMENTS", 20)
+    for merged, n in ((False, 20), (False, 21), (True, 20), (True, 21)):
+        sent = _dash_info(n, merged=merged)
+        _stand_in_yt_dlp(monkeypatch, "Youtube", sent)
+        reply = json.loads(udl.helper_handle(_request(
+            "probe", "https://www.youtube.com/watch?v=x")))
+        assert seg.source_of(reply["ok"][1]) == seg.source_of(sent), (merged, n)
+
+
+def test_helper_handle_sends_no_playlist_entries(monkeypatch):
+    """A playlist is refused in the server by its `_type`; its entries are
+    read nowhere."""
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "_type": "playlist", "title": "t", "extractor_key": "Youtube",
+        "entries": [{"_type": "url", "url": f"https://x/{i}"} for i in range(500)]})
+    reply = json.loads(udl.helper_handle(_request(
+        "probe", "https://www.youtube.com/playlist?list=x")))
+    _key, info, _target = udl._helper_result("probe", reply)
+    assert info == {"_type": "playlist", "title": "t", "extractor_key": "Youtube"}
+    with pytest.raises(udl.UrlDownloadError, match="playlists aren't supported"):
+        udl._policy_check_info(info)
+
+
+@pytest.mark.parametrize("info", [
+    {"formats": "x", "requested_formats": {"fragments": [1, 2, 3]}, "fragments": "abc"},
+    {"formats": [None, 5, "f", ["fragments"]], "requested_formats": [None, 7],
+     "fragments": {"a": 1}, "entries": None},
+    {"formats": [], "requested_formats": [], "fragments": []},
+    {"formats": None, "fragments": None},
+])
+def test_a_site_shaped_info_crosses_as_it_is(monkeypatch, info):
+    from faster_whisper_backend.media import segmented as seg
+
+    monkeypatch.setattr(seg, "MAX_DASH_FRAGMENTS", 1)
+    expected = {k: v for k, v in info.items() if k != "entries"}
+    assert udl._lean_info(info) == expected
+
+
+def test_a_probe_through_a_helper_gives_what_the_in_process_probe_gives(monkeypatch):
+    """The in-process probe (no helper started: this suite) reads the whole
+    info dict, a helper's caller the one the helper sent."""
+    from faster_whisper_backend.media import segmented as seg
+
+    monkeypatch.setattr(seg, "MAX_DASH_FRAGMENTS", 20)
+    monkeypatch.setattr(udl.cfg, "URL_VIDEO_ENABLED", True, raising=False)
+    url = "https://www.youtube.com/watch?v=x"
+    for merged, n in ((False, 12), (True, 12), (False, 50), (True, 50)):
+        _stand_in_yt_dlp(monkeypatch, "Youtube", _dash_info(n, merged=merged))
+        with monkeypatch.context() as through_helper:
+            through_helper.setattr(lh, "_HELPERS", object())
+            through_helper.setattr(lh, "run", lambda payload, timeout:
+                                   udl.helper_handle(payload))
+            helped = _run(udl.probe(url, timeout=30.0))
+        direct = _run(udl.probe(url, timeout=30.0))
+        assert direct.segmented["protocol"] == "dash" and direct.video_ladder
+        if n > seg.MAX_DASH_FRAGMENTS:
+            # Either list is refused by its length before it is walked.
+            assert len(direct.segmented["fragments"]) == n
+            assert len(helped.segmented["fragments"]) == seg.MAX_DASH_FRAGMENTS + 1
+            helped.segmented["fragments"] = direct.segmented["fragments"]
+        assert helped == direct, (merged, n)
+
+
 def test_helper_handle_names_a_refusal_and_keeps_what_was_logged(monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="whisper-api")  # helper_warm's, in a helper
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
