@@ -2223,6 +2223,19 @@ def test_wide_optional_branch_screen_is_fast():
     g.validate([("r", p, "")])
 
 
+# Two long runs of `.` in one alternation hold every pool character at every
+# position and nothing stops it. Asking each pair of those positions whether
+# they are one item was quadratic per pool character and ran again at every
+# enclosing group: one 510-char entry held a save thread and the save lock
+# for about 22 s, past the screen's own budget.
+def test_wide_optional_alternation_under_plain_wrappers_screens_fast():
+    p = "(" * 9 + "(?:" + "." * 96 + "|" + "." * 391 + ")" + ")" * 9
+    assert len(p) <= 512
+    t0 = time.perf_counter()
+    assert g._nested_repetition(p) is False
+    assert time.perf_counter() - t0 < 3.0
+
+
 # A branch that consumes nothing (`(?!)`, `\b`, `$`, `(?=x)`) or is one
 # optional atom (`x?`) only makes its alternation optional: `(?:– ?|(?!))`
 # is `(?:– ?)?`. Read as one "can match empty" atom it hid the `– ?` that

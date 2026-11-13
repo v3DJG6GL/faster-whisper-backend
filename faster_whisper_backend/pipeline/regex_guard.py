@@ -1573,9 +1573,16 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", 
             # but two positions of one un-shifted alternation are one item
             # (see apart): `h` fits every position of
             # `(?:äh|also|halt|sozusagen)` and still only one word is taken.
+            # No pair is apart exactly when every position belongs to the
+            # first one's un-shifted alternation, so one pass over them
+            # answers it: asking pair by pair was quadratic per character,
+            # and two long runs of `.` held a save thread for 22 s.
             took = [x for x in range(m) if c in sets[x]]
-            if any(apart(x, y) for p, x in enumerate(took) for y in took[p + 1:]):
-                return True
+            if len(took) >= 2:
+                alt = atoms[took[0]][3]
+                if (alt is None or alt in shifted
+                        or any(atoms[x][3] is not alt for x in took[1:])):
+                    return True
             continue
         if tuple(cuts) in seen_cuts:
             continue
