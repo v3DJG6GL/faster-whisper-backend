@@ -13,6 +13,8 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
+import psutil
+
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,17 @@ _MAX_INPUT_STREAMS = 8
 # window (a few hundred KiB for every recorder format); the bound stops
 # counting at the first PCM byte.
 _MAX_INPUT_BEFORE_PCM = 16 * 1024 * 1024
+# Ceiling on what the child holds resident, sampled every _RSS_POLL_S. The
+# bounds above each count one quantity, and a container can stay under all of
+# them at once: sample tables that each fit -max_alloc, one per stream up to
+# -max_streams, declared by a few hundred KB of input that never has to yield
+# more PCM. Measured, such a child holds about 0.7 GiB for as long as the
+# session lives; a real one peaks at 50-81 MiB (48 kHz stereo FLAC in maximal
+# blocks the largest). Sampled by a task rather than in feed(): the client
+# decides when the next frame comes, and may send none for a whole idle
+# timeout.
+_MAX_CHILD_RSS = 256 * 1024 * 1024
+_RSS_POLL_S = 1.0
 # Input demuxers ffmpeg may open. It picks one by content, whatever the
 # handshake declared, and a manifest demuxer fetches what it references:
 # ffmpeg 7.0's dash demuxer (the imageio-ffmpeg fallback) connects to an MPD's
@@ -100,6 +113,7 @@ class FfmpegTransport:
         self._read_size = read_size
         self._proc: "asyncio.subprocess.Process | None" = None
         self._reader: "asyncio.Task | None" = None
+        self._rss_watch: "asyncio.Task | None" = None
         self._closed = False
         self._reader_dead = False
         self._dead_logged = False
@@ -141,6 +155,7 @@ class FfmpegTransport:
             stderr=asyncio.subprocess.DEVNULL,
         )
         self._reader = asyncio.create_task(self._drain_stdout())
+        self._rss_watch = asyncio.create_task(self._watch_rss())
 
     async def _drain_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -169,6 +184,37 @@ class FfmpegTransport:
             logger.warning("[ffmpeg-transport] reader error: %s", exc)
         finally:
             self._reader_dead = True
+
+    async def _watch_rss(self) -> None:
+        """Stop a child that holds more than _MAX_CHILD_RSS. Ends with the
+        process, at the first breach, or when aclose() cancels it; a child
+        whose memory cannot be read is left alone."""
+        assert self._proc is not None
+        try:
+            child = psutil.Process(self._proc.pid)
+            while True:
+                await asyncio.sleep(_RSS_POLL_S)
+                if self._proc.returncode is not None:
+                    return
+                rss = child.memory_info().rss
+                if rss > _MAX_CHILD_RSS:
+                    # A dead decoder, as on an output-ratio breach; the latch
+                    # keeps the "ffmpeg exited" line from following this one.
+                    logger.warning("[ffmpeg-transport] decoder holds %d MiB (limit "
+                                   "%d MiB); stopping the decoder",
+                                   rss >> 20, _MAX_CHILD_RSS >> 20)
+                    self._reader_dead = True
+                    self._dead_logged = True
+                    self._proc.kill()
+                    return
+        except (psutil.NoSuchProcess, ProcessLookupError):
+            return        # the child exited between two samples
+        except (psutil.Error, OSError) as exc:
+            # No reading is never a reason to stop a stream, but the ceiling
+            # is off for this session: say so, once (the task ends here).
+            logger.warning("[ffmpeg-transport] cannot read the decoder's memory "
+                           "(%s); its ceiling is not enforced for this session",
+                           type(exc).__name__)
 
     def _max_out_bytes(self) -> int:
         return (self._in_bytes * _MAX_DECODE_RATIO
@@ -232,11 +278,19 @@ class FfmpegTransport:
             # Also on a cancel of this task (server shutdown): the
             # CancelledError still propagates, but _closed is already True,
             # so no later aclose() would come back to kill the process.
+            # The memory watcher runs until here, so the flush above stays
+            # under the ceiling too.
+            if self._rss_watch is not None:
+                self._rss_watch.cancel()
             if self._proc.returncode is None:
                 try:
                     self._proc.kill()
                 except Exception:  # noqa: BLE001
                     pass
+        if self._rss_watch is not None:
+            # Joined, so no task outlives the transport. On a cancel of
+            # aclose() itself the line above has already cancelled it.
+            await asyncio.gather(self._rss_watch, return_exceptions=True)
 
 
 def make_transport(audio_format: str, sink: Sink, *, sample_rate: int = 16000):

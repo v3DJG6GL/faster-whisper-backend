@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -24,7 +25,8 @@ from faster_whisper_backend.streaming.transport import (
     make_transport,
 )
 from tests._streaming_helpers import (
-    discard as _nosink, drain_frames, handshake, ready_ws, stop_and_drain, stream_ws)
+    discard as _nosink, drain_frames, handshake, ready_ws, stop_and_drain,
+    stop_if_open_and_drain, stream_ws)
 
 
 def test_ffmpeg_exe_resolves_to_runnable_binary():
@@ -392,6 +394,142 @@ def test_ffmpeg_transport_input_allowance_ends_at_the_first_pcm_byte(monkeypatch
     assert total >= 4 * 1024 * 1024 * 0.99
 
 
+def test_ffmpeg_transport_stops_a_child_over_the_memory_ceiling(monkeypatch, caplog):
+    """The other bounds each count one quantity (output bytes, one allocation,
+    streams, input before PCM); the child's total is watched on its own. With
+    the ceiling lowered under what any ffmpeg holds at rest, an ordinary WAV
+    session is stopped like an output-ratio breach: dead, one WARNING, and no
+    watcher left behind."""
+    monkeypatch.setattr(stream_transport, "_MAX_CHILD_RSS", 1024 * 1024)
+    monkeypatch.setattr(stream_transport, "_RSS_POLL_S", 0.05)
+    caplog.set_level(logging.WARNING, logger="faster_whisper_backend.streaming.transport")
+
+    async def run():
+        t = FfmpegTransport(_nosink)
+        await t.start()
+        try:
+            await t.feed(_tiny_rate_wav(4096, sample_rate=16000))
+            for _ in range(100):
+                if t.dead:
+                    break
+                await asyncio.sleep(0.05)
+            dead = t.dead
+            for _ in range(20):               # a client that keeps sending
+                await t.feed(b"\x00" * 16)
+            return dead, t
+        finally:
+            await t.aclose()
+
+    dead, t = asyncio.run(run())
+    assert dead
+    assert t._proc.returncode is not None
+    assert t._rss_watch.done()
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("stopping the decoder" in m for m in msgs) == 1
+    assert not any("ffmpeg exited" in m for m in msgs)
+
+
+def test_ffmpeg_transport_cancelled_aclose_also_ends_the_memory_watch():
+    """A cancel while aclose() waits (server shutdown) leaves nothing that
+    would come back for the watcher, so the same exit that kills ffmpeg
+    cancels it."""
+    async def run():
+        t = FfmpegTransport(_nosink)
+        t._proc = _StuckProc()
+        t._rss_watch = asyncio.create_task(asyncio.Event().wait())
+        task = asyncio.create_task(t.aclose())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        return t._proc.killed, t._rss_watch.cancelled()
+
+    assert asyncio.run(run()) == (True, True)
+
+
+def test_ffmpeg_transport_memory_watch_leaves_a_real_stream_alone(monkeypatch):
+    """At the shipped ceiling a real stream is never stopped, however often
+    the child is sampled: 48 kHz stereo FLAC in maximal blocks is the largest
+    decoder state a recorder format reaches. The watcher ends with the
+    transport."""
+    # Several times a real session's peak, well under the many-allocation
+    # growth the ceiling exists for.
+    assert 128 * 1024 * 1024 <= stream_transport._MAX_CHILD_RSS <= 512 * 1024 * 1024
+    monkeypatch.setattr(stream_transport, "_RSS_POLL_S", 0.02)
+    try:
+        r = subprocess.run(
+            [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "anoisesrc=d=2:c=pink:r=48000:a=0.3", "-ac", "2",
+             "-c:a", "flac", "-frame_size", "65535", "-f", "flac", "pipe:1"],
+            capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.skip("ffmpeg unavailable")
+    if r.returncode != 0 or not r.stdout:
+        pytest.skip("ffmpeg flac encode unavailable")
+    flac = r.stdout
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        try:
+            for at in range(0, len(flac), 64 * 1024):
+                await t.feed(flac[at:at + 64 * 1024])
+            await asyncio.sleep(0.2)          # ten samples with the stream held
+            dead, watching = t.dead, not t._rss_watch.done()
+        finally:
+            await t.aclose()
+        return dead, watching, t._rss_watch.done()
+
+    assert asyncio.run(run()) == (False, True, True)
+    # 2 s of 16 kHz mono s16le.
+    assert total >= 2 * 16000 * 2 * 0.99
+
+
+def test_ffmpeg_transport_memory_watch_never_stops_a_child_it_cannot_read(
+        monkeypatch, caplog):
+    """No reading is not a breach: when the child's memory cannot be sampled
+    the watcher gives up, says once that the ceiling is off, and the stream
+    decodes as it did without one."""
+    import psutil  # noqa: PLC0415
+
+    def _unreadable(pid):
+        raise psutil.AccessDenied(pid)
+
+    monkeypatch.setattr(stream_transport.psutil, "Process", _unreadable)
+    monkeypatch.setattr(stream_transport, "_MAX_CHILD_RSS", 1024 * 1024)
+    monkeypatch.setattr(stream_transport, "_RSS_POLL_S", 0.02)
+    caplog.set_level(logging.WARNING, logger="faster_whisper_backend.streaming.transport")
+    wav = _tiny_rate_wav(16000, sample_rate=16000)
+    total = 0
+
+    async def sink(b):
+        nonlocal total
+        total += len(b)
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        try:
+            await t.feed(wav)
+            await asyncio.sleep(0.1)
+            return t.dead
+        finally:
+            await t.aclose()
+
+    assert asyncio.run(run()) is False
+    # 1 s of 16 kHz pcm_u8 mono becomes 2 bytes of s16le per input byte.
+    assert total >= 2 * 16000 * 0.99
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("ceiling is not enforced" in m for m in msgs) == 1
+    assert not any("stopping the decoder" in m for m in msgs)
+
+
 def _transport_argv(monkeypatch) -> list:
     """The argv FfmpegTransport.start() hands to the subprocess, unrun."""
     seen = []
@@ -745,3 +883,31 @@ def test_stream_route_ends_the_session_when_the_decoder_dies(client, monkeypatch
     errors = [m for m in msgs if m.get("type") == "error"]
     assert [m["code"] for m in errors] == ["decoder_failed"], msgs
     assert len(feeds) == 1
+
+
+def test_stream_route_ends_the_session_when_the_decoder_is_over_the_memory_ceiling(
+        client, monkeypatch, energy_vad):
+    """The memory watcher stops the decoder between two frames; the next frame
+    then ends the session through the same decoder_failed close as any other
+    dead decoder."""
+    from faster_whisper_backend.streaming import routes as stream_routes
+    monkeypatch.setattr(stream_transport, "_MAX_CHILD_RSS", 1024 * 1024)
+    monkeypatch.setattr(stream_transport, "_RSS_POLL_S", 0.05)
+    made = []
+    real_make = stream_routes.make_transport
+
+    def _recording_make(fmt, sink, **kw):
+        made.append(real_make(fmt, sink, **kw))
+        return made[-1]
+
+    monkeypatch.setattr(stream_routes, "make_transport", _recording_make)
+    with ready_ws(client, audio={"format": "wav"}) as ws:
+        ws.send_bytes(_tiny_rate_wav(4096, sample_rate=16000))
+        deadline = time.monotonic() + 5
+        while not made[0].dead and time.monotonic() < deadline:
+            time.sleep(0.02)
+        ws.send_bytes(b"\x80" * 64)
+        msgs = stop_if_open_and_drain(ws)[0]
+    assert isinstance(made[0], FfmpegTransport)
+    errors = [m for m in msgs if m.get("type") == "error"]
+    assert [m["code"] for m in errors] == ["decoder_failed"], msgs
