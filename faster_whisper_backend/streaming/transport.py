@@ -48,8 +48,9 @@ _MAX_FFMPEG_ALLOC = 64 * 1024 * 1024
 # Matroska carrying that many audio tracks holds hundreds of MB in the child
 # for as long as the session lives, with no single allocation or output byte
 # the two bounds above would notice. A recorder sends one audio track (at
-# most audio + video) and a file adds cover art or a chapter track; a
-# container over the cap is refused at open.
+# most audio + video) and a file adds cover art or a chapter track. Over the
+# cap, older ffmpeg builds refuse the container at open; newer Matroska
+# demuxers (7.1.5, 9.0) drop the tracks past the cap and decode the rest.
 _MAX_INPUT_STREAMS = 8
 # Ceiling on the container bytes ffmpeg may take before its first PCM byte. A
 # Matroska header of empty tag elements is kept by the demuxer at about 26

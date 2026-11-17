@@ -639,11 +639,15 @@ def test_ffmpeg_transport_decodes_every_client_container(container, which, monke
 
 
 @pytest.mark.parametrize("which", ["default", "imageio"])
-def test_ffmpeg_transport_refuses_a_container_with_too_many_streams(
+def test_ffmpeg_transport_caps_the_streams_of_a_container(
         which, monkeypatch, tmp_path):
     """Both binaries take the option: a container at the stream cap decodes
-    as before, one over it is refused at open and leaves a dead transport
-    (the route then ends the session)."""
+    as before, and one over it never gets a decoder per track. How ffmpeg
+    enforces the cap depends on its build: older ones (7.0.2, Ubuntu's 8.0.1)
+    refuse the file at open, which leaves a dead transport and the route
+    ends the session; newer Matroska demuxers (Debian's 7.1.5, 9.0.2) drop
+    the tracks past the cap and go on, so the transport stays up. Either way
+    ffmpeg says so, and the session never outputs more than one track."""
     exe = _ffmpeg_binary(which)
     cap = stream_transport._MAX_INPUT_STREAMS
     one = tmp_path / "one.mkv"
@@ -665,7 +669,17 @@ def test_ffmpeg_transport_refuses_a_container_with_too_many_streams(
 
     monkeypatch.setattr("faster_whisper_backend.audio.ffmpeg.ffmpeg_exe", lambda: exe)
     # ~0.5 s of 16 kHz mono s16le = 16000 bytes.
-    assert asyncio.run(_decode(_tracks(cap))) >= 15000
+    one_track = asyncio.run(_decode(_tracks(cap)))
+    assert one_track >= 15000
+
+    over = _tracks(cap + 1)
+    probe = subprocess.run(
+        [exe, "-hide_banner", "-loglevel", "error", "-max_streams", str(cap),
+         "-i", "pipe:0", "-f", "null", "-"],
+        input=over, capture_output=True, timeout=30)
+    # "Number of streams exceeds max_streams parameter (8)" (refused) or
+    # "Number of tracks exceeds max_streams (8)" (tracks dropped).
+    assert b"exceeds max_streams" in probe.stderr
 
     total = 0
 
@@ -676,16 +690,16 @@ def test_ffmpeg_transport_refuses_a_container_with_too_many_streams(
     async def run():
         t = FfmpegTransport(sink)
         await t.start()
-        try:
-            await t.feed(_tracks(cap + 1))
-            # ffmpeg exits at the refusal, which ends the reader.
-            await asyncio.wait_for(asyncio.shield(t._reader), 10)
-            return t.dead
-        finally:
-            await t.aclose()
+        await t.feed(over)
+        dead = t.dead
+        # EOF: a build that kept the file decodes what it kept and exits.
+        await t.aclose()
+        return dead
 
-    assert asyncio.run(run()) is True
-    assert total == 0
+    refused = asyncio.run(run())
+    assert total <= one_track
+    if refused:
+        assert total == 0
 
 
 @pytest.mark.parametrize("which", ["default", "imageio"])

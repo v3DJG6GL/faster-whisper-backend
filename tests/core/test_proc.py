@@ -6,6 +6,7 @@ import signal
 import sys
 import time
 
+import psutil
 import pytest
 
 from faster_whisper_backend.core import proc as core_proc
@@ -67,11 +68,16 @@ def test_kill_takes_the_childs_process_group_down(tmp_path):
 
 
 def _gone_within(pid: int, seconds: float) -> bool:
+    """True once ``pid`` has ended. A zombie counts as ended: the group member
+    is a grandchild, so once its parent died the init process has to reap it,
+    and in a container without an init (CI's job container runs `tail -f
+    /dev/null` as PID 1) it stays a zombie forever."""
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
             return True
         time.sleep(0.05)
     return False

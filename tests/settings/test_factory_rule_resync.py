@@ -101,7 +101,9 @@ def test_js_json_of_a_large_digit_key_map_is_linear():
     m.update({f"0{i}": "y" for i in range(500)})
     t0 = time.perf_counter()
     got = cs._js_json(m)
-    assert time.perf_counter() - t0 < 0.4
+    # About 0.1 s idle; the per-key scan it replaced takes minutes, so the
+    # bound is loose enough for a loaded CI host (0.40 s measured there).
+    assert time.perf_counter() - t0 < 2.0
     keys = sorted(m, key=lambda k: k.encode("utf-16-be", "surrogatepass"))
     idx = sorted((k for k in keys if cs._JS_INDEX_KEY.fullmatch(k)), key=int)
     rest = [k for k in keys if k not in set(idx)]
