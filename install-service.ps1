@@ -119,6 +119,35 @@ function Invoke-PipInstall {
     if ($LASTEXITCODE -ne 0) { throw "$label failed (exit $LASTEXITCODE)" }
 }
 
+# Invoke-PipRefresh "<label>" <pip install args...>: the dependency steps that
+# run AFTER the old service was stopped and removed. A failure there (a version
+# with no Windows wheel, PyPI unreachable) must not end the script: it would
+# leave the box with no service at all, although pip changes nothing when it
+# cannot resolve and the packages already in the venv still work. So record
+# the step, carry on to register and start the service, and fail at the end
+# (Write-FailedDeps).
+$script:FailedDeps = @()
+function Invoke-PipRefresh {
+    $label, $pipArgs = $args
+    & $Python -m pip install @pipArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FAILED: $label (exit $LASTEXITCODE) - continuing with the packages already installed." -ForegroundColor Red
+        $script:FailedDeps += $label
+    }
+}
+
+# Write-FailedDeps: the closing report of every step Invoke-PipRefresh recorded;
+# returns $true when there was one.
+function Write-FailedDeps {
+    if ($script:FailedDeps.Count -eq 0) { return $false }
+    Write-Host ""
+    Write-Host "FAILED: these dependency steps did not install (pip's error is further up):" -ForegroundColor Red
+    foreach ($step in $script:FailedDeps) { Write-Host "  $step" -ForegroundColor Red }
+    Write-Host "The service was registered and started on the packages already in the venv."
+    Write-Host "Fix the cause, then re-run this script with the same flags."
+    return $true
+}
+
 # Invoke-NativeQuiet <exe> <args...>: runs a native command with its output
 # dropped and stderr non-terminating (Stop turns it into NativeCommandError);
 # the caller reads $LASTEXITCODE.
@@ -284,7 +313,7 @@ if (Test-Path $LegacyNssm) {
 $reqFile = Join-Path $RepoDir "requirements.txt"
 if (Test-Path $reqFile) {
     Write-Host "Installing/refreshing requirements (faster-whisper + CUDA wheels can take a few minutes)..." -ForegroundColor Cyan
-    Invoke-PipInstall "pip install -r requirements.txt" -r $reqFile
+    Invoke-PipRefresh "pip install -r requirements.txt" -r $reqFile
 } else {
     Write-Host "WARNING: requirements.txt not found at $reqFile" -ForegroundColor Yellow
 }
@@ -295,7 +324,7 @@ if (Test-Path $reqFile) {
 if ($Gpu) {
     $gpuReq = Join-Path $RepoDir "requirements-gpu.txt"
     Write-Host "Installing/refreshing GPU wheels (CUDA 12 / cuDNN 9, ~1 GB)..." -ForegroundColor Cyan
-    Invoke-PipInstall "pip install -r requirements-gpu.txt" -r $gpuReq
+    Invoke-PipRefresh "pip install -r requirements-gpu.txt" -r $gpuReq
 }
 
 # -Full: the heavy extras of the Docker "-full" tags. Keep the GPU branch in
@@ -368,7 +397,7 @@ class UniformQuantizer:
 def restore_quantized_state(*args, **kwargs):
     _unavailable()
 '@ | Set-Content -Path (Join-Path $stubDir "diffq\__init__.py") -Encoding ASCII
-        Invoke-PipInstall "diffq-fixed stub install" $stubDir
+        Invoke-PipRefresh "diffq-fixed stub install" $stubDir
     }
 
     $diarizeReq = Join-Path $RepoDir "requirements-diarize.txt"
@@ -377,21 +406,23 @@ def restore_quantized_state(*args, **kwargs):
         # requirements-bgm.txt pins the versions (single source of truth,
         # Renovate-bumped); "audio-separator[gpu]" only swaps in the GPU extra.
         $bgmReq = Join-Path $RepoDir "requirements-bgm.txt"
-        Invoke-PipInstall "pip install of the full extras" -r $diarizeReq -r $bgmReq "audio-separator[gpu]" --extra-index-url https://download.pytorch.org/whl/cu126
-        Invoke-PipInstall "pip install onnxruntime-gpu==1.26.*" --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
+        Invoke-PipRefresh "pip install of the full extras" -r $diarizeReq -r $bgmReq "audio-separator[gpu]" --extra-index-url https://download.pytorch.org/whl/cu126
+        Invoke-PipRefresh "pip install onnxruntime-gpu==1.26.*" --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
         # Translation (llama-cpp-python): the project's cu124 wheel index -- no
         # cu126 index exists; cu124 wheels run on a cu12.6 userspace (CUDA 12
         # minor-version compatibility). PyPI is sdist-only (source build).
-        Invoke-PipInstall "pip install -r requirements-translate.txt" -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+        Invoke-PipRefresh "pip install -r requirements-translate.txt" -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
     } else {
         $bgmReq = Join-Path $RepoDir "requirements-bgm.txt"
-        Invoke-PipInstall "pip install of the full extras" -r $diarizeReq -r $bgmReq
+        Invoke-PipRefresh "pip install of the full extras" -r $diarizeReq -r $bgmReq
         # Translation (llama-cpp-python): prebuilt CPU wheels from the project
         # index -- PyPI is sdist-only and would compile llama.cpp from source.
-        Invoke-PipInstall "pip install -r requirements-translate.txt" -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+        Invoke-PipRefresh "pip install -r requirements-translate.txt" -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
     }
-    Write-Host "Full extras installed. Gated pyannote pipelines additionally need accepted" -ForegroundColor Green
-    Write-Host "model terms on huggingface.co plus WHISPER_HF_TOKEN in the service env." -ForegroundColor Green
+    if ($script:FailedDeps.Count -eq 0) {
+        Write-Host "Full extras installed. Gated pyannote pipelines additionally need accepted" -ForegroundColor Green
+        Write-Host "model terms on huggingface.co plus WHISPER_HF_TOKEN in the service env." -ForegroundColor Green
+    }
 }
 
 # --- ffmpeg -----------------------------------------------------------------
@@ -499,11 +530,13 @@ function Install-ConvertDeps {
         # Keep any torch resolution on the same CUDA 12 userspace the -Full/-Gpu
         # block established (see its "one CUDA 12 userspace" rationale) -- the
         # default PyPI index could swap in a CPU / cu13 torch wheel.
-        Invoke-PipInstall "pip install -r requirements-convert.txt" -r $convertReq --extra-index-url https://download.pytorch.org/whl/cu126
+        Invoke-PipRefresh "pip install -r requirements-convert.txt" -r $convertReq --extra-index-url https://download.pytorch.org/whl/cu126
     } else {
-        Invoke-PipInstall "pip install -r requirements-convert.txt" -r $convertReq
+        Invoke-PipRefresh "pip install -r requirements-convert.txt" -r $convertReq
     }
-    Write-Host "Conversion extras installed. AUTO_CONVERT_HF_MODELS=true will now work." -ForegroundColor Green
+    if ($script:FailedDeps -notcontains "pip install -r requirements-convert.txt") {
+        Write-Host "Conversion extras installed. AUTO_CONVERT_HF_MODELS=true will now work." -ForegroundColor Green
+    }
 }
 
 if ($WithConvert) {
@@ -747,6 +780,7 @@ if (-not $final) {
     Write-Host ""
     Write-Host "FAILED: service is not registered after install." -ForegroundColor Red
     Write-Host "Re-run this script in an elevated PowerShell prompt."
+    Write-FailedDeps | Out-Null
     exit 1
 }
 # Poll up to 30 s for Running -- model preload at startup can push past 3 s.
@@ -764,8 +798,11 @@ if (-not $final -or $final.Status -ne "Running") {
     Write-Host "  $LogsDir\$ServiceName.err.log"
     Write-Host "  $LogsDir\$ServiceName.out.log"
     Write-Host "  $LogsDir\whisper.log"
+    Write-FailedDeps | Out-Null
     exit 1
 }
+
+if (Write-FailedDeps) { exit 1 }
 
 Write-Host ""
 Write-Host "Done. Service is running." -ForegroundColor Green

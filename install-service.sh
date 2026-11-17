@@ -105,12 +105,29 @@ fi
 # swapped underneath it (mirrors install-service.ps1's stop -> install -> start).
 systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
 
+# pip_refresh <label> <pip install args...>: every pip step from here on runs
+# with the service stopped. A failure (a version with no wheel for this
+# platform, PyPI unreachable) must not end the script under `set -e`: that
+# would leave the service down, although pip changes nothing when it cannot
+# resolve and the packages already in the venv still work. So record the step,
+# carry on to the restart, and exit 1 at the very end.
+FAILED_DEPS=()
+pip_refresh() {
+  local label=$1
+  shift
+  if ! as_user "$PY" -m pip install "$@"; then
+    echo "FAILED: $label - continuing with the packages already installed." >&2
+    FAILED_DEPS+=("$label")
+  fi
+}
+
 echo "Installing dependencies (gpu=$GPU full=$FULL) ..."
-as_user "$PY" -m pip install --upgrade pip
+pip_refresh "pip upgrade" --upgrade pip
 if [ "$GPU" -eq 1 ]; then
-  as_user "$PY" -m pip install -r "$REPO_DIR/requirements.txt" -r "$REPO_DIR/requirements-gpu.txt"
+  pip_refresh "pip install -r requirements.txt -r requirements-gpu.txt" \
+    -r "$REPO_DIR/requirements.txt" -r "$REPO_DIR/requirements-gpu.txt"
 else
-  as_user "$PY" -m pip install -r "$REPO_DIR/requirements.txt"
+  pip_refresh "pip install -r requirements.txt" -r "$REPO_DIR/requirements.txt"
 fi
 
 # --full extras. Keep the GPU branch in sync with Dockerfile.gpu's
@@ -133,24 +150,24 @@ if [ "$FULL" -eq 1 ]; then
   if [ "$GPU" -eq 1 ]; then
     # requirements-bgm.txt pins the versions (single source of truth,
     # Renovate-bumped); "audio-separator[gpu]" only swaps in the GPU extra.
-    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
+    pip_refresh "pip install of the full extras" -r "$REPO_DIR/requirements-diarize.txt" \
       -r "$REPO_DIR/requirements-bgm.txt" "audio-separator[gpu]" \
       --extra-index-url https://download.pytorch.org/whl/cu126
-    as_user "$PY" -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
+    pip_refresh "pip install onnxruntime-gpu==1.26.*" --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
     # Translation (llama-cpp-python): the project's cu124 wheel index — no
     # cu126 index exists; cu124 wheels run on a cu12.6 userspace (CUDA 12
     # minor-version compatibility). PyPI is sdist-only (source build).
-    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
+    pip_refresh "pip install -r requirements-translate.txt" -r "$REPO_DIR/requirements-translate.txt" \
       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
   else
     # CPU torch from the PyTorch cpu index — the PyPI wheel hard-depends on
     # the whole nvidia-* CUDA runtime (mirrors Dockerfile's extras install).
-    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
+    pip_refresh "pip install of the full extras" -r "$REPO_DIR/requirements-diarize.txt" \
       -r "$REPO_DIR/requirements-bgm.txt" \
       --extra-index-url https://download.pytorch.org/whl/cpu
     # Translation (llama-cpp-python): prebuilt CPU wheels from the project
     # index — PyPI is sdist-only and would compile llama.cpp from source.
-    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
+    pip_refresh "pip install -r requirements-translate.txt" -r "$REPO_DIR/requirements-translate.txt" \
       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
   fi
 fi
@@ -385,6 +402,17 @@ systemctl enable "${SERVICE_NAME}"
 # `restart` also starts an inactive unit, so first install and re-run both come
 # up on the fresh venv + rewritten unit (`enable --now` is a no-op when active).
 systemctl restart "${SERVICE_NAME}"
+
+if [ "${#FAILED_DEPS[@]}" -gt 0 ]; then
+  {
+    echo
+    echo "FAILED: these dependency steps did not install (pip's error is further up):"
+    printf '  %s\n' "${FAILED_DEPS[@]}"
+    echo "${SERVICE_NAME} was restarted on the packages already in the venv."
+    echo "Fix the cause, then re-run this script with the same flags."
+  } >&2
+  exit 1
+fi
 
 if [ "$FULL" -eq 1 ]; then
   echo

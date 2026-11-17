@@ -76,7 +76,7 @@ def test_linux_installer_cpu_full_uses_pytorch_cpu_index():
     # The PyPI torch wheel hard-depends on the nvidia-* CUDA runtime; the CPU
     # --full branch must install the extras from the cpu wheel index.
     sh = _read("install-service.sh")
-    cpu_line = ('pip install -r "$REPO_DIR/requirements-diarize.txt" \\\n'
+    cpu_line = ('-r "$REPO_DIR/requirements-diarize.txt" \\\n'
                 '      -r "$REPO_DIR/requirements-bgm.txt" \\\n'
                 '      --extra-index-url https://download.pytorch.org/whl/cpu')
     assert cpu_line in sh
@@ -901,3 +901,70 @@ def test_windows_legacy_captures_recipe_moves_the_audio_tree_with_its_store():
     recipe = block.index('"(it reads $dbDir). Move it: Stop-Service $ServiceName; $audio" +')
     assert recipe < block.index("\"Move-Item '$($legacy.FullName)*' '$dbDir' -Force;")
     assert '"(it reads $audioDir). Move it: Stop-Service $ServiceName; $audioMove" +' in block
+
+
+# --- a failed dependency step must not leave the box without a service -------
+
+@pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt",
+                    reason="needs a POSIX bash")
+def test_linux_installer_restarts_the_service_after_a_failed_pip_step(tmp_path):
+    # The service is stopped before pip runs, and the script is `set -e`: a pip
+    # step that cannot resolve (a floor with no wheel for this platform, PyPI
+    # down) used to end the script there, service down. Run the script's own
+    # pip_refresh and closing report around a pip that fails for the GPU file.
+    sh = _read("install-service.sh")
+    helper = re.search(r"^FAILED_DEPS=\(\)\npip_refresh\(\) \{\n.*?^\}\n", sh, re.M | re.S).group(0)
+    report = re.search(r'^if \[ "\$\{#FAILED_DEPS\[@\]\}" -gt 0 \]; then\n.*?^fi\n', sh,
+                       re.M | re.S).group(0)
+    py = tmp_path / "python"
+    _exe(py, '#!/bin/sh\ncase "$*" in *requirements-gpu.txt*) exit 1 ;; esac\necho "pip $*"\n')
+    script = ("set -euo pipefail\nas_user() { \"$@\"; }\n" + helper +
+              'pip_refresh "base" -r requirements.txt\n'
+              'pip_refresh "gpu wheels" -r requirements-gpu.txt\n'
+              'pip_refresh "extras" -r requirements-bgm.txt\n'
+              'echo "systemctl restart"\n' + report + 'echo "Done."\n')
+    out = _bash(script, {"PATH": "/usr/bin:/bin", "PY": str(py), "SERVICE_NAME": "whisper-api"})
+    assert out.returncode == 1
+    # The steps after the failed one still ran, and so did the restart.
+    assert out.stdout.splitlines() == [
+        "pip -m pip install -r requirements.txt",
+        "pip -m pip install -r requirements-bgm.txt",
+        "systemctl restart",
+    ]
+    assert "FAILED: gpu wheels - continuing" in out.stderr
+    assert "\n  gpu wheels\n" in out.stderr and "  base" not in out.stderr
+    # A clean run reports nothing and goes on to "Done.".
+    ok = _bash_ok(script.replace("requirements-gpu.txt", "requirements-dev.txt"),
+                  {"PATH": "/usr/bin:/bin", "PY": str(py), "SERVICE_NAME": "whisper-api"})
+    assert ok.stdout.splitlines()[-1] == "Done." and ok.stderr == ""
+
+
+def test_linux_installer_runs_every_pip_step_after_the_stop_through_pip_refresh():
+    sh = _read("install-service.sh")
+    after_stop = sh[sh.index('systemctl stop "${SERVICE_NAME}"'):]
+    # The one direct call is inside pip_refresh itself.
+    assert after_stop.count("-m pip install") == 1
+    assert 'if ! as_user "$PY" -m pip install "$@"; then' in after_stop
+    # The failure report comes after the restart, and is what exits non-zero.
+    assert after_stop.index('systemctl restart "${SERVICE_NAME}"') < after_stop.index(
+        'if [ "${#FAILED_DEPS[@]}" -gt 0 ]; then')
+
+
+def test_windows_installer_starts_the_service_after_a_failed_pip_step():
+    # No PowerShell under test, so pin the shape: the old service is removed
+    # before the dependency install, so every pip step from there on must
+    # record its failure (Invoke-PipRefresh) instead of throwing, and the
+    # script exits 1 only after WinSW registered and started the service.
+    ps1 = _read("install-service.ps1")
+    removed = ps1.index("# --- pre-flight: stop + remove any existing WhisperAPI service")
+    start = ps1.index("\nInvoke-WinSW start")
+    between = ps1[removed:start]
+    assert "Invoke-PipInstall" not in between
+    assert between.count("Invoke-PipRefresh ") == 10
+    helper = ps1[ps1.index("function Invoke-PipRefresh {"):ps1.index("function Write-FailedDeps {")]
+    assert "throw" not in helper
+    assert "$script:FailedDeps += $label" in helper
+    tail = ps1[start:]
+    assert tail.index("if (Write-FailedDeps) { exit 1 }") < tail.index('"Done. Service is running."')
+    # Both earlier exits (service missing / not running) name the failed steps too.
+    assert tail.count("Write-FailedDeps | Out-Null\n    exit 1") == 2
