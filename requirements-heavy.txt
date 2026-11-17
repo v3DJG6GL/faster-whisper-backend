@@ -30,7 +30,7 @@ faster-whisper>=1.2.1
 # PyAV 17 and 18 free a custom channel map twice (an 8-channel AIFF ends the
 # process); faster_whisper_backend/audio/ffmpeg.py holds_custom_channel_map
 # refuses such files on those versions and switches itself off from 19 on.
-av>=11,<19
+av>=19.0.2,<20
 
 # Bundled, cross-platform static ffmpeg BINARY for the live-streaming
 # endpoint's encoded transport (browser Opus/WebM → 16 kHz PCM), so it works
