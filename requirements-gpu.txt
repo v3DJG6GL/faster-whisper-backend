@@ -8,5 +8,9 @@
 # `cudnn64_9.dll` (and the cudnn_*64_9.dll family) needs cudnn 9.x. A major
 # bump silently drops GPU inference to CPU. On Linux these provide
 # the matching .so libraries that ctranslate2 loads at runtime.
-nvidia-cublas-cu12>=12.9.3.13,<13
+# Every floor must exist for Windows AND Linux: cuBLAS 12.9.3.13 was published
+# for Linux only, and with it as the floor install-service.ps1 -Gpu failed
+# (renovate.json excludes that version; scripts/check_requirements_resolve.py
+# fails CI on the next one).
+nvidia-cublas-cu12>=12.9.2.10,<13
 nvidia-cudnn-cu12>=9.28.1.4,<10

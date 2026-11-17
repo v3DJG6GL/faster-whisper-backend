@@ -307,7 +307,152 @@ def test_manual_same_boundary_rerun_repairs_instead_of_minting():
         '{ [ -n "$TARGET_SHA" ] || [ "$BUMP" = patch ]; }; then', gate)
 
 
+# --- scripts/check_requirements_resolve.py -----------------------------------
+
+def _resolve_check():
+    import importlib.util
+    import os
+
+    from faster_whisper_backend.paths import REPO_ROOT
+    spec = importlib.util.spec_from_file_location(
+        "check_requirements_resolve",
+        os.path.join(REPO_ROOT, "scripts", "check_requirements_resolve.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_INSTALLERS = ("install-service.ps1", "install-service.sh", "Dockerfile", "Dockerfile.gpu")
+
+
+def test_linux_leg_checks_that_every_install_set_resolves():
+    # The suites install requirements.txt + -dev only. Without this step a
+    # Renovate bump of any other file auto-merges untried on Windows (cuBLAS
+    # 12.9.3.13, Linux wheels only, broke install-service.ps1 -Gpu).
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    linux = ci[ci.index("\n  test:\n"):ci.index("\n  test-windows:\n")]
+    step = linux[linux.index("- name: Check every install set resolves"):]
+    step = step[:step.index("\n      - name:")]
+    assert "run: python scripts/check_requirements_resolve.py\n" in step
+    assert "if: needs.changes.outputs.suite == 'true'" in step
+    # After uv is installed, and before the long suite so a bad bump fails fast.
+    assert linux.index('pip install --no-cache-dir "uv') < linux.index("- name: Check every install")
+    assert linux.index("- name: Check every install") < linux.index("- name: Run tests")
+
+
+def test_install_sets_cover_every_requirements_file_on_both_platforms():
+    # A new requirements-*.txt (or one dropped from the table) would be bumped
+    # by Renovate unchecked. A file counts for a platform when a set names it,
+    # or names a file that `-r`-includes it.
+    import os
+
+    from faster_whisper_backend.paths import REPO_ROOT
+    chk = _resolve_check()
+    files = sorted(f for f in os.listdir(REPO_ROOT)
+                   if f.startswith("requirements") and f.endswith(".txt"))
+    assert "requirements-gpu.txt" in files and len(files) >= 8
+    includes = {f: set(re.findall(r"^-r (\S+)", _read(f), re.M)) for f in files}
+    for platform in ("windows", "linux"):
+        covered = {f for s in chk.INSTALL_SETS if platform in s.platforms for f in s.files}
+        while True:
+            more = {inc for f in covered for inc in includes.get(f, ())} - covered
+            if not more:
+                break
+            covered |= more
+        assert covered == set(files), (platform, sorted(set(files) - covered))
+    assert set(chk.PLATFORMS) == {"windows", "linux"}
+    # Windows is the platform no CI leg installs these on: it must be x86-64.
+    assert chk.PLATFORMS["windows"] == "x86_64-pc-windows-msvc"
+
+
+def test_install_sets_mirror_the_installers_indexes_and_inline_packages():
+    # The table is hand-kept: an index or a package an installer passes to pip
+    # outside a requirements file must be resolved too, with that index.
+    chk = _resolve_check()
+    text = "\n".join(_read(name) for name in _INSTALLERS)
+    indexes = set(re.findall(r"--extra-index-url (https://\S+)", text))
+    assert indexes == {i for s in chk.INSTALL_SETS for i in s.indexes}
+    assert len(indexes) == 4
+    # (Not the `requires = ["setuptools>=61"]` of the ps1's diffq stub project.)
+    inline = set(re.findall(r'(?<!\[)"([a-z][a-z0-9-]*(?:\[[a-z]+\]|[=<>]=[^"\s]+))"', text))
+    probed = {name for names in chk.EXCLUDED.values() for name in names}
+    # `"diffq-fixed>=0.2"` is the ps1's wheel probe: excluded, not resolved.
+    inline = {spec for spec in inline if re.split(r"[\[=<>]", spec)[0] not in probed}
+    assert inline == {spec for s in chk.INSTALL_SETS for spec in s.specs}
+    assert inline == {"audio-separator[gpu]", "onnxruntime-gpu==1.26.*"}
+    # The pinned ORT build is installed --no-deps, and resolved the same way.
+    ort = [s for s in chk.INSTALL_SETS if s.specs == ("onnxruntime-gpu==1.26.*",)]
+    assert len(ort) == 1 and ort[0].no_deps
+    # Each exclusion stands for a workaround the installers really have.
+    assert "diffq-fixed stub install" in _read("install-service.ps1")
+    assert "audio-separator's diffq dep may compile from source" in _read("install-service.sh")
+
+
+def test_install_sets_resolve_for_the_images_python_with_wheels_only(tmp_path):
+    chk = _resolve_check()
+    base = re.search(r"^FROM python:(\d+\.\d+)-slim", _read("Dockerfile"), re.M).group(1)
+    assert chk.PYTHON == base
+    full_gpu = next(s for s in chk.INSTALL_SETS if s.name == "full extras, gpu")
+    args = chk.resolve_args(full_gpu, "windows", tmp_path)
+    assert args[:2] == ["pip", "compile"]
+    for flag, value in (("--python-version", base),
+                        ("--python-platform", "x86_64-pc-windows-msvc"),
+                        # A package that must be compiled on the box is not installable.
+                        ("--only-binary", ":all:"),
+                        ("--extra-index-url", "https://download.pytorch.org/whl/cu126")):
+        assert args[args.index(flag) + 1] == value
+    exclude = args[args.index("--excludes") + 1]
+    with open(exclude, encoding="utf-8") as fh:
+        assert fh.read() == "diffq-fixed\n"
+    with open(args[-1], encoding="utf-8") as fh:
+        assert fh.read() == "audio-separator[gpu]\n"
+    assert sum(a.endswith(("requirements-diarize.txt", "requirements-bgm.txt")) for a in args) == 2
+    assert "--no-deps" not in args
+
+
+def test_resolve_check_fails_when_one_set_cannot_be_resolved(monkeypatch, capsys):
+    import subprocess
+    import sys
+    chk = _resolve_check()
+    asked = []
+
+    def fake_run(cmd, **kwargs):
+        asked.append(cmd)
+        bad = "x86_64-pc-windows-msvc" in cmd and any(a.endswith("requirements-gpu.txt") for a in cmd)
+        return subprocess.CompletedProcess(
+            cmd, 1 if bad else 0, stdout=None,
+            stderr="error: nvidia-cublas-cu12==12.9.3.13 has no wheels\n" if bad else "")
+
+    monkeypatch.setattr(chk, "uv_command", lambda: ["uv"])
+    monkeypatch.setattr(chk.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["check_requirements_resolve.py", "--jobs", "1"])
+    assert chk.main() == 1
+    out = capsys.readouterr().out
+    assert len(asked) == sum(len(s.platforms) for s in chk.INSTALL_SETS)
+    assert "FAIL  windows  base + gpu\n" in out and "ok    linux    base + gpu\n" in out
+    assert "nvidia-cublas-cu12==12.9.3.13 has no wheels" in out
+    # Every set green: exit 0.
+    monkeypatch.setattr(chk.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 0, stdout=None, stderr=""))
+    assert chk.main() == 0
+
+
 # --- renovate.json -----------------------------------------------------------
+
+def test_renovate_excludes_only_versions_that_the_gpu_floor_does_not_need():
+    # A version with no Windows wheel is kept out of Renovate's PRs by
+    # allowedVersions; the floor in requirements-gpu.txt must stay below it,
+    # or the file would again ask for the version Windows cannot install.
+    rules = json.loads(_read("renovate.json"))["packageRules"]
+    hits = [r for r in rules if "allowedVersions" in r]
+    assert [r["matchPackageNames"] for r in hits] == [["nvidia-cublas-cu12"]]
+    allowed = hits[0]["allowedVersions"]
+    assert allowed.startswith("!/") and allowed.endswith("/")
+    excluded = re.compile(allowed[2:-1])
+    assert excluded.search("12.9.3.13") and not excluded.search("12.9.4.1")
+    floor = re.search(r"^nvidia-cublas-cu12>=([\d.]+),<13$", _read("requirements-gpu.txt"), re.M)
+    assert floor and not excluded.search(floor.group(1))
+    assert tuple(map(int, floor.group(1).split("."))) < (12, 9, 3, 13)
 
 def test_ytdlp_fast_lane_outranks_the_blanket_major_rule():
     # yt-dlp is date-versioned, so the year rollover is a pep440 *major*.

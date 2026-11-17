@@ -31,6 +31,16 @@
       "enabled": false
     },
     {
+      "description": "Versions published without a Windows wheel. Renovate reads the newest version off PyPI and cannot see its platforms: cuBLAS 12.9.3.13 is Linux-only, and with it as the floor install-service.ps1 -Gpu died at 'No matching distribution found'. scripts/check_requirements_resolve.py (CI, Linux leg) now fails any bump that does not resolve for every platform; list such a version here so the grouped 'python deps' PR is not held red by it, and drop it from the list once the wheel exists.",
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "matchPackageNames": [
+        "nvidia-cublas-cu12"
+      ],
+      "allowedVersions": "!/^12\\.9\\.3\\.13$/"
+    },
+    {
       "description": "Keep workflow actions on floating major tags (@vN). Suppress pin/patch/minor so they are never pinned to an exact patch (upstream moves the @vN tag, so patch fixes land at runtime without a PR \u2014 and the local action mirrors only sync tags every 8h, so an exact-patch pin can race the mirror). A new MAJOR still surfaces via the rule below.",
       "matchFileNames": [
         ".forgejo/workflows/**"

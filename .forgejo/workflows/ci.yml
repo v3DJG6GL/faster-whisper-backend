@@ -229,6 +229,19 @@ jobs:
           uv --version
           uv pip install -r requirements.txt -r requirements-dev.txt
 
+      # Every pip command of the installers and Dockerfiles, resolved for
+      # Windows and Linux from package metadata (nothing is downloaded or
+      # installed). The suites install only requirements.txt + -dev, so a
+      # bump of any other file was never tried on Windows: Renovate raised
+      # the cuBLAS floor to a version published for Linux only, auto-merged
+      # it green, and install-service.ps1 -Gpu then failed on the next
+      # update. A red step here keeps such a bump out of main. Linux leg
+      # only: uv resolves for the other platform, and both legs would ask
+      # the same question.
+      - name: Check every install set resolves (Windows + Linux)
+        if: needs.changes.outputs.suite == 'true'
+        run: python scripts/check_requirements_resolve.py
+
       # Rules in ruff.toml. Linux leg only: the lint result does not depend
       # on the platform.
       - name: Lint (ruff)

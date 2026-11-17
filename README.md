@@ -184,6 +184,12 @@ gate set on the pytest command line in `.forgejo/workflows/ci.yml`
 deliberately skips both suites — a tag is only minted for a commit that already
 tested green — and goes straight to building and publishing the images.
 
+The Linux leg also runs `python scripts/check_requirements_resolve.py`: it resolves every
+`pip install` command of the install scripts and Dockerfiles for Windows and Linux from
+package metadata (nothing is downloaded), so a dependency bump whose new version was not
+published for one of the platforms fails the pull request instead of the next install.
+Run it locally after editing a `requirements*.txt` (needs `uv`).
+
 ## Usage
 
 ```python
