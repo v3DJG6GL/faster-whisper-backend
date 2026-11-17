@@ -76,6 +76,28 @@ with open(os.path.join(os.path.dirname(os.path.dirname(
 for _k in _DATA_PATH_ENV:
     os.environ[_k] = ""
 
+
+def _load_sync_venv():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("sync_venv", os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "sync_venv.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    # A venv drifts behind a raised requirements floor and then tests older
+    # packages than CI; scripts/sync_venv.py installs the requirements and
+    # restarts the run. Before xdist starts its workers, so they get the
+    # synced venv; the workers themselves skip it.
+    if hasattr(config, "workerinput"):
+        return
+    error = _load_sync_venv().ensure()
+    if error:
+        pytest.exit(error, returncode=pytest.ExitCode.USAGE_ERROR)
+
 # The app's lifespan starts the pipeline's rule helper processes
 # (pipeline/rule_helper.py) unless this is off. Hundreds of tests run a
 # TestClient lifespan, and three child interpreters each would cost the suite

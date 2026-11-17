@@ -175,6 +175,13 @@ pytest -n auto -q
 `-n auto` (pytest-xdist) spreads the suite over every core; drop it to run
 serially, e.g. when debugging a single test.
 
+Every run first checks the venv against `requirements.txt` + `requirements-dev.txt`
+(`scripts/sync_venv.py`). If an installed package misses a requirement, for
+example after a floor was raised, the run installs both files with `--upgrade`
+(through `uv` when it is on PATH, else pip) and starts over, so local runs test
+the same versions CI does. CI and a Python outside a venv only get the report
+with the install command. Set `FWB_NO_VENV_SYNC=1` to run on other versions on purpose.
+
 CI runs the suite on Linux (Python 3.14) and Windows for every pull request
 and every push to `main` (a pull request that changes only the Dockerfiles runs
 just the tests that read them), and fails the run if coverage drops below the
