@@ -630,4 +630,6 @@ def test_word_walks_are_charged_what_they_built(app_module, monkeypatch):
     elapsed = time.monotonic() - t0
     assert len(out) == len(raw)
     assert sum(peaks) <= pl_engine.output_bound(sum(len(w) for w in raw))
-    assert elapsed < 2
+    # A backstop only (the bound above is the check): ~1.2 s alone, and a
+    # busy CI host took 2.3-3.0 s.
+    assert elapsed < 10
