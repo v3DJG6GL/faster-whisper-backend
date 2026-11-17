@@ -207,6 +207,8 @@ def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monk
     # list after it writes the text back, so the slow tail is handed the
     # same text in every walk and must cost one kill, not one per walk.
     killed = _count_probe_timeouts(monkeypatch)
+    budgets = record_calls(monkeypatch, admin_routes, "_probe_chain",
+                           lambda text, units, skip=None, budget=None, **kw: budget)
     rules = []
     for n in "123":
         rules += [upper_rule("q", name="up" + n),
@@ -217,7 +219,13 @@ def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monk
     steps = dry_run(client, rules, "1 1 1 1")["steps"]
     assert [s["after"] for s in steps[1:3]] == ["a a a a", "1 1 1 1"]
     assert steps[-1].get("not_run") is True
-    assert len(killed) == 1
+    # One round charged. Not len(killed) == 1: a round the child's start ate
+    # (the Windows VM) is killed and re-tried free of charge, by design.
+    assert killed
+    assert budgets and all(b is budgets[0] for b in budgets)
+    rounds = admin_routes._TEST_PIPELINE_PROBE_ROUNDS
+    assert abs(budgets[0]["left"]
+               - admin_routes._TEST_PIPELINE_PROBE_TIMEOUT * (rounds - 1)) <= 1e-6
 
 
 def test_probe_time_across_walks_is_capped(client, monkeypatch, short_probe):
