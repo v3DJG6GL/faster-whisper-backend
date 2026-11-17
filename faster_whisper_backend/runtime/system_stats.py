@@ -12,6 +12,7 @@ gpu_mem_used_bytes() around each load) is runtime.model_registry.
 from __future__ import annotations
 
 import os
+import posixpath
 import sys
 import time
 from typing import Any, Callable
@@ -184,12 +185,14 @@ def _cgroup_headroom(host_total: "int | None") -> "int | None":
             # The process's own group up to the root of the mount: inside a
             # container's cgroup namespace that is the container's group;
             # a group the mount does not show is skipped.
+            # (posixpath: these are kernel paths, also when the suite runs
+            # the faked files on Windows.)
             parts = [p for p in rel.split("/") if p]
             found, heads = False, []
             for depth in range(len(parts), -1, -1):
-                d = os.path.join(base, *parts[:depth])
+                d = posixpath.join(base, *parts[:depth])
                 try:
-                    limit = _read_text(os.path.join(d, files[0])).strip()
+                    limit = _read_text(posixpath.join(d, files[0])).strip()
                 except FileNotFoundError:
                     continue
                 found = True
@@ -197,8 +200,8 @@ def _cgroup_headroom(host_total: "int | None") -> "int | None":
                                       and (host_total is None
                                            or int(limit) >= host_total)):
                     continue
-                used = (int(_read_text(os.path.join(d, files[1])))
-                        - _stat_field(_read_text(os.path.join(d, "memory.stat")),
+                used = (int(_read_text(posixpath.join(d, files[1])))
+                        - _stat_field(_read_text(posixpath.join(d, "memory.stat")),
                                       files[2]))
                 heads.append(max(0, int(limit) - used))
             if found:

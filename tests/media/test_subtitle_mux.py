@@ -241,7 +241,8 @@ def test_package_failure_log_names_neither_the_source_nor_the_workdir(
     src = str(tmp_path / "0123abcdef.mkv")
     _patch_argv(monkeypatch, (
         "import sys\n"
-        f"sys.stderr.write('Error opening input file {src}.\\n')\n"
+        # repr: a Windows path's backslashes are not escapes in the child.
+        f"sys.stderr.write('Error opening input file ' + {src!r} + '.\\n')\n"
         "sys.stderr.write('could not write __OUT__\\n')\n"
         "sys.exit(1)\n"))
     with caplog.at_level("WARNING", logger=pk.logger.name):
@@ -256,7 +257,7 @@ def test_package_failure_log_names_neither_the_source_nor_the_workdir(
     # With a track, a line naming the source still blames the source.
     _patch_argv(monkeypatch, (
         "import sys\n"
-        f"sys.stderr.write('{src}: Invalid data found when processing input')\n"
+        f"sys.stderr.write({src!r} + ': Invalid data found when processing input')\n"
         "sys.exit(1)\n"))
     with pytest.raises(pk.PackageError) as ei:
         _run(pk.package(src, _tracks(), container="mkv", default_track=None,

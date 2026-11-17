@@ -39,6 +39,10 @@ def test_test_pipeline_non_string_sample_is_refused(client):
     for sample in (deep, "5", '{"a": 1}', '["a"]', "true"):
         r = _post_raw(client, '{"sample": ' + sample + ', "rules": []}')
         assert r.status_code == 400, r.text
+        if sample is deep and r.json() == {"detail": "There was an error parsing the body"}:
+            # A smaller C stack (Windows) gives json.loads its RecursionError
+            # first, inside FastAPI's body parse: refused there.
+            continue
         assert r.json() == {"error": "sample must be a string"}
 
 
