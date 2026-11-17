@@ -216,19 +216,38 @@ def test_ffmpeg_transport_stops_a_decode_amplification_bomb():
         nonlocal total
         total += len(b)
 
+    stage = ["start"]
+    state = {}
+
     async def run():
         t = FfmpegTransport(sink)
+        state["t"] = t
         await t.start()
+        stage[0] = "feed"
         await t.feed(wav)
+        stage[0] = "wait for dead"
         for _ in range(100):
             if t.dead:
                 break
             await asyncio.sleep(0.05)
         dead = t.dead
+        stage[0] = "aclose"
         await t.aclose()
         return dead
 
-    assert asyncio.run(run())
+    async def bounded():
+        # This hung the Windows leg (2026-11-10..17); a stuck stage fails
+        # here with its name instead of running into the suite's watchdog.
+        try:
+            return await asyncio.wait_for(run(), 60)
+        except TimeoutError:
+            t = state.get("t")
+            proc = getattr(t, "_proc", None)
+            pytest.fail(f"stuck in {stage[0]}: in={getattr(t, '_in_bytes', None)} "
+                        f"out={getattr(t, '_out_bytes', None)} "
+                        f"ffmpeg returncode={getattr(proc, 'returncode', None)}")
+
+    assert asyncio.run(bounded())
     assert total <= len(wav) * 1024 + 120 * 16000 * 2
 
 

@@ -504,11 +504,15 @@ def test_helpers_killed_between_walks_are_replaced(pool, monkeypatch, caplog):
     rules = _install_rows(monkeypatch, [_row("card", "Card · x", "x", "y", 1)])
     assert pl_engine._postprocess_text("x") == "y"
     before = pool.pids()
-    for proc in list(pool._procs):
+    procs = list(pool._procs)
+    for proc in procs:
         proc.kill()
     with caplog.at_level(logging.WARNING, logger="whisper-api"):
         assert pl_engine._postprocess_text("x") == "y"
-    assert "helper process was lost" in caplog.text
+    # (Fails on Windows: the state says whether the kill reached the helper.)
+    assert "helper process was lost" in caplog.text, (
+        [(p.pid, p.poll()) for p in procs], caplog.text, sys.executable,
+        getattr(sys, "_base_executable", None))
     assert pl_engine._skip_for(rules) == frozenset()
     assert pool.wait_ready(30)
     assert len(pool.pids()) == 2 and not set(pool.pids()) & set(before)
