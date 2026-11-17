@@ -249,9 +249,32 @@ class FfmpegTransport:
             return
         try:
             self._proc.stdin.write(data)
-            await self._proc.stdin.drain()
+            await self._drain()
         except (BrokenPipeError, ConnectionResetError, RuntimeError):
             pass
+
+    async def _drain(self) -> None:
+        """stdin.drain(), given up once the reader has ended. On Windows a
+        write pending into the pipe of an ffmpeg that was killed (an output-
+        ratio breach) never completes, and feed() — the route's receive loop —
+        would wait on it for good."""
+        assert self._proc is not None and self._proc.stdin is not None
+        drain = asyncio.ensure_future(self._proc.stdin.drain())
+        if self._reader is None or self._reader.done():
+            await drain
+            return
+        try:
+            await asyncio.wait({drain, self._reader},
+                               return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            drain.cancel()
+            raise
+        if drain.done():
+            drain.result()
+            return
+        # ffmpeg is gone: drop what is still queued for it.
+        drain.cancel()
+        self._proc.stdin.transport.abort()
 
     async def aclose(self) -> None:
         if self._closed or self._proc is None:

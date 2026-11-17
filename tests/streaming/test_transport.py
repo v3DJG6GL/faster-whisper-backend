@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -249,6 +250,41 @@ def test_ffmpeg_transport_stops_a_decode_amplification_bomb():
 
     assert asyncio.run(bounded())
     assert total <= len(wav) * 1024 + 120 * 16000 * 2
+
+
+def test_feed_returns_when_the_decoder_ends_with_a_write_still_pending():
+    """On Windows a write pending into the pipe of a killed ffmpeg never
+    completes, so feed() hung in drain() for good (the Windows CI leg, run
+    1860). Here the pipe never drains at all: once the reader has ended,
+    feed() returns, drops the queued bytes and leaves a dead transport."""
+    aborted = []
+
+    class _Stdin:
+        transport = SimpleNamespace(abort=lambda: aborted.append(True))
+
+        def write(self, data):
+            pass
+
+        def drain(self):
+            return asyncio.get_running_loop().create_future()   # never done
+
+        def is_closing(self):
+            return bool(aborted)
+
+    async def run():
+        t = FfmpegTransport(lambda b: None)
+
+        async def reader():
+            await asyncio.sleep(0.1)       # ffmpeg killed mid-write
+            t._reader_dead = True
+
+        t._proc = SimpleNamespace(stdin=_Stdin(), returncode=1)
+        t._reader = asyncio.create_task(reader())
+        await asyncio.wait_for(t.feed(b"x" * 1024), 5)
+        return t.dead
+
+    assert asyncio.run(run()) is True
+    assert aborted == [True]
 
 
 def _tiny_rate_flac() -> bytes:
