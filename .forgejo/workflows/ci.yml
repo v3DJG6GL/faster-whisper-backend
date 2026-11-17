@@ -138,6 +138,11 @@ jobs:
     # servers hang the run (forgejo#12937).
     if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
+    # The leg takes ~5 min. Without a limit a hang runs to the runner's 3 h
+    # maximum (the Windows leg did, 2026-11-10..17) and blocks every main
+    # push queued behind it; pytest.ini's faulthandler_timeout names a hung
+    # test well inside this.
+    timeout-minutes: 30
     # One leg, on the interpreter the images ship (python:3.14-slim) and the
     # installers require; windows (below) is a portability parity guard.
     #
@@ -276,6 +281,8 @@ jobs:
     # (the Linux leg runs the tests that read the Dockerfiles).
     if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') && needs.changes.outputs.suite == 'true' }}
     runs-on: windows-latest
+    # See the `test` job.
+    timeout-minutes: 30
     env:
       # The SYSTEM profile's uv cache (default location) persists on the VM;
       # copy, not hard links, so nothing a job does to its .venv can reach it.

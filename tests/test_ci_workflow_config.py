@@ -307,6 +307,25 @@ def test_manual_same_boundary_rerun_repairs_instead_of_minting():
         '{ [ -n "$TARGET_SHA" ] || [ "$BUMP" = patch ]; }; then', gate)
 
 
+def test_test_legs_end_a_hang_long_before_the_runners_limit():
+    # A hung test kept the Windows leg running for the runner's 3 h maximum on
+    # every push and PR for a week, and printed no test name: each leg has a
+    # job limit, and pytest ends a hung test's worker with its stacks.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    for job, nxt in (("\n  test:\n", "\n  test-windows:\n"), ("\n  test-windows:\n", "\n  all-ci:\n")):
+        body = ci[ci.index(job):ci.index(nxt)]
+        limit = re.search(r"^    timeout-minutes: (\d+)$", body, re.M)
+        assert limit and 10 <= int(limit.group(1)) <= 60, job
+    ini = _read("pytest.ini")
+    timeout = re.search(r"^faulthandler_timeout = (\d+)$", ini, re.M)
+    assert timeout and int(timeout.group(1)) < 30 * 60
+    assert re.search(r"^faulthandler_exit_on_timeout = true$", ini, re.M)
+    # The ini keys need pytest >= 9.0 (exit_on_timeout); an older pytest
+    # would only warn about an unknown key and leave hangs unbounded.
+    floor = re.search(r"^pytest>=(\d+)\.", _read("requirements-dev.txt"), re.M)
+    assert floor and int(floor.group(1)) >= 9
+
+
 # --- scripts/check_requirements_resolve.py -----------------------------------
 
 def _resolve_check():
