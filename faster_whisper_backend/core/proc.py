@@ -4,9 +4,42 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
+from collections.abc import Mapping
 
 # How often the post-reap sweep looks for group members still running.
 _SWEEP_POLL_S = 0.05
+
+
+def _windows_venv() -> bool:
+    """True in a Windows venv, where sys.executable is the venv's
+    python.exe: a launcher that starts the base interpreter as ITS child."""
+    base = getattr(sys, "_base_executable", None)
+    return (sys.platform == "win32" and bool(base)
+            and os.path.normcase(os.path.abspath(base))
+            != os.path.normcase(os.path.abspath(sys.executable)))
+
+
+def python_exe() -> str:
+    """The interpreter to start a Python child with. In a Windows venv not
+    sys.executable: killing what that starts kills only the launcher, and
+    the real interpreter goes on running (a rule past its time limit too)
+    with the pipes still open. The base interpreter, given
+    __PYVENV_LAUNCHER__ by python_env(), is the venv's interpreter itself —
+    multiprocessing starts its Windows children the same way (bpo-35797)."""
+    return sys._base_executable if _windows_venv() else sys.executable
+
+
+def python_env(env: "Mapping[str, str] | None" = None) -> "dict[str, str] | None":
+    """The environment for a child started with python_exe(): `env` (None:
+    this process's) as is, plus __PYVENV_LAUNCHER__ in a Windows venv, which
+    makes the base interpreter take the venv's site-packages. None stays
+    None (inherit) everywhere else."""
+    if not _windows_venv():
+        return None if env is None else dict(env)
+    out = dict(os.environ if env is None else env)
+    out["__PYVENV_LAUNCHER__"] = sys.executable
+    return out
 
 
 async def terminate_then_kill(proc: "asyncio.subprocess.Process", grace: float = 5.0) -> None:

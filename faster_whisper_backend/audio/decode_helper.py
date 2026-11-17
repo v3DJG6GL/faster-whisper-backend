@@ -259,9 +259,10 @@ def _spawn(register) -> _Helper:
     try:
         try:
             end, inherit = _child_end(theirs)
-            env = _helper_env()
+            from faster_whisper_backend.core import proc as _proc  # noqa: PLC0415 - parent only
+            env = _proc.python_env(_helper_env())
             proc = subprocess.Popen(
-                [sys.executable, "-P", "-c", _BOOT, _paths.REPO_ROOT, str(end),
+                [_proc.python_exe(), "-P", "-c", _BOOT, _paths.REPO_ROOT, str(end),
                  LIMIT_MODE or "auto"],
                 # Nothing of the helper's reaches the server's console: what
                 # libav prints quotes the file, and the helper reports its

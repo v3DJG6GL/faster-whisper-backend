@@ -2217,7 +2217,7 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         # exits non-zero if it cannot (yt-dlp's plugin loader would only
         # print the import traceback and carry on unguarded), and running a
         # script puts ytdlp_plugins/ on sys.path instead of the repo root.
-        sys.executable, GUARD_LAUNCHER,
+        core_proc.python_exe(), GUARD_LAUNCHER,
         # Order matters: --no-plugin-dirs clears the defaults AND anything an
         # earlier --plugin-dirs added, so the guard's directory must follow
         # it. An operator's stray ~/.config/yt-dlp/plugins therefore cannot
@@ -2327,7 +2327,7 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         container = "mkv"
     fmt = video_format_selector(max_height, format_ids)
     return [
-        sys.executable, GUARD_LAUNCHER,
+        core_proc.python_exe(), GUARD_LAUNCHER,
         "--no-plugin-dirs", "--plugin-dirs", GUARD_DIR,
         "--ignore-config",
         "--downloader", "m3u8:native",   # see build_download_argv
@@ -2483,7 +2483,7 @@ async def _run_yt_dlp(
     # installs the guard directly and so is immune, but --plugin-dirs is the
     # belt to that braces and must not be silently disabled by the ambient
     # environment.
-    env = dict(os.environ)
+    env = core_proc.python_env(os.environ)
     env.pop("YTDLP_NO_PLUGINS", None)
 
     t0 = time.monotonic()

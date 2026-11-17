@@ -50,6 +50,7 @@ from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import jobs, web_common
+from faster_whisper_backend.core import proc as core_proc
 from faster_whisper_backend.pipeline import dictation_map
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.pipeline import engine as pl_engine
@@ -831,7 +832,6 @@ def _probe_chain(text: str, units: list[list[Any]],
     `cap`: the output bound of the dry run's walk (pl_engine.output_bound of
     its sample, not of `text`); None = the absolute _POSTPROCESS_MAX_CHARS."""
     import subprocess
-    import sys
     import time
 
     def _lines(out: str | bytes | None) -> list[str]:
@@ -914,7 +914,7 @@ def _probe_chain(text: str, units: list[list[Any]],
         t0 = time.monotonic()
         try:
             p = subprocess.run(
-                [sys.executable, "-I", "-c", _PROBE_SRC],
+                [core_proc.python_exe(), "-I", "-c", _PROBE_SRC], env=core_proc.python_env(),
                 input=payload, capture_output=True, text=True,
                 timeout=timeout)
             if budget is not None and "wall" in budget:

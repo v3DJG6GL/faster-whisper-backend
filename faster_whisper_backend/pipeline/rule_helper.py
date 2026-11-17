@@ -199,6 +199,7 @@ def _spawn(register) -> _Helper:
     """Start one helper on its end of a connected pair and wait until it is
     ready. `register(proc)` is called as soon as the process exists, so a
     shutdown in the middle of the start still finds it."""
+    from faster_whisper_backend.core import proc as _proc  # noqa: PLC0415 - parent only
     shm = _shared_memory.SharedMemory(create=True, size=16, track=False)
     try:
         # Made here and inherited, not listened for: an endpoint with a name
@@ -210,7 +211,8 @@ def _spawn(register) -> _Helper:
             try:
                 end, inherit = _child_end(theirs)
                 proc = subprocess.Popen(
-                    [sys.executable, "-P", "-c", _BOOT, _paths.REPO_ROOT],
+                    [_proc.python_exe(), "-P", "-c", _BOOT, _paths.REPO_ROOT],
+                    env=_proc.python_env(),
                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **inherit)
             finally:

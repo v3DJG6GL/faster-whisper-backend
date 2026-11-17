@@ -2868,14 +2868,15 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     import json
     import logging
     import subprocess
-    import sys
 
     payload = json.dumps([[c[1], c[2]] for c in checks])
+    # Parent side only: run as the child, this file has no package to import.
+    from faster_whisper_backend.core import proc as _proc  # noqa: PLC0415
     try:
         proc = subprocess.run(
             # -I: no PYTHONPATH, user site or script dir on the child's
             # sys.path, so nothing outside the stdlib is importable into it.
-            [sys.executable, "-I", _SELF],
+            [_proc.python_exe(), "-I", _SELF], env=_proc.python_env(),
             input=payload, capture_output=True, text=True, timeout=left,
         )
     except subprocess.TimeoutExpired as exc:
