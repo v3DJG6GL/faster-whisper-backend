@@ -439,7 +439,17 @@ def test_negated_shorthand_class_gets_a_real_witness():
     assert synths and all(re.match(r"[^\w]", s) for s in synths)
 
 
-def test_scaling_ratio_alone_cannot_reject_a_fast_pattern(monkeypatch):
+@pytest.fixture
+def child_cpu_clock(monkeypatch):
+    """_probe runs in its own single-threaded child, where process_time is the
+    pattern's CPU alone. Called in-process, it also counts every thread other
+    tests left running in this worker (0.36 s charged to `Wort30\\s+` on a
+    loaded CI runner, run 1871); thread_time is what the child measures."""
+    import time
+    monkeypatch.setattr(time, "process_time", time.thread_time)
+
+
+def test_scaling_ratio_alone_cannot_reject_a_fast_pattern(monkeypatch, child_cpu_clock):
     """The scaling verdict needs BOTH a confirmed ratio and _SCALE_MIN_REJECT
     of real CPU on the scaled fixture. Under CPU contention (the guard shares
     the box with live transcription) a de-schedule mid-probe faked 20-36x
@@ -578,7 +588,7 @@ def test_an_entry_with_a_synthetic_run_gets_its_own_allowance(child_timeouts):
     assert g._GUARD_TIMEOUT_MAX - 1 < child_timeouts[2] <= g._GUARD_TIMEOUT_MAX
 
 
-def test_a_slow_entry_cannot_borrow_the_allowance_of_cheap_ones(monkeypatch):
+def test_a_slow_entry_cannot_borrow_the_allowance_of_cheap_ones(monkeypatch, child_cpu_clock):
     """The allowances are pooled into ONE child timeout, so a cubic amount
     rule refused on its own was accepted behind 31 `Wort{i}\\s+` entries
     (~8 s). The child caps each entry's own CPU time at _GUARD_TIMEOUT, here
