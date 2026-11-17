@@ -1874,7 +1874,10 @@ def test_long_lead_leaves_an_ordinary_rules_probe_alone():
 @pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
 def test_ordinary_rule_keeps_its_terminated_probe(pat):
     assert g._synthetic_fixtures(pat)[0].endswith("#")
-    g.validate([("r", pat, "")], timeout=1.5)
+    # Accepted is the point; a false refusal still comes from the child's
+    # per-rule CPU cap. 1.5 s of wall clock, the helper's start included,
+    # was not enough for `\s+$` on the loaded Windows VM (run 1872).
+    g.validate([("r", pat, "")], timeout=g._HOLD_MAX)
 
 
 @pytest.mark.parametrize("pat", [

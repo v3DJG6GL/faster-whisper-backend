@@ -86,6 +86,23 @@ def _load_sync_venv():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _fresh_manifest_budget():
+    """The yt-dlp SSRF guard spends every manifest a thread parses from one
+    per-thread budget, shared by every load of the plugin, which only
+    download.probe() resets. A test that parses a manifest outside probe()
+    inherited what earlier tests on its worker had spent: four HLS tests hit
+    the 20000-variant cap on a Windows worker that way (run 1872)."""
+    guard = sys.modules.get("fwb_ssrf_guard_inproc")
+    if guard is None:
+        common = sys.modules.get("yt_dlp.networking.common")
+        handler = common and common._REQUEST_HANDLERS.get("FwbSsrfGuard")
+        guard = handler and types.SimpleNamespace(
+            reset_budget=handler._send.__globals__["reset_budget"])
+    if guard is not None:
+        guard.reset_budget()
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     # A venv drifts behind a raised requirements floor and then tests older

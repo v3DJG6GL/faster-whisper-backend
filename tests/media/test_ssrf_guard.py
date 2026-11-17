@@ -114,11 +114,6 @@ def _reset_budget():
         guard.reset_budget()
 
 
-@pytest.fixture(autouse=True)
-def _fresh_manifest_budget():
-    _reset_budget()
-
-
 @pytest.fixture(name="public")
 def servers():
     """The public URL base, with a clean INTERNAL hit log."""
