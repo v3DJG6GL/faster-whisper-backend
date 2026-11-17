@@ -2219,7 +2219,8 @@ def test_wide_optional_branch_screen_is_fast():
     assert len(p) == 512
     t0 = time.perf_counter()
     assert not g._nested_repetition(p)
-    assert time.perf_counter() - t0 < 3.0
+    # The re-testing version took ~15 s; the Windows CI VM needs 3.6 s.
+    assert time.perf_counter() - t0 < 10.0
     # The rule is legit; its wall-clock budget is not what this test is
     # about, and on a loaded host the default left the child 2 ms.
     g.validate([("r", p, "")], timeout=g._HOLD_MAX)

@@ -457,6 +457,10 @@ def test_wide_nested_steps_refused_before_walk(monkeypatch, field, wide,
     from faster_whisper_backend.reports import routes as reports_routes
 
     monkeypatch.setattr(reports_routes, "_NESTED_MAX_NODES", 100)
+    # Once untraced first: a worker's first validation builds caches and
+    # imports lazily (205 KB on the Windows leg), which is not the walk.
+    with pytest.raises(ValidationError, match="field too large"):
+        reports_routes.ReportSubmitIn.model_validate({field: wide})
     tracemalloc.start()
     try:
         with pytest.raises(ValidationError, match="field too large"):

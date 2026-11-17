@@ -243,7 +243,7 @@ def test_package_failure_log_names_neither_the_source_nor_the_workdir(
         "import sys\n"
         # repr: a Windows path's backslashes are not escapes in the child.
         f"sys.stderr.write('Error opening input file ' + {src!r} + '.\\n')\n"
-        "sys.stderr.write('could not write __OUT__\\n')\n"
+        "sys.stderr.write(r'could not write __OUT__' + '\\n')\n"
         "sys.exit(1)\n"))
     with caplog.at_level("WARNING", logger=pk.logger.name):
         with pytest.raises(pk.PackageError) as ei:
